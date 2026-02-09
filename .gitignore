@@ -13,6 +13,7 @@ xcuserdata/
 
 # Rust
 target/
+engine/target/
 
 # macOS
 .DS_Store
