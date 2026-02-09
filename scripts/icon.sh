@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 set -euo pipefail
 
 SIZES=(16 32 64 128 256 512 1024)

@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 ICONSET_DIR="assets/icon/macos/lexime.iconset"
 mkdir -p "$ICONSET_DIR"
 
