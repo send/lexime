@@ -14,7 +14,7 @@ ENGINE_LIB  := build/liblex_engine.a
 
 MACOS_MIN   := 13.0
 
-SWIFTC_FLAGS := -O -import-objc-header Sources/Bridging-Header.h
+SWIFTC_FLAGS := -O -import-objc-header Sources/Bridging-Header.h -Xcc -I.
 LINK_FLAGS   := -Lbuild -llex_engine
 
 .PHONY: build install reload log clean
@@ -43,6 +43,7 @@ $(MACOS_DIR)/$(APP_NAME): $(SWIFT_FILES) $(ENGINE_LIB) Info.plist Resources/icon
 	@rm $(MACOS_DIR)/$(APP_NAME)-x86_64 $(MACOS_DIR)/$(APP_NAME)-arm64
 	cp Info.plist $(CONTENTS)/Info.plist
 	cp Resources/icon.tiff $(RES_DIR)/icon.tiff
+	# TODO: codesign with Lexime.entitlements for distribution builds
 	@echo "Build complete: $(APP_BUNDLE)"
 
 install: build

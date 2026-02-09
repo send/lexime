@@ -9,6 +9,7 @@ class LeximeInputController: IMKInputController {
     private var isComposing: Bool { !composedKana.isEmpty || !pendingRomaji.isEmpty }
 
     private let trie = RomajiTrie.shared
+    private static let vowels: Set<Character> = ["a", "i", "u", "e", "o"]
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -134,7 +135,14 @@ class LeximeInputController: IMKInputController {
 
     private func appendAndConvert(_ input: String, client: IMKTextInput) {
         pendingRomaji += input
+        drainPendingRomaji(force: false)
+        updateMarkedText(client: client)
+    }
 
+    /// Consume pendingRomaji as much as possible.
+    /// - force=false: stop at prefix/exactAndPrefix (wait for more input)
+    /// - force=true: greedily convert everything (used before commit)
+    private func drainPendingRomaji(force: Bool) {
         var changed = true
         while !pendingRomaji.isEmpty && changed {
             changed = false
@@ -146,20 +154,25 @@ class LeximeInputController: IMKInputController {
                 pendingRomaji = ""
                 changed = true
 
-            case .exactAndPrefix:
-                // Wait for more input — a longer match might exist
-                break
+            case .exactAndPrefix(let kana):
+                if force {
+                    composedKana += kana
+                    pendingRomaji = ""
+                    changed = true
+                }
+                // else: wait for more input — a longer match might exist
 
             case .prefix:
-                // Wait for more input
-                break
+                if !force { break }
+                // force mode: try shorter prefixes
+                fallthrough
 
             case .none:
                 // Try to find the longest prefix match
                 var found = false
                 for len in stride(from: pendingRomaji.count - 1, through: 1, by: -1) {
                     let subEnd = pendingRomaji.index(pendingRomaji.startIndex, offsetBy: len)
-                    let sub = String(pendingRomaji[pendingRomaji.startIndex..<subEnd])
+                    let sub = String(pendingRomaji[..<subEnd])
                     let subResult = trie.lookup(sub)
 
                     switch subResult {
@@ -175,85 +188,49 @@ class LeximeInputController: IMKInputController {
                 }
 
                 if !found {
-                    // Check for double consonant → っ
                     if pendingRomaji.count >= 2 {
                         let chars = Array(pendingRomaji)
                         let first = chars[0]
                         let second = chars[1]
-                        // Same consonant and not 'n' (nn → ん is handled by trie)
-                        if first == second && first != "n" && first != "a" && first != "i" &&
-                           first != "u" && first != "e" && first != "o" {
+                        // Same consonant (not 'n', not vowel) → っ
+                        if first == second && first != "n" && !Self.vowels.contains(first) {
                             composedKana += "っ"
                             pendingRomaji = String(pendingRomaji.dropFirst())
                             changed = true
+                        } else if first == "n" && !Self.vowels.contains(second) &&
+                                  second != "n" && second != "y" {
+                            // "n" followed by non-vowel, non-n, non-y → ん
+                            composedKana += "ん"
+                            pendingRomaji = String(pendingRomaji.dropFirst())
+                            changed = true
+                        } else if force {
+                            composedKana += String(pendingRomaji.removeFirst())
+                            changed = true
                         } else {
-                            // "n" followed by a non-vowel, non-n, non-y consonant → ん
-                            if first == "n" && second != "a" && second != "i" &&
-                               second != "u" && second != "e" && second != "o" &&
-                               second != "n" && second != "y" {
-                                composedKana += "ん"
-                                pendingRomaji = String(pendingRomaji.dropFirst())
-                                changed = true
-                            } else {
-                                // Discard the first character
-                                pendingRomaji = String(pendingRomaji.dropFirst())
-                                changed = true
-                            }
+                            pendingRomaji = String(pendingRomaji.dropFirst())
+                            changed = true
                         }
                     } else {
-                        // Single unrecognized character — discard
-                        pendingRomaji = String(pendingRomaji.dropFirst())
+                        // Single character remaining
+                        if force {
+                            if pendingRomaji == "n" {
+                                composedKana += "ん"
+                            } else {
+                                composedKana += pendingRomaji
+                            }
+                        }
+                        pendingRomaji = ""
                         changed = true
                     }
                 }
             }
         }
-
-        updateMarkedText(client: client)
     }
 
     // MARK: - Flush & Commit
 
     private func flush(client: IMKTextInput) {
-        // Convert any remaining pending romaji before committing
-        var changed = true
-        while !pendingRomaji.isEmpty && changed {
-            changed = false
-
-            // Try full pending first (with exactAndPrefix also accepted)
-            for len in stride(from: pendingRomaji.count, through: 1, by: -1) {
-                let subEnd = pendingRomaji.index(pendingRomaji.startIndex, offsetBy: len)
-                let sub = String(pendingRomaji[pendingRomaji.startIndex..<subEnd])
-                let subResult = trie.lookup(sub)
-
-                switch subResult {
-                case .exact(let kana), .exactAndPrefix(let kana):
-                    composedKana += kana
-                    pendingRomaji = String(pendingRomaji[subEnd...])
-                    changed = true
-                default:
-                    continue
-                }
-                break
-            }
-
-            if !changed && !pendingRomaji.isEmpty {
-                // Check double consonant
-                if pendingRomaji.count >= 2 {
-                    let chars = Array(pendingRomaji)
-                    if chars[0] == chars[1] && chars[0] != "n" &&
-                       !["a","i","u","e","o"].contains(chars[0]) {
-                        composedKana += "っ"
-                        pendingRomaji = String(pendingRomaji.dropFirst())
-                        changed = true
-                        continue
-                    }
-                }
-                // Discard unrecognizable character
-                composedKana += String(pendingRomaji.removeFirst())
-                changed = true
-            }
-        }
+        drainPendingRomaji(force: true)
     }
 
     private func commitComposed(client: IMKTextInput) {
