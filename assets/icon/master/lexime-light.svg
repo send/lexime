@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#B8B5C9"/>
+
+  <!-- Symbol (fixed geometry) -->
+  <!-- Left vertical block -->
+  <rect x="256" y="256" width="128" height="512" rx="24" fill="#FFFFFF"/>
+  <!-- Bottom horizontal block -->
+  <rect x="256" y="640" width="512" height="128" rx="24" fill="#FFFFFF"/>
+  <!-- Top-right bar (taller) -->
+  <rect x="640" y="256" width="128" height="176" rx="24" fill="#FFFFFF"/>
+
+  <!-- Center dot (circle) -->
+  <circle cx="408" cy="616" r="48" fill="#FFFFFF"/>
+</svg>
