@@ -1,0 +1,125 @@
+[tasks.engine-lib]
+description = "Build universal static library (x86_64 + aarch64)"
+sources = ["engine/src/**/*.rs", "engine/Cargo.toml"]
+outputs = ["build/liblex_engine.a"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine && cargo build --release --target x86_64-apple-darwin
+cd engine && cargo build --release --target aarch64-apple-darwin
+mkdir -p build
+lipo -create \
+  engine/target/x86_64-apple-darwin/release/liblex_engine.a \
+  engine/target/aarch64-apple-darwin/release/liblex_engine.a \
+  -output build/liblex_engine.a
+"""
+
+[tasks.fetch-dict]
+description = "Download Mozc dictionary data"
+sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
+outputs = ["engine/data/mozc-raw/.stamp"]
+run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw"
+
+[tasks.fetch-sudachi-dict]
+description = "Download SudachiDict dictionary data"
+sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
+outputs = ["engine/data/sudachi-raw/.stamp"]
+run = "cd engine && cargo run --bin dictool -- fetch --source sudachi data/sudachi-raw"
+
+[tasks.dict]
+description = "Compile binary dictionary from Mozc TSV"
+depends = ["fetch-dict"]
+sources = ["engine/data/mozc-raw/.stamp"]
+outputs = ["engine/data/lexime.dict"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool compile data/mozc-raw data/lexime.dict
+"""
+
+[tasks.build]
+description = "Build Lexime.app (universal binary)"
+depends = ["engine-lib", "dict"]
+sources = [
+  "Sources/*.swift",
+  "build/liblex_engine.a",
+  "engine/data/lexime.dict",
+  "Info.plist",
+  "Resources/icon.tiff",
+]
+outputs = ["build/Lexime.app/Contents/MacOS/Lexime"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+APP=build/Lexime.app
+MACOS=$APP/Contents/MacOS
+RES=$APP/Contents/Resources
+MACOS_MIN=13.0
+SWIFTC_FLAGS="-O -import-objc-header Sources/Bridging-Header.h -Xcc -I."
+LINK_FLAGS="-Lbuild -llex_engine"
+
+mkdir -p "$MACOS" "$RES"
+swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
+  Sources/*.swift -o "$MACOS/Lexime-x86_64"
+swiftc $SWIFTC_FLAGS $LINK_FLAGS -target arm64-apple-macosx$MACOS_MIN \
+  Sources/*.swift -o "$MACOS/Lexime-arm64"
+lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime"
+rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
+cp Info.plist "$APP/Contents/Info.plist"
+cp Resources/icon.tiff "$RES/icon.tiff"
+cp engine/data/lexime.dict "$RES/lexime.dict"
+# TODO: codesign with Lexime.entitlements for distribution builds
+echo "Build complete: $APP"
+"""
+
+[tasks.install]
+description = "Install Lexime.app to ~/Library/Input Methods"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+INSTALL_DIR="$HOME/Library/Input Methods"
+mkdir -p "$INSTALL_DIR"
+rm -rf "$INSTALL_DIR/Lexime.app"
+cp -R build/Lexime.app "$INSTALL_DIR/Lexime.app"
+echo "Installed to $INSTALL_DIR/Lexime.app"
+"""
+
+[tasks.reload]
+description = "Restart Lexime (macOS auto-restarts input methods)"
+run = """
+#!/usr/bin/env bash
+pkill -x Lexime || true
+echo "Sent kill signal to Lexime (macOS will auto-restart it)"
+"""
+
+[tasks.log]
+description = "Stream Lexime log output"
+run = """log stream --predicate 'process == "Lexime"' --style compact"""
+
+[tasks.icon]
+description = "Generate icon assets"
+run = "bash scripts/icon.sh"
+
+[tasks.lint]
+description = "Run cargo fmt --check and clippy"
+run = [
+  "cd engine && cargo fmt --check",
+  "cd engine && cargo clippy -- -D warnings",
+]
+
+[tasks.test]
+description = "Run lint + engine tests"
+depends = ["lint"]
+run = "cd engine && cargo test"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = """
+#!/usr/bin/env bash
+rm -rf build
+cd engine && cargo clean
+echo "Clean complete"
+"""

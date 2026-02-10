@@ -15,6 +15,9 @@ xcuserdata/
 target/
 engine/target/
 
+# Dictionary data (downloaded / compiled)
+engine/data/
+
 # macOS
 .DS_Store
 *.swp
