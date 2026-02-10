@@ -112,6 +112,21 @@ macOS で動作する最小限の IME。リスクの高い部分から順に検�
 - **学習データ**: ローカル保存
 - **パフォーマンス**: 速度・軽量さを重視
 
+## CI/CD
+
+### 現状
+
+- PR トリガーで `cargo fmt --check` / `cargo clippy` / `cargo test` を実行 (`.github/workflows/ci.yml`)
+
+### TODO: リリースワークフロー (パブリック化後)
+
+リポジトリをパブリック化した後、タグプッシュでリリースビルドを自動作成するワークフローを追加する。
+
+- **トリガー**: `push: tags: ['v*']`
+- **ランナー**: `macos-latest`（パブリックリポなら無料）
+- **ビルド対象**: `liblex_engine` (staticlib, `aarch64-apple-darwin`)
+- **成果物**: GitHub Release にバイナリをアップロード
+
 ## 未決事項
 
 - 候補の確定操作体系（Tab? 数字キー? 自動確定?）
