@@ -3,14 +3,34 @@ set -euo pipefail
 
 SIZES=(16 32 64 128 256 512 1024)
 
-# light
-for s in "${SIZES[@]}"; do
-  rsvg-convert -w "$s" -h "$s" "assets/icon/master/lexime-light.svg" \
-    -o "assets/icon/export/light/png/icon_${s}x${s}.png"
+# --- PNG export (light + dark) ---
+for variant in light dark; do
+  for s in "${SIZES[@]}"; do
+    rsvg-convert -w "$s" -h "$s" "assets/icon/master/lexime-${variant}.svg" \
+      -o "assets/icon/export/${variant}/png/icon_${s}x${s}.png"
+  done
 done
 
-# dark
-for s in "${SIZES[@]}"; do
-  rsvg-convert -w "$s" -h "$s" "assets/icon/master/lexime-dark.svg" \
-    -o "assets/icon/export/dark/png/icon_${s}x${s}.png"
-done
+# --- macOS iconset ---
+ICONSET_DIR="assets/icon/macos/lexime.iconset"
+mkdir -p "$ICONSET_DIR"
+
+LIGHT="assets/icon/export/light/png"
+cp "$LIGHT/icon_16x16.png"    "$ICONSET_DIR/icon_16x16.png"
+cp "$LIGHT/icon_32x32.png"    "$ICONSET_DIR/icon_16x16@2x.png"
+cp "$LIGHT/icon_32x32.png"    "$ICONSET_DIR/icon_32x32.png"
+cp "$LIGHT/icon_64x64.png"    "$ICONSET_DIR/icon_32x32@2x.png"
+cp "$LIGHT/icon_128x128.png"  "$ICONSET_DIR/icon_128x128.png"
+cp "$LIGHT/icon_256x256.png"  "$ICONSET_DIR/icon_128x128@2x.png"
+cp "$LIGHT/icon_256x256.png"  "$ICONSET_DIR/icon_256x256.png"
+cp "$LIGHT/icon_512x512.png"  "$ICONSET_DIR/icon_256x256@2x.png"
+cp "$LIGHT/icon_512x512.png"  "$ICONSET_DIR/icon_512x512.png"
+cp "$LIGHT/icon_1024x1024.png" "$ICONSET_DIR/icon_512x512@2x.png"
+
+# --- icns ---
+iconutil -c icns "$ICONSET_DIR" -o assets/icon/macos/lexime.icns
+
+# --- IME menu bar icon (tiff) ---
+sips -s format tiff "$LIGHT/icon_16x16.png" --out Resources/icon.tiff >/dev/null
+
+echo "Icon generation complete."
