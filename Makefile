@@ -17,7 +17,7 @@ MACOS_MIN   := 13.0
 SWIFTC_FLAGS := -O -import-objc-header Sources/Bridging-Header.h -Xcc -I.
 LINK_FLAGS   := -Lbuild -llex_engine
 
-.PHONY: build install reload log clean
+.PHONY: build install reload log clean icon
 
 build: $(MACOS_DIR)/$(APP_NAME)
 
@@ -58,6 +58,9 @@ reload:
 
 log:
 	log stream --predicate 'process == "Lexime"' --style compact
+
+icon:
+	bash scripts/icon.sh
 
 clean:
 	rm -rf $(BUILD_DIR)

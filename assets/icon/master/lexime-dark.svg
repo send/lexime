@@ -1,16 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!-- Background -->
-  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#6F6C85"/>
+  <rect width="1024" height="1024" rx="224" fill="#707088"/>
 
-  <!-- Symbol (fixed geometry) -->
-  <!-- Left vertical block -->
-  <rect x="256" y="256" width="128" height="512" rx="24" fill="#F9F9FB"/>
-  <!-- Bottom horizontal block -->
-  <rect x="256" y="640" width="512" height="128" rx="24" fill="#F9F9FB"/>
-  <!-- Top-right bar (taller) -->
-  <rect x="640" y="256" width="128" height="176" rx="24" fill="#F9F9FB"/>
+  <!-- Symbol — Fibonacci golden: B=8, R=64, gap=40, margin=136 -->
+  <!-- Dimensions: left_w=34B, left_h=55B, bar_h=21B, bottom_h=34B -->
+  <!-- Ratios: 55:34≈φ (left block, upper:lower), 34:21≈φ (bar) -->
+  <!-- Dot at exact canvas center (512, 512), r=R=64 -->
+  <g fill="#D8D8F0">
+    <!-- Left vertical block -->
+    <rect x="136" y="136" width="272" height="440" rx="64"/>
 
-  <!-- Center dot (circle) -->
-  <circle cx="408" cy="616" r="48" fill="#F9F9FB"/>
+    <!-- Bottom-left block (bottom-left R=64) -->
+    <path d="M 136 616 H 616 V 888 H 200 A 64 64 0 0 1 136 824 V 616 Z"/>
+
+    <!-- Bottom-right block (bottom-right R=64) -->
+    <path d="M 656 616 H 888 V 824 A 64 64 0 0 1 824 888 H 656 V 616 Z"/>
+
+    <!-- Top-right bar (top-right R=64) -->
+    <path d="M 616 408 H 824 A 64 64 0 0 1 888 472 V 576 H 616 Z"/>
+  </g>
+
+  <!-- Center dot (accent) -->
+  <circle cx="512" cy="512" r="64" fill="#F8F8F8"/>
 </svg>
