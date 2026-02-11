@@ -132,25 +132,25 @@ impl Dictionary for TrieDictionary {
             .map(|v| v.as_slice())
     }
 
-    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
+    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>> {
         self.data
             .trie
             .predictive_search(prefix.as_bytes())
             .take(max_results)
             .map(|(key, entries): (String, &Vec<DictEntry>)| SearchResult {
                 reading: key,
-                entries: entries.clone(),
+                entries,
             })
             .collect()
     }
 
-    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>> {
         self.data
             .trie
             .common_prefix_search(query.as_bytes())
             .map(|(key, entries): (String, &Vec<DictEntry>)| SearchResult {
                 reading: key,
-                entries: entries.clone(),
+                entries,
             })
             .collect()
     }

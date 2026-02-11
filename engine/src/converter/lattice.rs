@@ -42,8 +42,10 @@ const UNKNOWN_WORD_COST: i16 = 10000;
 /// lookups per position.
 /// Adds an unknown-word fallback node (1-char, high cost) to guarantee connectivity.
 pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
-    let chars: Vec<char> = kana.chars().collect();
-    let char_count = chars.len();
+    // Pre-compute byte offsets for each char position so we can slice
+    // the original &str directly instead of allocating a new String per position.
+    let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
+    let char_count = byte_offsets.len();
     let mut nodes = Vec::new();
     // nodes_by_end has char_count + 1 slots (position 0 through char_count)
     let mut nodes_by_end: Vec<Vec<usize>> = vec![Vec::new(); char_count + 1];
@@ -52,13 +54,13 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
     for start in 0..char_count {
         let mut has_single_char_match = false;
 
-        let suffix: String = chars[start..].iter().collect();
-        let matches = dict.common_prefix_search(&suffix);
+        let suffix = &kana[byte_offsets[start]..];
+        let matches = dict.common_prefix_search(suffix);
 
         for result in &matches {
             let reading_char_count = result.reading.chars().count();
             let end = start + reading_char_count;
-            for entry in &result.entries {
+            for entry in result.entries {
                 let idx = nodes.len();
                 nodes.push(LatticeNode {
                     start,
@@ -81,7 +83,8 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
         // this single character. This guarantees connectivity: even positions
         // spanned only by longer matches remain reachable via the fallback.
         if !has_single_char_match {
-            let ch: String = chars[start..start + 1].iter().collect();
+            let next_offset = byte_offsets.get(start + 1).copied().unwrap_or(kana.len());
+            let ch = kana[byte_offsets[start]..next_offset].to_string();
             let idx = nodes.len();
             nodes.push(LatticeNode {
                 start,

@@ -41,6 +41,9 @@ extension LeximeInputController {
         return results
     }
 
+    /// Fast Viterbi conversion — returns segments with only the 1-best surface
+    /// (no per-segment dictionary lookup).  Candidates are loaded lazily via
+    /// `ensureCandidatesLoaded(segmentIndex:)` when the user enters multi-segment mode.
     func convertKana(_ kana: String) -> [ConversionSegment] {
         guard let dict = sharedDict else { return [] }
 
@@ -60,26 +63,22 @@ extension LeximeInputController {
                   let surfacePtr = segments[i].surface else { continue }
             let reading = String(cString: readingPtr)
             let surface = String(cString: surfacePtr)
-            let candidates = lookupCandidates(reading)
-            var orderedCandidates = [surface]
-            var seen: Set<String> = [surface]
-            for c in candidates where seen.insert(c).inserted {
-                orderedCandidates.append(c)
-            }
             converted.append(ConversionSegment(
                 reading: reading,
                 surface: surface,
-                candidates: orderedCandidates,
+                candidates: [surface],
                 selectedIndex: 0
             ))
         }
         return converted
     }
 
-    /// Return N-best whole-sentence surfaces from Viterbi.
-    /// Each element is the joined surface string of one Viterbi path.
-    func convertKanaNbest(_ kana: String, n: Int = 5) -> [String] {
-        guard let dict = sharedDict, !kana.isEmpty else { return [] }
+    /// Combined Viterbi N-best: returns 1-best segments AND N-best joined surfaces
+    /// in a single FFI call, replacing separate `convertKana` + `convertKanaNbest`.
+    func convertKanaCombined(_ kana: String, n: Int = 5)
+        -> (segments: [ConversionSegment], nbestSurfaces: [String])
+    {
+        guard let dict = sharedDict, !kana.isEmpty else { return ([], []) }
 
         let list: LexConversionResultList
         if let history = sharedHistory {
@@ -89,21 +88,56 @@ extension LeximeInputController {
         }
         defer { lex_conversion_result_list_free(list) }
 
-        guard list.len > 0, let results = list.results else { return [] }
+        guard list.len > 0, let results = list.results else { return ([], []) }
 
+        // Extract 1-best segments (first result) without per-segment candidate lookup
+        var segments: [ConversionSegment] = []
+        let firstResult = results[0]
+        if firstResult.len > 0, let firstSegments = firstResult.segments {
+            for j in 0..<Int(firstResult.len) {
+                guard let readingPtr = firstSegments[j].reading,
+                      let surfacePtr = firstSegments[j].surface else { continue }
+                let reading = String(cString: readingPtr)
+                let surface = String(cString: surfacePtr)
+                segments.append(ConversionSegment(
+                    reading: reading,
+                    surface: surface,
+                    candidates: [surface],
+                    selectedIndex: 0
+                ))
+            }
+        }
+
+        // Extract all N-best joined surfaces
         var surfaces: [String] = []
         for i in 0..<Int(list.len) {
             let result = results[i]
-            guard result.len > 0, let segments = result.segments else { continue }
-            var joined = ""
-            for j in 0..<Int(result.len) {
-                guard let surfacePtr = segments[j].surface else { continue }
-                joined += String(cString: surfacePtr)
+            guard result.len > 0, let segs = result.segments else { continue }
+            let parts = (0..<Int(result.len)).compactMap { j -> String? in
+                guard let ptr = segs[j].surface else { return nil }
+                return String(cString: ptr)
             }
+            let joined = parts.joined()
             if !joined.isEmpty {
                 surfaces.append(joined)
             }
         }
-        return surfaces
+
+        return (segments, surfaces)
+    }
+
+    /// Lazily load dictionary candidates for a segment that only has its
+    /// Viterbi surface.  Call this before the user needs to browse candidates.
+    func ensureCandidatesLoaded(segmentIndex: Int) {
+        guard segmentIndex < conversionSegments.count,
+              conversionSegments[segmentIndex].candidates.count <= 1 else { return }
+        let seg = conversionSegments[segmentIndex]
+        let looked = lookupCandidates(seg.reading)
+        var ordered = [seg.surface]
+        var seen: Set<String> = [seg.surface]
+        for c in looked where seen.insert(c).inserted {
+            ordered.append(c)
+        }
+        conversionSegments[segmentIndex].candidates = ordered
     }
 }

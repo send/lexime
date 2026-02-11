@@ -209,6 +209,7 @@ extension LeximeInputController {
         case Key.left: // Left arrow — previous segment
             if activeSegmentIndex > 0 {
                 activeSegmentIndex -= 1
+                ensureCandidatesLoaded(segmentIndex: activeSegmentIndex)
                 updateConvertingMarkedText(client: client)
                 showCandidatePanel(client: client)
             }
@@ -217,6 +218,7 @@ extension LeximeInputController {
         case Key.right: // Right arrow — next segment
             if activeSegmentIndex < conversionSegments.count - 1 {
                 activeSegmentIndex += 1
+                ensureCandidatesLoaded(segmentIndex: activeSegmentIndex)
                 updateConvertingMarkedText(client: client)
                 showCandidatePanel(client: client)
             }
@@ -266,6 +268,7 @@ extension LeximeInputController {
     /// `delta` is +1/-1 for next/previous; absolute index if `absolute` is true.
     func selectSegmentCandidate(delta: Int, absolute: Bool = false, client: IMKTextInput) {
         guard activeSegmentIndex < conversionSegments.count else { return }
+        ensureCandidatesLoaded(segmentIndex: activeSegmentIndex)
         let seg = conversionSegments[activeSegmentIndex]
         guard !seg.candidates.isEmpty else { return }
         let newIdx: Int
@@ -290,7 +293,10 @@ extension LeximeInputController {
     func performConversion(client: IMKTextInput) {
         hideCandidatePanel()
         flush()
-        let segments = convertKana(composedKana)
+
+        // Single FFI call: get both 1-best segments and N-best joined surfaces
+        let (segments, nbestSurfaces) = convertKanaCombined(composedKana, n: 5)
+
         if segments.isEmpty {
             commitComposed(client: client)
         } else {
@@ -306,7 +312,6 @@ extension LeximeInputController {
                 candidates.append(pred)
             }
             // N-best Viterbi surfaces (includes 1-best as first element)
-            let nbestSurfaces = convertKanaNbest(composedKana, n: 5)
             for surface in nbestSurfaces where seen.insert(surface).inserted {
                 candidates.append(surface)
             }
@@ -346,6 +351,8 @@ extension LeximeInputController {
             && viterbiSegments.count > 1 {
             conversionSegments = viterbiSegments
             activeSegmentIndex = 0
+            // Lazy-load candidates only for the active segment
+            ensureCandidatesLoaded(segmentIndex: activeSegmentIndex)
             updateConvertingMarkedText(client: client)
             showCandidatePanel(client: client)
             return true
@@ -375,6 +382,8 @@ extension LeximeInputController {
             let newNext = remainderReading.isEmpty ? [] : convertKana(remainderReading)
             rebuildSegments(activeReplace: newActive, nextReplace: newNext)
         }
+        // Lazy-load candidates for the active segment after boundary adjustment
+        ensureCandidatesLoaded(segmentIndex: activeSegmentIndex)
         updateConvertingMarkedText(client: client)
         showCandidatePanel(client: client)
         return true
