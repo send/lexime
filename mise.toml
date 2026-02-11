@@ -17,41 +17,35 @@ lipo -create \
 """
 
 [tasks.fetch-dict]
-description = "Download Mozc dictionary data"
-sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
-outputs = ["engine/data/mozc-raw/.stamp"]
-run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw"
-
-[tasks.fetch-sudachi-dict]
 description = "Download SudachiDict dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
 outputs = ["engine/data/sudachi-raw/.stamp"]
 run = "cd engine && cargo run --bin dictool -- fetch --source sudachi data/sudachi-raw"
 
 [tasks.dict]
-description = "Compile binary dictionary from Mozc TSV"
+description = "Compile binary dictionary from SudachiDict"
 depends = ["fetch-dict"]
-sources = ["engine/data/mozc-raw/.stamp"]
+sources = ["engine/data/sudachi-raw/.stamp"]
 outputs = ["engine/data/lexime.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile data/mozc-raw data/lexime.dict
+target/release/dictool compile --source sudachi data/sudachi-raw data/lexime.dict
 """
 
 [tasks.conn]
 description = "Compile connection cost matrix"
 depends = ["fetch-dict"]
-sources = ["engine/data/mozc-raw/connection_single_column.txt"]
+sources = ["engine/data/sudachi-raw/matrix.def"]
 outputs = ["engine/data/lexime.conn"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime.conn
+target/release/dictool compile-conn data/sudachi-raw/matrix.def data/lexime.conn
 """
 
 [tasks.build]
