@@ -16,46 +16,78 @@ lipo -create \
   -output build/liblex_engine.a
 """
 
-[tasks.fetch-dict]
+[tasks.fetch-dict-sudachi]
 description = "Download SudachiDict dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
 outputs = ["engine/data/sudachi-raw/.stamp"]
 run = "cd engine && cargo run --bin dictool -- fetch --source sudachi data/sudachi-raw"
 
-[tasks.dict]
+[tasks.fetch-dict-mozc]
+description = "Download Mozc dictionary data"
+sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
+outputs = ["engine/data/mozc-raw/.stamp"]
+run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw"
+
+[tasks.dict-sudachi]
 description = "Compile binary dictionary from SudachiDict"
-depends = ["fetch-dict"]
+depends = ["fetch-dict-sudachi"]
 sources = ["engine/data/sudachi-raw/.stamp"]
-outputs = ["engine/data/lexime.dict"]
+outputs = ["engine/data/lexime-sudachi.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile --source sudachi data/sudachi-raw data/lexime.dict
+target/release/dictool compile --source sudachi data/sudachi-raw data/lexime-sudachi.dict
 """
 
-[tasks.conn]
-description = "Compile connection cost matrix"
-depends = ["fetch-dict"]
-sources = ["engine/data/sudachi-raw/matrix.def"]
-outputs = ["engine/data/lexime.conn"]
+[tasks.dict-mozc]
+description = "Compile binary dictionary from Mozc"
+depends = ["fetch-dict-mozc"]
+sources = ["engine/data/mozc-raw/.stamp"]
+outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile-conn data/sudachi-raw/matrix.def data/lexime.conn
+target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
+"""
+
+[tasks.conn-sudachi]
+description = "Compile SudachiDict connection cost matrix"
+depends = ["fetch-dict-sudachi"]
+sources = ["engine/data/sudachi-raw/matrix.def"]
+outputs = ["engine/data/lexime-sudachi.conn"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool compile-conn data/sudachi-raw/matrix.def data/lexime-sudachi.conn
+"""
+
+[tasks.conn-mozc]
+description = "Compile Mozc connection cost matrix"
+depends = ["fetch-dict-mozc"]
+sources = ["engine/data/mozc-raw/connection_single_column.txt"]
+outputs = ["engine/data/lexime-mozc.conn"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime-mozc.conn
 """
 
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
-depends = ["engine-lib", "dict", "conn"]
+depends = ["engine-lib", "dict-sudachi", "conn-sudachi"]
 sources = [
   "Sources/*.swift",
   "build/liblex_engine.a",
-  "engine/data/lexime.dict",
-  "engine/data/lexime.conn",
+  "engine/data/lexime-*.dict",
+  "engine/data/lexime-*.conn",
   "Info.plist",
   "Resources/icon.tiff",
   "Resources/en.lproj/InfoPlist.strings",
@@ -83,8 +115,10 @@ cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
 cp -R Resources/en.lproj "$RES/en.lproj"
 cp -R Resources/ja.lproj "$RES/ja.lproj"
-cp engine/data/lexime.dict "$RES/lexime.dict"
-cp engine/data/lexime.conn "$RES/lexime.conn"
+# Copy all available dictionary files (sudachi is always built; mozc is optional)
+for f in engine/data/lexime-*.dict engine/data/lexime-*.conn; do
+  [ -f "$f" ] && cp "$f" "$RES/"
+done
 codesign -f -s - "$APP"
 echo "Build complete: $APP"
 """
