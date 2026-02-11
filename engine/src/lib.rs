@@ -209,12 +209,32 @@ pub struct LexCandidate {
 pub struct LexCandidateList {
     pub candidates: *const LexCandidate,
     pub len: u32,
-    _owned: *mut CandidateListOwned,
+    _owned: *mut OwnedVec<LexCandidate>,
 }
 
-struct CandidateListOwned {
-    candidates: Vec<LexCandidate>,
+/// Generic FFI-owned buffer: keeps a `Vec<T>` (whose pointer is exposed to C)
+/// alive together with the `CString`s that back any `*const c_char` inside `T`.
+struct OwnedVec<T> {
+    items: Vec<T>,
     _strings: Vec<CString>,
+}
+
+impl<T> OwnedVec<T> {
+    /// Box the items + strings, return (data_ptr, len, owned_ptr).
+    /// Returns null pointers when `items` is empty.
+    fn pack(items: Vec<T>, strings: Vec<CString>) -> (*const T, u32, *mut Self) {
+        if items.is_empty() {
+            return (ptr::null(), 0, ptr::null_mut());
+        }
+        let owned = Box::new(Self {
+            items,
+            _strings: strings,
+        });
+        let owned_ptr = Box::into_raw(owned);
+        let data_ptr = unsafe { (*owned_ptr).items.as_ptr() };
+        let len = unsafe { (*owned_ptr).items.len() as u32 };
+        (data_ptr, len, owned_ptr)
+    }
 }
 
 impl LexCandidateList {
@@ -303,28 +323,14 @@ impl LexCandidateList {
     }
 
     fn pack(candidates: Vec<LexCandidate>, strings: Vec<CString>) -> Self {
-        if candidates.is_empty() {
+        let (ptr, len, owned) = OwnedVec::pack(candidates, strings);
+        if owned.is_null() {
             return Self::empty();
         }
-
-        let owned = Box::new(CandidateListOwned {
-            candidates,
-            _strings: strings,
-        });
-        let owned_ptr = Box::into_raw(owned);
-
-        // SAFETY: `owned_ptr` was just created from `Box::into_raw` and has not been
-        // deallocated. The `candidates` Vec inside the Box is heap-allocated and its
-        // data pointer remains stable as long as the Vec is not mutated or dropped.
-        // The Box is kept alive via `_owned` in the returned struct, and `_strings`
-        // keeps the CString data alive so the char pointers inside candidates are valid.
-        let candidates_ptr = unsafe { (*owned_ptr).candidates.as_ptr() };
-        let len = unsafe { (*owned_ptr).candidates.len() as u32 };
-
         Self {
-            candidates: candidates_ptr,
+            candidates: ptr,
             len,
-            _owned: owned_ptr,
+            _owned: owned,
         }
     }
 }
@@ -426,12 +432,7 @@ pub struct LexSegment {
 pub struct LexConversionResult {
     pub segments: *const LexSegment,
     pub len: u32,
-    _owned: *mut ConversionResultOwned,
-}
-
-struct ConversionResultOwned {
-    segments: Vec<LexSegment>,
-    _strings: Vec<CString>,
+    _owned: *mut OwnedVec<LexSegment>,
 }
 
 impl LexConversionResult {
@@ -446,10 +447,6 @@ impl LexConversionResult {
 
 /// Pack a list of ConvertedSegments into a C-compatible LexConversionResult.
 fn pack_conversion_result(result: Vec<converter::ConvertedSegment>) -> LexConversionResult {
-    if result.is_empty() {
-        return LexConversionResult::empty();
-    }
-
     let mut strings = Vec::with_capacity(result.len() * 2);
     let mut segments = Vec::with_capacity(result.len());
 
@@ -468,22 +465,14 @@ fn pack_conversion_result(result: Vec<converter::ConvertedSegment>) -> LexConver
         strings.push(surface);
     }
 
-    let owned = Box::new(ConversionResultOwned {
-        segments,
-        _strings: strings,
-    });
-    let owned_ptr = Box::into_raw(owned);
-
-    // SAFETY: Same pattern as CandidateListOwned::pack — `owned_ptr` is freshly
-    // created from Box::into_raw, `segments` Vec data is stable, and `_strings`
-    // keeps CString data alive for the lifetime of the returned struct.
-    let segments_ptr = unsafe { (*owned_ptr).segments.as_ptr() };
-    let len = unsafe { (*owned_ptr).segments.len() as u32 };
-
+    let (ptr, len, owned) = OwnedVec::pack(segments, strings);
+    if owned.is_null() {
+        return LexConversionResult::empty();
+    }
     LexConversionResult {
-        segments: segments_ptr,
+        segments: ptr,
         len,
-        _owned: owned_ptr,
+        _owned: owned,
     }
 }
 
@@ -513,11 +502,7 @@ pub extern "C" fn lex_conversion_free(result: LexConversionResult) {
 pub struct LexConversionResultList {
     pub results: *const LexConversionResult,
     pub len: u32,
-    _owned: *mut ConversionResultListOwned,
-}
-
-struct ConversionResultListOwned {
-    results: Vec<LexConversionResult>,
+    _owned: *mut OwnedVec<LexConversionResult>,
 }
 
 impl LexConversionResultList {
@@ -533,25 +518,15 @@ impl LexConversionResultList {
 fn pack_conversion_result_list(
     paths: Vec<Vec<converter::ConvertedSegment>>,
 ) -> LexConversionResultList {
-    if paths.is_empty() {
+    let results: Vec<LexConversionResult> = paths.into_iter().map(pack_conversion_result).collect();
+    let (ptr, len, owned) = OwnedVec::pack(results, Vec::new());
+    if owned.is_null() {
         return LexConversionResultList::empty();
     }
-
-    let results: Vec<LexConversionResult> = paths.into_iter().map(pack_conversion_result).collect();
-
-    let owned = Box::new(ConversionResultListOwned { results });
-    let owned_ptr = Box::into_raw(owned);
-
-    // SAFETY: `owned_ptr` was just created from Box::into_raw. The `results` Vec
-    // inside is heap-allocated and stable. Each LexConversionResult inside owns
-    // its own strings via its `_owned` pointer.
-    let results_ptr = unsafe { (*owned_ptr).results.as_ptr() };
-    let len = unsafe { (*owned_ptr).results.len() as u32 };
-
     LexConversionResultList {
-        results: results_ptr,
+        results: ptr,
         len,
-        _owned: owned_ptr,
+        _owned: owned,
     }
 }
 
@@ -602,7 +577,7 @@ pub extern "C" fn lex_conversion_result_list_free(list: LexConversionResultList)
         unsafe {
             // First free each individual ConversionResult's owned data
             let owned = Box::from_raw(list._owned);
-            for result in &owned.results {
+            for result in &owned.items {
                 owned_drop(result._owned);
             }
             // The owned box (containing the Vec<LexConversionResult>) is dropped here
