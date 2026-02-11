@@ -1,4 +1,4 @@
-/// Character-level Unicode classification for Japanese text.
+//! Character-level Unicode classification for Japanese text.
 
 pub fn is_hiragana(c: char) -> bool {
     ('\u{3040}'..='\u{309F}').contains(&c)

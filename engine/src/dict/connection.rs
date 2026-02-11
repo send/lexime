@@ -264,10 +264,7 @@ mod tests {
     #[test]
     fn test_unsupported_version() {
         let result = ConnectionMatrix::from_bytes(b"LXCX\x99\x01\x00");
-        assert!(matches!(
-            result,
-            Err(DictError::UnsupportedVersion(0x99))
-        ));
+        assert!(matches!(result, Err(DictError::UnsupportedVersion(0x99))));
     }
 
     #[test]

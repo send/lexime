@@ -267,19 +267,15 @@ impl UserHistory {
             );
         }
 
-        let mut bigrams: HashMap<String, HashMap<(String, String), HistoryEntry>> =
-            HashMap::new();
+        let mut bigrams: HashMap<String, HashMap<(String, String), HistoryEntry>> = HashMap::new();
         for rec in data.bigrams {
-            bigrams
-                .entry(rec.prev_surface)
-                .or_default()
-                .insert(
-                    (rec.next_reading, rec.next_surface),
-                    HistoryEntry {
-                        frequency: rec.frequency,
-                        last_used: rec.last_used,
-                    },
-                );
+            bigrams.entry(rec.prev_surface).or_default().insert(
+                (rec.next_reading, rec.next_surface),
+                HistoryEntry {
+                    frequency: rec.frequency,
+                    last_used: rec.last_used,
+                },
+            );
         }
 
         Self { unigrams, bigrams }
