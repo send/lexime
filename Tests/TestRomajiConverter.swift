@@ -86,4 +86,28 @@ func testRomajiConverter() {
         assertEqual(r.composedKana, "っか", "kka → っか")
         assertEqual(r.pendingRomaji, "", "kka pending empty")
     }
+
+    // T1: Collapse latin+kana vowel — "kあ" → "か"
+    do {
+        let r = drainPendingRomaji(composedKana: "kあ", pendingRomaji: "", trie: trie, force: false)
+        assertEqual(r.composedKana, "か", "kあ → か (collapse)")
+    }
+
+    // T1: Collapse latin+kana vowel — "あkい" → "あき"
+    do {
+        let r = drainPendingRomaji(composedKana: "あkい", pendingRomaji: "", trie: trie, force: false)
+        assertEqual(r.composedKana, "あき", "あkい → あき (collapse mid)")
+    }
+
+    // T1: Collapse multi-char latin — "shあ" → "しゃ"
+    do {
+        let r = drainPendingRomaji(composedKana: "shあ", pendingRomaji: "", trie: trie, force: false)
+        assertEqual(r.composedKana, "しゃ", "shあ → しゃ (collapse multi-latin)")
+    }
+
+    // T1: No collapse when latin not followed by kana vowel
+    do {
+        let r = drainPendingRomaji(composedKana: "kが", pendingRomaji: "", trie: trie, force: false)
+        assertEqual(r.composedKana, "kが", "kが → kが (no collapse)")
+    }
 }
