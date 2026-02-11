@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use super::{is_hiragana, list_dict_files, parse_id_cost, DictSource, DictSourceError};
+use super::{
+    is_hiragana, parse_dict_files, parse_id_cost, DictSource, DictSourceError, ParsedLine,
+};
 use crate::dict::DictEntry;
 
 const MOZC_CONTENTS_URL: &str =
@@ -72,58 +74,30 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
 
 impl DictSource for MozcSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        let files = list_dict_files(dir, "dictionary*.txt", |name| {
-            name.starts_with("dictionary") && name.ends_with(".txt")
-        })?;
-
-        let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
-        let mut total_lines = 0u64;
-        let mut skipped = 0u64;
-
-        for file_entry in &files {
-            let path = file_entry.path();
-            eprintln!("Reading {}...", path.display());
-            let content = fs::read_to_string(&path).map_err(DictSourceError::Io)?;
-
-            for line in content.lines() {
-                total_lines += 1;
-                if line.is_empty() || line.starts_with('#') {
-                    skipped += 1;
-                    continue;
-                }
-
-                let fields: Vec<&str> = line.split('\t').collect();
+        parse_dict_files(
+            dir,
+            "dictionary*.txt",
+            |name| name.starts_with("dictionary") && name.ends_with(".txt"),
+            '\t',
+            |fields| {
                 if fields.len() < 5 {
-                    skipped += 1;
-                    continue;
+                    return None;
                 }
-
                 let reading = fields[0];
-                let Some((left_id, right_id, cost)) = parse_id_cost(&fields) else {
-                    skipped += 1;
-                    continue;
-                };
+                let (left_id, right_id, cost) = parse_id_cost(fields)?;
                 let surface = fields[4];
-
                 if !is_hiragana(reading) {
-                    skipped += 1;
-                    continue;
+                    return None;
                 }
-
-                entries
-                    .entry(reading.to_string())
-                    .or_default()
-                    .push(DictEntry {
-                        surface: surface.to_string(),
-                        cost,
-                        left_id,
-                        right_id,
-                    });
-            }
-        }
-
-        eprintln!("  (skipped {skipped} of {total_lines} lines)");
-        Ok(entries)
+                Some(ParsedLine {
+                    reading: reading.to_string(),
+                    surface: surface.to_string(),
+                    left_id,
+                    right_id,
+                    cost,
+                })
+            },
+        )
     }
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
