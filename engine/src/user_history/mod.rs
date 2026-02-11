@@ -22,8 +22,8 @@ const HALF_LIFE_HOURS: f64 = 168.0;
 pub struct UserHistory {
     /// reading → (surface → HistoryEntry)
     unigrams: HashMap<String, HashMap<String, HistoryEntry>>,
-    /// prev_surface → (next_reading → (next_surface → HistoryEntry))
-    bigrams: HashMap<String, HashMap<String, HashMap<String, HistoryEntry>>>,
+    /// prev_surface → ((next_reading, next_surface) → HistoryEntry)
+    bigrams: HashMap<String, HashMap<(String, String), HistoryEntry>>,
 }
 
 #[derive(Clone)]
@@ -96,11 +96,7 @@ impl UserHistory {
     }
 
     fn bigram_count(&self) -> usize {
-        self.bigrams
-            .values()
-            .flat_map(|inner| inner.values())
-            .map(|inner2| inner2.len())
-            .sum()
+        self.bigrams.values().map(|inner| inner.len()).sum()
     }
 
     /// Record a confirmed conversion: list of (reading, surface) segments.
@@ -126,13 +122,12 @@ impl UserHistory {
             let (_, prev_surface) = &pair[0];
             let (next_reading, next_surface) = &pair[1];
 
+            let key = (next_reading.clone(), next_surface.clone());
             let entry = self
                 .bigrams
                 .entry(prev_surface.clone())
                 .or_default()
-                .entry(next_reading.clone())
-                .or_default()
-                .entry(next_surface.clone())
+                .entry(key)
                 .or_insert(HistoryEntry {
                     frequency: 0,
                     last_used: now,
@@ -156,8 +151,7 @@ impl UserHistory {
     pub fn bigram_boost(&self, prev_surface: &str, next_reading: &str, next_surface: &str) -> i64 {
         self.bigrams
             .get(prev_surface)
-            .and_then(|inner| inner.get(next_reading))
-            .and_then(|inner2| inner2.get(next_surface))
+            .and_then(|inner| inner.get(&(next_reading.to_string(), next_surface.to_string())))
             .map_or(0, |entry| entry.boost())
     }
 
@@ -246,16 +240,14 @@ impl UserHistory {
 
         let mut bigrams = Vec::new();
         for (prev, inner) in &self.bigrams {
-            for (next_r, inner2) in inner {
-                for (next_s, entry) in inner2 {
-                    bigrams.push(BigramRecord {
-                        prev_surface: prev.clone(),
-                        next_reading: next_r.clone(),
-                        next_surface: next_s.clone(),
-                        frequency: entry.frequency,
-                        last_used: entry.last_used,
-                    });
-                }
+            for ((next_r, next_s), entry) in inner {
+                bigrams.push(BigramRecord {
+                    prev_surface: prev.clone(),
+                    next_reading: next_r.clone(),
+                    next_surface: next_s.clone(),
+                    frequency: entry.frequency,
+                    last_used: entry.last_used,
+                });
             }
         }
 
@@ -274,16 +266,14 @@ impl UserHistory {
             );
         }
 
-        let mut bigrams: HashMap<String, HashMap<String, HashMap<String, HistoryEntry>>> =
+        let mut bigrams: HashMap<String, HashMap<(String, String), HistoryEntry>> =
             HashMap::new();
         for rec in data.bigrams {
             bigrams
                 .entry(rec.prev_surface)
                 .or_default()
-                .entry(rec.next_reading)
-                .or_default()
                 .insert(
-                    rec.next_surface,
+                    (rec.next_reading, rec.next_surface),
                     HistoryEntry {
                         frequency: rec.frequency,
                         last_used: rec.last_used,
@@ -321,25 +311,18 @@ impl UserHistory {
         // Evict bigrams
         let count = self.bigram_count();
         if count > MAX_BIGRAMS {
-            let mut all: Vec<(String, String, String, f64)> = Vec::new();
+            let mut all: Vec<(String, (String, String), f64)> = Vec::new();
             for (prev, inner) in &self.bigrams {
-                for (next_r, inner2) in inner {
-                    for (next_s, entry) in inner2 {
-                        let score = entry.frequency as f64 * decay(entry.last_used);
-                        all.push((prev.clone(), next_r.clone(), next_s.clone(), score));
-                    }
+                for (key, entry) in inner {
+                    let score = entry.frequency as f64 * decay(entry.last_used);
+                    all.push((prev.clone(), key.clone(), score));
                 }
             }
-            all.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(Ordering::Equal));
+            all.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
             let to_remove = count - MAX_BIGRAMS;
-            for (prev, next_r, next_s, _) in all.iter().take(to_remove) {
+            for (prev, key, _) in all.iter().take(to_remove) {
                 if let Some(inner) = self.bigrams.get_mut(prev) {
-                    if let Some(inner2) = inner.get_mut(next_r) {
-                        inner2.remove(next_s);
-                        if inner2.is_empty() {
-                            inner.remove(next_r);
-                        }
-                    }
+                    inner.remove(key);
                     if inner.is_empty() {
                         self.bigrams.remove(prev);
                     }
