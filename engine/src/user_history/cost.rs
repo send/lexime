@@ -51,7 +51,7 @@ mod tests {
 
         // Without history: "今日" has cost 3000, "京" has cost 5000
         let default_cost_fn = LearnedCostFunction::new(None, &history);
-        let result = convert_with_cost(&dict, &default_cost_fn, "きょう");
+        let result = convert_with_cost(&dict, &default_cost_fn, None, "きょう");
         assert_eq!(result[0].surface, "今日");
 
         // Record "京" many times to overcome the cost difference
@@ -122,7 +122,7 @@ mod tests {
         }
 
         let cost_fn = LearnedCostFunction::new(None, &history);
-        let result = convert_with_cost(&dict, &cost_fn, "きょう");
+        let result = convert_with_cost(&dict, &cost_fn, None, "きょう");
         assert_eq!(result[0].surface, "京");
     }
 }

@@ -13,9 +13,16 @@ guard let bundleId = Bundle.main.bundleIdentifier else {
     exit(1)
 }
 
+// Dictionary source selection via `defaults write sh.send.inputmethod.Lexime dictSource mozc|sudachi`
+let dictSource: String = {
+    let source = UserDefaults.standard.string(forKey: "dictSource") ?? "sudachi"
+    NSLog("Lexime: dictSource = %@", source)
+    return source
+}()
+
 // Load dictionary once at startup
 let sharedDict: OpaquePointer? = {
-    let dictPath = resourcePath + "/lexime.dict"
+    let dictPath = resourcePath + "/lexime-\(dictSource).dict"
     guard let dict = lex_dict_open(dictPath) else {
         NSLog("Lexime: Failed to load dictionary at %@", dictPath)
         return nil
@@ -32,7 +39,7 @@ let sharedDict: OpaquePointer? = {
 
 // Load connection matrix (optional — falls back to unigram if not found)
 let sharedConn: OpaquePointer? = {
-    let connPath = resourcePath + "/lexime.conn"
+    let connPath = resourcePath + "/lexime-\(dictSource).conn"
     guard let conn = lex_conn_open(connPath) else {
         NSLog("Lexime: Connection matrix not found at %@ (using unigram fallback)", connPath)
         return nil

@@ -435,7 +435,7 @@ pub extern "C" fn lex_convert_nbest_with_history(
 
     let cost_fn = LearnedCostFunction::new(conn, &h);
     pack_conversion_result_list(convert_nbest_with_cost(
-        dict, &cost_fn, kana_str, n as usize,
+        dict, &cost_fn, conn, kana_str, n as usize,
     ))
 }
 
@@ -552,7 +552,7 @@ pub extern "C" fn lex_convert_with_history(
     };
 
     let cost_fn = LearnedCostFunction::new(conn, &h);
-    pack_conversion_result(convert_with_cost(dict, &cost_fn, kana_str))
+    pack_conversion_result(convert_with_cost(dict, &cost_fn, conn, kana_str))
 }
 
 #[no_mangle]

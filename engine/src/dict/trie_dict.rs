@@ -311,9 +311,9 @@ mod tests {
     fn test_mozc_dict_known_entries() {
         let dict_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("data")
-            .join("lexime.dict");
+            .join("lexime-sudachi.dict");
         let dict = TrieDictionary::open(&dict_path)
-            .expect("failed to open lexime.dict — run `make dict` first");
+            .expect("failed to open lexime-sudachi.dict — run `make dict` first");
 
         // かんじ should have 漢字
         let results = dict.lookup("かんじ").expect("かんじ should exist");
@@ -341,9 +341,9 @@ mod tests {
     fn test_mozc_dict_predict_performance() {
         let dict_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("data")
-            .join("lexime.dict");
+            .join("lexime-sudachi.dict");
         let dict = TrieDictionary::open(&dict_path)
-            .expect("failed to open lexime.dict — run `make dict` first");
+            .expect("failed to open lexime-sudachi.dict — run `make dict` first");
 
         let prefixes = ["か", "かん", "と", "たべ", "に"];
         for prefix in &prefixes {
