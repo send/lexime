@@ -1,6 +1,7 @@
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
 
+use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use trie_rs::map::{Trie, TrieBuilder};
 
@@ -57,11 +58,16 @@ impl TrieDictionary {
         Ok(Self { data: trie_data })
     }
 
-    // TODO: fs::read loads the entire dictionary into memory (~50 MB).
-    // Consider mmap for lower memory footprint in the IME background process.
+    /// Open a dictionary file, using mmap to avoid doubling peak memory.
+    ///
+    /// The trie is deserialized from the mapped region (avoiding a separate
+    /// heap allocation for the raw file bytes), then the mapping is dropped.
     pub fn open(path: &Path) -> Result<Self, DictError> {
-        let data = fs::read(path)?;
-        Self::from_bytes(&data)
+        let file = File::open(path)?;
+        // SAFETY: The file is opened read-only and the mapping is immutable.
+        // The Mmap is dropped after deserialization completes below.
+        let mmap = unsafe { Mmap::map(&file)? };
+        Self::from_bytes(&mmap)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), DictError> {

@@ -1,5 +1,7 @@
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
+
+use memmap2::Mmap;
 
 use super::DictError;
 
@@ -7,11 +9,17 @@ const MAGIC: &[u8; 4] = b"LXCX";
 const VERSION: u8 = 1;
 const HEADER_SIZE: usize = 4 + 1 + 2; // magic + version + num_ids
 
+/// Backing storage for cost data: either owned or memory-mapped.
+enum CostStorage {
+    Owned(Vec<i16>),
+    Mapped(Mmap),
+}
+
 /// A connection cost matrix mapping (left_id, right_id) → cost.
 /// Used by the Viterbi algorithm to score morpheme transitions.
 pub struct ConnectionMatrix {
     num_ids: u16,
-    costs: Vec<i16>,
+    storage: CostStorage,
 }
 
 impl ConnectionMatrix {
@@ -22,7 +30,15 @@ impl ConnectionMatrix {
         let idx = (left_id as usize)
             .saturating_mul(self.num_ids as usize)
             .saturating_add(right_id as usize);
-        self.costs.get(idx).copied().unwrap_or(0)
+        match &self.storage {
+            CostStorage::Owned(costs) => costs.get(idx).copied().unwrap_or(0),
+            CostStorage::Mapped(mmap) => {
+                let byte_offset = HEADER_SIZE + idx * 2;
+                mmap.get(byte_offset..byte_offset + 2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .unwrap_or(0)
+            }
+        }
     }
 
     /// Number of morpheme IDs in this matrix.
@@ -134,17 +150,14 @@ impl ConnectionMatrix {
             costs
         };
 
-        Ok(Self { num_ids, costs })
+        Ok(Self {
+            num_ids,
+            storage: CostStorage::Owned(costs),
+        })
     }
 
-    /// Load from compiled binary format.
-    pub fn open(path: &Path) -> Result<Self, DictError> {
-        let data = fs::read(path)?;
-        Self::from_bytes(&data)
-    }
-
-    /// Parse from compiled binary format.
-    pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
+    /// Validate the binary header and return `num_ids`.
+    fn validate_header(data: &[u8]) -> Result<u16, DictError> {
         if data.len() < HEADER_SIZE {
             return Err(DictError::InvalidHeader);
         }
@@ -154,37 +167,63 @@ impl ConnectionMatrix {
         if data[4] != VERSION {
             return Err(DictError::UnsupportedVersion(data[4]));
         }
-
         let num_ids = u16::from_le_bytes([data[5], data[6]]);
-        let expected_len = num_ids as usize * num_ids as usize;
-        let costs_bytes = &data[HEADER_SIZE..];
-
-        if costs_bytes.len() != expected_len * 2 {
+        let expected_bytes = num_ids as usize * num_ids as usize * 2;
+        let actual_bytes = data.len() - HEADER_SIZE;
+        if actual_bytes != expected_bytes {
             return Err(DictError::Parse(format!(
-                "expected {} bytes of cost data, got {}",
-                expected_len * 2,
-                costs_bytes.len()
+                "expected {expected_bytes} bytes of cost data, got {actual_bytes}",
             )));
         }
+        Ok(num_ids)
+    }
 
-        let costs: Vec<i16> = costs_bytes
+    /// Load from compiled binary format using memory-mapped I/O.
+    ///
+    /// The cost data is accessed directly from the mapped file, avoiding
+    /// a heap allocation for the entire matrix. The OS pages in data on
+    /// demand and can reclaim pages under memory pressure.
+    pub fn open(path: &Path) -> Result<Self, DictError> {
+        let file = File::open(path)?;
+        // SAFETY: The file is opened read-only and the mapping is immutable.
+        // We hold the Mmap for the lifetime of this struct, so the data remains
+        // valid. The file should not be modified while the IME is running.
+        let mmap = unsafe { Mmap::map(&file)? };
+        let num_ids = Self::validate_header(&mmap)?;
+        Ok(Self {
+            num_ids,
+            storage: CostStorage::Mapped(mmap),
+        })
+    }
+
+    /// Parse from compiled binary format into an owned representation.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
+        let num_ids = Self::validate_header(data)?;
+        let costs: Vec<i16> = data[HEADER_SIZE..]
             .chunks_exact(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
-
-        Ok(Self { num_ids, costs })
+        Ok(Self {
+            num_ids,
+            storage: CostStorage::Owned(costs),
+        })
     }
 
     /// Serialize to compiled binary format.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(HEADER_SIZE + self.costs.len() * 2);
-        buf.extend_from_slice(MAGIC);
-        buf.push(VERSION);
-        buf.extend_from_slice(&self.num_ids.to_le_bytes());
-        for &cost in &self.costs {
-            buf.extend_from_slice(&cost.to_le_bytes());
+        match &self.storage {
+            CostStorage::Mapped(mmap) => mmap.to_vec(),
+            CostStorage::Owned(costs) => {
+                let mut buf = Vec::with_capacity(HEADER_SIZE + costs.len() * 2);
+                buf.extend_from_slice(MAGIC);
+                buf.push(VERSION);
+                buf.extend_from_slice(&self.num_ids.to_le_bytes());
+                for &cost in costs {
+                    buf.extend_from_slice(&cost.to_le_bytes());
+                }
+                buf
+            }
         }
-        buf
     }
 
     /// Save compiled binary to file.
