@@ -12,6 +12,9 @@ const SUDACHI_S3_LIST_URL: &str = "https://sudachi.s3.ap-northeast-1.amazonaws.c
 /// ZIP files to download for the default (core) dictionary.
 const SUDACHI_ZIPS: &[&str] = &["small_lex.zip", "core_lex.zip"];
 
+/// Additional ZIP file for the full dictionary (notcore).
+const SUDACHI_NOTCORE_ZIP: &str = "notcore_lex.zip";
+
 /// SudachiDict CSV dictionary source.
 ///
 /// File format: 18-column CSV (comma-separated).
@@ -30,6 +33,25 @@ impl SudachiSource {
             .read_to_string()
             .map_err(|e| DictSourceError::Http(format!("S3 listing: {e}")))?;
         parse_latest_version(&body)
+    }
+
+    /// Fetch the full dictionary including `notcore_lex.zip`.
+    pub fn fetch_full(&self, dest: &Path) -> Result<(), DictSourceError> {
+        // First fetch the core dictionary (small_lex + core_lex + matrix).
+        self.fetch(dest)?;
+
+        let version = Self::latest_version()?;
+        let csv_name = SUDACHI_NOTCORE_ZIP.replace(".zip", ".csv");
+        let csv_path = dest.join(&csv_name);
+        if csv_path.exists() {
+            eprintln!("  {csv_name} (already exists, skipping)");
+        } else {
+            let url = format!("{SUDACHI_CDN_BASE}/{version}/{SUDACHI_NOTCORE_ZIP}");
+            eprintln!("  {SUDACHI_NOTCORE_ZIP}");
+            download_and_extract(&url, ".csv", dest)?;
+        }
+
+        Ok(())
     }
 }
 

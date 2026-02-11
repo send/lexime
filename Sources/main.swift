@@ -13,9 +13,9 @@ guard let bundleId = Bundle.main.bundleIdentifier else {
     exit(1)
 }
 
-// Dictionary source selection via `defaults write sh.send.inputmethod.Lexime dictSource mozc|sudachi`
+// Dictionary source selection via `defaults write sh.send.inputmethod.Lexime dictSource merged|mozc|sudachi`
 let dictSource: String = {
-    let source = UserDefaults.standard.string(forKey: "dictSource") ?? "sudachi"
+    let source = UserDefaults.standard.string(forKey: "dictSource") ?? "merged"
     NSLog("Lexime: dictSource = %@", source)
     return source
 }()
