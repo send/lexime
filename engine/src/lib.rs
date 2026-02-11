@@ -13,6 +13,15 @@ use converter::convert;
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
 
+/// Safely convert a C string pointer to a `&str`.
+/// Returns `None` if the pointer is null or contains invalid UTF-8.
+unsafe fn cptr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+    CStr::from_ptr(ptr).to_str().ok()
+}
+
 #[no_mangle]
 pub extern "C" fn lex_engine_version() -> *const c_char {
     c"0.1.0".as_ptr()
@@ -135,13 +144,8 @@ impl LexCandidateList {
 
 #[no_mangle]
 pub extern "C" fn lex_dict_open(path: *const c_char) -> *mut TrieDictionary {
-    if path.is_null() {
+    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
         return ptr::null_mut();
-    }
-    let path_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match path_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
     };
 
     match TrieDictionary::open(Path::new(path_str)) {
@@ -164,15 +168,13 @@ pub extern "C" fn lex_dict_lookup(
     dict: *const TrieDictionary,
     reading: *const c_char,
 ) -> LexCandidateList {
-    if dict.is_null() || reading.is_null() {
+    if dict.is_null() {
         return LexCandidateList::empty();
     }
-    let dict = unsafe { &*dict };
-    let reading_str = unsafe { CStr::from_ptr(reading) };
-    let reading_str = match reading_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return LexCandidateList::empty(),
+    let Some(reading_str) = (unsafe { cptr_to_str(reading) }) else {
+        return LexCandidateList::empty();
     };
+    let dict = unsafe { &*dict };
 
     match dict.lookup(reading_str) {
         Some(entries) => LexCandidateList::from_entries(reading_str, entries),
@@ -186,15 +188,13 @@ pub extern "C" fn lex_dict_predict(
     prefix: *const c_char,
     max_results: u32,
 ) -> LexCandidateList {
-    if dict.is_null() || prefix.is_null() {
+    if dict.is_null() {
         return LexCandidateList::empty();
     }
-    let dict = unsafe { &*dict };
-    let prefix_str = unsafe { CStr::from_ptr(prefix) };
-    let prefix_str = match prefix_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return LexCandidateList::empty(),
+    let Some(prefix_str) = (unsafe { cptr_to_str(prefix) }) else {
+        return LexCandidateList::empty();
     };
+    let dict = unsafe { &*dict };
 
     let results = dict.predict(prefix_str, max_results as usize);
     LexCandidateList::from_search_results(results)
@@ -213,13 +213,8 @@ pub extern "C" fn lex_candidates_free(list: LexCandidateList) {
 
 #[no_mangle]
 pub extern "C" fn lex_conn_open(path: *const c_char) -> *mut ConnectionMatrix {
-    if path.is_null() {
+    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
         return ptr::null_mut();
-    }
-    let path_str = unsafe { CStr::from_ptr(path) };
-    let path_str = match path_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
     };
 
     match ConnectionMatrix::open(Path::new(path_str)) {
@@ -273,15 +268,13 @@ pub extern "C" fn lex_convert(
     conn: *const ConnectionMatrix,
     kana: *const c_char,
 ) -> LexConversionResult {
-    if dict.is_null() || kana.is_null() {
+    if dict.is_null() {
         return LexConversionResult::empty();
     }
-    let dict = unsafe { &*dict };
-    let kana_str = unsafe { CStr::from_ptr(kana) };
-    let kana_str = match kana_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return LexConversionResult::empty(),
+    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
+        return LexConversionResult::empty();
     };
+    let dict = unsafe { &*dict };
 
     let conn_ref = if conn.is_null() {
         None
@@ -298,8 +291,12 @@ pub extern "C" fn lex_convert(
     let mut segments = Vec::with_capacity(result.len());
 
     for seg in &result {
-        let reading = CString::new(seg.reading.as_str()).unwrap_or_default();
-        let surface = CString::new(seg.surface.as_str()).unwrap_or_default();
+        let Ok(reading) = CString::new(seg.reading.as_str()) else {
+            continue;
+        };
+        let Ok(surface) = CString::new(seg.surface.as_str()) else {
+            continue;
+        };
         segments.push(LexSegment {
             reading: reading.as_ptr(),
             surface: surface.as_ptr(),
