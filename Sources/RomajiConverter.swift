@@ -77,8 +77,7 @@ func drainPendingRomaji(
                     } else {
                         // R1 fix: preserve unrecognized characters in composedKana
                         // instead of silently discarding them
-                        composedKana += String(pendingRomaji.first!)
-                        pendingRomaji = String(pendingRomaji.dropFirst())
+                        composedKana += String(pendingRomaji.removeFirst())
                         changed = true
                     }
                 } else {

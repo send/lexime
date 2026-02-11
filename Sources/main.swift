@@ -3,9 +3,19 @@ import InputMethodKit
 
 let kConnectionName = "dev.sendsh.inputmethod.Lexime_Connection"
 
+guard let resourcePath = Bundle.main.resourcePath else {
+    NSLog("Lexime: Bundle.main.resourcePath is nil")
+    exit(1)
+}
+
+guard let bundleId = Bundle.main.bundleIdentifier else {
+    NSLog("Lexime: Bundle.main.bundleIdentifier is nil")
+    exit(1)
+}
+
 // Load dictionary once at startup
 let sharedDict: OpaquePointer? = {
-    let dictPath = Bundle.main.resourcePath! + "/lexime.dict"
+    let dictPath = resourcePath + "/lexime.dict"
     guard let dict = lex_dict_open(dictPath) else {
         NSLog("Lexime: Failed to load dictionary at %@", dictPath)
         return nil
@@ -22,7 +32,7 @@ let sharedDict: OpaquePointer? = {
 
 // Load connection matrix (optional — falls back to unigram if not found)
 let sharedConn: OpaquePointer? = {
-    let connPath = Bundle.main.resourcePath! + "/lexime.conn"
+    let connPath = resourcePath + "/lexime.conn"
     guard let conn = lex_conn_open(connPath) else {
         NSLog("Lexime: Connection matrix not found at %@ (using unigram fallback)", connPath)
         return nil
@@ -31,8 +41,7 @@ let sharedConn: OpaquePointer? = {
     return conn
 }()
 
-guard let server = IMKServer(name: kConnectionName,
-                             bundleIdentifier: Bundle.main.bundleIdentifier!) else {
+guard let server = IMKServer(name: kConnectionName, bundleIdentifier: bundleId) else {
     NSLog("Lexime: Failed to create IMKServer")
     exit(1)
 }

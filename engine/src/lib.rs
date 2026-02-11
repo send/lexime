@@ -54,7 +54,9 @@ impl LexCandidateList {
     }
 
     fn from_entries(reading: &str, entries: &[dict::DictEntry]) -> Self {
-        let reading_cstr = CString::new(reading).unwrap_or_default();
+        let Ok(reading_cstr) = CString::new(reading) else {
+            return Self::empty();
+        };
         let reading_ptr = reading_cstr.as_ptr();
 
         let mut strings = Vec::with_capacity(entries.len() + 1);
@@ -63,7 +65,9 @@ impl LexCandidateList {
         strings.push(reading_cstr);
 
         for entry in entries {
-            let surface = CString::new(entry.surface.as_str()).unwrap_or_default();
+            let Ok(surface) = CString::new(entry.surface.as_str()) else {
+                continue; // skip entries with interior null bytes
+            };
             candidates.push(LexCandidate {
                 reading: reading_ptr,
                 surface: surface.as_ptr(),
@@ -80,12 +84,16 @@ impl LexCandidateList {
         let mut candidates = Vec::new();
 
         for result in &results {
-            let reading_cstr = CString::new(result.reading.as_str()).unwrap_or_default();
+            let Ok(reading_cstr) = CString::new(result.reading.as_str()) else {
+                continue; // skip results with interior null bytes
+            };
             let reading_ptr = reading_cstr.as_ptr();
             strings.push(reading_cstr);
 
             for entry in &result.entries {
-                let surface = CString::new(entry.surface.as_str()).unwrap_or_default();
+                let Ok(surface) = CString::new(entry.surface.as_str()) else {
+                    continue;
+                };
                 candidates.push(LexCandidate {
                     reading: reading_ptr,
                     surface: surface.as_ptr(),
@@ -109,7 +117,11 @@ impl LexCandidateList {
         });
         let owned_ptr = Box::into_raw(owned);
 
-        // Safety: owned_ptr is valid and its candidates vec won't move
+        // SAFETY: `owned_ptr` was just created from `Box::into_raw` and has not been
+        // deallocated. The `candidates` Vec inside the Box is heap-allocated and its
+        // data pointer remains stable as long as the Vec is not mutated or dropped.
+        // The Box is kept alive via `_owned` in the returned struct, and `_strings`
+        // keeps the CString data alive so the char pointers inside candidates are valid.
         let candidates_ptr = unsafe { (*owned_ptr).candidates.as_ptr() };
         let len = unsafe { (*owned_ptr).candidates.len() as u32 };
 
@@ -302,6 +314,9 @@ pub extern "C" fn lex_convert(
     });
     let owned_ptr = Box::into_raw(owned);
 
+    // SAFETY: Same pattern as CandidateListOwned::pack — `owned_ptr` is freshly
+    // created from Box::into_raw, `segments` Vec data is stable, and `_strings`
+    // keeps CString data alive for the lifetime of the returned struct.
     let segments_ptr = unsafe { (*owned_ptr).segments.as_ptr() };
     let len = unsafe { (*owned_ptr).segments.len() as u32 };
 

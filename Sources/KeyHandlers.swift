@@ -1,6 +1,23 @@
 import Cocoa
 import InputMethodKit
 
+// MARK: - Key Codes (macOS virtual key codes)
+
+enum Key {
+    static let enter:     UInt16 = 36
+    static let tab:       UInt16 = 48
+    static let space:     UInt16 = 49
+    static let backspace: UInt16 = 51
+    static let escape:    UInt16 = 53
+    static let f7:        UInt16 = 98
+    static let eisu:      UInt16 = 102
+    static let kana:      UInt16 = 104
+    static let left:      UInt16 = 123
+    static let right:     UInt16 = 124
+    static let down:      UInt16 = 125
+    static let up:        UInt16 = 126
+}
+
 extension LeximeInputController {
 
     // MARK: - Idle State
@@ -34,7 +51,7 @@ extension LeximeInputController {
 
     func handleComposing(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
-        case 36: // Enter — commit selected prediction, or kana as-is
+        case Key.enter: // Enter — commit selected prediction, or kana as-is
             hideCandidatePanel()
             if !predictionCandidates.isEmpty {
                 let idx = min(selectedPredictionIndex, predictionCandidates.count - 1)
@@ -45,7 +62,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 125: // Down arrow — next prediction candidate
+        case Key.down: // Down arrow — next prediction candidate
             if !predictionCandidates.isEmpty {
                 selectedPredictionIndex = (selectedPredictionIndex + 1) % predictionCandidates.count
                 updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
@@ -53,7 +70,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 126: // Up arrow — previous prediction candidate
+        case Key.up: // Up arrow — previous prediction candidate
             if !predictionCandidates.isEmpty {
                 selectedPredictionIndex = (selectedPredictionIndex - 1 + predictionCandidates.count) % predictionCandidates.count
                 updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
@@ -61,7 +78,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 48: // Tab — accept selected prediction candidate
+        case Key.tab: // Tab — accept selected prediction candidate
             if !predictionCandidates.isEmpty {
                 hideCandidatePanel()
                 let idx = min(selectedPredictionIndex, predictionCandidates.count - 1)
@@ -70,7 +87,7 @@ extension LeximeInputController {
             }
             return false
 
-        case 49: // Space — convert kana (or next candidate for punctuation)
+        case Key.space: // Space — convert kana (or next candidate for punctuation)
             if isPunctuationComposing && predictionCandidates.count > 1 {
                 selectedPredictionIndex = (selectedPredictionIndex + 1) % predictionCandidates.count
                 composedKana = predictionCandidates[selectedPredictionIndex]
@@ -99,7 +116,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 51: // Backspace
+        case Key.backspace: // Backspace
             if !pendingRomaji.isEmpty {
                 pendingRomaji.removeLast()
             } else if !composedKana.isEmpty {
@@ -117,7 +134,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 53: // Escape — dismiss predictions, keep kana; second Esc cancels
+        case Key.escape: // Escape — dismiss predictions, keep kana; second Esc cancels
             if !predictionCandidates.isEmpty {
                 hideCandidatePanel()
                 predictionCandidates = []
@@ -132,7 +149,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 98: // F7 — katakana conversion
+        case Key.f7: // F7 — katakana conversion
             hideCandidatePanel()
             flush()
             let katakana = composedKana.applyingTransform(.hiraganaToKatakana, reverse: false)
@@ -176,13 +193,13 @@ extension LeximeInputController {
 
     func handleConverting(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
-        case 36: // Enter — confirm all segments
+        case Key.enter: // Enter — confirm all segments
             hideCandidatePanel()
             let fullText = conversionSegments.map { $0.surface }.joined()
             commitText(fullText, client: client)
             return true
 
-        case 49: // Space — next candidate for active segment
+        case Key.space: // Space — next candidate for active segment
             if activeSegmentIndex < conversionSegments.count {
                 let seg = conversionSegments[activeSegmentIndex]
                 if !seg.candidates.isEmpty {
@@ -195,7 +212,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 51, 53: // Backspace or Escape — back to composing with original kana
+        case Key.backspace, Key.escape: // Backspace or Escape — back to composing with original kana
             hideCandidatePanel()
             composedKana = originalKana
             conversionSegments = []
@@ -204,7 +221,7 @@ extension LeximeInputController {
             updateMarkedText(client: client)
             return true
 
-        case 123: // Left arrow — previous segment
+        case Key.left: // Left arrow — previous segment
             if activeSegmentIndex > 0 {
                 activeSegmentIndex -= 1
                 updateConvertingMarkedText(client: client)
@@ -212,7 +229,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 124: // Right arrow — next segment
+        case Key.right: // Right arrow — next segment
             if activeSegmentIndex < conversionSegments.count - 1 {
                 activeSegmentIndex += 1
                 updateConvertingMarkedText(client: client)
@@ -220,7 +237,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 126: // Up arrow — previous candidate
+        case Key.up: // Up arrow — previous candidate
             if activeSegmentIndex < conversionSegments.count {
                 let seg = conversionSegments[activeSegmentIndex]
                 if !seg.candidates.isEmpty {
@@ -233,7 +250,7 @@ extension LeximeInputController {
             }
             return true
 
-        case 125: // Down arrow — next candidate
+        case Key.down: // Down arrow — next candidate
             if activeSegmentIndex < conversionSegments.count {
                 let seg = conversionSegments[activeSegmentIndex]
                 if !seg.candidates.isEmpty {

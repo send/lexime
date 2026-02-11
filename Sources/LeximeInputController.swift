@@ -98,13 +98,13 @@ class LeximeInputController: IMKInputController {
         }
 
         // Eisu key (102) → switch to ABC input source
-        if event.keyCode == 102 {
+        if event.keyCode == Key.eisu {
             if isComposing { commitCurrentState(client: client) }
             selectABCInputSource()
             return true
         }
         // Kana key (104) → already in Japanese mode, consume the event
-        if event.keyCode == 104 {
+        if event.keyCode == Key.kana {
             return true
         }
 
@@ -113,9 +113,9 @@ class LeximeInputController: IMKInputController {
 
         // Shift+Arrow in converting state: segment boundary adjustment (U2)
         if dominated == .shift && state == .converting {
-            if event.keyCode == 123 || event.keyCode == 124 {
+            if event.keyCode == Key.left || event.keyCode == Key.right {
                 return handleSegmentBoundaryAdjust(
-                    shrink: event.keyCode == 123, client: client)
+                    shrink: event.keyCode == Key.left, client: client)
             }
         }
 

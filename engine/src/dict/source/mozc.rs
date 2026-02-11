@@ -49,8 +49,10 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
 
     let mut files: Vec<(String, String)> = Vec::new();
     for entry in &entries {
-        let raw_name = entry["name"].as_str().unwrap_or_default();
-        let url = entry["download_url"].as_str().unwrap_or_default();
+        let (Some(raw_name), Some(url)) = (entry["name"].as_str(), entry["download_url"].as_str())
+        else {
+            continue; // skip entries with missing name or download_url
+        };
         if url.is_empty() {
             continue;
         }

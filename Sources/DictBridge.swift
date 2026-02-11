@@ -33,7 +33,6 @@ extension LeximeInputController {
                 }
             }
         }
-        NSLog("Lexime: predict('%@') → [%@]", kana, results.joined(separator: ", "))
         return results
     }
 
@@ -47,8 +46,10 @@ extension LeximeInputController {
 
         var converted: [ConversionSegment] = []
         for i in 0..<Int(result.len) {
-            let reading = String(cString: segments[i].reading)
-            let surface = String(cString: segments[i].surface)
+            guard let readingPtr = segments[i].reading,
+                  let surfacePtr = segments[i].surface else { continue }
+            let reading = String(cString: readingPtr)
+            let surface = String(cString: surfacePtr)
             let candidates = lookupCandidates(reading)
             var orderedCandidates = [surface]
             var seen: Set<String> = [surface]
