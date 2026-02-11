@@ -77,6 +77,13 @@ LexCandidateList lex_dict_lookup_with_history(
     const char *reading
 );
 
+LexCandidateList lex_dict_predict_ranked(
+    const LexDict *dict,
+    const LexUserHistory *history,
+    const char *prefix,
+    uint32_t max_results
+);
+
 /* N-best Conversion API */
 
 typedef struct {

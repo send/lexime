@@ -24,7 +24,7 @@ extension LeximeInputController {
 
     func predictCandidates(_ kana: String) -> [String] {
         guard let dict = sharedDict, !kana.isEmpty else { return [] }
-        let list = lex_dict_predict(dict, kana, 5)
+        let list = lex_dict_predict_ranked(dict, sharedHistory, kana, 9)
         defer { lex_candidates_free(list) }
 
         guard list.len > 0, let candidates = list.candidates else { return [] }

@@ -74,6 +74,39 @@ impl TrieDictionary {
         self.data.trie.iter()
     }
 
+    /// Return prediction candidates ranked by cost (lowest first).
+    ///
+    /// Scans up to `scan_limit` readings from the trie's predictive search,
+    /// flattens all entries, deduplicates by surface (keeping the lowest cost),
+    /// and returns the top `max_results` entries as `(reading, DictEntry)` pairs.
+    pub fn predict_ranked(
+        &self,
+        prefix: &str,
+        max_results: usize,
+        scan_limit: usize,
+    ) -> Vec<(String, DictEntry)> {
+        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
+            Box::new(self.data.trie.predictive_search(prefix.as_bytes()));
+
+        // Flatten all (reading, entry) pairs from up to scan_limit readings
+        let mut flat: Vec<(String, DictEntry)> = iter
+            .take(scan_limit)
+            .flat_map(|(reading, entries)| {
+                entries.iter().map(move |e| (reading.clone(), e.clone()))
+            })
+            .collect();
+
+        // Sort by cost ascending (low cost = high frequency)
+        flat.sort_by_key(|(_, e)| e.cost);
+
+        // Deduplicate by surface, keeping the lowest-cost entry
+        let mut seen = std::collections::HashSet::new();
+        flat.retain(|(_, e)| seen.insert(e.surface.clone()));
+
+        flat.truncate(max_results);
+        flat
+    }
+
     /// Returns (reading_count, entry_count) by iterating the trie.
     pub fn stats(&self) -> (usize, usize) {
         let mut readings = 0usize;
@@ -305,6 +338,71 @@ mod tests {
     fn test_unsupported_version() {
         let result = TrieDictionary::from_bytes(b"LXDX\x99");
         assert!(matches!(result, Err(DictError::UnsupportedVersion(0x99))));
+    }
+
+    #[test]
+    fn test_predict_ranked_cost_order() {
+        let dict = sample_dict();
+        let results = dict.predict_ranked("かん", 100, 200);
+        // Should be sorted by cost ascending
+        for w in results.windows(2) {
+            assert!(
+                w[0].1.cost <= w[1].1.cost,
+                "predict_ranked should be cost-ordered: {} <= {}",
+                w[0].1.cost,
+                w[1].1.cost,
+            );
+        }
+    }
+
+    #[test]
+    fn test_predict_ranked_dedup_surface() {
+        // Create a dict where two different readings produce the same surface
+        let entries = vec![
+            (
+                "かん".to_string(),
+                vec![DictEntry {
+                    surface: "感".to_string(),
+                    cost: 5200,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "かんじ".to_string(),
+                vec![DictEntry {
+                    surface: "感".to_string(),
+                    cost: 5000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+        ];
+        let dict = TrieDictionary::from_entries(entries);
+        let results = dict.predict_ranked("かん", 100, 200);
+        // "感" should appear only once, with the lower cost (5000)
+        let surfaces: Vec<&str> = results.iter().map(|(_, e)| e.surface.as_str()).collect();
+        assert_eq!(
+            surfaces.iter().filter(|&&s| s == "感").count(),
+            1,
+            "duplicate surface should be deduplicated"
+        );
+        let entry = results.iter().find(|(_, e)| e.surface == "感").unwrap();
+        assert_eq!(entry.1.cost, 5000, "should keep lowest cost");
+    }
+
+    #[test]
+    fn test_predict_ranked_max_results() {
+        let dict = sample_dict();
+        let results = dict.predict_ranked("かん", 2, 200);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_predict_ranked_no_match() {
+        let dict = sample_dict();
+        let results = dict.predict_ranked("そ", 100, 200);
+        assert!(results.is_empty());
     }
 
     // --- Integration tests (require compiled Mozc dictionary) ---

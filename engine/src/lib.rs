@@ -101,6 +101,29 @@ impl LexCandidateList {
         Self::pack(candidates, strings)
     }
 
+    fn from_flat_entries(pairs: &[(String, dict::DictEntry)]) -> Self {
+        let mut strings = Vec::new();
+        let mut candidates = Vec::new();
+
+        for (reading, entry) in pairs {
+            let Ok(reading_cstr) = CString::new(reading.as_str()) else {
+                continue;
+            };
+            let Ok(surface) = CString::new(entry.surface.as_str()) else {
+                continue;
+            };
+            candidates.push(LexCandidate {
+                reading: reading_cstr.as_ptr(),
+                surface: surface.as_ptr(),
+                cost: entry.cost,
+            });
+            strings.push(reading_cstr);
+            strings.push(surface);
+        }
+
+        Self::pack(candidates, strings)
+    }
+
     fn from_search_results(results: Vec<dict::SearchResult>) -> Self {
         let mut strings = Vec::new();
         let mut candidates = Vec::new();
@@ -211,6 +234,48 @@ pub extern "C" fn lex_dict_predict(
 
     let results = dict.predict(prefix_str, max_results as usize);
     LexCandidateList::from_search_results(results)
+}
+
+#[no_mangle]
+pub extern "C" fn lex_dict_predict_ranked(
+    dict: *const TrieDictionary,
+    history: *const LexUserHistoryWrapper,
+    prefix: *const c_char,
+    max_results: u32,
+) -> LexCandidateList {
+    if dict.is_null() {
+        return LexCandidateList::empty();
+    }
+    let Some(prefix_str) = (unsafe { cptr_to_str(prefix) }) else {
+        return LexCandidateList::empty();
+    };
+    let dict = unsafe { &*dict };
+
+    // When history is available, over-fetch so boosted entries that rank outside
+    // the pure-cost top-N still have a chance to surface after re-sorting.
+    let fetch_limit = if history.is_null() {
+        max_results as usize
+    } else {
+        (max_results as usize).max(50)
+    };
+    let mut ranked = dict.predict_ranked(prefix_str, fetch_limit, 1000);
+
+    // If history is provided, re-sort by unigram boost (descending), then cost (ascending)
+    if !history.is_null() {
+        let wrapper = unsafe { &*history };
+        if let Ok(h) = wrapper.inner.read() {
+            ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
+                let boost_a = h.unigram_boost(r_a, &e_a.surface);
+                let boost_b = h.unigram_boost(r_b, &e_b.surface);
+                boost_b
+                    .cmp(&boost_a) // higher boost first
+                    .then(e_a.cost.cmp(&e_b.cost)) // then lower cost first
+            });
+        }
+        ranked.truncate(max_results as usize);
+    }
+
+    LexCandidateList::from_flat_entries(&ranked)
 }
 
 #[no_mangle]
@@ -751,6 +816,52 @@ mod tests {
         let path = CString::new("/nonexistent/path/dict.bin").unwrap();
         let dict_ptr = lex_dict_open(path.as_ptr());
         assert!(dict_ptr.is_null());
+    }
+
+    #[test]
+    fn test_ffi_predict_ranked_roundtrip() {
+        let dict = make_test_dict();
+        let prefix = CString::new("かん").unwrap();
+
+        let list = lex_dict_predict_ranked(dict, ptr::null(), prefix.as_ptr(), 10);
+        assert!(list.len >= 3); // 漢字, 感じ from かんじ + 感情 from かんじょう
+
+        unsafe {
+            let candidates = std::slice::from_raw_parts(list.candidates, list.len as usize);
+            // Should be sorted by cost
+            for w in candidates.windows(2) {
+                assert!(
+                    w[0].cost <= w[1].cost,
+                    "predict_ranked FFI should be cost-ordered"
+                );
+            }
+        }
+
+        lex_candidates_free(list);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_predict_ranked_null_safety() {
+        let prefix = CString::new("かん").unwrap();
+
+        // null dict
+        let list = lex_dict_predict_ranked(ptr::null(), ptr::null(), prefix.as_ptr(), 10);
+        assert_eq!(list.len, 0);
+        lex_candidates_free(list);
+
+        // null prefix
+        let dict = make_test_dict();
+        let list = lex_dict_predict_ranked(dict, ptr::null(), ptr::null(), 10);
+        assert_eq!(list.len, 0);
+        lex_candidates_free(list);
+
+        // null history is OK (pure cost order)
+        let list = lex_dict_predict_ranked(dict, ptr::null(), prefix.as_ptr(), 10);
+        assert!(list.len >= 1);
+        lex_candidates_free(list);
+
+        lex_dict_close(dict);
     }
 
     fn make_convert_test_dict() -> *mut TrieDictionary {
