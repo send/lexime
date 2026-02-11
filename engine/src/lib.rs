@@ -275,7 +275,7 @@ impl LexCandidateList {
         Self::pack(candidates, strings)
     }
 
-    fn from_search_results(results: Vec<dict::SearchResult>) -> Self {
+    fn from_search_results(results: Vec<dict::SearchResult<'_>>) -> Self {
         let mut strings = Vec::new();
         let mut candidates = Vec::new();
 
@@ -286,7 +286,7 @@ impl LexCandidateList {
             let reading_ptr = reading_cstr.as_ptr();
             strings.push(reading_cstr);
 
-            for entry in &result.entries {
+            for entry in result.entries {
                 let Ok(surface) = CString::new(entry.surface.as_str()) else {
                     continue;
                 };

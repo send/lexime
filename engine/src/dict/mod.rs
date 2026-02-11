@@ -37,13 +37,13 @@ pub enum DictError {
     Parse(String),
 }
 
-pub struct SearchResult {
+pub struct SearchResult<'a> {
     pub reading: String,
-    pub entries: Vec<DictEntry>,
+    pub entries: &'a [DictEntry],
 }
 
 pub trait Dictionary: Send + Sync {
     fn lookup(&self, reading: &str) -> Option<&[DictEntry]>;
-    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult>;
-    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult>;
+    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>>;
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>>;
 }

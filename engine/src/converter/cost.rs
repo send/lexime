@@ -29,14 +29,26 @@ const LATIN_PENALTY: i64 = 20000;
 /// - All-katakana (e.g. タラ, オッ): penalty (positive)
 /// - Otherwise (pure kanji, hiragana, etc.): no adjustment
 pub fn script_cost(surface: &str) -> i64 {
-    if surface.chars().any(is_latin) {
-        return LATIN_PENALTY;
+    let mut has_kanji = false;
+    let mut has_kana = false;
+    let mut all_katakana = !surface.is_empty();
+    for c in surface.chars() {
+        if is_latin(c) {
+            return LATIN_PENALTY;
+        }
+        if is_kanji(c) {
+            has_kanji = true;
+        }
+        if is_hiragana(c) || is_katakana(c) {
+            has_kana = true;
+        }
+        if !is_katakana(c) {
+            all_katakana = false;
+        }
     }
-    let has_kanji = surface.chars().any(is_kanji);
-    let has_kana = surface.chars().any(|c| is_hiragana(c) || is_katakana(c));
     if has_kanji && has_kana {
         -MIXED_SCRIPT_BONUS
-    } else if !surface.is_empty() && surface.chars().all(is_katakana) {
+    } else if all_katakana {
         KATAKANA_PENALTY
     } else {
         0

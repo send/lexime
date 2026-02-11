@@ -133,18 +133,19 @@ pub(crate) fn viterbi_nbest(
         });
     }
 
-    // Forward pass
+    // Forward pass — next_idx loop is outermost so word_cost is computed
+    // once per next_node (O(P)) instead of once per (prev, next) pair (O(P²)).
     for pos in 1..char_count {
-        for &prev_idx in &lattice.nodes_by_end[pos] {
-            if top_k[prev_idx].is_empty() {
-                continue;
-            }
-            let prev_node = &lattice.nodes[prev_idx];
+        for &next_idx in &lattice.nodes_by_start[pos] {
+            let next_node = &lattice.nodes[next_idx];
+            let word = cost_fn.word_cost(next_node);
 
-            for &next_idx in &lattice.nodes_by_start[pos] {
-                let next_node = &lattice.nodes[next_idx];
+            for &prev_idx in &lattice.nodes_by_end[pos] {
+                if top_k[prev_idx].is_empty() {
+                    continue;
+                }
+                let prev_node = &lattice.nodes[prev_idx];
                 let transition = cost_fn.transition_cost(prev_node, next_node);
-                let word = cost_fn.word_cost(next_node);
 
                 for rank in 0..top_k[prev_idx].len() {
                     let prev_cost = top_k[prev_idx][rank].cost;
