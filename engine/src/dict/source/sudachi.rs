@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, Cursor};
 use std::path::Path;
 
-use super::{is_hiragana, list_dict_files, parse_id_cost, DictSource, DictSourceError};
+use super::{
+    is_hiragana, parse_dict_files, parse_id_cost, DictSource, DictSourceError, ParsedLine,
+};
 use crate::dict::DictEntry;
 
 const SUDACHI_CDN_BASE: &str = "https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw";
@@ -119,60 +121,30 @@ fn parse_latest_version(xml: &str) -> Result<String, DictSourceError> {
 
 impl DictSource for SudachiSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        let files = list_dict_files(dir, "*.csv", |name| name.ends_with(".csv"))?;
-
-        let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
-        let mut total_lines = 0u64;
-        let mut skipped = 0u64;
-
-        for file_entry in &files {
-            let path = file_entry.path();
-            eprintln!("Reading {}...", path.display());
-            let content = fs::read_to_string(&path).map_err(DictSourceError::Io)?;
-
-            for line in content.lines() {
-                total_lines += 1;
-                if line.is_empty() || line.starts_with('#') {
-                    skipped += 1;
-                    continue;
-                }
-
-                let fields: Vec<&str> = line.split(',').collect();
+        parse_dict_files(
+            dir,
+            "*.csv",
+            |name| name.ends_with(".csv"),
+            ',',
+            |fields| {
                 if fields.len() < 12 {
-                    skipped += 1;
-                    continue;
+                    return None;
                 }
-
                 let surface = fields[0];
-                let Some((left_id, right_id, cost)) = parse_id_cost(&fields) else {
-                    skipped += 1;
-                    continue;
-                };
-                let reading_kata = fields[11];
-                let reading = kata_to_hira(reading_kata);
-
-                if reading.is_empty() {
-                    skipped += 1;
-                    continue;
+                let (left_id, right_id, cost) = parse_id_cost(fields)?;
+                let reading = kata_to_hira(fields[11]);
+                if reading.is_empty() || !is_hiragana(&reading) {
+                    return None;
                 }
-
-                // Only keep entries whose reading is pure hiragana after conversion
-                if !is_hiragana(&reading) {
-                    skipped += 1;
-                    continue;
-                }
-
-                entries.entry(reading).or_default().push(DictEntry {
+                Some(ParsedLine {
+                    reading,
                     surface: surface.to_string(),
-                    cost,
                     left_id,
                     right_id,
-                });
-            }
-        }
-
-        eprintln!("  (skipped {skipped} of {total_lines} lines)");
-        Ok(entries)
+                    cost,
+                })
+            },
+        )
     }
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
