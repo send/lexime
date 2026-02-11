@@ -3,9 +3,9 @@ import Foundation
 extension LeximeInputController {
 
     func lookupCandidates(_ kana: String) -> [String] {
-        guard let dict = sharedDict else { return [] }
+        guard let dict = AppContext.shared.dict else { return [] }
         let list: LexCandidateList
-        if let history = sharedHistory {
+        if let history = AppContext.shared.history {
             list = lex_dict_lookup_with_history(dict, history, kana)
         } else {
             list = lex_dict_lookup(dict, kana)
@@ -23,8 +23,8 @@ extension LeximeInputController {
     }
 
     func predictCandidates(_ kana: String) -> [String] {
-        guard let dict = sharedDict, !kana.isEmpty else { return [] }
-        let list = lex_dict_predict_ranked(dict, sharedHistory, kana, 9)
+        guard let dict = AppContext.shared.dict, !kana.isEmpty else { return [] }
+        let list = lex_dict_predict_ranked(dict, AppContext.shared.history, kana, 9)
         defer { lex_candidates_free(list) }
 
         guard list.len > 0, let candidates = list.candidates else { return [] }
@@ -45,13 +45,13 @@ extension LeximeInputController {
     /// (no per-segment dictionary lookup).  Candidates are loaded lazily via
     /// `ensureCandidatesLoaded(segmentIndex:)` when the user enters multi-segment mode.
     func convertKana(_ kana: String) -> [ConversionSegment] {
-        guard let dict = sharedDict else { return [] }
+        guard let dict = AppContext.shared.dict else { return [] }
 
         let result: LexConversionResult
-        if let history = sharedHistory {
-            result = lex_convert_with_history(dict, sharedConn, history, kana)
+        if let history = AppContext.shared.history {
+            result = lex_convert_with_history(dict, AppContext.shared.conn, history, kana)
         } else {
-            result = lex_convert(dict, sharedConn, kana)
+            result = lex_convert(dict, AppContext.shared.conn, kana)
         }
         defer { lex_conversion_free(result) }
 
@@ -78,13 +78,13 @@ extension LeximeInputController {
     func convertKanaCombined(_ kana: String, n: Int = 5)
         -> (segments: [ConversionSegment], nbestSurfaces: [String])
     {
-        guard let dict = sharedDict, !kana.isEmpty else { return ([], []) }
+        guard let dict = AppContext.shared.dict, !kana.isEmpty else { return ([], []) }
 
         let list: LexConversionResultList
-        if let history = sharedHistory {
-            list = lex_convert_nbest_with_history(dict, sharedConn, history, kana, UInt32(n))
+        if let history = AppContext.shared.history {
+            list = lex_convert_nbest_with_history(dict, AppContext.shared.conn, history, kana, UInt32(n))
         } else {
-            list = lex_convert_nbest(dict, sharedConn, kana, UInt32(n))
+            list = lex_convert_nbest(dict, AppContext.shared.conn, kana, UInt32(n))
         }
         defer { lex_conversion_result_list_free(list) }
 

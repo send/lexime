@@ -100,7 +100,7 @@ extension LeximeInputController {
                 showCandidatePanel(client: client)
                 return true
             }
-            if sharedDict == nil {
+            if AppContext.shared.dict == nil {
                 hideCandidatePanel()
                 flush()
                 commitComposed(client: client)
