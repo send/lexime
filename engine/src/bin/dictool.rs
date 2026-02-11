@@ -6,6 +6,16 @@ use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::source;
 use lex_engine::dict::{Dictionary, TrieDictionary};
 
+/// Unwrap a Result or print the error and exit.
+macro_rules! die {
+    ($result:expr, $($arg:tt)*) => {
+        $result.unwrap_or_else(|e| {
+            eprintln!($($arg)*, e);
+            process::exit(1);
+        })
+    };
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -89,10 +99,10 @@ fn parse_fetch(args: &[String]) {
     });
 
     let output_dir = Path::new(positional[0]);
-    dict_source.fetch(output_dir).unwrap_or_else(|e| {
-        eprintln!("Error fetching dictionary: {e}");
-        process::exit(1);
-    });
+    die!(
+        dict_source.fetch(output_dir),
+        "Error fetching dictionary: {}"
+    );
 }
 
 fn compile(source_name: &str, input_dir: &str, output_file: &str) {
@@ -108,10 +118,10 @@ fn compile(source_name: &str, input_dir: &str, output_file: &str) {
     }
 
     eprintln!("Source: {source_name}");
-    let entries = dict_source.parse_dir(input_path).unwrap_or_else(|e| {
-        eprintln!("Error parsing dictionary: {e}");
-        process::exit(1);
-    });
+    let entries = die!(
+        dict_source.parse_dir(input_path),
+        "Error parsing dictionary: {}"
+    );
 
     let reading_count = entries.len();
     let entry_count: usize = entries.values().map(|v| v.len()).sum();
@@ -119,10 +129,10 @@ fn compile(source_name: &str, input_dir: &str, output_file: &str) {
     eprintln!("Building trie from {reading_count} readings ({entry_count} entries)...");
 
     let dict = TrieDictionary::from_entries(entries);
-    dict.save(Path::new(output_file)).unwrap_or_else(|e| {
-        eprintln!("Error writing dictionary: {e}");
-        process::exit(1);
-    });
+    die!(
+        dict.save(Path::new(output_file)),
+        "Error writing dictionary: {}"
+    );
 
     let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
     eprintln!(
@@ -132,23 +142,23 @@ fn compile(source_name: &str, input_dir: &str, output_file: &str) {
 }
 
 fn compile_conn(input_txt: &str, output_file: &str) {
-    let text = fs::read_to_string(input_txt).unwrap_or_else(|e| {
-        eprintln!("Error reading {input_txt}: {e}");
-        process::exit(1);
-    });
+    let text = die!(
+        fs::read_to_string(input_txt),
+        "Error reading {input_txt}: {}"
+    );
 
     eprintln!("Parsing connection matrix from {input_txt}...");
-    let matrix = ConnectionMatrix::from_text(&text).unwrap_or_else(|e| {
-        eprintln!("Error parsing connection matrix: {e}");
-        process::exit(1);
-    });
+    let matrix = die!(
+        ConnectionMatrix::from_text(&text),
+        "Error parsing connection matrix: {}"
+    );
 
     eprintln!("  Matrix size: {}x{}", matrix.num_ids(), matrix.num_ids());
 
-    matrix.save(Path::new(output_file)).unwrap_or_else(|e| {
-        eprintln!("Error writing {output_file}: {e}");
-        process::exit(1);
-    });
+    die!(
+        matrix.save(Path::new(output_file)),
+        "Error writing {output_file}: {}"
+    );
 
     let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
     eprintln!(
@@ -158,10 +168,10 @@ fn compile_conn(input_txt: &str, output_file: &str) {
 }
 
 fn info(dict_file: &str) {
-    let dict = TrieDictionary::open(Path::new(dict_file)).unwrap_or_else(|e| {
-        eprintln!("Error opening dictionary: {e}");
-        process::exit(1);
-    });
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
 
     let file_size = fs::metadata(dict_file).map(|m| m.len()).unwrap_or(0);
     let (reading_count, entry_count) = dict.stats();

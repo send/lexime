@@ -15,8 +15,12 @@ pub struct ConnectionMatrix {
 
 impl ConnectionMatrix {
     /// Look up the connection cost between two morphemes.
+    /// Index: left_id * num_ids + right_id. Max index with u16 is ~4.3B,
+    /// which fits in usize on 64-bit targets. Out-of-bounds returns 0.
     pub fn cost(&self, left_id: u16, right_id: u16) -> i16 {
-        let idx = left_id as usize * self.num_ids as usize + right_id as usize;
+        let idx = (left_id as usize)
+            .saturating_mul(self.num_ids as usize)
+            .saturating_add(right_id as usize);
         self.costs.get(idx).copied().unwrap_or(0)
     }
 

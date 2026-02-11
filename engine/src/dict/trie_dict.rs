@@ -34,13 +34,13 @@ impl TrieDictionary {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DictError> {
         let mut buf = Vec::new();
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
-        let encoded = bincode::serialize(&self.data).expect("serialize trie");
+        let encoded = bincode::serialize(&self.data).map_err(DictError::Serialize)?;
         buf.extend_from_slice(&encoded);
-        buf
+        Ok(buf)
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
@@ -66,7 +66,7 @@ impl TrieDictionary {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), DictError> {
-        fs::write(path, self.to_bytes()).map_err(DictError::Io)
+        fs::write(path, self.to_bytes()?).map_err(DictError::Io)
     }
 
     /// Returns (reading_count, entry_count) by iterating the trie.
@@ -94,7 +94,6 @@ impl Dictionary for TrieDictionary {
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
         let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
             Box::new(self.data.trie.predictive_search(prefix.as_bytes()));
-
         iter.take(max_results)
             .map(|(key, entries)| SearchResult {
                 reading: key,
@@ -106,7 +105,6 @@ impl Dictionary for TrieDictionary {
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
         let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
             Box::new(self.data.trie.common_prefix_search(query.as_bytes()));
-
         iter.map(|(key, entries)| SearchResult {
             reading: key,
             entries: entries.clone(),
@@ -121,6 +119,7 @@ pub enum DictError {
     InvalidHeader,
     InvalidMagic,
     UnsupportedVersion(u8),
+    Serialize(bincode::Error),
     Deserialize(bincode::Error),
 }
 
@@ -131,6 +130,7 @@ impl std::fmt::Display for DictError {
             Self::InvalidHeader => write!(f, "invalid dictionary header"),
             Self::InvalidMagic => write!(f, "invalid magic bytes (expected LXDX)"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported dictionary version: {v}"),
+            Self::Serialize(e) => write!(f, "serialization error: {e}"),
             Self::Deserialize(e) => write!(f, "deserialization error: {e}"),
         }
     }
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip() {
         let dict = sample_dict();
-        let bytes = dict.to_bytes();
+        let bytes = dict.to_bytes().unwrap();
         let dict2 = TrieDictionary::from_bytes(&bytes).unwrap();
 
         let r1 = dict.lookup("かんじ").unwrap();
