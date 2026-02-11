@@ -13,6 +13,40 @@ pub struct ConvertedSegment {
     pub surface: String,
 }
 
+/// A segment with POS metadata, used internally for reranking.
+#[derive(Debug, Clone)]
+pub(crate) struct RichSegment {
+    pub reading: String,
+    pub surface: String,
+    pub left_id: u16,
+    pub right_id: u16,
+}
+
+/// A scored path from N-best Viterbi, carrying enough info for reranking.
+#[derive(Debug, Clone)]
+pub(crate) struct ScoredPath {
+    pub segments: Vec<RichSegment>,
+    pub viterbi_cost: i64,
+}
+
+impl ScoredPath {
+    /// Convert to public ConvertedSegment, dropping POS metadata.
+    pub fn into_segments(self) -> Vec<ConvertedSegment> {
+        self.segments
+            .into_iter()
+            .map(|s| ConvertedSegment {
+                reading: s.reading,
+                surface: s.surface,
+            })
+            .collect()
+    }
+
+    /// Surface key for deduplication.
+    pub fn surface_key(&self) -> String {
+        self.segments.iter().map(|s| s.surface.as_str()).collect()
+    }
+}
+
 /// Convert a kana string to the best segmentation using Viterbi algorithm.
 ///
 /// If `conn` is provided, uses connection costs for scoring transitions.
@@ -23,13 +57,16 @@ pub fn convert(
     kana: &str,
 ) -> Vec<ConvertedSegment> {
     let cost_fn = DefaultCostFunction::new(conn);
-    convert_with_cost(dict, &cost_fn, kana)
+    convert_with_cost(dict, &cost_fn, conn, kana)
 }
 
 /// Convert a kana string using a custom cost function.
+///
+/// `conn` is passed separately for the reranker's structure cost calculation.
 pub fn convert_with_cost(
     dict: &dyn Dictionary,
     cost_fn: &dyn CostFunction,
+    conn: Option<&ConnectionMatrix>,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
     if kana.is_empty() {
@@ -37,13 +74,24 @@ pub fn convert_with_cost(
     }
 
     let lattice = build_lattice(dict, kana);
-    viterbi(&lattice, cost_fn)
+    viterbi(&lattice, cost_fn, conn)
 }
 
 /// Run the Viterbi algorithm on a lattice to find the minimum-cost path.
-fn viterbi(lattice: &Lattice, cost_fn: &dyn CostFunction) -> Vec<ConvertedSegment> {
-    let results = viterbi_nbest(lattice, cost_fn, 1);
-    results.into_iter().next().unwrap_or_default()
+/// Over-generates candidates and applies reranking to find the best path.
+fn viterbi(
+    lattice: &Lattice,
+    cost_fn: &dyn CostFunction,
+    conn: Option<&ConnectionMatrix>,
+) -> Vec<ConvertedSegment> {
+    // Over-generate to give the reranker enough candidates
+    let mut paths = viterbi_nbest(lattice, cost_fn, 10);
+    super::reranker::rerank(&mut paths, conn);
+    paths
+        .into_iter()
+        .next()
+        .map(|p| p.into_segments())
+        .unwrap_or_default()
 }
 
 /// A single entry in the top-K list for a node: (accumulated cost, previous node index, rank at
@@ -58,13 +106,13 @@ struct KEntry {
 
 /// Run N-best Viterbi: keep top-K cost/backpointer pairs per node.
 ///
-/// Returns up to `n` distinct paths, sorted by total cost (best first).
+/// Returns up to `n` distinct `ScoredPath`s, sorted by Viterbi cost (best first).
 /// Paths that produce identical surface strings are deduplicated.
-fn viterbi_nbest(
+pub(crate) fn viterbi_nbest(
     lattice: &Lattice,
     cost_fn: &dyn CostFunction,
     n: usize,
-) -> Vec<Vec<ConvertedSegment>> {
+) -> Vec<ScoredPath> {
     let char_count = lattice.char_count;
     if char_count == 0 || n == 0 {
         return Vec::new();
@@ -129,17 +177,20 @@ fn viterbi_nbest(
     eos_entries.sort_by_key(|&(cost, _, _)| cost);
 
     // Backtrace each path, deduplicate by surface string
-    let mut results: Vec<Vec<ConvertedSegment>> = Vec::new();
+    let mut results: Vec<ScoredPath> = Vec::new();
     let mut seen_surfaces: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for &(_, end_idx, end_rank) in &eos_entries {
+    for &(total_cost, end_idx, end_rank) in &eos_entries {
         if results.len() >= n {
             break;
         }
-        let path = backtrace_nbest(&top_k, end_idx, end_rank, lattice);
-        let surface_key: String = path.iter().map(|s| s.surface.as_str()).collect();
-        if seen_surfaces.insert(surface_key) {
-            results.push(path);
+        let segments = backtrace_nbest(&top_k, end_idx, end_rank, lattice);
+        let scored = ScoredPath {
+            segments,
+            viterbi_cost: total_cost,
+        };
+        if seen_surfaces.insert(scored.surface_key()) {
+            results.push(scored);
         }
     }
 
@@ -165,7 +216,7 @@ fn backtrace_nbest(
     end_idx: usize,
     end_rank: usize,
     lattice: &Lattice,
-) -> Vec<ConvertedSegment> {
+) -> Vec<RichSegment> {
     let mut path_indices = Vec::new();
     let mut cur_idx = end_idx;
     let mut cur_rank = end_rank;
@@ -187,15 +238,20 @@ fn backtrace_nbest(
         .iter()
         .map(|&idx| {
             let node = &lattice.nodes[idx];
-            ConvertedSegment {
+            RichSegment {
                 reading: node.reading.clone(),
                 surface: node.surface.clone(),
+                left_id: node.left_id,
+                right_id: node.right_id,
             }
         })
         .collect()
 }
 
 /// Convert a kana string to the N-best segmentations using Viterbi algorithm.
+///
+/// Internally generates more candidates than `n`, applies reranking, then
+/// returns the top `n` distinct paths.
 pub fn convert_nbest(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -203,13 +259,16 @@ pub fn convert_nbest(
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
     let cost_fn = DefaultCostFunction::new(conn);
-    convert_nbest_with_cost(dict, &cost_fn, kana, n)
+    convert_nbest_with_cost(dict, &cost_fn, conn, kana, n)
 }
 
 /// Convert a kana string to the N-best segmentations using a custom cost function.
+///
+/// `conn` is passed separately for the reranker's structure cost calculation.
 pub fn convert_nbest_with_cost(
     dict: &dyn Dictionary,
     cost_fn: &dyn CostFunction,
+    conn: Option<&ConnectionMatrix>,
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
@@ -217,7 +276,15 @@ pub fn convert_nbest_with_cost(
         return Vec::new();
     }
     let lattice = build_lattice(dict, kana);
-    viterbi_nbest(&lattice, cost_fn, n)
+    // Over-generate candidates to give the reranker enough diversity
+    let oversample = n * 3;
+    let mut paths = viterbi_nbest(&lattice, cost_fn, oversample);
+    super::reranker::rerank(&mut paths, conn);
+    paths
+        .into_iter()
+        .take(n)
+        .map(|p| p.into_segments())
+        .collect()
 }
 
 #[cfg(test)]
@@ -450,8 +517,8 @@ mod tests {
         // ensure at least 2 results with different segmentations.
         assert!(results.len() >= 2);
         // Different segmentations should exist (e.g., 今日+は vs 京+は vs き+ょ+う+は)
-        let first: String = results[0].iter().map(|s| &*s.surface).collect();
-        let second: String = results[1].iter().map(|s| &*s.surface).collect();
+        let first: String = results[0].segments.iter().map(|s| &*s.surface).collect();
+        let second: String = results[1].segments.iter().map(|s| &*s.surface).collect();
         assert_ne!(first, second);
     }
 }
