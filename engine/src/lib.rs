@@ -2,12 +2,15 @@
 // Clippy cannot verify this statically, so we allow it at crate level.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+pub mod converter;
 pub mod dict;
 
 use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::ptr;
 
+use converter::convert;
+use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
 
 #[no_mangle]
@@ -194,6 +197,130 @@ pub extern "C" fn lex_candidates_free(list: LexCandidateList) {
     }
 }
 
+// --- Connection matrix FFI ---
+
+#[no_mangle]
+pub extern "C" fn lex_conn_open(path: *const c_char) -> *mut ConnectionMatrix {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+    let path_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match path_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    match ConnectionMatrix::open(Path::new(path_str)) {
+        Ok(conn) => Box::into_raw(Box::new(conn)),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_conn_close(conn: *mut ConnectionMatrix) {
+    if !conn.is_null() {
+        unsafe {
+            drop(Box::from_raw(conn));
+        }
+    }
+}
+
+// --- Conversion FFI ---
+
+#[repr(C)]
+pub struct LexSegment {
+    pub reading: *const c_char,
+    pub surface: *const c_char,
+}
+
+#[repr(C)]
+pub struct LexConversionResult {
+    pub segments: *const LexSegment,
+    pub len: u32,
+    _owned: *mut ConversionResultOwned,
+}
+
+struct ConversionResultOwned {
+    segments: Vec<LexSegment>,
+    _strings: Vec<CString>,
+}
+
+impl LexConversionResult {
+    fn empty() -> Self {
+        Self {
+            segments: ptr::null(),
+            len: 0,
+            _owned: ptr::null_mut(),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_convert(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    kana: *const c_char,
+) -> LexConversionResult {
+    if dict.is_null() || kana.is_null() {
+        return LexConversionResult::empty();
+    }
+    let dict = unsafe { &*dict };
+    let kana_str = unsafe { CStr::from_ptr(kana) };
+    let kana_str = match kana_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return LexConversionResult::empty(),
+    };
+
+    let conn_ref = if conn.is_null() {
+        None
+    } else {
+        Some(unsafe { &*conn })
+    };
+
+    let result = convert(dict, conn_ref, kana_str);
+    if result.is_empty() {
+        return LexConversionResult::empty();
+    }
+
+    let mut strings = Vec::with_capacity(result.len() * 2);
+    let mut segments = Vec::with_capacity(result.len());
+
+    for seg in &result {
+        let reading = CString::new(seg.reading.as_str()).unwrap_or_default();
+        let surface = CString::new(seg.surface.as_str()).unwrap_or_default();
+        segments.push(LexSegment {
+            reading: reading.as_ptr(),
+            surface: surface.as_ptr(),
+        });
+        strings.push(reading);
+        strings.push(surface);
+    }
+
+    let owned = Box::new(ConversionResultOwned {
+        segments,
+        _strings: strings,
+    });
+    let owned_ptr = Box::into_raw(owned);
+
+    let segments_ptr = unsafe { (*owned_ptr).segments.as_ptr() };
+    let len = unsafe { (*owned_ptr).segments.len() as u32 };
+
+    LexConversionResult {
+        segments: segments_ptr,
+        len,
+        _owned: owned_ptr,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_conversion_free(result: LexConversionResult) {
+    if !result._owned.is_null() {
+        unsafe {
+            drop(Box::from_raw(result._owned));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +490,101 @@ mod tests {
         let path = CString::new("/nonexistent/path/dict.bin").unwrap();
         let dict_ptr = lex_dict_open(path.as_ptr());
         assert!(dict_ptr.is_null());
+    }
+
+    fn make_convert_test_dict() -> *mut TrieDictionary {
+        let entries = vec![
+            (
+                "きょう".to_string(),
+                vec![dict::DictEntry {
+                    surface: "今日".to_string(),
+                    cost: 3000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "は".to_string(),
+                vec![dict::DictEntry {
+                    surface: "は".to_string(),
+                    cost: 2000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "いい".to_string(),
+                vec![dict::DictEntry {
+                    surface: "良い".to_string(),
+                    cost: 3500,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+        ];
+        let dict = TrieDictionary::from_entries(entries);
+        Box::into_raw(Box::new(dict))
+    }
+
+    #[test]
+    fn test_ffi_convert_roundtrip() {
+        let dict = make_convert_test_dict();
+        let kana = CString::new("きょうはいい").unwrap();
+
+        let result = lex_convert(dict, ptr::null(), kana.as_ptr());
+        assert!(result.len >= 3);
+
+        unsafe {
+            let segments = std::slice::from_raw_parts(result.segments, result.len as usize);
+            let s0 = CStr::from_ptr(segments[0].surface).to_str().unwrap();
+            assert_eq!(s0, "今日");
+        }
+
+        lex_conversion_free(result);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_convert_null_safety() {
+        let kana = CString::new("きょう").unwrap();
+
+        // null dict
+        let result = lex_convert(ptr::null(), ptr::null(), kana.as_ptr());
+        assert_eq!(result.len, 0);
+        lex_conversion_free(result);
+
+        // null kana
+        let dict = make_convert_test_dict();
+        let result = lex_convert(dict, ptr::null(), ptr::null());
+        assert_eq!(result.len, 0);
+        lex_conversion_free(result);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_convert_empty_input() {
+        let dict = make_convert_test_dict();
+        let kana = CString::new("").unwrap();
+
+        let result = lex_convert(dict, ptr::null(), kana.as_ptr());
+        assert_eq!(result.len, 0);
+
+        lex_conversion_free(result);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_conn_null_safety() {
+        // null path
+        let conn = lex_conn_open(ptr::null());
+        assert!(conn.is_null());
+
+        // nonexistent path
+        let path = CString::new("/nonexistent/path/conn.bin").unwrap();
+        let conn = lex_conn_open(path.as_ptr());
+        assert!(conn.is_null());
+
+        // close null
+        lex_conn_close(ptr::null_mut());
     }
 }

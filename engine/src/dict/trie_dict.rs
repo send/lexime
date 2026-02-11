@@ -102,6 +102,17 @@ impl Dictionary for TrieDictionary {
             })
             .collect()
     }
+
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
+        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
+            Box::new(self.data.trie.common_prefix_search(query.as_bytes()));
+
+        iter.map(|(key, entries)| SearchResult {
+            reading: key,
+            entries: entries.clone(),
+        })
+        .collect()
+    }
 }
 
 #[derive(Debug)]

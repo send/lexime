@@ -8,6 +8,7 @@ use crate::dict::DictEntry;
 const MOZC_CONTENTS_URL: &str =
     "https://api.github.com/repos/google/mozc/contents/src/data/dictionary_oss";
 const MOZC_LICENSE_URL: &str = "https://raw.githubusercontent.com/google/mozc/master/LICENSE";
+const MOZC_CONNECTION_URL: &str = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/connection_single_column.txt";
 
 /// Mozc TSV dictionary source.
 ///
@@ -168,6 +169,15 @@ impl DictSource for MozcSource {
             }
             eprintln!("  {name}");
             Self::download_file(url, &file_path)?;
+        }
+
+        // Download connection matrix
+        let connection = dest.join("connection_single_column.txt");
+        if connection.exists() {
+            eprintln!("  connection_single_column.txt (already exists, skipping)");
+        } else {
+            eprintln!("  connection_single_column.txt");
+            Self::download_file(MOZC_CONNECTION_URL, &connection)?;
         }
 
         // Download LICENSE

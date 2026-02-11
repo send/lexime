@@ -1,21 +1,92 @@
+import Carbon
 import Cocoa
 import InputMethodKit
 
 @objc(LeximeInputController)
 class LeximeInputController: IMKInputController {
 
-    private var composedKana: String = ""
-    private var pendingRomaji: String = ""
-    private var isComposing: Bool { !composedKana.isEmpty || !pendingRomaji.isEmpty }
+    // MARK: - State
 
-    private let trie = RomajiTrie.shared
-    private static let vowels: Set<Character> = ["a", "i", "u", "e", "o"]
+    var state: InputState = .idle
+    var composedKana: String = ""
+    var pendingRomaji: String = ""
+
+    // Multi-segment conversion state
+    var originalKana: String = ""
+    var conversionSegments: [ConversionSegment] = []
+    var activeSegmentIndex: Int = 0
+
+    var isComposing: Bool { state != .idle }
+
+    let trie = RomajiTrie.shared
+    var selectedPredictionIndex: Int = 0
+    var isPunctuationComposing: Bool = false
+
+    /// Maps ASCII key to [fullwidth, halfwidth] candidates
+    static let punctuationCandidates: [String: [String]] = [
+        ".": ["。", "."], ",": ["、", ","], "?": ["？", "?"], "!": ["！", "!"],
+        "[": ["「", "｢", "["], "]": ["」", "｣", "]"], "/": ["・", "/"], "~": ["〜", "~"],
+    ]
+
+    static let maxComposedKanaLength = 100
+
+    // Realtime prediction state
+    var predictionCandidates: [String] = []
+
+    private static var hasShownDictWarning = false
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = String(cString: lex_engine_version())
         NSLog("Lexime: InputController initialized (engine: %@)", version)
+        if sharedDict == nil && !Self.hasShownDictWarning {
+            Self.hasShownDictWarning = true
+            NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
+        }
     }
+
+    // MARK: - Candidate Panel
+
+    static let maxCandidateDisplay = 9
+
+    func cursorRect(client: IMKTextInput) -> NSRect {
+        var rect = NSRect.zero
+        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+        return rect
+    }
+
+    func showCandidatePanel(client: IMKTextInput) {
+        let allCandidates: [String]
+        let selectedIndex: Int
+
+        switch state {
+        case .composing:
+            allCandidates = predictionCandidates
+            selectedIndex = selectedPredictionIndex
+        case .converting:
+            guard activeSegmentIndex < conversionSegments.count else { return }
+            allCandidates = conversionSegments[activeSegmentIndex].candidates
+            selectedIndex = conversionSegments[activeSegmentIndex].selectedIndex
+        case .idle:
+            return
+        }
+
+        let pageSize = Self.maxCandidateDisplay
+        let page = selectedIndex / pageSize
+        let pageStart = page * pageSize
+        let pageEnd = min(pageStart + pageSize, allCandidates.count)
+        let pageCandidates = Array(allCandidates[pageStart..<pageEnd])
+        let pageSelectedIndex = selectedIndex - pageStart
+
+        let rect = cursorRect(client: client)
+        sharedCandidatePanel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
+    }
+
+    func hideCandidatePanel() {
+        sharedCandidatePanel.hide()
+    }
+
+    // MARK: - Key Handling
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event = event, let client = sender as? IMKTextInput else {
@@ -26,14 +97,33 @@ class LeximeInputController: IMKInputController {
             return false
         }
 
+        // Eisu key (102) → switch to ABC input source
+        if event.keyCode == 102 {
+            if isComposing { commitCurrentState(client: client) }
+            selectABCInputSource()
+            return true
+        }
+        // Kana key (104) → already in Japanese mode, consume the event
+        if event.keyCode == 104 {
+            return true
+        }
+
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
+        // Shift+Arrow in converting state: segment boundary adjustment (U2)
+        if dominated == .shift && state == .converting {
+            if event.keyCode == 123 || event.keyCode == 124 {
+                return handleSegmentBoundaryAdjust(
+                    shrink: event.keyCode == 123, client: client)
+            }
+        }
+
         // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
-        if !dominated.isEmpty {
+        // Shift alone is excluded (used for normal text input like ?, !, ~)
+        if !dominated.subtracting(.shift).isEmpty {
             if isComposing {
-                flush(client: client)
-                commitComposed(client: client)
+                commitCurrentState(client: client)
             }
             return false
         }
@@ -43,217 +133,138 @@ class LeximeInputController: IMKInputController {
             return false
         }
 
-        NSLog("Lexime: handle keyCode=%d text=%@", keyCode, text)
+        NSLog("Lexime: handle keyCode=%d text=%@ state=%d", keyCode, text, stateOrdinal)
 
-        switch keyCode {
-        case 36: // Enter
-            if isComposing {
-                flush(client: client)
-                commitComposed(client: client)
-                return true
-            }
-            return false
-
-        case 49: // Space
-            if isComposing {
-                flush(client: client)
-                commitComposed(client: client)
-                return false
-            }
-            return false
-
-        case 51: // Backspace
-            if isComposing {
-                if !pendingRomaji.isEmpty {
-                    pendingRomaji.removeLast()
-                } else if !composedKana.isEmpty {
-                    composedKana.removeLast()
-                }
-                if isComposing {
-                    updateMarkedText(client: client)
-                } else {
-                    // All cleared — remove marked text
-                    client.setMarkedText("",
-                                        selectionRange: NSRange(location: 0, length: 0),
-                                        replacementRange: NSRange(location: NSNotFound, length: 0))
-                }
-                return true
-            }
-            return false
-
-        case 53: // Escape
-            if isComposing {
-                composedKana = ""
-                pendingRomaji = ""
-                client.setMarkedText("",
-                                     selectionRange: NSRange(location: 0, length: 0),
-                                     replacementRange: NSRange(location: NSNotFound, length: 0))
-                return true
-            }
-            return false
-
-        default:
-            break
+        switch state {
+        case .idle:
+            return handleIdle(keyCode: keyCode, text: text, client: client)
+        case .composing:
+            return handleComposing(keyCode: keyCode, text: text, client: client)
+        case .converting:
+            return handleConverting(keyCode: keyCode, text: text, client: client)
         }
+    }
 
-        let scalar = text.unicodeScalars.first!
+    private func selectABCInputSource() {
+        let conditions = [
+            kTISPropertyInputSourceID as String: "com.apple.keylayout.ABC"
+        ] as CFDictionary
+        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
+                as? [TISInputSource],
+              let source = list.first else { return }
+        TISSelectInputSource(source)
+    }
 
-        // Punctuation: period and comma
-        if text == "." || text == "," {
-            if isComposing {
-                flush(client: client)
-                commitComposed(client: client)
-            }
-            let punct = text == "." ? "。" : "、"
-            client.insertText(punct, replacementRange: NSRange(location: NSNotFound, length: 0))
-            return true
+    private var stateOrdinal: Int {
+        switch state {
+        case .idle: return 0
+        case .composing: return 1
+        case .converting: return 2
         }
+    }
 
-        // Alphabetic characters (a-z)
-        if CharacterSet.lowercaseLetters.contains(scalar) ||
-           CharacterSet.uppercaseLetters.contains(scalar) {
-            let ch = text.lowercased()
-            appendAndConvert(ch, client: client)
-            return true
-        }
+    // MARK: - Punctuation Composing
 
-        // Hyphen for prolonged sound mark
-        if text == "-" {
-            appendAndConvert("-", client: client)
-            return true
-        }
+    func composePunctuation(_ candidates: [String], client: IMKTextInput) {
+        state = .composing
+        isPunctuationComposing = true
+        composedKana = candidates[0]
+        pendingRomaji = ""
+        predictionCandidates = candidates
+        selectedPredictionIndex = 0
+        updateMarkedTextWithCandidate(candidates[0], client: client)
+        showCandidatePanel(client: client)
+    }
 
-        // Other characters — commit composing first, then pass through
-        if isComposing {
-            flush(client: client)
+    // MARK: - Romaji Conversion
+
+    func appendAndConvert(_ input: String, client: IMKTextInput) {
+        if composedKana.count >= Self.maxComposedKanaLength {
+            flush()
             commitComposed(client: client)
+            state = .composing
         }
-        return false
-    }
-
-    // MARK: - Conversion
-
-    private func appendAndConvert(_ input: String, client: IMKTextInput) {
         pendingRomaji += input
-        drainPendingRomaji(force: false)
+        drainPending(force: false)
         updateMarkedText(client: client)
+        updatePredictions()
     }
 
-    /// Consume pendingRomaji as much as possible.
-    /// - force=false: stop at prefix/exactAndPrefix (wait for more input)
-    /// - force=true: greedily convert everything (used before commit)
-    private func drainPendingRomaji(force: Bool) {
-        var changed = true
-        while !pendingRomaji.isEmpty && changed {
-            changed = false
-            let result = trie.lookup(pendingRomaji)
-
-            switch result {
-            case .exact(let kana):
-                composedKana += kana
-                pendingRomaji = ""
-                changed = true
-
-            case .exactAndPrefix(let kana):
-                if force {
-                    composedKana += kana
-                    pendingRomaji = ""
-                    changed = true
-                }
-                // else: wait for more input — a longer match might exist
-
-            case .prefix:
-                if !force { break }
-                // force mode: try shorter prefixes
-                fallthrough
-
-            case .none:
-                // Try to find the longest prefix match
-                var found = false
-                for len in stride(from: pendingRomaji.count - 1, through: 1, by: -1) {
-                    let subEnd = pendingRomaji.index(pendingRomaji.startIndex, offsetBy: len)
-                    let sub = String(pendingRomaji[..<subEnd])
-                    let subResult = trie.lookup(sub)
-
-                    switch subResult {
-                    case .exact(let kana), .exactAndPrefix(let kana):
-                        composedKana += kana
-                        pendingRomaji = String(pendingRomaji[subEnd...])
-                        found = true
-                        changed = true
-                    default:
-                        break
-                    }
-                    if found { break }
-                }
-
-                if !found {
-                    if pendingRomaji.count >= 2 {
-                        let chars = Array(pendingRomaji)
-                        let first = chars[0]
-                        let second = chars[1]
-                        // Same consonant (not 'n', not vowel) → っ
-                        if first == second && first != "n" && !Self.vowels.contains(first) {
-                            composedKana += "っ"
-                            pendingRomaji = String(pendingRomaji.dropFirst())
-                            changed = true
-                        } else if first == "n" && !Self.vowels.contains(second) &&
-                                  second != "n" && second != "y" {
-                            // "n" followed by non-vowel, non-n, non-y → ん
-                            composedKana += "ん"
-                            pendingRomaji = String(pendingRomaji.dropFirst())
-                            changed = true
-                        } else if force {
-                            composedKana += String(pendingRomaji.removeFirst())
-                            changed = true
-                        } else {
-                            pendingRomaji = String(pendingRomaji.dropFirst())
-                            changed = true
-                        }
-                    } else {
-                        // Single character remaining
-                        if force {
-                            if pendingRomaji == "n" {
-                                composedKana += "ん"
-                            } else {
-                                composedKana += pendingRomaji
-                            }
-                        }
-                        pendingRomaji = ""
-                        changed = true
-                    }
-                }
+    func updatePredictions() {
+        selectedPredictionIndex = 0
+        if !composedKana.isEmpty {
+            var candidates = predictCandidates(composedKana)
+            // Ensure the raw kana is always the first candidate
+            candidates.removeAll { $0 == composedKana }
+            candidates.insert(composedKana, at: 0)
+            predictionCandidates = candidates
+            if let client = self.client() {
+                showCandidatePanel(client: client)
             }
+        } else {
+            predictionCandidates = []
+            hideCandidatePanel()
         }
+    }
+
+    private func drainPending(force: Bool) {
+        let result = drainPendingRomaji(
+            composedKana: composedKana,
+            pendingRomaji: pendingRomaji,
+            trie: trie,
+            force: force)
+        composedKana = result.composedKana
+        pendingRomaji = result.pendingRomaji
     }
 
     // MARK: - Flush & Commit
 
-    private func flush(client: IMKTextInput) {
-        drainPendingRomaji(force: true)
+    func flush() {
+        drainPending(force: true)
     }
 
-    private func commitComposed(client: IMKTextInput) {
+    func commitComposed(client: IMKTextInput) {
         if !composedKana.isEmpty {
             NSLog("Lexime: commit %@", composedKana)
             client.insertText(composedKana, replacementRange: NSRange(location: NSNotFound, length: 0))
-            composedKana = ""
         } else {
-            // Clear marked text even if nothing to commit
             client.setMarkedText("",
                                  selectionRange: NSRange(location: 0, length: 0),
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
-        pendingRomaji = ""
+        resetState()
     }
 
-    // MARK: - Marked Text
+    func commitText(_ text: String, client: IMKTextInput) {
+        NSLog("Lexime: commit %@", text)
+        client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        resetState()
+    }
 
-    private func updateMarkedText(client: IMKTextInput) {
-        let display = composedKana + pendingRomaji
-        let len = display.utf16.count
-        client.setMarkedText(display,
-                             selectionRange: NSRange(location: len, length: 0),
-                             replacementRange: NSRange(location: NSNotFound, length: 0))
+    func commitCurrentState(client: IMKTextInput) {
+        switch state {
+        case .idle:
+            break
+        case .composing:
+            hideCandidatePanel()
+            flush()
+            commitComposed(client: client)
+        case .converting:
+            let fullText = conversionSegments.map { $0.surface }.joined()
+            hideCandidatePanel()
+            commitText(fullText, client: client)
+        }
+    }
+
+    func resetState() {
+        composedKana = ""
+        pendingRomaji = ""
+        originalKana = ""
+        conversionSegments = []
+        activeSegmentIndex = 0
+        predictionCandidates = []
+        selectedPredictionIndex = 0
+        isPunctuationComposing = false
+        state = .idle
     }
 }
