@@ -45,6 +45,26 @@ mise run install
 | Escape | キャンセル |
 | 英数キー | システム ABC に切替 |
 
+### 辞書ソース切り替え
+
+Mozc と SudachiDict の辞書を `defaults write` で切り替えられる（デフォルト: `sudachi`）。
+
+```sh
+# Mozc に切り替え
+defaults write sh.send.inputmethod.Lexime dictSource mozc
+mise run reload
+
+# SudachiDict に戻す
+defaults write sh.send.inputmethod.Lexime dictSource sudachi
+mise run reload
+```
+
+Mozc 辞書は別途ビルドが必要:
+
+```sh
+mise run fetch-dict-mozc && mise run dict-mozc && mise run conn-mozc
+```
+
 ### プログラマモード
 
 JIS キーボードの ¥ キーでバックスラッシュ `\` を入力するモード。

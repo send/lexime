@@ -53,15 +53,23 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 | `lib.rs` | FFI 関数 (20 関数)。C 互換構造体、メモリ管理（`*Owned` パターン） |
 | `dict/` | `Dictionary` trait、`TrieDictionary`（bincode）、`ConnectionMatrix`（LXCX） |
 | `dict/source/` | `DictSource` trait、`MozcSource`、`SudachiSource`（辞書取得・変換） |
-| `converter/` | `Lattice` 構築、`Viterbi` 探索、`CostFunction` trait |
+| `converter/` | `Lattice` 構築、`Viterbi` N-best 探索、`Reranker`、`CostFunction` trait |
 | `user_history/` | ユニグラム・バイグラム学習、`LearnedCostFunction`、LXUD 形式 |
 | `bin/dictool.rs` | 辞書操作 CLI（fetch / compile / compile-conn） |
 
 ### 辞書データ
 
-- **辞書**: Mozc TSV → `TrieDictionary`（bincode シリアライズ、マジック `LXDC`、約 50MB）
-- **接続行列**: Mozc single-column → バイナリ行列（マジック `LXCX`、i16 配列）
+ビルド時にソースごとの辞書ファイルを生成し、ランタイムで切り替え可能:
+
+| ソース | 辞書 | 接続行列 |
+|---|---|---|
+| SudachiDict | `lexime-sudachi.dict` | `lexime-sudachi.conn` |
+| Mozc | `lexime-mozc.dict` | `lexime-mozc.conn` |
+
+- **辞書**: TSV → `TrieDictionary`（bincode シリアライズ、マジック `LXDC`）
+- **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）
 - POS ID ペアの遷移コストを O(1) で参照
+- **ソース選択**: `UserDefaults` の `dictSource` キー（デフォルト: `sudachi`）で起動時に決定
 
 ### FFI (C ABI)
 
@@ -183,11 +191,12 @@ Space 押下時、以下の優先順位で候補を統合:
 - 各位置から始まる全てのエントリをノードとして追加
 - **接続性保証**: 1 文字マッチがない位置にはコスト 10,000 の未知語フォールバックを追加
 
-### Viterbi 探索
+### Viterbi N-best 探索 + Reranker
 
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
-- 前方パス: 動的計画法でコストを更新
-- バックポインタで最適パスを復元
+- 前方パス: ノードごとに top-K コスト/バックポインタを保持
+- N-best: 同一サーフェスの重複排除後、上位 N パスを出力
+- **Reranker**: Viterbi で over-generate（1-best: 10 候補、N-best: 3x）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
 
 ### CostFunction trait
 
@@ -277,11 +286,13 @@ macOS で動作する最小限の IME を構築。
 | タスク | 内容 |
 |---|---|
 | `engine-lib` | universal static library ビルド（x86_64 + aarch64、lipo） |
-| `fetch-dict` | Mozc 辞書データのダウンロード |
-| `fetch-sudachi-dict` | SudachiDict データのダウンロード |
-| `dict` | 辞書バイナリのコンパイル（Mozc TSV → bincode） |
-| `conn` | 接続行列のコンパイル |
-| `build` | Lexime.app ユニバーサルバイナリのビルド |
+| `fetch-dict-sudachi` | SudachiDict データのダウンロード |
+| `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
+| `dict-sudachi` | SudachiDict 辞書バイナリのコンパイル |
+| `dict-mozc` | Mozc 辞書バイナリのコンパイル |
+| `conn-sudachi` | SudachiDict 接続行列のコンパイル |
+| `conn-mozc` | Mozc 接続行列のコンパイル |
+| `build` | Lexime.app ユニバーサルバイナリのビルド（depends: dict-sudachi, conn-sudachi） |
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `log` | ログストリーミング |
@@ -302,5 +313,5 @@ macOS で動作する最小限の IME を構築。
 ## 未決事項
 
 - リリースワークフロー（パブリック化後のタグプッシュによる自動ビルド）
-- SudachiDict の統合・評価
+- SudachiDict の接続コスト調整（IME 用途への最適化）
 - 差別化の方向性（速度以外）
