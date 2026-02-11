@@ -64,6 +64,8 @@ sources = [
   "engine/data/lexime.conn",
   "Info.plist",
   "Resources/icon.tiff",
+  "Resources/en.lproj/InfoPlist.strings",
+  "Resources/ja.lproj/InfoPlist.strings",
 ]
 outputs = ["build/Lexime.app/Contents/MacOS/Lexime"]
 run = """
@@ -85,9 +87,11 @@ lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime
 rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
+cp -R Resources/en.lproj "$RES/en.lproj"
+cp -R Resources/ja.lproj "$RES/ja.lproj"
 cp engine/data/lexime.dict "$RES/lexime.dict"
 cp engine/data/lexime.conn "$RES/lexime.conn"
-# TODO: codesign with Lexime.entitlements for distribution builds
+codesign -f -s - "$APP"
 echo "Build complete: $APP"
 """
 
