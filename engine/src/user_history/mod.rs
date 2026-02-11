@@ -152,7 +152,12 @@ impl UserHistory {
         let now = now_epoch();
         self.bigrams
             .get(prev_surface)
-            .and_then(|inner| inner.get(&(next_reading.to_string(), next_surface.to_string())))
+            .and_then(|inner| {
+                inner
+                    .iter()
+                    .find(|((reading, surface), _)| reading == next_reading && surface == next_surface)
+                    .map(|(_, entry)| entry)
+            })
             .map_or(0, |entry| entry.boost(now))
     }
 
