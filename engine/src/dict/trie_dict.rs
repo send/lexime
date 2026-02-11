@@ -1,11 +1,10 @@
 use std::fs;
-use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use trie_rs::map::{Trie, TrieBuilder};
 
-use super::{DictEntry, Dictionary, SearchResult};
+use super::{DictEntry, DictError, Dictionary, SearchResult};
 
 const MAGIC: &[u8; 4] = b"LXDX";
 const VERSION: u8 = 1;
@@ -61,12 +60,12 @@ impl TrieDictionary {
     // TODO: fs::read loads the entire dictionary into memory (~50 MB).
     // Consider mmap for lower memory footprint in the IME background process.
     pub fn open(path: &Path) -> Result<Self, DictError> {
-        let data = fs::read(path).map_err(DictError::Io)?;
+        let data = fs::read(path)?;
         Self::from_bytes(&data)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), DictError> {
-        fs::write(path, self.to_bytes()?).map_err(DictError::Io)
+        Ok(fs::write(path, self.to_bytes()?)?)
     }
 
     /// Iterate over all `(reading, entries)` pairs in the trie.
@@ -85,13 +84,13 @@ impl TrieDictionary {
         max_results: usize,
         scan_limit: usize,
     ) -> Vec<(String, DictEntry)> {
-        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
-            Box::new(self.data.trie.predictive_search(prefix.as_bytes()));
-
         // Flatten all (reading, entry) pairs from up to scan_limit readings
-        let mut flat: Vec<(String, DictEntry)> = iter
+        let mut flat: Vec<(String, DictEntry)> = self
+            .data
+            .trie
+            .predictive_search(prefix.as_bytes())
             .take(scan_limit)
-            .flat_map(|(reading, entries)| {
+            .flat_map(|(reading, entries): (String, &Vec<DictEntry>)| {
                 entries.iter().map(move |e| (reading.clone(), e.clone()))
             })
             .collect();
@@ -128,10 +127,11 @@ impl Dictionary for TrieDictionary {
     }
 
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
-        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
-            Box::new(self.data.trie.predictive_search(prefix.as_bytes()));
-        iter.take(max_results)
-            .map(|(key, entries)| SearchResult {
+        self.data
+            .trie
+            .predictive_search(prefix.as_bytes())
+            .take(max_results)
+            .map(|(key, entries): (String, &Vec<DictEntry>)| SearchResult {
                 reading: key,
                 entries: entries.clone(),
             })
@@ -139,40 +139,16 @@ impl Dictionary for TrieDictionary {
     }
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
-        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
-            Box::new(self.data.trie.common_prefix_search(query.as_bytes()));
-        iter.map(|(key, entries)| SearchResult {
-            reading: key,
-            entries: entries.clone(),
-        })
-        .collect()
+        self.data
+            .trie
+            .common_prefix_search(query.as_bytes())
+            .map(|(key, entries): (String, &Vec<DictEntry>)| SearchResult {
+                reading: key,
+                entries: entries.clone(),
+            })
+            .collect()
     }
 }
-
-#[derive(Debug)]
-pub enum DictError {
-    Io(io::Error),
-    InvalidHeader,
-    InvalidMagic,
-    UnsupportedVersion(u8),
-    Serialize(bincode::Error),
-    Deserialize(bincode::Error),
-}
-
-impl std::fmt::Display for DictError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::InvalidHeader => write!(f, "invalid dictionary header"),
-            Self::InvalidMagic => write!(f, "invalid magic bytes (expected LXDX)"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported dictionary version: {v}"),
-            Self::Serialize(e) => write!(f, "serialization error: {e}"),
-            Self::Deserialize(e) => write!(f, "deserialization error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for DictError {}
 
 #[cfg(test)]
 mod tests {

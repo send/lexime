@@ -34,9 +34,9 @@ pub struct HistoryEntry {
 
 impl HistoryEntry {
     /// Compute boost score with time decay.
-    fn boost(&self) -> i64 {
+    fn boost(&self, now: u64) -> i64 {
         let raw = (self.frequency as i64 * BOOST_PER_USE).min(MAX_BOOST);
-        (raw as f64 * decay(self.last_used)) as i64
+        (raw as f64 * decay(self.last_used, now)) as i64
     }
 }
 
@@ -71,8 +71,7 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
-fn decay(last_used: u64) -> f64 {
-    let now = now_epoch();
+fn decay(last_used: u64, now: u64) -> f64 {
     let hours = (now.saturating_sub(last_used)) as f64 / 3600.0;
     1.0 / (1.0 + hours / HALF_LIFE_HOURS)
 }
@@ -141,18 +140,20 @@ impl UserHistory {
 
     /// Compute unigram boost for a (reading, surface) pair.
     pub fn unigram_boost(&self, reading: &str, surface: &str) -> i64 {
+        let now = now_epoch();
         self.unigrams
             .get(reading)
             .and_then(|inner| inner.get(surface))
-            .map_or(0, |entry| entry.boost())
+            .map_or(0, |entry| entry.boost(now))
     }
 
     /// Compute bigram boost for (prev_surface → next_reading, next_surface).
     pub fn bigram_boost(&self, prev_surface: &str, next_reading: &str, next_surface: &str) -> i64 {
+        let now = now_epoch();
         self.bigrams
             .get(prev_surface)
             .and_then(|inner| inner.get(&(next_reading.to_string(), next_surface.to_string())))
-            .map_or(0, |entry| entry.boost())
+            .map_or(0, |entry| entry.boost(now))
     }
 
     /// Reorder dictionary candidates so learned entries appear first.
@@ -286,13 +287,15 @@ impl UserHistory {
 
     /// Evict lowest-score entries when exceeding capacity.
     fn evict(&mut self) {
+        let now = now_epoch();
+
         // Evict unigrams
         let count = self.unigram_count();
         if count > MAX_UNIGRAMS {
             let mut all: Vec<(String, String, f64)> = Vec::new();
             for (reading, inner) in &self.unigrams {
                 for (surface, entry) in inner {
-                    let score = entry.frequency as f64 * decay(entry.last_used);
+                    let score = entry.frequency as f64 * decay(entry.last_used, now);
                     all.push((reading.clone(), surface.clone(), score));
                 }
             }
@@ -314,7 +317,7 @@ impl UserHistory {
             let mut all: Vec<(String, (String, String), f64)> = Vec::new();
             for (prev, inner) in &self.bigrams {
                 for (key, entry) in inner {
-                    let score = entry.frequency as f64 * decay(entry.last_used);
+                    let score = entry.frequency as f64 * decay(entry.last_used, now);
                     all.push((prev.clone(), key.clone(), score));
                 }
             }
@@ -435,7 +438,7 @@ mod tests {
     fn test_decay_recent() {
         // Just recorded → decay ≈ 1.0
         let now = now_epoch();
-        let d = decay(now);
+        let d = decay(now, now);
         assert!(
             (d - 1.0).abs() < 0.01,
             "recent decay should be ~1.0, got {d}"
@@ -445,8 +448,9 @@ mod tests {
     #[test]
     fn test_decay_one_week_old() {
         // 1 week (168 hours) ago → decay = 1/(1+1) = 0.5
-        let one_week_ago = now_epoch() - 168 * 3600;
-        let d = decay(one_week_ago);
+        let now = now_epoch();
+        let one_week_ago = now - 168 * 3600;
+        let d = decay(one_week_ago, now);
         assert!(
             (d - 0.5).abs() < 0.01,
             "1-week decay should be ~0.5, got {d}"
@@ -456,19 +460,63 @@ mod tests {
     #[test]
     fn test_decay_very_old() {
         // Very old entry → decay approaches 0
-        let very_old = now_epoch().saturating_sub(365 * 24 * 3600);
-        let d = decay(very_old);
+        let now = now_epoch();
+        let very_old = now.saturating_sub(365 * 24 * 3600);
+        let d = decay(very_old, now);
         assert!(d < 0.02, "very old decay should be near 0, got {d}");
     }
 
     #[test]
     fn test_decay_future_timestamp() {
         // Future timestamp → saturating_sub yields 0 hours → decay = 1.0
-        let future = now_epoch() + 3600;
-        let d = decay(future);
+        let now = now_epoch();
+        let future = now + 3600;
+        let d = decay(future, now);
         assert!(
             (d - 1.0).abs() < 0.001,
             "future decay should be 1.0, got {d}"
+        );
+    }
+
+    #[test]
+    fn test_decay_known_timestamps() {
+        // Use fixed timestamps so the test is fully deterministic (no system clock).
+        let now: u64 = 1_700_000_000; // arbitrary epoch value
+
+        // 0 hours elapsed → decay = 1/(1+0/168) = 1.0
+        assert!(
+            (decay(now, now) - 1.0).abs() < 1e-9,
+            "zero elapsed: expected 1.0"
+        );
+
+        // Exactly 1 half-life (168 h) elapsed → decay = 1/(1+1) = 0.5
+        let one_hl = now - 168 * 3600;
+        assert!(
+            (decay(one_hl, now) - 0.5).abs() < 1e-9,
+            "one half-life: expected 0.5"
+        );
+
+        // Exactly 2 half-lives (336 h) elapsed → decay = 1/(1+2) ≈ 0.333…
+        let two_hl = now - 336 * 3600;
+        let expected = 1.0 / 3.0;
+        assert!(
+            (decay(two_hl, now) - expected).abs() < 1e-9,
+            "two half-lives: expected {expected}"
+        );
+
+        // 24 hours elapsed → decay = 1/(1+24/168) = 168/192 = 0.875
+        let day_ago = now - 24 * 3600;
+        let expected_day = 168.0 / 192.0;
+        assert!(
+            (decay(day_ago, now) - expected_day).abs() < 1e-9,
+            "24h elapsed: expected {expected_day}"
+        );
+
+        // Future timestamp (last_used > now) → saturating_sub gives 0 → decay = 1.0
+        let future = now + 9999;
+        assert!(
+            (decay(future, now) - 1.0).abs() < 1e-9,
+            "future timestamp: expected 1.0"
         );
     }
 

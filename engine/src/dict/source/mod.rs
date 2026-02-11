@@ -3,7 +3,7 @@ pub mod pos_map;
 mod sudachi;
 
 use std::collections::HashMap;
-use std::fmt;
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -21,30 +21,57 @@ pub trait DictSource {
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DictSourceError {
-    Io(io::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("parse error: {0}")]
     Parse(String),
+
+    #[error("HTTP error: {0}")]
     Http(String),
 }
 
-impl fmt::Display for DictSourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::Parse(msg) => write!(f, "parse error: {msg}"),
-            Self::Http(msg) => write!(f, "HTTP error: {msg}"),
-        }
+pub(super) use crate::unicode::is_hiragana_reading as is_hiragana;
+
+/// List files in `dir` whose names satisfy `predicate`, sorted by name.
+///
+/// Returns an error if no matching files are found, using `label` in the
+/// message (e.g. `"dictionary*.txt"` or `"*.csv"`).
+pub(super) fn list_dict_files(
+    dir: &Path,
+    label: &str,
+    predicate: impl Fn(&str) -> bool,
+) -> Result<Vec<fs::DirEntry>, DictSourceError> {
+    let mut files: Vec<fs::DirEntry> = fs::read_dir(dir)
+        .map_err(DictSourceError::Io)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            predicate(&name.to_string_lossy())
+        })
+        .collect();
+    files.sort_by_key(|e| e.file_name());
+
+    if files.is_empty() {
+        return Err(DictSourceError::Parse(format!(
+            "no {label} files found in {}",
+            dir.display()
+        )));
     }
+
+    Ok(files)
 }
 
-impl std::error::Error for DictSourceError {}
-
-/// Check if a string consists entirely of hiragana (U+3040..U+309F) and prolonged sound mark ー.
-pub(super) fn is_hiragana(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| ('\u{3040}'..='\u{309F}').contains(&c) || c == 'ー')
+/// Parse fields `[1]`, `[2]`, `[3]` as `(left_id: u16, right_id: u16, cost: i16)`.
+///
+/// Returns `None` if any field fails to parse — callers should skip the line.
+pub(super) fn parse_id_cost(fields: &[&str]) -> Option<(u16, u16, i16)> {
+    let left_id: u16 = fields[1].parse().ok()?;
+    let right_id: u16 = fields[2].parse().ok()?;
+    let cost: i16 = fields[3].parse().ok()?;
+    Some((left_id, right_id, cost))
 }
 
 /// Create a `DictSource` by name. Returns `None` for unknown source names.

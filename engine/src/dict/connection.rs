@@ -1,6 +1,7 @@
 use std::fs;
-use std::io;
 use std::path::Path;
+
+use super::DictError;
 
 const MAGIC: &[u8; 4] = b"LXCX";
 const VERSION: u8 = 1;
@@ -34,33 +35,33 @@ impl ConnectionMatrix {
     /// Supports two formats (auto-detected):
     /// - **Mozc**: Line 1 is `num_ids` (or `num_left num_right`), then one cost per line.
     /// - **MeCab**: Line 1 is `num_left num_right`, then `right_id left_id cost` per line.
-    pub fn from_text(text: &str) -> Result<Self, ConnectionError> {
+    pub fn from_text(text: &str) -> Result<Self, DictError> {
         let mut lines = text.lines().peekable();
 
         let header = lines
             .next()
-            .ok_or_else(|| ConnectionError::Parse("empty file".to_string()))?;
+            .ok_or_else(|| DictError::Parse("empty file".to_string()))?;
         let parts: Vec<&str> = header.split_whitespace().collect();
         let num_ids: u16 = match parts.len() {
             1 => parts[0]
                 .parse()
-                .map_err(|e| ConnectionError::Parse(format!("invalid num_ids: {e}")))?,
+                .map_err(|e| DictError::Parse(format!("invalid num_ids: {e}")))?,
             2 => {
                 let nl: u16 = parts[0]
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("invalid num_left: {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("invalid num_left: {e}")))?;
                 let nr: u16 = parts[1]
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("invalid num_right: {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("invalid num_right: {e}")))?;
                 if nl != nr {
-                    return Err(ConnectionError::Parse(format!(
+                    return Err(DictError::Parse(format!(
                         "num_left ({nl}) != num_right ({nr})"
                     )));
                 }
                 nl
             }
             _ => {
-                return Err(ConnectionError::Parse(format!(
+                return Err(DictError::Parse(format!(
                     "expected 1 or 2 values in header, got {}",
                     parts.len()
                 )));
@@ -88,23 +89,23 @@ impl ConnectionMatrix {
                 }
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 if fields.len() != 3 {
-                    return Err(ConnectionError::Parse(format!(
+                    return Err(DictError::Parse(format!(
                         "expected 3 fields, got {}",
                         fields.len()
                     )));
                 }
                 let right_id: usize = fields[0]
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("right_id: {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("right_id: {e}")))?;
                 let left_id: usize = fields[1]
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("left_id: {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("left_id: {e}")))?;
                 let cost: i16 = fields[2]
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("cost: {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("cost: {e}")))?;
                 let idx = left_id * num_ids as usize + right_id;
                 if idx >= expected {
-                    return Err(ConnectionError::Parse(format!(
+                    return Err(DictError::Parse(format!(
                         "index out of bounds: ({right_id}, {left_id})"
                     )));
                 }
@@ -121,11 +122,11 @@ impl ConnectionMatrix {
                 }
                 let cost: i16 = line
                     .parse()
-                    .map_err(|e| ConnectionError::Parse(format!("invalid cost '{line}': {e}")))?;
+                    .map_err(|e| DictError::Parse(format!("invalid cost '{line}': {e}")))?;
                 costs.push(cost);
             }
             if costs.len() != expected {
-                return Err(ConnectionError::Parse(format!(
+                return Err(DictError::Parse(format!(
                     "expected {expected} costs, got {}",
                     costs.len()
                 )));
@@ -137,21 +138,21 @@ impl ConnectionMatrix {
     }
 
     /// Load from compiled binary format.
-    pub fn open(path: &Path) -> Result<Self, ConnectionError> {
-        let data = fs::read(path).map_err(ConnectionError::Io)?;
+    pub fn open(path: &Path) -> Result<Self, DictError> {
+        let data = fs::read(path)?;
         Self::from_bytes(&data)
     }
 
     /// Parse from compiled binary format.
-    pub fn from_bytes(data: &[u8]) -> Result<Self, ConnectionError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
         if data.len() < HEADER_SIZE {
-            return Err(ConnectionError::InvalidHeader);
+            return Err(DictError::InvalidHeader);
         }
         if &data[..4] != MAGIC {
-            return Err(ConnectionError::InvalidMagic);
+            return Err(DictError::InvalidMagic);
         }
         if data[4] != VERSION {
-            return Err(ConnectionError::UnsupportedVersion(data[4]));
+            return Err(DictError::UnsupportedVersion(data[4]));
         }
 
         let num_ids = u16::from_le_bytes([data[5], data[6]]);
@@ -159,7 +160,7 @@ impl ConnectionMatrix {
         let costs_bytes = &data[HEADER_SIZE..];
 
         if costs_bytes.len() != expected_len * 2 {
-            return Err(ConnectionError::Parse(format!(
+            return Err(DictError::Parse(format!(
                 "expected {} bytes of cost data, got {}",
                 expected_len * 2,
                 costs_bytes.len()
@@ -187,33 +188,10 @@ impl ConnectionMatrix {
     }
 
     /// Save compiled binary to file.
-    pub fn save(&self, path: &Path) -> Result<(), ConnectionError> {
-        fs::write(path, self.to_bytes()).map_err(ConnectionError::Io)
+    pub fn save(&self, path: &Path) -> Result<(), DictError> {
+        Ok(fs::write(path, self.to_bytes())?)
     }
 }
-
-#[derive(Debug)]
-pub enum ConnectionError {
-    Io(io::Error),
-    InvalidHeader,
-    InvalidMagic,
-    UnsupportedVersion(u8),
-    Parse(String),
-}
-
-impl std::fmt::Display for ConnectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::InvalidHeader => write!(f, "invalid connection matrix header"),
-            Self::InvalidMagic => write!(f, "invalid magic bytes (expected LXCX)"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
-            Self::Parse(msg) => write!(f, "parse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for ConnectionError {}
 
 #[cfg(test)]
 mod tests {
@@ -274,13 +252,13 @@ mod tests {
     #[test]
     fn test_invalid_magic() {
         let result = ConnectionMatrix::from_bytes(b"XXXX\x01\x03\x00");
-        assert!(matches!(result, Err(ConnectionError::InvalidMagic)));
+        assert!(matches!(result, Err(DictError::InvalidMagic)));
     }
 
     #[test]
     fn test_header_too_short() {
         let result = ConnectionMatrix::from_bytes(b"LXC");
-        assert!(matches!(result, Err(ConnectionError::InvalidHeader)));
+        assert!(matches!(result, Err(DictError::InvalidHeader)));
     }
 
     #[test]
@@ -288,7 +266,7 @@ mod tests {
         let result = ConnectionMatrix::from_bytes(b"LXCX\x99\x01\x00");
         assert!(matches!(
             result,
-            Err(ConnectionError::UnsupportedVersion(0x99))
+            Err(DictError::UnsupportedVersion(0x99))
         ));
     }
 
@@ -306,7 +284,7 @@ mod tests {
     fn test_wrong_count() {
         let text = "2 2\n0\n10\n20\n"; // only 3 costs instead of 4
         let result = ConnectionMatrix::from_text(text);
-        assert!(matches!(result, Err(ConnectionError::Parse(_))));
+        assert!(matches!(result, Err(DictError::Parse(_))));
     }
 
     #[test]

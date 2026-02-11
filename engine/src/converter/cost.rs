@@ -1,4 +1,5 @@
 use crate::dict::connection::ConnectionMatrix;
+use crate::unicode::{is_hiragana, is_kanji, is_katakana, is_latin};
 
 use super::lattice::LatticeNode;
 
@@ -40,24 +41,6 @@ pub fn script_cost(surface: &str) -> i64 {
     } else {
         0
     }
-}
-
-fn is_kanji(c: char) -> bool {
-    ('\u{4E00}'..='\u{9FFF}').contains(&c)
-        || ('\u{3400}'..='\u{4DBF}').contains(&c)
-        || ('\u{20000}'..='\u{2A6DF}').contains(&c)
-}
-
-fn is_hiragana(c: char) -> bool {
-    ('\u{3040}'..='\u{309F}').contains(&c)
-}
-
-fn is_katakana(c: char) -> bool {
-    ('\u{30A0}'..='\u{30FF}').contains(&c)
-}
-
-fn is_latin(c: char) -> bool {
-    c.is_ascii_alphabetic()
 }
 
 /// Trait for scoring lattice paths during Viterbi search.
