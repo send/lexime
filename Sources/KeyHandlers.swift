@@ -89,8 +89,6 @@ extension LeximeInputController {
             let segments = convertKana(composedKana)
             if segments.isEmpty {
                 commitComposed(client: client)
-            } else if segments.count == 1 && segments[0].candidates.count <= 1 {
-                commitText(segments[0].surface, client: client)
             } else {
                 originalKana = composedKana
                 conversionSegments = segments
