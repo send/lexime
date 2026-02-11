@@ -155,7 +155,9 @@ impl UserHistory {
             .and_then(|inner| {
                 inner
                     .iter()
-                    .find(|((reading, surface), _)| reading == next_reading && surface == next_surface)
+                    .find(|((reading, surface), _)| {
+                        reading == next_reading && surface == next_surface
+                    })
                     .map(|(_, entry)| entry)
             })
             .map_or(0, |entry| entry.boost(now))
