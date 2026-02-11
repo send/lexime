@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
+use clap::{Parser, Subcommand};
+
 use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::source;
 use lex_engine::dict::source::SudachiSource;
@@ -20,150 +22,128 @@ macro_rules! die {
     };
 }
 
+#[derive(Parser)]
+#[command(name = "dictool", about = "Lexime dictionary build tool")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Download raw dictionary files
+    Fetch {
+        /// Dictionary source
+        #[arg(long, default_value = "mozc")]
+        source: String,
+        /// Fetch full dictionary (sudachi only)
+        #[arg(long)]
+        full: bool,
+        /// Output directory
+        output_dir: String,
+    },
+    /// Compile dictionary from raw files
+    Compile {
+        /// Dictionary source
+        #[arg(long, default_value = "mozc")]
+        source: String,
+        /// Remap POS IDs using Mozc id.def
+        #[arg(long)]
+        remap_ids: Option<String>,
+        /// Input directory
+        input_dir: String,
+        /// Output file
+        output_file: String,
+    },
+    /// Compile connection matrix
+    CompileConn {
+        /// Input text file
+        input_txt: String,
+        /// Output binary file
+        output_file: String,
+    },
+    /// Show dictionary info
+    Info {
+        /// Dictionary file
+        dict_file: String,
+    },
+    /// Merge two dictionaries
+    Merge {
+        /// Maximum cost to keep
+        #[arg(long)]
+        max_cost: Option<i16>,
+        /// Maximum reading length (in characters)
+        #[arg(long)]
+        max_reading_len: Option<usize>,
+        /// First dictionary
+        dict_a: String,
+        /// Second dictionary
+        dict_b: String,
+        /// Output file
+        output_file: String,
+    },
+    /// Show diff between two dictionaries
+    Diff {
+        /// First dictionary
+        dict_a: String,
+        /// Second dictionary
+        dict_b: String,
+    },
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        usage();
-    }
+    let cli = Cli::parse();
 
-    match args[1].as_str() {
-        "compile" => parse_compile(&args[2..]),
-        "compile-conn" => {
-            if args.len() != 4 {
-                eprintln!("Usage: dictool compile-conn <input-txt> <output-file>");
-                process::exit(1);
+    match cli.command {
+        Command::Fetch {
+            source: source_name,
+            full,
+            output_dir,
+        } => {
+            let output_dir = Path::new(&output_dir);
+            if full {
+                if source_name != "sudachi" {
+                    eprintln!("Error: --full is only supported for sudachi source");
+                    process::exit(1);
+                }
+                let src = SudachiSource;
+                die!(src.fetch_full(output_dir), "Error fetching dictionary: {}");
+            } else {
+                let dict_source = source::from_name(&source_name).unwrap_or_else(|| {
+                    eprintln!("Error: unknown source '{source_name}' (available: mozc, sudachi)");
+                    process::exit(1);
+                });
+                die!(
+                    dict_source.fetch(output_dir),
+                    "Error fetching dictionary: {}"
+                );
             }
-            compile_conn(&args[2], &args[3]);
         }
-        "diff" => {
-            if args.len() != 4 {
-                eprintln!("Usage: dictool diff <dict-a> <dict-b>");
-                process::exit(1);
-            }
-            diff(&args[2], &args[3]);
+        Command::Compile {
+            source: source_name,
+            remap_ids,
+            input_dir,
+            output_file,
+        } => compile(&source_name, remap_ids.as_deref(), &input_dir, &output_file),
+        Command::CompileConn {
+            input_txt,
+            output_file,
+        } => compile_conn(&input_txt, &output_file),
+        Command::Info { dict_file } => info(&dict_file),
+        Command::Merge {
+            max_cost,
+            max_reading_len,
+            dict_a,
+            dict_b,
+            output_file,
+        } => {
+            let opts = MergeOptions {
+                max_cost,
+                max_reading_len,
+            };
+            merge(&dict_a, &dict_b, &output_file, &opts);
         }
-        "merge" => parse_merge(&args[2..]),
-        "fetch" => parse_fetch(&args[2..]),
-        "info" => {
-            if args.len() != 3 {
-                eprintln!("Usage: dictool info <dict-file>");
-                process::exit(1);
-            }
-            info(&args[2]);
-        }
-        _ => usage(),
-    }
-}
-
-fn usage() -> ! {
-    eprintln!("Usage: dictool <command>");
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  fetch         [--source mozc|sudachi] [--full] <output-dir>");
-    eprintln!(
-        "  compile       [--source mozc|sudachi] [--remap-ids <id.def>] <input-dir> <output-file>"
-    );
-    eprintln!("  compile-conn  <input-txt> <output-file>");
-    eprintln!("  info          <dict-file>");
-    eprintln!(
-        "  merge         [--max-cost N] [--max-reading-len N] <dict-a> <dict-b> <output-file>"
-    );
-    eprintln!("  diff          <dict-a> <dict-b>");
-    process::exit(1);
-}
-
-/// Parsed flags from argument parsing.
-struct ParsedArgs<'a> {
-    source_name: &'a str,
-    full: bool,
-    remap_ids: Option<&'a str>,
-    positional: Vec<&'a str>,
-}
-
-/// Parse `[--source mozc|sudachi] [--full] [--remap-ids <path>] <positional>...`.
-fn parse_source_args(args: &[String]) -> ParsedArgs<'_> {
-    let mut source_name = "mozc";
-    let mut full = false;
-    let mut remap_ids = None;
-    let mut positional = Vec::new();
-
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--source" {
-            i += 1;
-            if i >= args.len() {
-                eprintln!("Error: --source requires a value (mozc, sudachi)");
-                process::exit(1);
-            }
-            source_name = args[i].as_str();
-        } else if args[i] == "--remap-ids" {
-            i += 1;
-            if i >= args.len() {
-                eprintln!("Error: --remap-ids requires a path to Mozc id.def");
-                process::exit(1);
-            }
-            remap_ids = Some(args[i].as_str());
-        } else if args[i] == "--full" {
-            full = true;
-        } else {
-            positional.push(args[i].as_str());
-        }
-        i += 1;
-    }
-
-    ParsedArgs {
-        source_name,
-        full,
-        remap_ids,
-        positional,
-    }
-}
-
-fn parse_compile(args: &[String]) {
-    let parsed = parse_source_args(args);
-    if parsed.positional.len() != 2 {
-        eprintln!("Usage: dictool compile [--source mozc|sudachi] [--remap-ids <id.def>] <input-dir> <output-file>");
-        process::exit(1);
-    }
-    compile(
-        parsed.source_name,
-        parsed.remap_ids,
-        parsed.positional[0],
-        parsed.positional[1],
-    );
-}
-
-fn parse_fetch(args: &[String]) {
-    let parsed = parse_source_args(args);
-    if parsed.positional.len() != 1 {
-        eprintln!("Usage: dictool fetch [--source mozc|sudachi] [--full] <output-dir>");
-        process::exit(1);
-    }
-
-    let output_dir = Path::new(parsed.positional[0]);
-
-    if parsed.full {
-        if parsed.source_name != "sudachi" {
-            eprintln!("Error: --full is only supported for sudachi source");
-            process::exit(1);
-        }
-        let source = SudachiSource;
-        die!(
-            source.fetch_full(output_dir),
-            "Error fetching dictionary: {}"
-        );
-    } else {
-        let dict_source = source::from_name(parsed.source_name).unwrap_or_else(|| {
-            eprintln!(
-                "Error: unknown source '{}' (available: mozc, sudachi)",
-                parsed.source_name
-            );
-            process::exit(1);
-        });
-        die!(
-            dict_source.fetch(output_dir),
-            "Error fetching dictionary: {}"
-        );
+        Command::Diff { dict_a, dict_b } => diff(&dict_a, &dict_b),
     }
 }
 
@@ -278,55 +258,6 @@ fn info(dict_file: &str) {
 struct MergeOptions {
     max_cost: Option<i16>,
     max_reading_len: Option<usize>,
-}
-
-fn parse_merge(args: &[String]) {
-    let mut max_cost: Option<i16> = None;
-    let mut max_reading_len: Option<usize> = None;
-    let mut positional = Vec::new();
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--max-cost" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --max-cost requires a value");
-                    process::exit(1);
-                }
-                max_cost = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("Error: invalid --max-cost value: {}", args[i]);
-                    process::exit(1);
-                }));
-            }
-            "--max-reading-len" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("Error: --max-reading-len requires a value");
-                    process::exit(1);
-                }
-                max_reading_len = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("Error: invalid --max-reading-len value: {}", args[i]);
-                    process::exit(1);
-                }));
-            }
-            _ => positional.push(args[i].as_str()),
-        }
-        i += 1;
-    }
-
-    if positional.len() != 3 {
-        eprintln!(
-            "Usage: dictool merge [--max-cost N] [--max-reading-len N] <dict-a> <dict-b> <output-file>"
-        );
-        process::exit(1);
-    }
-
-    let opts = MergeOptions {
-        max_cost,
-        max_reading_len,
-    };
-    merge(positional[0], positional[1], positional[2], &opts);
 }
 
 fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &MergeOptions) {
