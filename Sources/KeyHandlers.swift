@@ -189,9 +189,7 @@ extension LeximeInputController {
     func handleConverting(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
         case Key.enter: // Enter — confirm all segments
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             return true
 
         case Key.space: // Space — next candidate for active segment
@@ -243,9 +241,7 @@ extension LeximeInputController {
 
         // Alphabetic: confirm all segments and start new input
         if isRomajiInput(text) {
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             state = .composing
             appendAndConvert(text.lowercased(), client: client)
             return true
@@ -253,17 +249,13 @@ extension LeximeInputController {
 
         // Punctuation: confirm all segments, then insert
         if let candidates = Self.punctuationCandidates[text] {
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             composePunctuation(candidates, client: client)
             return true
         }
 
         // Other: confirm and pass through
-        hideCandidatePanel()
-        let fullText = conversionSegments.map { $0.surface }.joined()
-        commitText(fullText, client: client)
+        commitConversion(client: client)
         return false
     }
 

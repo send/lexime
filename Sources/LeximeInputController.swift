@@ -250,9 +250,46 @@ class LeximeInputController: IMKInputController {
             flush()
             commitComposed(client: client)
         case .converting:
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            hideCandidatePanel()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
+        }
+    }
+
+    func commitConversion(client: IMKTextInput) {
+        guard !conversionSegments.isEmpty else { return }
+        hideCandidatePanel()
+        recordToHistory()
+        let fullText = conversionSegments.map { $0.surface }.joined()
+        commitText(fullText, client: client)
+    }
+
+    private static let historySaveQueue = DispatchQueue(label: "dev.sendsh.lexime.history-save")
+
+    private func recordToHistory() {
+        guard let history = sharedHistory else { return }
+
+        // strdup ensures C string pointers remain valid independent of Swift string lifetimes
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        var segments: [LexSegment] = []
+        for seg in conversionSegments {
+            guard let r = strdup(seg.reading), let s = strdup(seg.surface) else { continue }
+            cStrings.append(r)
+            cStrings.append(s)
+            segments.append(LexSegment(reading: r, surface: s))
+        }
+        defer { cStrings.forEach { free($0) } }
+
+        segments.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            lex_history_record(history, base, UInt32(buffer.count))
+        }
+
+        // Save asynchronously to avoid blocking key handling
+        let path = userHistoryPath
+        Self.historySaveQueue.async {
+            let result = lex_history_save(history, path)
+            if result != 0 {
+                NSLog("Lexime: Failed to save user history to %@", path)
+            }
         }
     }
 
