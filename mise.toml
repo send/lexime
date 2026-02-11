@@ -80,9 +80,48 @@ cargo build --release --bin dictool
 target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime-mozc.conn
 """
 
+[tasks.fetch-dict-sudachi-full]
+description = "Download SudachiDict full dictionary data (core + notcore)"
+depends = ["fetch-dict-sudachi"]
+sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
+outputs = ["engine/data/sudachi-full-raw/.stamp"]
+run = "cd engine && cargo run --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
+
+[tasks.dict-sudachi-full]
+description = "Compile binary dictionary from SudachiDict full (remapped to Mozc POS IDs)"
+depends = ["fetch-dict-sudachi-full", "fetch-dict-mozc"]
+sources = ["engine/data/sudachi-full-raw/.stamp"]
+outputs = ["engine/data/lexime-sudachi-full.dict"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def \
+  data/sudachi-full-raw data/lexime-sudachi-full.dict
+"""
+
+[tasks.dict-merged]
+description = "Merge Mozc + SudachiDict full into filtered dictionary"
+depends = ["dict-mozc", "dict-sudachi-full"]
+outputs = ["engine/data/lexime-merged.dict"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool merge --max-cost 15000 --max-reading-len 15 data/lexime-mozc.dict data/lexime-sudachi-full.dict data/lexime-merged.dict
+"""
+
+[tasks.conn-merged]
+description = "Copy Mozc connection matrix for merged dictionary"
+depends = ["conn-mozc"]
+outputs = ["engine/data/lexime-merged.conn"]
+run = "cp engine/data/lexime-mozc.conn engine/data/lexime-merged.conn"
+
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
-depends = ["engine-lib", "dict-sudachi", "conn-sudachi"]
+depends = ["engine-lib", "dict-merged", "conn-merged"]
 sources = [
   "Sources/*.swift",
   "build/liblex_engine.a",

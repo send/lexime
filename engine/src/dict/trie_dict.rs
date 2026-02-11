@@ -69,13 +69,16 @@ impl TrieDictionary {
         fs::write(path, self.to_bytes()?).map_err(DictError::Io)
     }
 
+    /// Iterate over all `(reading, entries)` pairs in the trie.
+    pub fn iter(&self) -> impl Iterator<Item = (String, &Vec<DictEntry>)> {
+        self.data.trie.iter()
+    }
+
     /// Returns (reading_count, entry_count) by iterating the trie.
     pub fn stats(&self) -> (usize, usize) {
         let mut readings = 0usize;
         let mut entries = 0usize;
-        let iter: Box<dyn Iterator<Item = (String, &Vec<DictEntry>)>> =
-            Box::new(self.data.trie.iter());
-        for (_key, vals) in iter {
+        for (_key, vals) in self.iter() {
             readings += 1;
             entries += vals.len();
         }

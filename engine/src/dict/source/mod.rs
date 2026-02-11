@@ -1,4 +1,5 @@
 mod mozc;
+pub mod pos_map;
 mod sudachi;
 
 use std::collections::HashMap;
