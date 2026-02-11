@@ -11,7 +11,7 @@ use std::path::Path;
 use std::ptr;
 use std::sync::RwLock;
 
-use converter::{convert, convert_with_cost};
+use converter::{convert, convert_nbest, convert_nbest_with_cost, convert_with_cost};
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
 use user_history::cost::LearnedCostFunction;
@@ -341,6 +341,116 @@ pub extern "C" fn lex_conversion_free(result: LexConversionResult) {
     if !result._owned.is_null() {
         unsafe {
             drop(Box::from_raw(result._owned));
+        }
+    }
+}
+
+// --- N-best Conversion FFI ---
+
+#[repr(C)]
+pub struct LexConversionResultList {
+    pub results: *const LexConversionResult,
+    pub len: u32,
+    _owned: *mut ConversionResultListOwned,
+}
+
+struct ConversionResultListOwned {
+    results: Vec<LexConversionResult>,
+}
+
+impl LexConversionResultList {
+    fn empty() -> Self {
+        Self {
+            results: ptr::null(),
+            len: 0,
+            _owned: ptr::null_mut(),
+        }
+    }
+}
+
+fn pack_conversion_result_list(
+    paths: Vec<Vec<converter::ConvertedSegment>>,
+) -> LexConversionResultList {
+    if paths.is_empty() {
+        return LexConversionResultList::empty();
+    }
+
+    let results: Vec<LexConversionResult> = paths.into_iter().map(pack_conversion_result).collect();
+
+    let owned = Box::new(ConversionResultListOwned { results });
+    let owned_ptr = Box::into_raw(owned);
+
+    // SAFETY: `owned_ptr` was just created from Box::into_raw. The `results` Vec
+    // inside is heap-allocated and stable. Each LexConversionResult inside owns
+    // its own strings via its `_owned` pointer.
+    let results_ptr = unsafe { (*owned_ptr).results.as_ptr() };
+    let len = unsafe { (*owned_ptr).results.len() as u32 };
+
+    LexConversionResultList {
+        results: results_ptr,
+        len,
+        _owned: owned_ptr,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_convert_nbest(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    kana: *const c_char,
+    n: u32,
+) -> LexConversionResultList {
+    if dict.is_null() {
+        return LexConversionResultList::empty();
+    }
+    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
+        return LexConversionResultList::empty();
+    };
+    let dict = unsafe { &*dict };
+    let conn = unsafe { conn_ref(conn) };
+
+    pack_conversion_result_list(convert_nbest(dict, conn, kana_str, n as usize))
+}
+
+#[no_mangle]
+pub extern "C" fn lex_convert_nbest_with_history(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    history: *const LexUserHistoryWrapper,
+    kana: *const c_char,
+    n: u32,
+) -> LexConversionResultList {
+    if dict.is_null() || history.is_null() {
+        return LexConversionResultList::empty();
+    }
+    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
+        return LexConversionResultList::empty();
+    };
+    let dict = unsafe { &*dict };
+    let conn = unsafe { conn_ref(conn) };
+    let wrapper = unsafe { &*history };
+    let Ok(h) = wrapper.inner.read() else {
+        return LexConversionResultList::empty();
+    };
+
+    let cost_fn = LearnedCostFunction::new(conn, &h);
+    pack_conversion_result_list(convert_nbest_with_cost(
+        dict, &cost_fn, kana_str, n as usize,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn lex_conversion_result_list_free(list: LexConversionResultList) {
+    if !list._owned.is_null() {
+        unsafe {
+            // First free each individual ConversionResult's owned data
+            let owned = Box::from_raw(list._owned);
+            for result in &owned.results {
+                if !result._owned.is_null() {
+                    drop(Box::from_raw(result._owned));
+                }
+            }
+            // The owned box (containing the Vec<LexConversionResult>) is dropped here
         }
     }
 }
@@ -795,5 +905,49 @@ mod tests {
 
         lex_history_close(history);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_ffi_convert_nbest_roundtrip() {
+        let dict = make_convert_test_dict();
+        let kana = CString::new("きょうはいい").unwrap();
+
+        let list = lex_convert_nbest(dict, ptr::null(), kana.as_ptr(), 5);
+        assert!(list.len >= 1, "should return at least 1 result");
+
+        unsafe {
+            let results = std::slice::from_raw_parts(list.results, list.len as usize);
+            // First result should match 1-best
+            assert!(results[0].len >= 3);
+            let segments = std::slice::from_raw_parts(results[0].segments, results[0].len as usize);
+            let s0 = CStr::from_ptr(segments[0].surface).to_str().unwrap();
+            assert_eq!(s0, "今日");
+        }
+
+        lex_conversion_result_list_free(list);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_convert_nbest_null_safety() {
+        let kana = CString::new("きょう").unwrap();
+
+        // null dict
+        let list = lex_convert_nbest(ptr::null(), ptr::null(), kana.as_ptr(), 5);
+        assert_eq!(list.len, 0);
+        lex_conversion_result_list_free(list);
+
+        // null kana
+        let dict = make_convert_test_dict();
+        let list = lex_convert_nbest(dict, ptr::null(), ptr::null(), 5);
+        assert_eq!(list.len, 0);
+        lex_conversion_result_list_free(list);
+
+        // n = 0
+        let list = lex_convert_nbest(dict, ptr::null(), kana.as_ptr(), 0);
+        assert_eq!(list.len, 0);
+        lex_conversion_result_list_free(list);
+
+        lex_dict_close(dict);
     }
 }

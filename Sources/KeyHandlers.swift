@@ -115,7 +115,7 @@ extension LeximeInputController {
                 originalKana = composedKana
                 viterbiSegments = segments
 
-                // Build single-segment view: predictions first, then Viterbi, then lookups
+                // Build single-segment view: predictions, N-best Viterbi, lookups
                 let viterbiSurface = segments.map { $0.surface }.joined()
                 var candidates: [String] = []
                 var seen = Set<String>()
@@ -123,7 +123,12 @@ extension LeximeInputController {
                 for pred in predictionCandidates where pred != composedKana && seen.insert(pred).inserted {
                     candidates.append(pred)
                 }
-                // Viterbi result
+                // N-best Viterbi surfaces (includes 1-best as first element)
+                let nbestSurfaces = convertKanaNbest(composedKana, n: 5)
+                for surface in nbestSurfaces where seen.insert(surface).inserted {
+                    candidates.append(surface)
+                }
+                // Viterbi 1-best as fallback (in case N-best was empty)
                 if seen.insert(viterbiSurface).inserted {
                     candidates.append(viterbiSurface)
                 }
