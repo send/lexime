@@ -98,5 +98,54 @@ func drainPendingRomaji(
         }
     }
 
+    // Collapse latin consonant + kana vowel sequences (e.g., "kあ" → "か")
+    if composedKana.contains(where: { $0.isASCII && $0.isLetter && $0.isLowercase }) {
+        composedKana = collapseLatinKana(composedKana, trie: trie)
+    }
+
     return RomajiConvertResult(composedKana: composedKana, pendingRomaji: pendingRomaji)
+}
+
+private let kanaVowelToRomaji: [Character: Character] = [
+    "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
+]
+
+func collapseLatinKana(_ input: String, trie: RomajiTrie) -> String {
+    let chars = Array(input)
+    var result = ""
+    var i = 0
+
+    while i < chars.count {
+        let ch = chars[i]
+
+        if ch.isASCII && ch.isLetter && ch.isLowercase {
+            // Collect consecutive latin lowercase chars
+            var j = i + 1
+            while j < chars.count && chars[j].isASCII && chars[j].isLetter && chars[j].isLowercase {
+                j += 1
+            }
+
+            // Check if followed by a kana vowel
+            if j < chars.count, let vowel = kanaVowelToRomaji[chars[j]] {
+                let latin = String(chars[i..<j])
+                let candidate = latin + String(vowel)
+                switch trie.lookup(candidate) {
+                case .exact(let kana), .exactAndPrefix(let kana):
+                    result += kana
+                    i = j + 1
+                    continue
+                default:
+                    break
+                }
+            }
+
+            result.append(ch)
+            i += 1
+        } else {
+            result.append(ch)
+            i += 1
+        }
+    }
+
+    return result
 }
