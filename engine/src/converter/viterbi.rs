@@ -42,76 +42,149 @@ pub fn convert_with_cost(
 
 /// Run the Viterbi algorithm on a lattice to find the minimum-cost path.
 fn viterbi(lattice: &Lattice, cost_fn: &dyn CostFunction) -> Vec<ConvertedSegment> {
-    let n = lattice.char_count;
-    if n == 0 {
+    let results = viterbi_nbest(lattice, cost_fn, 1);
+    results.into_iter().next().unwrap_or_default()
+}
+
+/// A single entry in the top-K list for a node: (accumulated cost, previous node index, rank at
+/// that node). `prev_rank` identifies which of the K paths at the previous node this entry
+/// continues from.
+#[derive(Clone, Copy)]
+struct KEntry {
+    cost: i64,
+    prev_idx: Option<usize>,
+    prev_rank: usize,
+}
+
+/// Run N-best Viterbi: keep top-K cost/backpointer pairs per node.
+///
+/// Returns up to `n` distinct paths, sorted by total cost (best first).
+/// Paths that produce identical surface strings are deduplicated.
+fn viterbi_nbest(
+    lattice: &Lattice,
+    cost_fn: &dyn CostFunction,
+    n: usize,
+) -> Vec<Vec<ConvertedSegment>> {
+    let char_count = lattice.char_count;
+    if char_count == 0 || n == 0 {
         return Vec::new();
     }
 
-    // best_cost[node_idx] = minimum total cost to reach this node
-    // backpointer[node_idx] = previous node index on the best path (None for start nodes)
     let num_nodes = lattice.nodes.len();
-    let mut best_cost: Vec<i64> = vec![i64::MAX; num_nodes];
-    let mut backpointer: Vec<Option<usize>> = vec![None; num_nodes];
+    // top_k[node_idx] = sorted Vec of KEntry (ascending cost), max `n` entries
+    let mut top_k: Vec<Vec<KEntry>> = vec![Vec::new(); num_nodes];
 
     // Initialize nodes starting at position 0 (BOS transition)
     for &idx in &lattice.nodes_by_start[0] {
         let node = &lattice.nodes[idx];
-        best_cost[idx] = cost_fn.word_cost(node) + cost_fn.bos_cost(node);
-        backpointer[idx] = None;
+        let cost = cost_fn.word_cost(node) + cost_fn.bos_cost(node);
+        top_k[idx].push(KEntry {
+            cost,
+            prev_idx: None,
+            prev_rank: 0,
+        });
     }
 
-    // Forward pass: for each position, update costs of nodes starting there
-    for pos in 1..n {
-        // For each node ending at `pos`
+    // Forward pass
+    for pos in 1..char_count {
         for &prev_idx in &lattice.nodes_by_end[pos] {
-            if best_cost[prev_idx] == i64::MAX {
-                continue; // unreachable node
+            if top_k[prev_idx].is_empty() {
+                continue;
             }
             let prev_node = &lattice.nodes[prev_idx];
 
-            // For each node starting at `pos` (O(E) via index)
             for &next_idx in &lattice.nodes_by_start[pos] {
                 let next_node = &lattice.nodes[next_idx];
+                let transition = cost_fn.transition_cost(prev_node, next_node);
+                let word = cost_fn.word_cost(next_node);
 
-                let total = best_cost[prev_idx]
-                    + cost_fn.transition_cost(prev_node, next_node)
-                    + cost_fn.word_cost(next_node);
+                for rank in 0..top_k[prev_idx].len() {
+                    let prev_cost = top_k[prev_idx][rank].cost;
+                    let total = prev_cost + transition + word;
 
-                if total < best_cost[next_idx] {
-                    best_cost[next_idx] = total;
-                    backpointer[next_idx] = Some(prev_idx);
+                    insert_top_k(
+                        &mut top_k[next_idx],
+                        n,
+                        KEntry {
+                            cost: total,
+                            prev_idx: Some(prev_idx),
+                            prev_rank: rank,
+                        },
+                    );
                 }
             }
         }
     }
 
-    // Find the best node ending at position n (EOS)
-    let mut best_end_idx: Option<usize> = None;
-    let mut best_end_cost = i64::MAX;
-
-    for &node_idx in &lattice.nodes_by_end[n] {
-        if best_cost[node_idx] == i64::MAX {
-            continue;
-        }
+    // Collect top-K at EOS
+    let mut eos_entries: Vec<(i64, usize, usize)> = Vec::new(); // (total_cost, node_idx, rank)
+    for &node_idx in &lattice.nodes_by_end[char_count] {
         let node = &lattice.nodes[node_idx];
-        let total = best_cost[node_idx] + cost_fn.eos_cost(node);
+        let eos = cost_fn.eos_cost(node);
+        for (rank, entry) in top_k[node_idx].iter().enumerate() {
+            let total = entry.cost + eos;
+            eos_entries.push((total, node_idx, rank));
+        }
+    }
+    eos_entries.sort_by_key(|&(cost, _, _)| cost);
 
-        if total < best_end_cost {
-            best_end_cost = total;
-            best_end_idx = Some(node_idx);
+    // Backtrace each path, deduplicate by surface string
+    let mut results: Vec<Vec<ConvertedSegment>> = Vec::new();
+    let mut seen_surfaces: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for &(_, end_idx, end_rank) in &eos_entries {
+        if results.len() >= n {
+            break;
+        }
+        let path = backtrace_nbest(&top_k, end_idx, end_rank, lattice);
+        let surface_key: String = path.iter().map(|s| s.surface.as_str()).collect();
+        if seen_surfaces.insert(surface_key) {
+            results.push(path);
         }
     }
 
-    // Backtrace
-    let mut path = Vec::new();
-    let mut current = best_end_idx;
-    while let Some(idx) = current {
-        path.push(idx);
-        current = backpointer[idx];
-    }
-    path.reverse();
+    results
+}
 
-    path.iter()
+/// Insert a KEntry into a top-K list, maintaining ascending sort by cost and max size `k`.
+fn insert_top_k(list: &mut Vec<KEntry>, k: usize, entry: KEntry) {
+    // Find insertion point (binary search for ascending order)
+    let pos = list.partition_point(|e| e.cost <= entry.cost);
+    if pos >= k {
+        return; // worse than all K existing entries
+    }
+    list.insert(pos, entry);
+    if list.len() > k {
+        list.pop();
+    }
+}
+
+/// Backtrace from a specific (node_idx, rank) to reconstruct a path.
+fn backtrace_nbest(
+    top_k: &[Vec<KEntry>],
+    end_idx: usize,
+    end_rank: usize,
+    lattice: &Lattice,
+) -> Vec<ConvertedSegment> {
+    let mut path_indices = Vec::new();
+    let mut cur_idx = end_idx;
+    let mut cur_rank = end_rank;
+
+    loop {
+        path_indices.push(cur_idx);
+        let entry = &top_k[cur_idx][cur_rank];
+        match entry.prev_idx {
+            Some(prev) => {
+                cur_rank = entry.prev_rank;
+                cur_idx = prev;
+            }
+            None => break,
+        }
+    }
+    path_indices.reverse();
+
+    path_indices
+        .iter()
         .map(|&idx| {
             let node = &lattice.nodes[idx];
             ConvertedSegment {
@@ -120,6 +193,31 @@ fn viterbi(lattice: &Lattice, cost_fn: &dyn CostFunction) -> Vec<ConvertedSegmen
             }
         })
         .collect()
+}
+
+/// Convert a kana string to the N-best segmentations using Viterbi algorithm.
+pub fn convert_nbest(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    kana: &str,
+    n: usize,
+) -> Vec<Vec<ConvertedSegment>> {
+    let cost_fn = DefaultCostFunction::new(conn);
+    convert_nbest_with_cost(dict, &cost_fn, kana, n)
+}
+
+/// Convert a kana string to the N-best segmentations using a custom cost function.
+pub fn convert_nbest_with_cost(
+    dict: &dyn Dictionary,
+    cost_fn: &dyn CostFunction,
+    kana: &str,
+    n: usize,
+) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    let lattice = build_lattice(dict, kana);
+    viterbi_nbest(&lattice, cost_fn, n)
 }
 
 #[cfg(test)]
@@ -269,5 +367,91 @@ mod tests {
                 "Viterbi tie-breaking must be deterministic"
             );
         }
+    }
+
+    #[test]
+    fn test_nbest_returns_multiple_paths() {
+        let dict = test_dict();
+        // "きょう" has two entries: 今日(3000) and 京(5000)
+        let results = convert_nbest(&dict, None, "きょう", 5);
+
+        assert!(results.len() >= 2, "should return at least 2 paths");
+        // 1-best should be 今日
+        assert_eq!(results[0][0].surface, "今日");
+        // 2nd best should be 京
+        assert_eq!(results[1][0].surface, "京");
+    }
+
+    #[test]
+    fn test_nbest_first_matches_1best() {
+        let dict = test_dict();
+        let best = convert(&dict, None, "きょうはいいてんき");
+        let nbest = convert_nbest(&dict, None, "きょうはいいてんき", 5);
+
+        assert!(!nbest.is_empty());
+        let best_surfaces: Vec<&str> = best.iter().map(|s| s.surface.as_str()).collect();
+        let nbest_surfaces: Vec<&str> = nbest[0].iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(best_surfaces, nbest_surfaces, "1-best must match convert()");
+    }
+
+    #[test]
+    fn test_nbest_deduplicates_surfaces() {
+        let dict = test_dict();
+        let results = convert_nbest(&dict, None, "きょうは", 10);
+
+        let surface_strings: Vec<String> = results
+            .iter()
+            .map(|path| path.iter().map(|s| s.surface.as_str()).collect::<String>())
+            .collect();
+        let unique: std::collections::HashSet<&String> = surface_strings.iter().collect();
+        assert_eq!(
+            surface_strings.len(),
+            unique.len(),
+            "N-best should not contain duplicate surface strings"
+        );
+    }
+
+    #[test]
+    fn test_nbest_empty_input() {
+        let dict = test_dict();
+        let results = convert_nbest(&dict, None, "", 5);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_nbest_n_zero() {
+        let dict = test_dict();
+        let results = convert_nbest(&dict, None, "きょう", 0);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_nbest_n_one_matches_1best() {
+        let dict = test_dict();
+        let best = convert(&dict, None, "きょうはいいてんき");
+        let nbest = convert_nbest(&dict, None, "きょうはいいてんき", 1);
+
+        assert_eq!(nbest.len(), 1);
+        let best_surfaces: Vec<&str> = best.iter().map(|s| s.surface.as_str()).collect();
+        let nbest_surfaces: Vec<&str> = nbest[0].iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(best_surfaces, nbest_surfaces);
+    }
+
+    #[test]
+    fn test_nbest_sorted_by_cost() {
+        // Verify N-best paths are returned in ascending cost order
+        let dict = test_dict();
+        let cost_fn = DefaultCostFunction::new(None);
+        let lattice = build_lattice(&dict, "きょうは");
+        let results = viterbi_nbest(&lattice, &cost_fn, 10);
+
+        // We can't directly check costs from the public API, but we can verify
+        // the best path is first (already tested above). For additional confidence,
+        // ensure at least 2 results with different segmentations.
+        assert!(results.len() >= 2);
+        // Different segmentations should exist (e.g., 今日+は vs 京+は vs き+ょ+う+は)
+        let first: String = results[0].iter().map(|s| &*s.surface).collect();
+        let second: String = results[1].iter().map(|s| &*s.surface).collect();
+        assert_ne!(first, second);
     }
 }

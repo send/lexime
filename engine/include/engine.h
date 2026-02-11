@@ -77,4 +77,29 @@ LexCandidateList lex_dict_lookup_with_history(
     const char *reading
 );
 
+/* N-best Conversion API */
+
+typedef struct {
+    const LexConversionResult *results;
+    uint32_t len;
+    void *_owned;
+} LexConversionResultList;
+
+LexConversionResultList lex_convert_nbest(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const char *kana,
+    uint32_t n
+);
+
+LexConversionResultList lex_convert_nbest_with_history(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history,
+    const char *kana,
+    uint32_t n
+);
+
+void lex_conversion_result_list_free(LexConversionResultList list);
+
 #endif

@@ -75,4 +75,35 @@ extension LeximeInputController {
         }
         return converted
     }
+
+    /// Return N-best whole-sentence surfaces from Viterbi.
+    /// Each element is the joined surface string of one Viterbi path.
+    func convertKanaNbest(_ kana: String, n: Int = 5) -> [String] {
+        guard let dict = sharedDict, !kana.isEmpty else { return [] }
+
+        let list: LexConversionResultList
+        if let history = sharedHistory {
+            list = lex_convert_nbest_with_history(dict, sharedConn, history, kana, UInt32(n))
+        } else {
+            list = lex_convert_nbest(dict, sharedConn, kana, UInt32(n))
+        }
+        defer { lex_conversion_result_list_free(list) }
+
+        guard list.len > 0, let results = list.results else { return [] }
+
+        var surfaces: [String] = []
+        for i in 0..<Int(list.len) {
+            let result = results[i]
+            guard result.len > 0, let segments = result.segments else { continue }
+            var joined = ""
+            for j in 0..<Int(result.len) {
+                guard let surfacePtr = segments[j].surface else { continue }
+                joined += String(cString: surfacePtr)
+            }
+            if !joined.isEmpty {
+                surfaces.append(joined)
+            }
+        }
+        return surfaces
+    }
 }
