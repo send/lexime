@@ -21,7 +21,7 @@ pub enum DictError {
     #[error("invalid header (too short)")]
     InvalidHeader,
 
-    #[error("invalid magic bytes")]
+    #[error("invalid magic bytes (expected LXDX or LXCX)")]
     InvalidMagic,
 
     #[error("unsupported version: {0}")]
