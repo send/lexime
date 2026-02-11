@@ -68,9 +68,9 @@ pub(super) fn list_dict_files(
 ///
 /// Returns `None` if any field fails to parse — callers should skip the line.
 pub(super) fn parse_id_cost(fields: &[&str]) -> Option<(u16, u16, i16)> {
-    let left_id: u16 = fields[1].parse().ok()?;
-    let right_id: u16 = fields[2].parse().ok()?;
-    let cost: i16 = fields[3].parse().ok()?;
+    let left_id: u16 = fields.get(1)?.parse().ok()?;
+    let right_id: u16 = fields.get(2)?.parse().ok()?;
+    let cost: i16 = fields.get(3)?.parse().ok()?;
     Some((left_id, right_id, cost))
 }
 
