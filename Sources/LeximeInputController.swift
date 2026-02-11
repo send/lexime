@@ -43,7 +43,7 @@ class LeximeInputController: IMKInputController {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = String(cString: lex_engine_version())
         NSLog("Lexime: InputController initialized (engine: %@)", version)
-        if sharedDict == nil && !Self.hasShownDictWarning {
+        if AppContext.shared.dict == nil && !Self.hasShownDictWarning {
             Self.hasShownDictWarning = true
             NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
         }
@@ -88,11 +88,11 @@ class LeximeInputController: IMKInputController {
         let pageSelectedIndex = selectedIndex - pageStart
 
         let rect = cursorRect(client: client)
-        sharedCandidatePanel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
+        AppContext.shared.candidatePanel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
     }
 
     func hideCandidatePanel() {
-        sharedCandidatePanel.hide()
+        AppContext.shared.candidatePanel.hide()
     }
 
     // MARK: - Key Handling
@@ -273,7 +273,7 @@ class LeximeInputController: IMKInputController {
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
     private func recordToHistory() {
-        guard let history = sharedHistory else { return }
+        guard let history = AppContext.shared.history else { return }
 
         // strdup ensures C string pointers remain valid independent of Swift string lifetimes
         var cStrings: [UnsafeMutablePointer<CChar>] = []
@@ -292,7 +292,7 @@ class LeximeInputController: IMKInputController {
         }
 
         // Save asynchronously to avoid blocking key handling
-        let path = userHistoryPath
+        let path = AppContext.shared.historyPath
         Self.historySaveQueue.async {
             let result = lex_history_save(history, path)
             if result != 0 {
