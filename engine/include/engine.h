@@ -55,4 +55,26 @@ LexConversionResult lex_convert(
 );
 void lex_conversion_free(LexConversionResult result);
 
+/* User History API */
+
+typedef struct LexUserHistory LexUserHistory;
+
+LexUserHistory *lex_history_open(const char *path);
+void lex_history_close(LexUserHistory *history);
+void lex_history_record(const LexUserHistory *history, const LexSegment *segments, uint32_t len);
+int32_t lex_history_save(const LexUserHistory *history, const char *path);
+
+LexConversionResult lex_convert_with_history(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history,
+    const char *kana
+);
+
+LexCandidateList lex_dict_lookup_with_history(
+    const LexDict *dict,
+    const LexUserHistory *history,
+    const char *reading
+);
+
 #endif

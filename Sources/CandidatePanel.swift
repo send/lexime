@@ -96,6 +96,9 @@ class CandidatePanel: NSPanel {
         content.addSubview(listView)
     }
 
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
     func show(candidates: [String], selectedIndex: Int, cursorRect: NSRect) {
         guard !candidates.isEmpty else {
             hide()

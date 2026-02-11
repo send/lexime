@@ -15,6 +15,7 @@ class LeximeInputController: IMKInputController {
     var originalKana: String = ""
     var conversionSegments: [ConversionSegment] = []
     var activeSegmentIndex: Int = 0
+    var viterbiSegments: [ConversionSegment] = []  // stored for segment boundary expansion
 
     var isComposing: Bool { state != .idle }
 
@@ -43,6 +44,11 @@ class LeximeInputController: IMKInputController {
             Self.hasShownDictWarning = true
             NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
         }
+    }
+
+    override func recognizedEvents(_ sender: Any!) -> Int {
+        let mask = NSEvent.EventTypeMask.keyDown.union(.flagsChanged)
+        return Int(mask.rawValue)
     }
 
     // MARK: - Candidate Panel
@@ -94,7 +100,9 @@ class LeximeInputController: IMKInputController {
         }
 
         guard event.type == .keyDown else {
-            return false
+            // Consume modifier-only events (e.g. Shift press) while composing
+            // to prevent IMKit's default handling from interfering.
+            return isComposing
         }
 
         // Eisu key (102) → switch to ABC input source
@@ -133,8 +141,6 @@ class LeximeInputController: IMKInputController {
             return false
         }
 
-        NSLog("Lexime: handle keyCode=%d text=%@ state=%d", keyCode, text, stateOrdinal)
-
         switch state {
         case .idle:
             return handleIdle(keyCode: keyCode, text: text, client: client)
@@ -153,14 +159,6 @@ class LeximeInputController: IMKInputController {
                 as? [TISInputSource],
               let source = list.first else { return }
         TISSelectInputSource(source)
-    }
-
-    private var stateOrdinal: Int {
-        switch state {
-        case .idle: return 0
-        case .composing: return 1
-        case .converting: return 2
-        }
     }
 
     // MARK: - Punctuation Composing
@@ -250,10 +248,68 @@ class LeximeInputController: IMKInputController {
             flush()
             commitComposed(client: client)
         case .converting:
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            hideCandidatePanel()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
         }
+    }
+
+    func commitConversion(client: IMKTextInput) {
+        guard !conversionSegments.isEmpty else { return }
+        hideCandidatePanel()
+        recordToHistory()
+        let fullText = conversionSegments.map { $0.surface }.joined()
+        commitText(fullText, client: client)
+    }
+
+    private static let historySaveQueue = DispatchQueue(label: "dev.sendsh.lexime.history-save")
+
+    private func recordToHistory() {
+        guard let history = sharedHistory else { return }
+
+        // strdup ensures C string pointers remain valid independent of Swift string lifetimes
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        var segments: [LexSegment] = []
+        for seg in conversionSegments {
+            guard let r = strdup(seg.reading), let s = strdup(seg.surface) else { continue }
+            cStrings.append(r)
+            cStrings.append(s)
+            segments.append(LexSegment(reading: r, surface: s))
+        }
+        defer { cStrings.forEach { free($0) } }
+
+        segments.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            lex_history_record(history, base, UInt32(buffer.count))
+        }
+
+        // Save asynchronously to avoid blocking key handling
+        let path = userHistoryPath
+        Self.historySaveQueue.async {
+            let result = lex_history_save(history, path)
+            if result != 0 {
+                NSLog("Lexime: Failed to save user history to %@", path)
+            }
+        }
+    }
+
+    override func composedString(_ sender: Any!) -> Any! {
+        return composedKana + pendingRomaji
+    }
+
+    override func originalString(_ sender: Any!) -> NSAttributedString! {
+        return NSAttributedString(string: composedKana + pendingRomaji)
+    }
+
+    override func commitComposition(_ sender: Any!) {
+        if let client = sender as? IMKTextInput {
+            commitCurrentState(client: client)
+        }
+    }
+
+    // Block IMKit's built-in mode switching (e.g. Shift→katakana)
+    // which would interfere with our own composing state management.
+    override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
+        if isComposing { return }
+        super.setValue(value, forTag: tag, client: sender)
     }
 
     func resetState() {
@@ -262,6 +318,7 @@ class LeximeInputController: IMKInputController {
         originalKana = ""
         conversionSegments = []
         activeSegmentIndex = 0
+        viterbiSegments = []
         predictionCandidates = []
         selectedPredictionIndex = 0
         isPunctuationComposing = false

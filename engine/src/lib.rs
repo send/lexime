@@ -4,14 +4,18 @@
 
 pub mod converter;
 pub mod dict;
+pub mod user_history;
 
 use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::ptr;
+use std::sync::RwLock;
 
-use converter::convert;
+use converter::{convert, convert_with_cost};
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
+use user_history::cost::LearnedCostFunction;
+use user_history::UserHistory;
 
 /// Safely convert a C string pointer to a `&str`.
 /// Returns `None` if the pointer is null or contains invalid UTF-8.
@@ -20,6 +24,15 @@ unsafe fn cptr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
         return None;
     }
     CStr::from_ptr(ptr).to_str().ok()
+}
+
+/// Convert a nullable ConnectionMatrix pointer to an `Option<&ConnectionMatrix>`.
+unsafe fn conn_ref<'a>(conn: *const ConnectionMatrix) -> Option<&'a ConnectionMatrix> {
+    if conn.is_null() {
+        None
+    } else {
+        Some(&*conn)
+    }
 }
 
 #[no_mangle]
@@ -262,27 +275,8 @@ impl LexConversionResult {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn lex_convert(
-    dict: *const TrieDictionary,
-    conn: *const ConnectionMatrix,
-    kana: *const c_char,
-) -> LexConversionResult {
-    if dict.is_null() {
-        return LexConversionResult::empty();
-    }
-    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
-        return LexConversionResult::empty();
-    };
-    let dict = unsafe { &*dict };
-
-    let conn_ref = if conn.is_null() {
-        None
-    } else {
-        Some(unsafe { &*conn })
-    };
-
-    let result = convert(dict, conn_ref, kana_str);
+/// Pack a list of ConvertedSegments into a C-compatible LexConversionResult.
+fn pack_conversion_result(result: Vec<converter::ConvertedSegment>) -> LexConversionResult {
     if result.is_empty() {
         return LexConversionResult::empty();
     }
@@ -325,11 +319,156 @@ pub extern "C" fn lex_convert(
 }
 
 #[no_mangle]
+pub extern "C" fn lex_convert(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    kana: *const c_char,
+) -> LexConversionResult {
+    if dict.is_null() {
+        return LexConversionResult::empty();
+    }
+    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
+        return LexConversionResult::empty();
+    };
+    let dict = unsafe { &*dict };
+    let conn = unsafe { conn_ref(conn) };
+
+    pack_conversion_result(convert(dict, conn, kana_str))
+}
+
+#[no_mangle]
 pub extern "C" fn lex_conversion_free(result: LexConversionResult) {
     if !result._owned.is_null() {
         unsafe {
             drop(Box::from_raw(result._owned));
         }
+    }
+}
+
+// --- User History FFI ---
+
+pub struct LexUserHistoryWrapper {
+    inner: RwLock<UserHistory>,
+}
+
+#[no_mangle]
+pub extern "C" fn lex_history_open(path: *const c_char) -> *mut LexUserHistoryWrapper {
+    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
+        return ptr::null_mut();
+    };
+
+    match UserHistory::open(Path::new(path_str)) {
+        Ok(history) => Box::into_raw(Box::new(LexUserHistoryWrapper {
+            inner: RwLock::new(history),
+        })),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_history_close(history: *mut LexUserHistoryWrapper) {
+    if !history.is_null() {
+        unsafe {
+            drop(Box::from_raw(history));
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_history_record(
+    history: *const LexUserHistoryWrapper,
+    segments: *const LexSegment,
+    len: u32,
+) {
+    if history.is_null() || segments.is_null() || len == 0 {
+        return;
+    }
+    let wrapper = unsafe { &*history };
+    let segs = unsafe { std::slice::from_raw_parts(segments, len as usize) };
+
+    let pairs: Vec<(String, String)> = segs
+        .iter()
+        .filter_map(|s| {
+            let reading = unsafe { cptr_to_str(s.reading) }?;
+            let surface = unsafe { cptr_to_str(s.surface) }?;
+            Some((reading.to_string(), surface.to_string()))
+        })
+        .collect();
+
+    if let Ok(mut h) = wrapper.inner.write() {
+        h.record(&pairs);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_history_save(
+    history: *const LexUserHistoryWrapper,
+    path: *const c_char,
+) -> i32 {
+    if history.is_null() {
+        return -1;
+    }
+    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
+        return -1;
+    };
+    let wrapper = unsafe { &*history };
+    let Ok(h) = wrapper.inner.read() else {
+        return -1;
+    };
+    match h.save(Path::new(path_str)) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_convert_with_history(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    history: *const LexUserHistoryWrapper,
+    kana: *const c_char,
+) -> LexConversionResult {
+    if dict.is_null() || history.is_null() {
+        return LexConversionResult::empty();
+    }
+    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
+        return LexConversionResult::empty();
+    };
+    let dict = unsafe { &*dict };
+    let conn = unsafe { conn_ref(conn) };
+    let wrapper = unsafe { &*history };
+    let Ok(h) = wrapper.inner.read() else {
+        return LexConversionResult::empty();
+    };
+
+    let cost_fn = LearnedCostFunction::new(conn, &h);
+    pack_conversion_result(convert_with_cost(dict, &cost_fn, kana_str))
+}
+
+#[no_mangle]
+pub extern "C" fn lex_dict_lookup_with_history(
+    dict: *const TrieDictionary,
+    history: *const LexUserHistoryWrapper,
+    reading: *const c_char,
+) -> LexCandidateList {
+    if dict.is_null() || history.is_null() {
+        return LexCandidateList::empty();
+    }
+    let Some(reading_str) = (unsafe { cptr_to_str(reading) }) else {
+        return LexCandidateList::empty();
+    };
+    let dict = unsafe { &*dict };
+    let wrapper = unsafe { &*history };
+    let Ok(h) = wrapper.inner.read() else {
+        return LexCandidateList::empty();
+    };
+
+    match dict.lookup(reading_str) {
+        Some(entries) => {
+            let reordered = h.reorder_candidates(reading_str, entries);
+            LexCandidateList::from_entries(reading_str, &reordered)
+        }
+        None => LexCandidateList::empty(),
     }
 }
 
@@ -598,5 +737,63 @@ mod tests {
 
         // close null
         lex_conn_close(ptr::null_mut());
+    }
+
+    #[test]
+    fn test_ffi_history_roundtrip() {
+        let dir = std::env::temp_dir().join("lexime_test_ffi_history");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.lxud");
+        let path_cstr = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Open (creates empty)
+        let history = lex_history_open(path_cstr.as_ptr());
+        assert!(!history.is_null());
+
+        // Record segments
+        let reading = CString::new("きょう").unwrap();
+        let surface = CString::new("京").unwrap();
+        let seg = LexSegment {
+            reading: reading.as_ptr(),
+            surface: surface.as_ptr(),
+        };
+        lex_history_record(history, &seg, 1);
+
+        // Save
+        assert_eq!(lex_history_save(history, path_cstr.as_ptr()), 0);
+        lex_history_close(history);
+
+        // Reopen and verify boost via lookup_with_history
+        let history2 = lex_history_open(path_cstr.as_ptr());
+        assert!(!history2.is_null());
+
+        let dict = make_test_dict();
+        let reading_lookup = CString::new("かんじ").unwrap();
+        let list = lex_dict_lookup_with_history(dict, history2, reading_lookup.as_ptr());
+        // Should still return entries (just potentially reordered)
+        assert!(list.len >= 1);
+        lex_candidates_free(list);
+
+        lex_history_close(history2);
+        lex_dict_close(dict);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_ffi_history_save_invalid_path() {
+        let dir = std::env::temp_dir().join("lexime_test_ffi_save_fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let open_path = dir.join("temp.lxud");
+        let open_cstr = CString::new(open_path.to_str().unwrap()).unwrap();
+
+        let history = lex_history_open(open_cstr.as_ptr());
+        assert!(!history.is_null());
+
+        // Save to an invalid path should return -1
+        let bad_path = CString::new("/nonexistent/deeply/nested/history.lxud").unwrap();
+        assert_eq!(lex_history_save(history, bad_path.as_ptr()), -1);
+
+        lex_history_close(history);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

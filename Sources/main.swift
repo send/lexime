@@ -41,6 +41,21 @@ let sharedConn: OpaquePointer? = {
     return conn
 }()
 
+// Load user history (learning data)
+let userHistoryPath: String = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    return appSupport.appendingPathComponent("Lexime/user_history.lxud").path
+}()
+
+let sharedHistory: OpaquePointer? = {
+    guard let history = lex_history_open(userHistoryPath) else {
+        NSLog("Lexime: Failed to open user history at %@", userHistoryPath)
+        return nil
+    }
+    NSLog("Lexime: User history loaded from %@", userHistoryPath)
+    return history
+}()
+
 guard let server = IMKServer(name: kConnectionName, bundleIdentifier: bundleId) else {
     NSLog("Lexime: Failed to create IMKServer")
     exit(1)

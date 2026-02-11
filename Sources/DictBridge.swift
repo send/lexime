@@ -4,7 +4,12 @@ extension LeximeInputController {
 
     func lookupCandidates(_ kana: String) -> [String] {
         guard let dict = sharedDict else { return [] }
-        let list = lex_dict_lookup(dict, kana)
+        let list: LexCandidateList
+        if let history = sharedHistory {
+            list = lex_dict_lookup_with_history(dict, history, kana)
+        } else {
+            list = lex_dict_lookup(dict, kana)
+        }
         defer { lex_candidates_free(list) }
 
         guard list.len > 0, let candidates = list.candidates else { return [] }
@@ -39,7 +44,12 @@ extension LeximeInputController {
     func convertKana(_ kana: String) -> [ConversionSegment] {
         guard let dict = sharedDict else { return [] }
 
-        let result = lex_convert(dict, sharedConn, kana)
+        let result: LexConversionResult
+        if let history = sharedHistory {
+            result = lex_convert_with_history(dict, sharedConn, history, kana)
+        } else {
+            result = lex_convert(dict, sharedConn, kana)
+        }
         defer { lex_conversion_free(result) }
 
         guard result.len > 0, let segments = result.segments else { return [] }

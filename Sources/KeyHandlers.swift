@@ -112,7 +112,36 @@ extension LeximeInputController {
                 commitComposed(client: client)
             } else {
                 originalKana = composedKana
-                conversionSegments = segments
+                viterbiSegments = segments
+
+                // Build single-segment view: predictions first, then Viterbi, then lookups
+                let viterbiSurface = segments.map { $0.surface }.joined()
+                var candidates: [String] = []
+                var seen = Set<String>()
+                // Predictions first (skip raw kana — added at end as fallback)
+                for pred in predictionCandidates where pred != composedKana && seen.insert(pred).inserted {
+                    candidates.append(pred)
+                }
+                // Viterbi result
+                if seen.insert(viterbiSurface).inserted {
+                    candidates.append(viterbiSurface)
+                }
+                // Lookup candidates for full reading
+                for c in lookupCandidates(composedKana) where seen.insert(c).inserted {
+                    candidates.append(c)
+                }
+                // Raw kana as last resort
+                if seen.insert(composedKana).inserted {
+                    candidates.append(composedKana)
+                }
+                let surface = candidates.first ?? viterbiSurface
+
+                conversionSegments = [ConversionSegment(
+                    reading: composedKana,
+                    surface: surface,
+                    candidates: candidates,
+                    selectedIndex: 0
+                )]
                 activeSegmentIndex = 0
                 state = .converting
                 updateConvertingMarkedText(client: client)
@@ -189,9 +218,7 @@ extension LeximeInputController {
     func handleConverting(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
         case Key.enter: // Enter — confirm all segments
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             return true
 
         case Key.space: // Space — next candidate for active segment
@@ -243,9 +270,7 @@ extension LeximeInputController {
 
         // Alphabetic: confirm all segments and start new input
         if isRomajiInput(text) {
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             state = .composing
             appendAndConvert(text.lowercased(), client: client)
             return true
@@ -253,17 +278,13 @@ extension LeximeInputController {
 
         // Punctuation: confirm all segments, then insert
         if let candidates = Self.punctuationCandidates[text] {
-            hideCandidatePanel()
-            let fullText = conversionSegments.map { $0.surface }.joined()
-            commitText(fullText, client: client)
+            commitConversion(client: client)
             composePunctuation(candidates, client: client)
             return true
         }
 
         // Other: confirm and pass through
-        hideCandidatePanel()
-        let fullText = conversionSegments.map { $0.surface }.joined()
-        commitText(fullText, client: client)
+        commitConversion(client: client)
         return false
     }
 
@@ -291,6 +312,17 @@ extension LeximeInputController {
     // MARK: - Segment Boundary Adjustment (U2)
 
     func handleSegmentBoundaryAdjust(shrink: Bool, client: IMKTextInput) -> Bool {
+        // Expand from single-segment to multi-segment mode on first boundary adjustment
+        if conversionSegments.count == 1
+            && conversionSegments[0].reading == originalKana
+            && viterbiSegments.count > 1 {
+            conversionSegments = viterbiSegments
+            activeSegmentIndex = 0
+            updateConvertingMarkedText(client: client)
+            showCandidatePanel(client: client)
+            return true
+        }
+
         guard activeSegmentIndex < conversionSegments.count else { return true }
         let activeReading = conversionSegments[activeSegmentIndex].reading
 
