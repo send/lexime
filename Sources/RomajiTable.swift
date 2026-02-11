@@ -301,6 +301,18 @@ class RomajiTrie {
 
         // 記号
         insert("-", "ー")
+
+        // z-sequences (Mozc 互換)
+        insert("zh", "←")
+        insert("zj", "↓")
+        insert("zk", "↑")
+        insert("zl", "→")
+        insert("z.", "…")
+        insert("z,", "‥")
+        insert("z/", "・")
+        insert("z-", "〜")
+        insert("z[", "『")
+        insert("z]", "』")
     }
 
     func lookup(_ romaji: String) -> TrieLookupResult {

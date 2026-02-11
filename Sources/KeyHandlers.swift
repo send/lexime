@@ -200,6 +200,18 @@ extension LeximeInputController {
             break
         }
 
+        // z-sequences: composing 中、pendingRomaji + text が trie にマッチする場合は通す
+        if !pendingRomaji.isEmpty {
+            let candidate = pendingRomaji + text
+            switch RomajiTrie.shared.lookup(candidate) {
+            case .exact, .exactAndPrefix, .prefix:
+                appendAndConvert(text, client: client)
+                return true
+            case .none:
+                break
+            }
+        }
+
         if let candidates = Self.punctuationCandidates[text] {
             hideCandidatePanel()
             flush()
