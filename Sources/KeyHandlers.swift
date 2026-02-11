@@ -18,29 +18,33 @@ enum Key {
     static let up:        UInt16 = 126
 }
 
+/// Wrap-around index within a cyclic list.
+func cyclicIndex(_ current: Int, delta: Int, count: Int) -> Int {
+    guard count > 0 else { return 0 }
+    return (current + delta + count) % count
+}
+
+/// Whether `text` is a romaji input character (letter or hyphen).
+func isRomajiInput(_ text: String) -> Bool {
+    if text == "-" { return true }
+    guard let scalar = text.unicodeScalars.first else { return false }
+    return CharacterSet.lowercaseLetters.contains(scalar)
+        || CharacterSet.uppercaseLetters.contains(scalar)
+}
+
 extension LeximeInputController {
 
     // MARK: - Idle State
 
     func handleIdle(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
-        guard let scalar = text.unicodeScalars.first else { return false }
-
         if let candidates = Self.punctuationCandidates[text] {
             composePunctuation(candidates, client: client)
             return true
         }
 
-        if CharacterSet.lowercaseLetters.contains(scalar) ||
-           CharacterSet.uppercaseLetters.contains(scalar) {
+        if isRomajiInput(text) {
             state = .composing
-            let ch = text.lowercased()
-            appendAndConvert(ch, client: client)
-            return true
-        }
-
-        if text == "-" {
-            state = .composing
-            appendAndConvert("-", client: client)
+            appendAndConvert(text.lowercased(), client: client)
             return true
         }
 
@@ -64,7 +68,7 @@ extension LeximeInputController {
 
         case Key.down: // Down arrow — next prediction candidate
             if !predictionCandidates.isEmpty {
-                selectedPredictionIndex = (selectedPredictionIndex + 1) % predictionCandidates.count
+                selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: 1, count: predictionCandidates.count)
                 updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
                 showCandidatePanel(client: client)
             }
@@ -72,7 +76,7 @@ extension LeximeInputController {
 
         case Key.up: // Up arrow — previous prediction candidate
             if !predictionCandidates.isEmpty {
-                selectedPredictionIndex = (selectedPredictionIndex - 1 + predictionCandidates.count) % predictionCandidates.count
+                selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: -1, count: predictionCandidates.count)
                 updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
                 showCandidatePanel(client: client)
             }
@@ -89,7 +93,7 @@ extension LeximeInputController {
 
         case Key.space: // Space — convert kana (or next candidate for punctuation)
             if isPunctuationComposing && predictionCandidates.count > 1 {
-                selectedPredictionIndex = (selectedPredictionIndex + 1) % predictionCandidates.count
+                selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: 1, count: predictionCandidates.count)
                 composedKana = predictionCandidates[selectedPredictionIndex]
                 updateMarkedTextWithCandidate(composedKana, client: client)
                 showCandidatePanel(client: client)
@@ -161,8 +165,6 @@ extension LeximeInputController {
             break
         }
 
-        guard let scalar = text.unicodeScalars.first else { return false }
-
         if let candidates = Self.punctuationCandidates[text] {
             hideCandidatePanel()
             flush()
@@ -171,15 +173,8 @@ extension LeximeInputController {
             return true
         }
 
-        if CharacterSet.lowercaseLetters.contains(scalar) ||
-           CharacterSet.uppercaseLetters.contains(scalar) {
-            let ch = text.lowercased()
-            appendAndConvert(ch, client: client)
-            return true
-        }
-
-        if text == "-" {
-            appendAndConvert("-", client: client)
+        if isRomajiInput(text) {
+            appendAndConvert(text.lowercased(), client: client)
             return true
         }
 
@@ -200,16 +195,7 @@ extension LeximeInputController {
             return true
 
         case Key.space: // Space — next candidate for active segment
-            if activeSegmentIndex < conversionSegments.count {
-                let seg = conversionSegments[activeSegmentIndex]
-                if !seg.candidates.isEmpty {
-                    let newIdx = (seg.selectedIndex + 1) % seg.candidates.count
-                    conversionSegments[activeSegmentIndex].selectedIndex = newIdx
-                    conversionSegments[activeSegmentIndex].surface = seg.candidates[newIdx]
-                    updateConvertingMarkedText(client: client)
-                    showCandidatePanel(client: client)
-                }
-            }
+            selectSegmentCandidate(delta: 1, client: client)
             return true
 
         case Key.backspace, Key.escape: // Backspace or Escape — back to composing with original kana
@@ -238,61 +224,30 @@ extension LeximeInputController {
             return true
 
         case Key.up: // Up arrow — previous candidate
-            if activeSegmentIndex < conversionSegments.count {
-                let seg = conversionSegments[activeSegmentIndex]
-                if !seg.candidates.isEmpty {
-                    let newIdx = (seg.selectedIndex - 1 + seg.candidates.count) % seg.candidates.count
-                    conversionSegments[activeSegmentIndex].selectedIndex = newIdx
-                    conversionSegments[activeSegmentIndex].surface = seg.candidates[newIdx]
-                    updateConvertingMarkedText(client: client)
-                    showCandidatePanel(client: client)
-                }
-            }
+            selectSegmentCandidate(delta: -1, client: client)
             return true
 
         case Key.down: // Down arrow — next candidate
-            if activeSegmentIndex < conversionSegments.count {
-                let seg = conversionSegments[activeSegmentIndex]
-                if !seg.candidates.isEmpty {
-                    let newIdx = (seg.selectedIndex + 1) % seg.candidates.count
-                    conversionSegments[activeSegmentIndex].selectedIndex = newIdx
-                    conversionSegments[activeSegmentIndex].surface = seg.candidates[newIdx]
-                    updateConvertingMarkedText(client: client)
-                    showCandidatePanel(client: client)
-                }
-            }
+            selectSegmentCandidate(delta: 1, client: client)
             return true
 
         default:
             break
         }
 
-        guard let scalar = text.unicodeScalars.first else { return false }
-
         // U3: Number keys 1-9 for direct candidate selection
         if let num = text.first?.wholeNumberValue, num >= 1, num <= 9 {
-            let idx = num - 1
-            if activeSegmentIndex < conversionSegments.count {
-                let seg = conversionSegments[activeSegmentIndex]
-                if idx < seg.candidates.count {
-                    conversionSegments[activeSegmentIndex].selectedIndex = idx
-                    conversionSegments[activeSegmentIndex].surface = seg.candidates[idx]
-                    updateConvertingMarkedText(client: client)
-                    showCandidatePanel(client: client)
-                }
-            }
+            selectSegmentCandidate(delta: num - 1, absolute: true, client: client)
             return true
         }
 
         // Alphabetic: confirm all segments and start new input
-        if CharacterSet.lowercaseLetters.contains(scalar) ||
-           CharacterSet.uppercaseLetters.contains(scalar) {
+        if isRomajiInput(text) {
             hideCandidatePanel()
             let fullText = conversionSegments.map { $0.surface }.joined()
             commitText(fullText, client: client)
             state = .composing
-            let ch = text.lowercased()
-            appendAndConvert(ch, client: client)
+            appendAndConvert(text.lowercased(), client: client)
             return true
         }
 
@@ -310,6 +265,27 @@ extension LeximeInputController {
         let fullText = conversionSegments.map { $0.surface }.joined()
         commitText(fullText, client: client)
         return false
+    }
+
+    // MARK: - Segment Candidate Selection
+
+    /// Select a candidate for the active segment and refresh the UI.
+    /// `delta` is +1/-1 for next/previous; absolute index if `absolute` is true.
+    func selectSegmentCandidate(delta: Int, absolute: Bool = false, client: IMKTextInput) {
+        guard activeSegmentIndex < conversionSegments.count else { return }
+        let seg = conversionSegments[activeSegmentIndex]
+        guard !seg.candidates.isEmpty else { return }
+        let newIdx: Int
+        if absolute {
+            guard delta >= 0 && delta < seg.candidates.count else { return }
+            newIdx = delta
+        } else {
+            newIdx = cyclicIndex(seg.selectedIndex, delta: delta, count: seg.candidates.count)
+        }
+        conversionSegments[activeSegmentIndex].selectedIndex = newIdx
+        conversionSegments[activeSegmentIndex].surface = seg.candidates[newIdx]
+        updateConvertingMarkedText(client: client)
+        showCandidatePanel(client: client)
     }
 
     // MARK: - Segment Boundary Adjustment (U2)

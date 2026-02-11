@@ -109,89 +109,11 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dict::TrieDictionary;
-
-    fn sample_dict() -> TrieDictionary {
-        use crate::dict::DictEntry;
-        let entries = vec![
-            (
-                "きょう".to_string(),
-                vec![
-                    DictEntry {
-                        surface: "今日".to_string(),
-                        cost: 3000,
-                        left_id: 100,
-                        right_id: 100,
-                    },
-                    DictEntry {
-                        surface: "京".to_string(),
-                        cost: 5000,
-                        left_id: 100,
-                        right_id: 100,
-                    },
-                ],
-            ),
-            (
-                "は".to_string(),
-                vec![DictEntry {
-                    surface: "は".to_string(),
-                    cost: 2000,
-                    left_id: 200,
-                    right_id: 200,
-                }],
-            ),
-            (
-                "いい".to_string(),
-                vec![DictEntry {
-                    surface: "良い".to_string(),
-                    cost: 3500,
-                    left_id: 300,
-                    right_id: 300,
-                }],
-            ),
-            (
-                "てんき".to_string(),
-                vec![DictEntry {
-                    surface: "天気".to_string(),
-                    cost: 4000,
-                    left_id: 400,
-                    right_id: 400,
-                }],
-            ),
-            (
-                "き".to_string(),
-                vec![DictEntry {
-                    surface: "木".to_string(),
-                    cost: 4500,
-                    left_id: 500,
-                    right_id: 500,
-                }],
-            ),
-            (
-                "い".to_string(),
-                vec![DictEntry {
-                    surface: "胃".to_string(),
-                    cost: 6000,
-                    left_id: 600,
-                    right_id: 600,
-                }],
-            ),
-            (
-                "てん".to_string(),
-                vec![DictEntry {
-                    surface: "天".to_string(),
-                    cost: 5000,
-                    left_id: 700,
-                    right_id: 700,
-                }],
-            ),
-        ];
-        TrieDictionary::from_entries(entries)
-    }
+    use crate::converter::testutil::test_dict;
 
     #[test]
     fn test_build_lattice_basic() {
-        let dict = sample_dict();
+        let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうは");
 
         // Should have nodes for "きょう" (2 entries), "は" (1 entry), and "き" (1 entry)
@@ -211,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_unknown_word_fallback() {
-        let dict = sample_dict();
+        let dict = test_dict();
         // "zzz" is not in dictionary — each char gets an unknown node
         let lattice = build_lattice(&dict, "ぬ");
 
@@ -224,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_lattice_connectivity() {
-        let dict = sample_dict();
+        let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうはいいてんき");
 
         // Every position should be reachable: nodes_by_end[i] should be non-empty
@@ -239,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_nodes_by_start_end_consistency() {
-        let dict = sample_dict();
+        let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうはいいてんき");
 
         // All nodes are correctly indexed in nodes_by_start and nodes_by_end
