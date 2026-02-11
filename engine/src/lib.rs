@@ -4,6 +4,7 @@
 
 pub mod converter;
 pub mod dict;
+pub mod unicode;
 pub mod user_history;
 
 use std::ffi::{c_char, CStr, CString};
@@ -16,6 +17,26 @@ use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
 use user_history::cost::LearnedCostFunction;
 use user_history::UserHistory;
+
+// --- Generic owned-pointer helpers for FFI resource management ---
+
+/// Allocate a value on the heap and return a raw pointer suitable for FFI.
+/// The caller is responsible for eventually passing the pointer to [`owned_drop`].
+fn owned_new<T>(value: T) -> *mut T {
+    Box::into_raw(Box::new(value))
+}
+
+/// Free a heap-allocated value previously created by [`owned_new`].
+/// No-op if `ptr` is null.
+///
+/// # Safety
+/// `ptr` must have been produced by [`owned_new`] (i.e. `Box::into_raw`)
+/// and must not have been freed already.
+unsafe fn owned_drop<T>(ptr: *mut T) {
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+}
 
 /// Safely convert a C string pointer to a `&str`.
 /// Returns `None` if the pointer is null or contains invalid UTF-8.
@@ -33,6 +54,136 @@ unsafe fn conn_ref<'a>(conn: *const ConnectionMatrix) -> Option<&'a ConnectionMa
     } else {
         Some(&*conn)
     }
+}
+
+// ---------------------------------------------------------------------------
+// FFI boilerplate-reduction macros (crate-internal)
+// ---------------------------------------------------------------------------
+//
+// The `extern "C"` functions in this module follow a handful of recurring
+// patterns: null-check a pointer, convert a C string, dereference an opaque
+// handle, and return a sentinel on failure.  The macros below capture those
+// patterns so each FFI entry point can focus on its domain logic rather
+// than repeating the same safety scaffolding.
+
+/// Validate one or more FFI arguments and bind them as safe Rust values,
+/// returning `$on_err` from the **calling** function if any check fails.
+///
+/// This is the workhorse macro for reducing FFI boilerplate.  Place it at
+/// the top of an `extern "C"` function body and list every raw-pointer
+/// argument that needs validation.  The macro expands to a sequence of
+/// `let` bindings with early returns, so the rest of the function body
+/// can use the bound names as ordinary safe references / slices.
+///
+/// # Supported argument forms
+///
+/// | Syntax | What it does |
+/// |--------|--------------|
+/// | `str: $name = $ptr` | Null-check `$ptr: *const c_char`, convert via [`cptr_to_str`] to `&str`, bind as `$name`. |
+/// | `ref: $name = $ptr` | Null-check `$ptr: *const T`, dereference to `&T`, bind as `$name`. |
+/// | `nonnull: $ptr`      | Assert `$ptr` is non-null (no new binding is introduced). |
+///
+/// The first positional argument (`$on_err`) is the expression returned
+/// when any check fails.  It is evaluated lazily -- only on the failing
+/// branch.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Inside an extern "C" fn returning LexCandidateList:
+/// ffi_guard!(LexCandidateList::empty();
+///     ref: dict     = dict_ptr,
+///     str: reading  = reading_ptr,
+/// );
+/// // `dict` is now `&TrieDictionary`, `reading` is `&str`.
+/// ```
+///
+/// ```ignore
+/// // Multiple pointer checks with no string conversion:
+/// ffi_guard!(LexConversionResultList::empty();
+///     ref:     dict    = dict_ptr,
+///     nonnull: history,
+/// );
+/// ```
+macro_rules! ffi_guard {
+    // Terminal rule -- all arguments processed.
+    ($on_err:expr ; ) => {};
+
+    // `str:` -- convert *const c_char to &str.
+    ($on_err:expr ; str: $name:ident = $ptr:expr , $($rest:tt)*) => {
+        let Some($name) = (unsafe { cptr_to_str($ptr) }) else {
+            return $on_err;
+        };
+        ffi_guard!($on_err ; $($rest)*);
+    };
+
+    // `ref:` -- dereference *const T to &T after null check.
+    ($on_err:expr ; ref: $name:ident = $ptr:expr , $($rest:tt)*) => {
+        if $ptr.is_null() {
+            return $on_err;
+        }
+        let $name = unsafe { &*$ptr };
+        ffi_guard!($on_err ; $($rest)*);
+    };
+
+    // `nonnull:` -- assert non-null, no binding.
+    ($on_err:expr ; nonnull: $ptr:expr , $($rest:tt)*) => {
+        if $ptr.is_null() {
+            return $on_err;
+        }
+        ffi_guard!($on_err ; $($rest)*);
+    };
+}
+
+/// Define an `extern "C"` function that opens a resource from a file path.
+///
+/// Encapsulates the common pattern shared by `lex_dict_open`,
+/// `lex_conn_open`, and similar functions:
+///
+/// 1. Null-check the incoming `*const c_char` path.
+/// 2. Convert to `&str` via [`cptr_to_str`].
+/// 3. Call a constructor that returns `Result<T, _>`.
+/// 4. On success, box the value and return a raw pointer.
+/// 5. On failure, return `ptr::null_mut()`.
+///
+/// # Syntax
+///
+/// ```ignore
+/// ffi_open!(function_name, ReturnType, |path: &Path| constructor(path));
+/// ```
+///
+/// The closure receives a `&Path` and must return a `Result<ReturnType, _>`.
+macro_rules! ffi_open {
+    ($fn_name:ident, $T:ty, $open_expr:expr) => {
+        #[no_mangle]
+        pub extern "C" fn $fn_name(path: *const c_char) -> *mut $T {
+            ffi_guard!(ptr::null_mut() ; str: path_str = path ,);
+            let opener: fn(&Path) -> _ = $open_expr;
+            match opener(Path::new(path_str)) {
+                Ok(val) => owned_new(val),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+    };
+}
+
+/// Define an `extern "C"` function that closes (frees) a heap-allocated
+/// resource previously returned by an `ffi_open!`-generated function.
+///
+/// Null-checks the pointer, then reclaims the `Box` and drops it.
+///
+/// # Syntax
+///
+/// ```ignore
+/// ffi_close!(function_name, ResourceType);
+/// ```
+macro_rules! ffi_close {
+    ($fn_name:ident, $T:ty) => {
+        #[no_mangle]
+        pub extern "C" fn $fn_name(ptr: *mut $T) {
+            unsafe { owned_drop(ptr) };
+        }
+    };
 }
 
 #[no_mangle]
@@ -178,39 +329,18 @@ impl LexCandidateList {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn lex_dict_open(path: *const c_char) -> *mut TrieDictionary {
-    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
-        return ptr::null_mut();
-    };
-
-    match TrieDictionary::open(Path::new(path_str)) {
-        Ok(dict) => Box::into_raw(Box::new(dict)),
-        Err(_) => ptr::null_mut(),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn lex_dict_close(dict: *mut TrieDictionary) {
-    if !dict.is_null() {
-        unsafe {
-            drop(Box::from_raw(dict));
-        }
-    }
-}
+ffi_open!(lex_dict_open, TrieDictionary, |p| TrieDictionary::open(p));
+ffi_close!(lex_dict_close, TrieDictionary);
 
 #[no_mangle]
 pub extern "C" fn lex_dict_lookup(
     dict: *const TrieDictionary,
     reading: *const c_char,
 ) -> LexCandidateList {
-    if dict.is_null() {
-        return LexCandidateList::empty();
-    }
-    let Some(reading_str) = (unsafe { cptr_to_str(reading) }) else {
-        return LexCandidateList::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexCandidateList::empty();
+        ref: dict        = dict,
+        str: reading_str = reading,
+    );
 
     match dict.lookup(reading_str) {
         Some(entries) => LexCandidateList::from_entries(reading_str, entries),
@@ -224,13 +354,10 @@ pub extern "C" fn lex_dict_predict(
     prefix: *const c_char,
     max_results: u32,
 ) -> LexCandidateList {
-    if dict.is_null() {
-        return LexCandidateList::empty();
-    }
-    let Some(prefix_str) = (unsafe { cptr_to_str(prefix) }) else {
-        return LexCandidateList::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexCandidateList::empty();
+        ref: dict       = dict,
+        str: prefix_str = prefix,
+    );
 
     let results = dict.predict(prefix_str, max_results as usize);
     LexCandidateList::from_search_results(results)
@@ -243,13 +370,10 @@ pub extern "C" fn lex_dict_predict_ranked(
     prefix: *const c_char,
     max_results: u32,
 ) -> LexCandidateList {
-    if dict.is_null() {
-        return LexCandidateList::empty();
-    }
-    let Some(prefix_str) = (unsafe { cptr_to_str(prefix) }) else {
-        return LexCandidateList::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexCandidateList::empty();
+        ref: dict       = dict,
+        str: prefix_str = prefix,
+    );
 
     // When history is available, over-fetch so boosted entries that rank outside
     // the pure-cost top-N still have a chance to surface after re-sorting.
@@ -280,35 +404,15 @@ pub extern "C" fn lex_dict_predict_ranked(
 
 #[no_mangle]
 pub extern "C" fn lex_candidates_free(list: LexCandidateList) {
-    if !list._owned.is_null() {
-        unsafe {
-            drop(Box::from_raw(list._owned));
-        }
-    }
+    unsafe { owned_drop(list._owned) };
 }
 
 // --- Connection matrix FFI ---
 
-#[no_mangle]
-pub extern "C" fn lex_conn_open(path: *const c_char) -> *mut ConnectionMatrix {
-    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
-        return ptr::null_mut();
-    };
-
-    match ConnectionMatrix::open(Path::new(path_str)) {
-        Ok(conn) => Box::into_raw(Box::new(conn)),
-        Err(_) => ptr::null_mut(),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn lex_conn_close(conn: *mut ConnectionMatrix) {
-    if !conn.is_null() {
-        unsafe {
-            drop(Box::from_raw(conn));
-        }
-    }
-}
+ffi_open!(lex_conn_open, ConnectionMatrix, |p| ConnectionMatrix::open(
+    p
+));
+ffi_close!(lex_conn_close, ConnectionMatrix);
 
 // --- Conversion FFI ---
 
@@ -389,13 +493,10 @@ pub extern "C" fn lex_convert(
     conn: *const ConnectionMatrix,
     kana: *const c_char,
 ) -> LexConversionResult {
-    if dict.is_null() {
-        return LexConversionResult::empty();
-    }
-    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
-        return LexConversionResult::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexConversionResult::empty();
+        ref: dict     = dict,
+        str: kana_str = kana,
+    );
     let conn = unsafe { conn_ref(conn) };
 
     pack_conversion_result(convert(dict, conn, kana_str))
@@ -403,11 +504,7 @@ pub extern "C" fn lex_convert(
 
 #[no_mangle]
 pub extern "C" fn lex_conversion_free(result: LexConversionResult) {
-    if !result._owned.is_null() {
-        unsafe {
-            drop(Box::from_raw(result._owned));
-        }
-    }
+    unsafe { owned_drop(result._owned) };
 }
 
 // --- N-best Conversion FFI ---
@@ -465,13 +562,10 @@ pub extern "C" fn lex_convert_nbest(
     kana: *const c_char,
     n: u32,
 ) -> LexConversionResultList {
-    if dict.is_null() {
-        return LexConversionResultList::empty();
-    }
-    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
-        return LexConversionResultList::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexConversionResultList::empty();
+        ref: dict     = dict,
+        str: kana_str = kana,
+    );
     let conn = unsafe { conn_ref(conn) };
 
     pack_conversion_result_list(convert_nbest(dict, conn, kana_str, n as usize))
@@ -485,13 +579,11 @@ pub extern "C" fn lex_convert_nbest_with_history(
     kana: *const c_char,
     n: u32,
 ) -> LexConversionResultList {
-    if dict.is_null() || history.is_null() {
-        return LexConversionResultList::empty();
-    }
-    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
-        return LexConversionResultList::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexConversionResultList::empty();
+        ref:     dict    = dict,
+        nonnull:           history,
+        str:     kana_str = kana,
+    );
     let conn = unsafe { conn_ref(conn) };
     let wrapper = unsafe { &*history };
     let Ok(h) = wrapper.inner.read() else {
@@ -511,9 +603,7 @@ pub extern "C" fn lex_conversion_result_list_free(list: LexConversionResultList)
             // First free each individual ConversionResult's owned data
             let owned = Box::from_raw(list._owned);
             for result in &owned.results {
-                if !result._owned.is_null() {
-                    drop(Box::from_raw(result._owned));
-                }
+                owned_drop(result._owned);
             }
             // The owned box (containing the Vec<LexConversionResult>) is dropped here
         }
@@ -528,37 +618,32 @@ pub struct LexUserHistoryWrapper {
 
 #[no_mangle]
 pub extern "C" fn lex_history_open(path: *const c_char) -> *mut LexUserHistoryWrapper {
-    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
-        return ptr::null_mut();
-    };
+    ffi_guard!(ptr::null_mut() ; str: path_str = path ,);
 
     match UserHistory::open(Path::new(path_str)) {
-        Ok(history) => Box::into_raw(Box::new(LexUserHistoryWrapper {
+        Ok(history) => owned_new(LexUserHistoryWrapper {
             inner: RwLock::new(history),
-        })),
+        }),
         Err(_) => ptr::null_mut(),
     }
 }
 
-#[no_mangle]
-pub extern "C" fn lex_history_close(history: *mut LexUserHistoryWrapper) {
-    if !history.is_null() {
-        unsafe {
-            drop(Box::from_raw(history));
-        }
-    }
-}
+ffi_close!(lex_history_close, LexUserHistoryWrapper);
 
 #[no_mangle]
+#[allow(clippy::unused_unit)]
 pub extern "C" fn lex_history_record(
     history: *const LexUserHistoryWrapper,
     segments: *const LexSegment,
     len: u32,
 ) {
-    if history.is_null() || segments.is_null() || len == 0 {
+    ffi_guard!(();
+        ref:     wrapper = history,
+        nonnull:           segments,
+    );
+    if len == 0 {
         return;
     }
-    let wrapper = unsafe { &*history };
     let segs = unsafe { std::slice::from_raw_parts(segments, len as usize) };
 
     let pairs: Vec<(String, String)> = segs
@@ -580,13 +665,10 @@ pub extern "C" fn lex_history_save(
     history: *const LexUserHistoryWrapper,
     path: *const c_char,
 ) -> i32 {
-    if history.is_null() {
-        return -1;
-    }
-    let Some(path_str) = (unsafe { cptr_to_str(path) }) else {
-        return -1;
-    };
-    let wrapper = unsafe { &*history };
+    ffi_guard!(-1;
+        ref: wrapper  = history,
+        str: path_str = path,
+    );
     let Ok(h) = wrapper.inner.read() else {
         return -1;
     };
@@ -603,15 +685,12 @@ pub extern "C" fn lex_convert_with_history(
     history: *const LexUserHistoryWrapper,
     kana: *const c_char,
 ) -> LexConversionResult {
-    if dict.is_null() || history.is_null() {
-        return LexConversionResult::empty();
-    }
-    let Some(kana_str) = (unsafe { cptr_to_str(kana) }) else {
-        return LexConversionResult::empty();
-    };
-    let dict = unsafe { &*dict };
+    ffi_guard!(LexConversionResult::empty();
+        ref: dict    = dict,
+        ref: wrapper = history,
+        str: kana_str = kana,
+    );
     let conn = unsafe { conn_ref(conn) };
-    let wrapper = unsafe { &*history };
     let Ok(h) = wrapper.inner.read() else {
         return LexConversionResult::empty();
     };
@@ -626,14 +705,11 @@ pub extern "C" fn lex_dict_lookup_with_history(
     history: *const LexUserHistoryWrapper,
     reading: *const c_char,
 ) -> LexCandidateList {
-    if dict.is_null() || history.is_null() {
-        return LexCandidateList::empty();
-    }
-    let Some(reading_str) = (unsafe { cptr_to_str(reading) }) else {
-        return LexCandidateList::empty();
-    };
-    let dict = unsafe { &*dict };
-    let wrapper = unsafe { &*history };
+    ffi_guard!(LexCandidateList::empty();
+        ref: dict        = dict,
+        ref: wrapper     = history,
+        str: reading_str = reading,
+    );
     let Ok(h) = wrapper.inner.read() else {
         return LexCandidateList::empty();
     };
@@ -682,7 +758,7 @@ mod tests {
             ),
         ];
         let dict = TrieDictionary::from_entries(entries);
-        Box::into_raw(Box::new(dict))
+        owned_new(dict)
     }
 
     #[test]
@@ -895,7 +971,7 @@ mod tests {
             ),
         ];
         let dict = TrieDictionary::from_entries(entries);
-        Box::into_raw(Box::new(dict))
+        owned_new(dict)
     }
 
     #[test]

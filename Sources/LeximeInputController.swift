@@ -180,7 +180,7 @@ class LeximeInputController: IMKInputController {
         pendingRomaji = ""
         predictionCandidates = candidates
         selectedPredictionIndex = 0
-        updateMarkedTextWithCandidate(candidates[0], client: client)
+        updateMarkedText(candidates[0], client: client)
         showCandidatePanel(client: client)
     }
 

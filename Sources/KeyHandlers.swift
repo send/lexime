@@ -70,7 +70,7 @@ extension LeximeInputController {
         case Key.down: // Down arrow — next prediction candidate
             if !predictionCandidates.isEmpty {
                 selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: 1, count: predictionCandidates.count)
-                updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
+                updateMarkedText(predictionCandidates[selectedPredictionIndex], client: client)
                 showCandidatePanel(client: client)
             }
             return true
@@ -78,7 +78,7 @@ extension LeximeInputController {
         case Key.up: // Up arrow — previous prediction candidate
             if !predictionCandidates.isEmpty {
                 selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: -1, count: predictionCandidates.count)
-                updateMarkedTextWithCandidate(predictionCandidates[selectedPredictionIndex], client: client)
+                updateMarkedText(predictionCandidates[selectedPredictionIndex], client: client)
                 showCandidatePanel(client: client)
             }
             return true
@@ -96,7 +96,7 @@ extension LeximeInputController {
             if isPunctuationComposing && predictionCandidates.count > 1 {
                 selectedPredictionIndex = cyclicIndex(selectedPredictionIndex, delta: 1, count: predictionCandidates.count)
                 composedKana = predictionCandidates[selectedPredictionIndex]
-                updateMarkedTextWithCandidate(composedKana, client: client)
+                updateMarkedText(composedKana, client: client)
                 showCandidatePanel(client: client)
                 return true
             }
@@ -106,53 +106,7 @@ extension LeximeInputController {
                 commitComposed(client: client)
                 return true
             }
-            hideCandidatePanel()
-            flush()
-            let segments = convertKana(composedKana)
-            if segments.isEmpty {
-                commitComposed(client: client)
-            } else {
-                originalKana = composedKana
-                viterbiSegments = segments
-
-                // Build single-segment view: predictions, N-best Viterbi, lookups
-                let viterbiSurface = segments.map { $0.surface }.joined()
-                var candidates: [String] = []
-                var seen = Set<String>()
-                // Predictions first (skip raw kana — added at end as fallback)
-                for pred in predictionCandidates where pred != composedKana && seen.insert(pred).inserted {
-                    candidates.append(pred)
-                }
-                // N-best Viterbi surfaces (includes 1-best as first element)
-                let nbestSurfaces = convertKanaNbest(composedKana, n: 5)
-                for surface in nbestSurfaces where seen.insert(surface).inserted {
-                    candidates.append(surface)
-                }
-                // Viterbi 1-best as fallback (in case N-best was empty)
-                if seen.insert(viterbiSurface).inserted {
-                    candidates.append(viterbiSurface)
-                }
-                // Lookup candidates for full reading
-                for c in lookupCandidates(composedKana) where seen.insert(c).inserted {
-                    candidates.append(c)
-                }
-                // Raw kana as last resort
-                if seen.insert(composedKana).inserted {
-                    candidates.append(composedKana)
-                }
-                let surface = candidates.first ?? viterbiSurface
-
-                conversionSegments = [ConversionSegment(
-                    reading: composedKana,
-                    surface: surface,
-                    candidates: candidates,
-                    selectedIndex: 0
-                )]
-                activeSegmentIndex = 0
-                state = .converting
-                updateConvertingMarkedText(client: client)
-                showCandidatePanel(client: client)
-            }
+            performConversion(client: client)
             return true
 
         case Key.backspace: // Backspace
@@ -325,6 +279,62 @@ extension LeximeInputController {
         conversionSegments[activeSegmentIndex].surface = seg.candidates[newIdx]
         updateConvertingMarkedText(client: client)
         showCandidatePanel(client: client)
+    }
+
+    // MARK: - Kana Conversion
+
+    /// Flush pending romaji, run Viterbi conversion on the composed kana, build
+    /// a unified candidate list (predictions, N-best, lookups, raw kana), and
+    /// transition to the `.converting` state.  If conversion produces no segments
+    /// the kana is committed as-is.
+    func performConversion(client: IMKTextInput) {
+        hideCandidatePanel()
+        flush()
+        let segments = convertKana(composedKana)
+        if segments.isEmpty {
+            commitComposed(client: client)
+        } else {
+            originalKana = composedKana
+            viterbiSegments = segments
+
+            // Build single-segment view: predictions, N-best Viterbi, lookups
+            let viterbiSurface = segments.map { $0.surface }.joined()
+            var candidates: [String] = []
+            var seen = Set<String>()
+            // Predictions first (skip raw kana — added at end as fallback)
+            for pred in predictionCandidates where pred != composedKana && seen.insert(pred).inserted {
+                candidates.append(pred)
+            }
+            // N-best Viterbi surfaces (includes 1-best as first element)
+            let nbestSurfaces = convertKanaNbest(composedKana, n: 5)
+            for surface in nbestSurfaces where seen.insert(surface).inserted {
+                candidates.append(surface)
+            }
+            // Viterbi 1-best as fallback (in case N-best was empty)
+            if seen.insert(viterbiSurface).inserted {
+                candidates.append(viterbiSurface)
+            }
+            // Lookup candidates for full reading
+            for c in lookupCandidates(composedKana) where seen.insert(c).inserted {
+                candidates.append(c)
+            }
+            // Raw kana as last resort
+            if seen.insert(composedKana).inserted {
+                candidates.append(composedKana)
+            }
+            let surface = candidates.first ?? viterbiSurface
+
+            conversionSegments = [ConversionSegment(
+                reading: composedKana,
+                surface: surface,
+                candidates: candidates,
+                selectedIndex: 0
+            )]
+            activeSegmentIndex = 0
+            state = .converting
+            updateConvertingMarkedText(client: client)
+            showCandidatePanel(client: client)
+        }
     }
 
     // MARK: - Segment Boundary Adjustment (U2)

@@ -16,303 +16,103 @@ class RomajiTrie {
     static let shared = RomajiTrie()
     private let root = Node()
 
-    private init() {
+    // Romaji-to-kana mapping table: (romaji, kana)
+    private static let mappings: [(String, String)] = [
         // 母音
-        insert("a", "あ")
-        insert("i", "い")
-        insert("u", "う")
-        insert("e", "え")
-        insert("o", "お")
-
+        ("a", "あ"), ("i", "い"), ("u", "う"), ("e", "え"), ("o", "お"),
         // か行
-        insert("ka", "か")
-        insert("ki", "き")
-        insert("ku", "く")
-        insert("ke", "け")
-        insert("ko", "こ")
-
+        ("ka", "か"), ("ki", "き"), ("ku", "く"), ("ke", "け"), ("ko", "こ"),
         // さ行
-        insert("sa", "さ")
-        insert("si", "し")
-        insert("shi", "し")
-        insert("su", "す")
-        insert("se", "せ")
-        insert("so", "そ")
-
+        ("sa", "さ"), ("si", "し"), ("shi", "し"), ("su", "す"), ("se", "せ"), ("so", "そ"),
         // た行
-        insert("ta", "た")
-        insert("ti", "ち")
-        insert("chi", "ち")
-        insert("tu", "つ")
-        insert("tsu", "つ")
-        insert("te", "て")
-        insert("to", "と")
-
+        ("ta", "た"), ("ti", "ち"), ("chi", "ち"), ("tu", "つ"), ("tsu", "つ"),
+        ("te", "て"), ("to", "と"),
         // な行
-        insert("na", "な")
-        insert("ni", "に")
-        insert("nu", "ぬ")
-        insert("ne", "ね")
-        insert("no", "の")
-
+        ("na", "な"), ("ni", "に"), ("nu", "ぬ"), ("ne", "ね"), ("no", "の"),
         // は行
-        insert("ha", "は")
-        insert("hi", "ひ")
-        insert("hu", "ふ")
-        insert("fu", "ふ")
-        insert("he", "へ")
-        insert("ho", "ほ")
-
+        ("ha", "は"), ("hi", "ひ"), ("hu", "ふ"), ("fu", "ふ"), ("he", "へ"), ("ho", "ほ"),
         // ま行
-        insert("ma", "ま")
-        insert("mi", "み")
-        insert("mu", "む")
-        insert("me", "め")
-        insert("mo", "も")
-
+        ("ma", "ま"), ("mi", "み"), ("mu", "む"), ("me", "め"), ("mo", "も"),
         // や行
-        insert("ya", "や")
-        insert("yu", "ゆ")
-        insert("yo", "よ")
-
+        ("ya", "や"), ("yu", "ゆ"), ("yo", "よ"),
         // ら行
-        insert("ra", "ら")
-        insert("ri", "り")
-        insert("ru", "る")
-        insert("re", "れ")
-        insert("ro", "ろ")
-
+        ("ra", "ら"), ("ri", "り"), ("ru", "る"), ("re", "れ"), ("ro", "ろ"),
         // わ行
-        insert("wa", "わ")
-        insert("wi", "ゐ")
-        insert("we", "ゑ")
-        insert("wo", "を")
-
+        ("wa", "わ"), ("wi", "ゐ"), ("we", "ゑ"), ("wo", "を"),
         // ん
-        insert("nn", "ん")
-        insert("n'", "ん")
-        insert("xn", "ん")
-
+        ("nn", "ん"), ("n'", "ん"), ("xn", "ん"),
         // が行
-        insert("ga", "が")
-        insert("gi", "ぎ")
-        insert("gu", "ぐ")
-        insert("ge", "げ")
-        insert("go", "ご")
-
+        ("ga", "が"), ("gi", "ぎ"), ("gu", "ぐ"), ("ge", "げ"), ("go", "ご"),
         // ざ行
-        insert("za", "ざ")
-        insert("zi", "じ")
-        insert("ji", "じ")
-        insert("zu", "ず")
-        insert("ze", "ぜ")
-        insert("zo", "ぞ")
-
+        ("za", "ざ"), ("zi", "じ"), ("ji", "じ"), ("zu", "ず"), ("ze", "ぜ"), ("zo", "ぞ"),
         // だ行
-        insert("da", "だ")
-        insert("di", "ぢ")
-        insert("du", "づ")
-        insert("de", "で")
-        insert("do", "ど")
-
+        ("da", "だ"), ("di", "ぢ"), ("du", "づ"), ("de", "で"), ("do", "ど"),
         // ば行
-        insert("ba", "ば")
-        insert("bi", "び")
-        insert("bu", "ぶ")
-        insert("be", "べ")
-        insert("bo", "ぼ")
-
+        ("ba", "ば"), ("bi", "び"), ("bu", "ぶ"), ("be", "べ"), ("bo", "ぼ"),
         // ぱ行
-        insert("pa", "ぱ")
-        insert("pi", "ぴ")
-        insert("pu", "ぷ")
-        insert("pe", "ぺ")
-        insert("po", "ぽ")
-
+        ("pa", "ぱ"), ("pi", "ぴ"), ("pu", "ぷ"), ("pe", "ぺ"), ("po", "ぽ"),
         // きゃ行（拗音）
-        insert("kya", "きゃ")
-        insert("kyi", "きぃ")
-        insert("kyu", "きゅ")
-        insert("kye", "きぇ")
-        insert("kyo", "きょ")
-
+        ("kya", "きゃ"), ("kyi", "きぃ"), ("kyu", "きゅ"), ("kye", "きぇ"), ("kyo", "きょ"),
         // しゃ行
-        insert("sya", "しゃ")
-        insert("sha", "しゃ")
-        insert("syi", "しぃ")
-        insert("syu", "しゅ")
-        insert("shu", "しゅ")
-        insert("sye", "しぇ")
-        insert("she", "しぇ")
-        insert("syo", "しょ")
-        insert("sho", "しょ")
-
+        ("sya", "しゃ"), ("sha", "しゃ"), ("syi", "しぃ"), ("syu", "しゅ"), ("shu", "しゅ"),
+        ("sye", "しぇ"), ("she", "しぇ"), ("syo", "しょ"), ("sho", "しょ"),
         // ちゃ行
-        insert("tya", "ちゃ")
-        insert("cha", "ちゃ")
-        insert("tyi", "ちぃ")
-        insert("tyu", "ちゅ")
-        insert("chu", "ちゅ")
-        insert("tye", "ちぇ")
-        insert("che", "ちぇ")
-        insert("tyo", "ちょ")
-        insert("cho", "ちょ")
-
+        ("tya", "ちゃ"), ("cha", "ちゃ"), ("tyi", "ちぃ"), ("tyu", "ちゅ"), ("chu", "ちゅ"),
+        ("tye", "ちぇ"), ("che", "ちぇ"), ("tyo", "ちょ"), ("cho", "ちょ"),
         // にゃ行
-        insert("nya", "にゃ")
-        insert("nyi", "にぃ")
-        insert("nyu", "にゅ")
-        insert("nye", "にぇ")
-        insert("nyo", "にょ")
-
+        ("nya", "にゃ"), ("nyi", "にぃ"), ("nyu", "にゅ"), ("nye", "にぇ"), ("nyo", "にょ"),
         // ひゃ行
-        insert("hya", "ひゃ")
-        insert("hyi", "ひぃ")
-        insert("hyu", "ひゅ")
-        insert("hye", "ひぇ")
-        insert("hyo", "ひょ")
-
+        ("hya", "ひゃ"), ("hyi", "ひぃ"), ("hyu", "ひゅ"), ("hye", "ひぇ"), ("hyo", "ひょ"),
         // みゃ行
-        insert("mya", "みゃ")
-        insert("myi", "みぃ")
-        insert("myu", "みゅ")
-        insert("mye", "みぇ")
-        insert("myo", "みょ")
-
+        ("mya", "みゃ"), ("myi", "みぃ"), ("myu", "みゅ"), ("mye", "みぇ"), ("myo", "みょ"),
         // りゃ行
-        insert("rya", "りゃ")
-        insert("ryi", "りぃ")
-        insert("ryu", "りゅ")
-        insert("rye", "りぇ")
-        insert("ryo", "りょ")
-
+        ("rya", "りゃ"), ("ryi", "りぃ"), ("ryu", "りゅ"), ("rye", "りぇ"), ("ryo", "りょ"),
         // ぎゃ行
-        insert("gya", "ぎゃ")
-        insert("gyi", "ぎぃ")
-        insert("gyu", "ぎゅ")
-        insert("gye", "ぎぇ")
-        insert("gyo", "ぎょ")
-
+        ("gya", "ぎゃ"), ("gyi", "ぎぃ"), ("gyu", "ぎゅ"), ("gye", "ぎぇ"), ("gyo", "ぎょ"),
         // じゃ行
-        insert("ja", "じゃ")
-        insert("jya", "じゃ")
-        insert("zya", "じゃ")
-        insert("ji", "じ")
-        insert("jyi", "じぃ")
-        insert("zyi", "じぃ")
-        insert("ju", "じゅ")
-        insert("jyu", "じゅ")
-        insert("zyu", "じゅ")
-        insert("je", "じぇ")
-        insert("jye", "じぇ")
-        insert("zye", "じぇ")
-        insert("jo", "じょ")
-        insert("jyo", "じょ")
-        insert("zyo", "じょ")
-
+        ("ja", "じゃ"), ("jya", "じゃ"), ("zya", "じゃ"),
+        ("ji", "じ"), ("jyi", "じぃ"), ("zyi", "じぃ"),
+        ("ju", "じゅ"), ("jyu", "じゅ"), ("zyu", "じゅ"),
+        ("je", "じぇ"), ("jye", "じぇ"), ("zye", "じぇ"),
+        ("jo", "じょ"), ("jyo", "じょ"), ("zyo", "じょ"),
         // ぢゃ行
-        insert("dya", "ぢゃ")
-        insert("dyi", "ぢぃ")
-        insert("dyu", "ぢゅ")
-        insert("dye", "ぢぇ")
-        insert("dyo", "ぢょ")
-
+        ("dya", "ぢゃ"), ("dyi", "ぢぃ"), ("dyu", "ぢゅ"), ("dye", "ぢぇ"), ("dyo", "ぢょ"),
         // びゃ行
-        insert("bya", "びゃ")
-        insert("byi", "びぃ")
-        insert("byu", "びゅ")
-        insert("bye", "びぇ")
-        insert("byo", "びょ")
-
+        ("bya", "びゃ"), ("byi", "びぃ"), ("byu", "びゅ"), ("bye", "びぇ"), ("byo", "びょ"),
         // ぴゃ行
-        insert("pya", "ぴゃ")
-        insert("pyi", "ぴぃ")
-        insert("pyu", "ぴゅ")
-        insert("pye", "ぴぇ")
-        insert("pyo", "ぴょ")
-
+        ("pya", "ぴゃ"), ("pyi", "ぴぃ"), ("pyu", "ぴゅ"), ("pye", "ぴぇ"), ("pyo", "ぴょ"),
         // ふぁ行
-        insert("fa", "ふぁ")
-        insert("fi", "ふぃ")
-        insert("fe", "ふぇ")
-        insert("fo", "ふぉ")
-
+        ("fa", "ふぁ"), ("fi", "ふぃ"), ("fe", "ふぇ"), ("fo", "ふぉ"),
         // てぃ etc.
-        insert("thi", "てぃ")
-        insert("tha", "てゃ")
-        insert("thu", "てゅ")
-        insert("the", "てぇ")
-        insert("tho", "てょ")
-
+        ("thi", "てぃ"), ("tha", "てゃ"), ("thu", "てゅ"), ("the", "てぇ"), ("tho", "てょ"),
         // でぃ etc.
-        insert("dhi", "でぃ")
-        insert("dha", "でゃ")
-        insert("dhu", "でゅ")
-        insert("dhe", "でぇ")
-        insert("dho", "でょ")
-
+        ("dhi", "でぃ"), ("dha", "でゃ"), ("dhu", "でゅ"), ("dhe", "でぇ"), ("dho", "でょ"),
         // つぁ行
-        insert("tsa", "つぁ")
-        insert("tsi", "つぃ")
-        insert("tse", "つぇ")
-        insert("tso", "つぉ")
-
+        ("tsa", "つぁ"), ("tsi", "つぃ"), ("tse", "つぇ"), ("tso", "つぉ"),
         // ヴ行
-        insert("va", "ゔぁ")
-        insert("vi", "ゔぃ")
-        insert("vu", "ゔ")
-        insert("ve", "ゔぇ")
-        insert("vo", "ゔぉ")
-
+        ("va", "ゔぁ"), ("vi", "ゔぃ"), ("vu", "ゔ"), ("ve", "ゔぇ"), ("vo", "ゔぉ"),
         // 小書きかな
-        insert("xa", "ぁ")
-        insert("xi", "ぃ")
-        insert("xu", "ぅ")
-        insert("xe", "ぇ")
-        insert("xo", "ぉ")
-        insert("xya", "ゃ")
-        insert("xyu", "ゅ")
-        insert("xyo", "ょ")
-        insert("xtu", "っ")
-        insert("xtsu", "っ")
-        insert("xwa", "ゎ")
-        insert("xka", "ゕ")
-        insert("xke", "ゖ")
-
+        ("xa", "ぁ"), ("xi", "ぃ"), ("xu", "ぅ"), ("xe", "ぇ"), ("xo", "ぉ"),
+        ("xya", "ゃ"), ("xyu", "ゅ"), ("xyo", "ょ"),
+        ("xtu", "っ"), ("xtsu", "っ"), ("xwa", "ゎ"), ("xka", "ゕ"), ("xke", "ゖ"),
         // 小書き代替
-        insert("la", "ぁ")
-        insert("li", "ぃ")
-        insert("lu", "ぅ")
-        insert("le", "ぇ")
-        insert("lo", "ぉ")
-        insert("lya", "ゃ")
-        insert("lyu", "ゅ")
-        insert("lyo", "ょ")
-        insert("ltu", "っ")
-        insert("ltsu", "っ")
-        insert("lwa", "ゎ")
-        insert("lka", "ゕ")
-        insert("lke", "ゖ")
-
+        ("la", "ぁ"), ("li", "ぃ"), ("lu", "ぅ"), ("le", "ぇ"), ("lo", "ぉ"),
+        ("lya", "ゃ"), ("lyu", "ゅ"), ("lyo", "ょ"),
+        ("ltu", "っ"), ("ltsu", "っ"), ("lwa", "ゎ"), ("lka", "ゕ"), ("lke", "ゖ"),
         // ウィ・ウェ・ウォ
-        insert("whi", "うぃ")
-        insert("whe", "うぇ")
-        insert("who", "うぉ")
-
+        ("whi", "うぃ"), ("whe", "うぇ"), ("who", "うぉ"),
         // 記号
-        insert("-", "ー")
-
+        ("-", "ー"),
         // z-sequences (Mozc 互換)
-        insert("zh", "←")
-        insert("zj", "↓")
-        insert("zk", "↑")
-        insert("zl", "→")
-        insert("z.", "…")
-        insert("z,", "‥")
-        insert("z/", "・")
-        insert("z-", "〜")
-        insert("z[", "『")
-        insert("z]", "』")
+        ("zh", "←"), ("zj", "↓"), ("zk", "↑"), ("zl", "→"),
+        ("z.", "…"), ("z,", "‥"), ("z/", "・"), ("z-", "〜"),
+        ("z[", "『"), ("z]", "』"),
+    ]
+
+    private init() {
+        for (romaji, kana) in RomajiTrie.mappings {
+            insert(romaji, kana)
+        }
     }
 
     func lookup(_ romaji: String) -> TrieLookupResult {

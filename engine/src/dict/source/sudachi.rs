@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Cursor};
 use std::path::Path;
 
-use super::{is_hiragana, DictSource, DictSourceError};
+use super::{is_hiragana, list_dict_files, parse_id_cost, DictSource, DictSourceError};
 use crate::dict::DictEntry;
 
 const SUDACHI_CDN_BASE: &str = "https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw";
@@ -119,22 +119,7 @@ fn parse_latest_version(xml: &str) -> Result<String, DictSourceError> {
 
 impl DictSource for SudachiSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        let mut files: Vec<_> = fs::read_dir(dir)
-            .map_err(DictSourceError::Io)?
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                let name = entry.file_name();
-                name.to_string_lossy().ends_with(".csv")
-            })
-            .collect();
-        files.sort_by_key(|e| e.file_name());
-
-        if files.is_empty() {
-            return Err(DictSourceError::Parse(format!(
-                "no *.csv files found in {}",
-                dir.display()
-            )));
-        }
+        let files = list_dict_files(dir, "*.csv", |name| name.ends_with(".csv"))?;
 
         let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
         let mut total_lines = 0u64;
@@ -159,26 +144,9 @@ impl DictSource for SudachiSource {
                 }
 
                 let surface = fields[0];
-                let left_id: u16 = match fields[1].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let right_id: u16 = match fields[2].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let cost: i16 = match fields[3].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
+                let Some((left_id, right_id, cost)) = parse_id_cost(&fields) else {
+                    skipped += 1;
+                    continue;
                 };
                 let reading_kata = fields[11];
                 let reading = kata_to_hira(reading_kata);

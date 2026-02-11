@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use super::{is_hiragana, DictSource, DictSourceError};
+use super::{is_hiragana, list_dict_files, parse_id_cost, DictSource, DictSourceError};
 use crate::dict::DictEntry;
 
 const MOZC_CONTENTS_URL: &str =
@@ -72,23 +72,9 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
 
 impl DictSource for MozcSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        let mut files: Vec<_> = fs::read_dir(dir)
-            .map_err(DictSourceError::Io)?
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("dictionary") && name.ends_with(".txt")
-            })
-            .collect();
-        files.sort_by_key(|e| e.file_name());
-
-        if files.is_empty() {
-            return Err(DictSourceError::Parse(format!(
-                "no dictionary*.txt files found in {}",
-                dir.display()
-            )));
-        }
+        let files = list_dict_files(dir, "dictionary*.txt", |name| {
+            name.starts_with("dictionary") && name.ends_with(".txt")
+        })?;
 
         let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
         let mut total_lines = 0u64;
@@ -113,26 +99,9 @@ impl DictSource for MozcSource {
                 }
 
                 let reading = fields[0];
-                let left_id: u16 = match fields[1].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let right_id: u16 = match fields[2].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let cost: i16 = match fields[3].parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        skipped += 1;
-                        continue;
-                    }
+                let Some((left_id, right_id, cost)) = parse_id_cost(&fields) else {
+                    skipped += 1;
+                    continue;
                 };
                 let surface = fields[4];
 
