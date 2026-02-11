@@ -22,6 +22,9 @@ class LeximeInputController: IMKInputController {
     let trie = RomajiTrie.shared
     var selectedPredictionIndex: Int = 0
     var isPunctuationComposing: Bool = false
+    var programmerMode: Bool {
+        UserDefaults.standard.bool(forKey: "programmerMode")
+    }
 
     /// Maps ASCII key to [fullwidth, halfwidth] candidates
     static let punctuationCandidates: [String: [String]] = [
@@ -134,6 +137,13 @@ class LeximeInputController: IMKInputController {
                 commitCurrentState(client: client)
             }
             return false
+        }
+
+        // Programmer mode: ¥ key → insert backslash (Shift+¥ = pipe is excluded)
+        if event.keyCode == Key.yen && programmerMode && !dominated.contains(.shift) {
+            if isComposing { commitCurrentState(client: client) }
+            client.insertText("\\", replacementRange: NSRange(location: NSNotFound, length: 0))
+            return true
         }
 
         let keyCode = event.keyCode
@@ -260,7 +270,7 @@ class LeximeInputController: IMKInputController {
         commitText(fullText, client: client)
     }
 
-    private static let historySaveQueue = DispatchQueue(label: "dev.sendsh.lexime.history-save")
+    private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
     private func recordToHistory() {
         guard let history = sharedHistory else { return }

@@ -9,6 +9,7 @@ enum Key {
     static let space:     UInt16 = 49
     static let backspace: UInt16 = 51
     static let escape:    UInt16 = 53
+    static let yen:       UInt16 = 93
     static let f7:        UInt16 = 98
     static let eisu:      UInt16 = 102
     static let kana:      UInt16 = 104

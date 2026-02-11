@@ -1,7 +1,7 @@
 import Cocoa
 import InputMethodKit
 
-let kConnectionName = "dev.sendsh.inputmethod.Lexime_Connection"
+let kConnectionName = "sh.send.inputmethod.Lexime_Connection"
 
 guard let resourcePath = Bundle.main.resourcePath else {
     NSLog("Lexime: Bundle.main.resourcePath is nil")

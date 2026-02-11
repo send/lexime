@@ -7,7 +7,7 @@
     <key>CFBundleExecutable</key>
     <string>Lexime</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.sendsh.inputmethod.Lexime</string>
+    <string>sh.send.inputmethod.Lexime</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -21,7 +21,7 @@
     <key>LSBackgroundOnly</key>
     <true/>
     <key>InputMethodConnectionName</key>
-    <string>dev.sendsh.inputmethod.Lexime_Connection</string>
+    <string>sh.send.inputmethod.Lexime_Connection</string>
     <key>InputMethodServerControllerClass</key>
     <string>LeximeInputController</string>
     <key>tsInputMethodCharacterRepertoireKey</key>
@@ -34,7 +34,7 @@
     <dict>
         <key>tsInputModeListKey</key>
         <dict>
-            <key>dev.sendsh.inputmethod.Lexime.Japanese</key>
+            <key>sh.send.inputmethod.Lexime.Japanese</key>
             <dict>
                 <key>TISIntendedLanguage</key>
                 <string>ja</string>
@@ -52,7 +52,7 @@
         </dict>
         <key>tsVisibleInputModeOrderedArrayKey</key>
         <array>
-            <string>dev.sendsh.inputmethod.Lexime.Japanese</string>
+            <string>sh.send.inputmethod.Lexime.Japanese</string>
         </array>
     </dict>
 </dict>
