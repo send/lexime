@@ -5,8 +5,10 @@ outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-cd engine && cargo build --release --target x86_64-apple-darwin
-cd engine && cargo build --release --target aarch64-apple-darwin
+cd engine
+cargo build --release --target x86_64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
+cd ..
 mkdir -p build
 lipo -create \
   engine/target/x86_64-apple-darwin/release/liblex_engine.a \
@@ -39,13 +41,27 @@ cargo build --release --bin dictool
 target/release/dictool compile data/mozc-raw data/lexime.dict
 """
 
+[tasks.conn]
+description = "Compile connection cost matrix"
+depends = ["fetch-dict"]
+sources = ["engine/data/mozc-raw/connection_single_column.txt"]
+outputs = ["engine/data/lexime.conn"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --bin dictool
+target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime.conn
+"""
+
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
-depends = ["engine-lib", "dict"]
+depends = ["engine-lib", "dict", "conn"]
 sources = [
   "Sources/*.swift",
   "build/liblex_engine.a",
   "engine/data/lexime.dict",
+  "engine/data/lexime.conn",
   "Info.plist",
   "Resources/icon.tiff",
 ]
@@ -70,6 +86,7 @@ rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
 cp engine/data/lexime.dict "$RES/lexime.dict"
+cp engine/data/lexime.conn "$RES/lexime.conn"
 # TODO: codesign with Lexime.entitlements for distribution builds
 echo "Build complete: $APP"
 """
@@ -102,6 +119,17 @@ run = """log stream --predicate 'process == "Lexime"' --style compact"""
 [tasks.icon]
 description = "Generate icon assets"
 run = "bash scripts/icon.sh"
+
+[tasks.test-swift]
+description = "Run Swift unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p build
+swiftc Sources/RomajiTable.swift Sources/RomajiConverter.swift \
+  Tests/TestRunner.swift Tests/TestRomajiTrie.swift Tests/TestRomajiConverter.swift \
+  -o build/test-runner && build/test-runner
+"""
 
 [tasks.lint]
 description = "Run cargo fmt --check and clippy"

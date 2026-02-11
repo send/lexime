@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
+use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::source;
 use lex_engine::dict::{Dictionary, TrieDictionary};
 
@@ -13,6 +14,13 @@ fn main() {
 
     match args[1].as_str() {
         "compile" => parse_compile(&args[2..]),
+        "compile-conn" => {
+            if args.len() != 4 {
+                eprintln!("Usage: dictool compile-conn <input-txt> <output-file>");
+                process::exit(1);
+            }
+            compile_conn(&args[2], &args[3]);
+        }
         "fetch" => parse_fetch(&args[2..]),
         "info" => {
             if args.len() != 3 {
@@ -29,9 +37,10 @@ fn usage() -> ! {
     eprintln!("Usage: dictool <command>");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  fetch   [--source mozc|sudachi] <output-dir>");
-    eprintln!("  compile [--source mozc|sudachi] <input-dir> <output-file>");
-    eprintln!("  info    <dict-file>");
+    eprintln!("  fetch         [--source mozc|sudachi] <output-dir>");
+    eprintln!("  compile       [--source mozc|sudachi] <input-dir> <output-file>");
+    eprintln!("  compile-conn  <input-txt> <output-file>");
+    eprintln!("  info          <dict-file>");
     process::exit(1);
 }
 
@@ -112,6 +121,32 @@ fn compile(source_name: &str, input_dir: &str, output_file: &str) {
     let dict = TrieDictionary::from_entries(entries);
     dict.save(Path::new(output_file)).unwrap_or_else(|e| {
         eprintln!("Error writing dictionary: {e}");
+        process::exit(1);
+    });
+
+    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "Wrote {output_file} ({:.1} MB)",
+        file_size as f64 / 1_048_576.0
+    );
+}
+
+fn compile_conn(input_txt: &str, output_file: &str) {
+    let text = fs::read_to_string(input_txt).unwrap_or_else(|e| {
+        eprintln!("Error reading {input_txt}: {e}");
+        process::exit(1);
+    });
+
+    eprintln!("Parsing connection matrix from {input_txt}...");
+    let matrix = ConnectionMatrix::from_text(&text).unwrap_or_else(|e| {
+        eprintln!("Error parsing connection matrix: {e}");
+        process::exit(1);
+    });
+
+    eprintln!("  Matrix size: {}x{}", matrix.num_ids(), matrix.num_ids());
+
+    matrix.save(Path::new(output_file)).unwrap_or_else(|e| {
+        eprintln!("Error writing {output_file}: {e}");
         process::exit(1);
     });
 

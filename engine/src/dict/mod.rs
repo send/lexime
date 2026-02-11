@@ -1,3 +1,4 @@
+pub mod connection;
 mod entry;
 pub mod source;
 mod trie_dict;
@@ -13,4 +14,5 @@ pub struct SearchResult {
 pub trait Dictionary: Send + Sync {
     fn lookup(&self, reading: &str) -> Option<&[DictEntry]>;
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult>;
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult>;
 }

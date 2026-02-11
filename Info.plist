@@ -30,5 +30,30 @@
     </array>
     <key>tsInputMethodIconFileKey</key>
     <string>icon.tiff</string>
+    <key>ComponentInputModeDict</key>
+    <dict>
+        <key>tsInputModeListKey</key>
+        <dict>
+            <key>dev.sendsh.inputmethod.Lexime.Japanese</key>
+            <dict>
+                <key>TISIntendedLanguage</key>
+                <string>ja</string>
+                <key>tsInputModeDefaultStateKey</key>
+                <true/>
+                <key>tsInputModeScriptKey</key>
+                <string>smJapanese</string>
+                <key>tsInputModeMenuIconFileKey</key>
+                <string>icon.tiff</string>
+                <key>tsInputModeIsVisibleKey</key>
+                <true/>
+                <key>tsInputModePrimaryInScriptKey</key>
+                <true/>
+            </dict>
+        </dict>
+        <key>tsVisibleInputModeOrderedArrayKey</key>
+        <array>
+            <string>dev.sendsh.inputmethod.Lexime.Japanese</string>
+        </array>
+    </dict>
 </dict>
 </plist>
