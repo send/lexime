@@ -6,7 +6,7 @@ use std::path::Path;
 use super::{is_hiragana, DictSource, DictSourceError};
 use crate::dict::DictEntry;
 
-const SUDACHI_BASE_URL: &str = "https://sudachi.s3.ap-northeast-1.amazonaws.com/sudachidict-raw";
+const SUDACHI_CDN_BASE: &str = "https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw";
 const SUDACHI_S3_LIST_URL: &str = "https://sudachi.s3.ap-northeast-1.amazonaws.com/?list-type=2&prefix=sudachidict-raw/&delimiter=/";
 
 /// ZIP files to download for the default (core) dictionary.
@@ -31,6 +31,44 @@ impl SudachiSource {
             .map_err(|e| DictSourceError::Http(format!("S3 listing: {e}")))?;
         parse_latest_version(&body)
     }
+}
+
+/// Download a ZIP and extract entries whose name ends with `suffix` into `dest`.
+/// Returns the number of files extracted. Uses basename only (zip-slip safe).
+fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, DictSourceError> {
+    let body = ureq::get(url)
+        .call()
+        .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
+        .into_body()
+        .with_config()
+        .limit(200 * 1024 * 1024)
+        .read_to_vec()
+        .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
+
+    let cursor = Cursor::new(body);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(zip_err)?;
+    let mut count = 0;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(zip_err)?;
+        let raw_name = file.name().to_string();
+        if !raw_name.ends_with(suffix) {
+            continue;
+        }
+        let basename = Path::new(&raw_name)
+            .file_name()
+            .ok_or_else(|| DictSourceError::Parse(format!("invalid ZIP entry name: {raw_name}")))?
+            .to_string_lossy();
+        let out_path = dest.join(&*basename);
+        let mut out = fs::File::create(&out_path).map_err(DictSourceError::Io)?;
+        io::copy(&mut file, &mut out).map_err(DictSourceError::Io)?;
+        eprintln!("    → {basename}");
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn zip_err(e: impl std::fmt::Display) -> DictSourceError {
+    DictSourceError::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
 /// Extract the latest numeric version from S3 ListBucket XML response.
@@ -164,39 +202,23 @@ impl DictSource for SudachiSource {
                 continue;
             }
 
-            let url = format!("{SUDACHI_BASE_URL}/{version}/{zip_name}");
+            let url = format!("{SUDACHI_CDN_BASE}/{version}/{zip_name}");
             eprintln!("  {zip_name}");
+            download_and_extract(&url, ".csv", dest)?;
+        }
 
-            let body = ureq::get(&url)
-                .call()
-                .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
-                .into_body()
-                .read_to_vec()
-                .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
-
-            let cursor = Cursor::new(body);
-            let mut archive = zip::ZipArchive::new(cursor)
-                .map_err(|e| DictSourceError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
-
-            for i in 0..archive.len() {
-                let mut file = archive.by_index(i).map_err(|e| {
-                    DictSourceError::Io(io::Error::new(io::ErrorKind::InvalidData, e))
-                })?;
-                let raw_name = file.name().to_string();
-                if !raw_name.ends_with(".csv") {
-                    continue;
-                }
-                // Sanitize: use only the file basename to prevent zip slip
-                let basename = Path::new(&raw_name)
-                    .file_name()
-                    .ok_or_else(|| {
-                        DictSourceError::Parse(format!("invalid ZIP entry name: {raw_name}"))
-                    })?
-                    .to_string_lossy();
-                let out_path = dest.join(&*basename);
-                let mut out = fs::File::create(&out_path).map_err(DictSourceError::Io)?;
-                io::copy(&mut file, &mut out).map_err(DictSourceError::Io)?;
-                eprintln!("    → {basename}");
+        // Download matrix.def
+        let matrix_path = dest.join("matrix.def");
+        if matrix_path.exists() {
+            eprintln!("  matrix.def (already exists, skipping)");
+        } else {
+            eprintln!("  matrix.def");
+            let matrix_url = format!("{SUDACHI_CDN_BASE}/matrix.def.zip");
+            let count = download_and_extract(&matrix_url, "matrix.def", dest)?;
+            if count == 0 {
+                return Err(DictSourceError::Parse(
+                    "matrix.def not found in ZIP archive".to_string(),
+                ));
             }
         }
 

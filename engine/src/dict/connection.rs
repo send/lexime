@@ -29,19 +29,19 @@ impl ConnectionMatrix {
         self.num_ids
     }
 
-    /// Build from a TSV file (Mozc connection_single_column.txt format).
+    /// Build from a text file.
     ///
-    /// Format:
-    /// - Line 1: `num_left num_right` (both should be equal)
-    /// - Remaining lines: one cost (i16) per line, row-major order
+    /// Supports two formats (auto-detected):
+    /// - **Mozc**: Line 1 is `num_ids` (or `num_left num_right`), then one cost per line.
+    /// - **MeCab**: Line 1 is `num_left num_right`, then `right_id left_id cost` per line.
     pub fn from_text(text: &str) -> Result<Self, ConnectionError> {
-        let mut lines = text.lines();
+        let mut lines = text.lines().peekable();
 
         let header = lines
             .next()
             .ok_or_else(|| ConnectionError::Parse("empty file".to_string()))?;
         let parts: Vec<&str> = header.split_whitespace().collect();
-        let num_left: u16 = match parts.len() {
+        let num_ids: u16 = match parts.len() {
             1 => parts[0]
                 .parse()
                 .map_err(|e| ConnectionError::Parse(format!("invalid num_ids: {e}")))?,
@@ -67,31 +67,73 @@ impl ConnectionMatrix {
             }
         };
 
-        let expected = num_left as usize * num_left as usize;
-        let mut costs = Vec::with_capacity(expected);
+        let expected = num_ids as usize * num_ids as usize;
 
-        for line in lines {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
+        // Auto-detect format: skip empty lines then peek at first data line
+        while lines.peek().is_some_and(|line| line.trim().is_empty()) {
+            lines.next();
+        }
+        let is_triplet = lines
+            .peek()
+            .is_some_and(|line| line.split_whitespace().count() == 3);
+
+        let costs = if is_triplet {
+            // MeCab format: "right_id left_id cost" per line
+            // Store as left_id * N + right_id to match cost() lookup
+            let mut costs = vec![0i16; expected];
+            for line in lines {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                if fields.len() != 3 {
+                    return Err(ConnectionError::Parse(format!(
+                        "expected 3 fields, got {}",
+                        fields.len()
+                    )));
+                }
+                let right_id: usize = fields[0]
+                    .parse()
+                    .map_err(|e| ConnectionError::Parse(format!("right_id: {e}")))?;
+                let left_id: usize = fields[1]
+                    .parse()
+                    .map_err(|e| ConnectionError::Parse(format!("left_id: {e}")))?;
+                let cost: i16 = fields[2]
+                    .parse()
+                    .map_err(|e| ConnectionError::Parse(format!("cost: {e}")))?;
+                let idx = left_id * num_ids as usize + right_id;
+                if idx >= expected {
+                    return Err(ConnectionError::Parse(format!(
+                        "index out of bounds: ({right_id}, {left_id})"
+                    )));
+                }
+                costs[idx] = cost;
             }
-            let cost: i16 = line
-                .parse()
-                .map_err(|e| ConnectionError::Parse(format!("invalid cost '{line}': {e}")))?;
-            costs.push(cost);
-        }
+            costs
+        } else {
+            // Mozc format: one cost per line
+            let mut costs = Vec::with_capacity(expected);
+            for line in lines {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let cost: i16 = line
+                    .parse()
+                    .map_err(|e| ConnectionError::Parse(format!("invalid cost '{line}': {e}")))?;
+                costs.push(cost);
+            }
+            if costs.len() != expected {
+                return Err(ConnectionError::Parse(format!(
+                    "expected {expected} costs, got {}",
+                    costs.len()
+                )));
+            }
+            costs
+        };
 
-        if costs.len() != expected {
-            return Err(ConnectionError::Parse(format!(
-                "expected {expected} costs, got {}",
-                costs.len()
-            )));
-        }
-
-        Ok(Self {
-            num_ids: num_left,
-            costs,
-        })
+        Ok(Self { num_ids, costs })
     }
 
     /// Load from compiled binary format.
@@ -265,5 +307,51 @@ mod tests {
         let text = "2 2\n0\n10\n20\n"; // only 3 costs instead of 4
         let result = ConnectionMatrix::from_text(text);
         assert!(matches!(result, Err(ConnectionError::Parse(_))));
+    }
+
+    #[test]
+    fn test_mecab_triplet_format() {
+        // MeCab matrix.def: "right_id left_id cost"
+        // Line "R L C" → cost(left=L, right=R) = C
+        // Use asymmetric values to catch transpose bugs
+        let text = "2 2\n0 0 10\n0 1 20\n1 0 30\n1 1 40\n";
+        let m = ConnectionMatrix::from_text(text).unwrap();
+        assert_eq!(m.num_ids(), 2);
+        // "0 0 10" → cost(left=0, right=0) = 10
+        assert_eq!(m.cost(0, 0), 10);
+        // "0 1 20" → cost(left=1, right=0) = 20
+        assert_eq!(m.cost(1, 0), 20);
+        // "1 0 30" → cost(left=0, right=1) = 30
+        assert_eq!(m.cost(0, 1), 30);
+        // "1 1 40" → cost(left=1, right=1) = 40
+        assert_eq!(m.cost(1, 1), 40);
+    }
+
+    #[test]
+    fn test_mecab_triplet_sparse() {
+        // Sparse: only specify some entries; rest default to 0
+        // Format: "right_id left_id cost"
+        // "0 1 100" → right=0, left=1 → cost(left=1, right=0) = 100
+        // "1 0 -200" → right=1, left=0 → cost(left=0, right=1) = -200
+        let text = "2 2\n0 1 100\n1 0 -200\n";
+        let m = ConnectionMatrix::from_text(text).unwrap();
+        assert_eq!(m.cost(0, 0), 0);
+        assert_eq!(m.cost(0, 1), -200);
+        assert_eq!(m.cost(1, 0), 100);
+        assert_eq!(m.cost(1, 1), 0);
+    }
+
+    #[test]
+    fn test_mecab_triplet_roundtrip() {
+        let text = "2 2\n0 0 10\n0 1 20\n1 0 30\n1 1 40\n";
+        let m = ConnectionMatrix::from_text(text).unwrap();
+        let bytes = m.to_bytes();
+        let m2 = ConnectionMatrix::from_bytes(&bytes).unwrap();
+        assert_eq!(m2.num_ids(), 2);
+        for left in 0..2 {
+            for right in 0..2 {
+                assert_eq!(m.cost(left, right), m2.cost(left, right));
+            }
+        }
     }
 }
