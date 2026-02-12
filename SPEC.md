@@ -253,11 +253,36 @@ macOS で動作する最小限の IME を構築。
 - 候補リストの並び替え（学習済みエントリ優先）
 - ローカル保存（LXUD 形式、アトミック書き込み）
 
-### Phase 4+ (今後)
+### Phase 4: Speed of Thought
+
+思考の速度で日本語を書ける開発者向け IME を目指す。
+
+**1発目精度の向上**
+
+- 学習収束の高速化（1-2 回の使用で十分なブースト）
+- バイグラム活用の強化（直前の文脈を変換精度に反映）
+
+**リアルタイム変換表示 + 句読点自動確定**
+
+- マークドテキストにかなではなく 1 位変換結果をリアルタイム表示
+- 句読点入力で直前の変換を自動コミット（Space/Enter 不要）
+- composedKana は長く保持（Viterbi の文脈を最大化）
+
+**Shift インライン英字**
+
+- composing 中に Shift+文字で英字入力を開始（ローマ字変換をバイパス）
+- 区切り文字（スペース、句読点等）で日本語モードに復帰
+- programmerMode 時は英語と日本語の境界に自動スペース挿入
+  - 例: `今日 React のコンポーネントを commit した`
+
+**実験枠**
+
+- ゴーストテキスト: 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）
+
+### Phase 5+ (今後)
 
 - ユーザー辞書
 - 設定 UI
-- 候補ランキングの継続改善
 
 ## ビルド・CI
 
@@ -289,10 +314,9 @@ macOS で動作する最小限の IME を構築。
 
 - **トリガー**: pull_request
 - **パスフィルタ**: `engine/**` 変更時のみ Rust CI、`Sources/**` or `Tests/**` 変更時のみ Swift CI を実行
-- **engine ジョブ** (ubuntu-latest): `cargo fmt --check` → `cargo clippy -- -D warnings` → `cargo test`
-- **swift ジョブ** (macos-latest): `swiftc` でテストバイナリをビルド・実行
+- **engine ジョブ** (ubuntu-latest): `mise run test`（lint + cargo test）
+- **swift ジョブ** (macos-latest): `mise run test-swift`（engine-lib ビルド + FFI テスト）
 
 ## 未決事項
 
 - リリースワークフロー（パブリック化後のタグプッシュによる自動ビルド）
-- 差別化の方向性（速度以外）
