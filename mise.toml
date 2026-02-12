@@ -158,13 +158,15 @@ description = "Generate icon assets"
 run = "bash scripts/icon.sh"
 
 [tasks.test-swift]
-description = "Run Swift unit tests"
+description = "Run Swift unit tests (FFI round-trip)"
+depends = ["engine-lib"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p build
-swiftc Sources/RomajiTable.swift Sources/RomajiConverter.swift \
-  Tests/TestRunner.swift Tests/TestRomajiTrie.swift Tests/TestRomajiConverter.swift \
+swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
+  -Lbuild -llex_engine \
+  Tests/TestRunner.swift Tests/TestRomajiFFI.swift \
   -o build/test-runner && build/test-runner
 """
 

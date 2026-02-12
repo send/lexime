@@ -11,27 +11,14 @@ class LeximeInputController: IMKInputController {
     var composedKana: String = ""
     var pendingRomaji: String = ""
 
-    // Multi-segment conversion state
-    var originalKana: String = ""
-    var conversionSegments: [ConversionSegment] = []
-    var activeSegmentIndex: Int = 0
-    var viterbiSegments: [ConversionSegment] = []  // stored for segment boundary expansion
     var nbestPaths: [[(reading: String, surface: String)]] = []
 
     var isComposing: Bool { state != .idle }
 
-    let trie = RomajiTrie.shared
     var selectedPredictionIndex: Int = 0
-    var isPunctuationComposing: Bool = false
     var programmerMode: Bool {
         UserDefaults.standard.bool(forKey: "programmerMode")
     }
-
-    /// Maps ASCII key to [fullwidth, halfwidth] candidates
-    static let punctuationCandidates: [String: [String]] = [
-        ".": ["。", "."], ",": ["、", ","], "?": ["？", "?"], "!": ["！", "!"],
-        "[": ["「", "｢", "["], "]": ["」", "｣", "]"], "/": ["・", "/"], "~": ["〜", "~"],
-    ]
 
     static let maxComposedKanaLength = 100
 
@@ -66,20 +53,10 @@ class LeximeInputController: IMKInputController {
     }
 
     func showCandidatePanel(client: IMKTextInput) {
-        let allCandidates: [String]
-        let selectedIndex: Int
+        guard state == .composing else { return }
 
-        switch state {
-        case .composing:
-            allCandidates = predictionCandidates
-            selectedIndex = selectedPredictionIndex
-        case .converting:
-            guard activeSegmentIndex < conversionSegments.count else { return }
-            allCandidates = conversionSegments[activeSegmentIndex].candidates
-            selectedIndex = conversionSegments[activeSegmentIndex].selectedIndex
-        case .idle:
-            return
-        }
+        let allCandidates = predictionCandidates
+        let selectedIndex = selectedPredictionIndex
 
         guard !allCandidates.isEmpty else { hideCandidatePanel(); return }
         let clampedIndex = min(selectedIndex, allCandidates.count - 1)
@@ -126,17 +103,11 @@ class LeximeInputController: IMKInputController {
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
-        // Shift+Arrow in converting state: segment boundary adjustment (U2)
-        if dominated == .shift && state == .converting {
-            if event.keyCode == Key.left || event.keyCode == Key.right {
-                return handleSegmentBoundaryAdjust(
-                    shrink: event.keyCode == Key.left, client: client)
-            }
-        }
-
         // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
         // Shift alone is excluded (used for normal text input like ?, !, ~)
         if !dominated.subtracting(.shift).isEmpty {
+            NSLog("Lexime: modifier key pass-through (dominated=%lu, composing=%d)",
+                  dominated.rawValue, isComposing ? 1 : 0)
             if isComposing {
                 commitCurrentState(client: client)
             }
@@ -160,8 +131,6 @@ class LeximeInputController: IMKInputController {
             return handleIdle(keyCode: keyCode, text: text, client: client)
         case .composing:
             return handleComposing(keyCode: keyCode, text: text, client: client)
-        case .converting:
-            return handleConverting(keyCode: keyCode, text: text, client: client)
         }
     }
 
@@ -175,19 +144,6 @@ class LeximeInputController: IMKInputController {
         TISSelectInputSource(source)
     }
 
-    // MARK: - Punctuation Composing
-
-    func composePunctuation(_ candidates: [String], client: IMKTextInput) {
-        state = .composing
-        isPunctuationComposing = true
-        composedKana = candidates[0]
-        pendingRomaji = ""
-        predictionCandidates = candidates
-        selectedPredictionIndex = 0
-        updateMarkedText(candidates[0], client: client)
-        showCandidatePanel(client: client)
-    }
-
     // MARK: - Romaji Conversion
 
     func appendAndConvert(_ input: String, client: IMKTextInput) {
@@ -199,31 +155,30 @@ class LeximeInputController: IMKInputController {
         pendingRomaji += input
         drainPending(force: false)
         updateMarkedText(client: client)
-        updatePredictions()
+        updateCandidates()
     }
 
-    func updatePredictions() {
+    func updateCandidates() {
         selectedPredictionIndex = 0
-        if !composedKana.isEmpty {
-            var candidates = predictCandidates(composedKana)
-            // Ensure the raw kana is always the first candidate
-            candidates.removeAll { $0 == composedKana }
-            candidates.insert(composedKana, at: 0)
-            predictionCandidates = candidates
-            if let client = self.client() {
-                showCandidatePanel(client: client)
-            }
-        } else {
+        guard !composedKana.isEmpty else {
             predictionCandidates = []
             hideCandidatePanel()
+            return
+        }
+
+        let (candidates, paths) = generateCandidates(composedKana)
+        predictionCandidates = candidates
+        nbestPaths = paths
+
+        if let client = self.client() {
+            showCandidatePanel(client: client)
         }
     }
 
     private func drainPending(force: Bool) {
-        let result = drainPendingRomaji(
+        let result = convertRomaji(
             composedKana: composedKana,
             pendingRomaji: pendingRomaji,
-            trie: trie,
             force: force)
         composedKana = result.composedKana
         pendingRomaji = result.pendingRomaji
@@ -260,37 +215,35 @@ class LeximeInputController: IMKInputController {
         case .composing:
             hideCandidatePanel()
             flush()
-            commitComposed(client: client)
-        case .converting:
-            commitConversion(client: client)
+            if selectedPredictionIndex > 0,
+               selectedPredictionIndex < predictionCandidates.count {
+                let reading = composedKana
+                let surface = predictionCandidates[selectedPredictionIndex]
+                if surface != reading {
+                    recordToHistory(reading: reading, surface: surface)
+                }
+                commitText(surface, client: client)
+            } else {
+                commitComposed(client: client)
+            }
         }
-    }
-
-    func commitConversion(client: IMKTextInput) {
-        guard !conversionSegments.isEmpty else { return }
-        hideCandidatePanel()
-        recordToHistory()
-        let fullText = conversionSegments.map { $0.surface }.joined()
-        commitText(fullText, client: client)
     }
 
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
-    private func recordToHistory() {
+    func recordToHistory(reading: String, surface: String) {
         guard let history = AppContext.shared.history else { return }
 
-        // Record the committed segments (whole reading → surface)
-        recordPairsToFFI(conversionSegments.map { ($0.reading, $0.surface) }, history: history)
+        // Record the committed pair (whole reading → surface)
+        recordPairsToFFI([(reading, surface)], history: history)
 
-        // Segment-level learning: when committing in single-segment mode,
-        // also record individual Viterbi segments so that sub-phrase mappings
-        // (e.g. ください → 下さい) are learned independently.
-        if conversionSegments.count == 1, let selectedSurface = conversionSegments.first?.surface {
-            if let matchingPath = nbestPaths.first(where: { path in
-                path.map { $0.surface }.joined() == selectedSurface
-            }), matchingPath.count > 1 {
-                recordPairsToFFI(matchingPath, history: history)
-            }
+        // Sub-phrase learning: if there's a matching N-best path whose
+        // joined surface equals the committed surface, also record its
+        // individual segments so sub-phrase mappings are learned.
+        if let matchingPath = nbestPaths.first(where: { path in
+            path.map { $0.surface }.joined() == surface
+        }), matchingPath.count > 1 {
+            recordPairsToFFI(matchingPath, history: history)
         }
 
         // Save asynchronously to avoid blocking key handling
@@ -344,14 +297,9 @@ class LeximeInputController: IMKInputController {
     func resetState() {
         composedKana = ""
         pendingRomaji = ""
-        originalKana = ""
-        conversionSegments = []
-        activeSegmentIndex = 0
-        viterbiSegments = []
         nbestPaths = []
         predictionCandidates = []
         selectedPredictionIndex = 0
-        isPunctuationComposing = false
         state = .idle
     }
 }

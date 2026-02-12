@@ -109,4 +109,49 @@ LexConversionResultList lex_convert_nbest_with_history(
 
 void lex_conversion_result_list_free(LexConversionResultList list);
 
+/* Romaji Lookup API */
+
+typedef struct {
+    uint8_t tag;           /* 0=none, 1=prefix, 2=exact, 3=exactAndPrefix */
+    const char *kana;      /* valid when tag=2 or tag=3; NULL otherwise */
+    void *_owned;
+} LexRomajiLookupResult;
+
+LexRomajiLookupResult lex_romaji_lookup(const char *romaji);
+void lex_romaji_lookup_free(LexRomajiLookupResult result);
+
+/* Romaji Convert API */
+
+typedef struct {
+    const char *composed_kana;
+    const char *pending_romaji;
+    void *_owned;
+} LexRomajiConvertResult;
+
+LexRomajiConvertResult lex_romaji_convert(
+    const char *composed_kana,
+    const char *pending_romaji,
+    uint8_t force
+);
+void lex_romaji_convert_free(LexRomajiConvertResult result);
+
+/* Unified Candidate Generation API */
+
+typedef struct {
+    const char *const *surfaces;
+    uint32_t surfaces_len;
+    const LexConversionResult *paths;
+    uint32_t paths_len;
+    void *_owned;
+} LexCandidateResponse;
+
+LexCandidateResponse lex_generate_candidates(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history,
+    const char *reading,
+    uint32_t max_results
+);
+void lex_candidate_response_free(LexCandidateResponse response);
+
 #endif
