@@ -10,10 +10,8 @@ class CandidateListView: NSView {
     override var isFlipped: Bool { true }
 
     private let font = NSFont.systemFont(ofSize: 14)
-    private let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .regular)
     private let rowHeight: CGFloat = 24
     private let horizontalPadding: CGFloat = 8
-    private let numberWidth: CGFloat = 20
 
     var desiredSize: NSSize {
         guard !candidates.isEmpty else { return .zero }
@@ -23,7 +21,7 @@ class CandidateListView: NSView {
             let w = (c as NSString).size(withAttributes: attrs).width
             if w > maxTextWidth { maxTextWidth = w }
         }
-        let width = horizontalPadding + numberWidth + horizontalPadding + maxTextWidth + horizontalPadding
+        let width = horizontalPadding + maxTextWidth + horizontalPadding
         let height = rowHeight * CGFloat(candidates.count)
         return NSSize(width: ceil(width), height: ceil(height))
     }
@@ -32,11 +30,6 @@ class CandidateListView: NSView {
         let bg = NSColor.windowBackgroundColor
         bg.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
-
-        let numberAttrs: [NSAttributedString.Key: Any] = [
-            .font: numberFont,
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
 
         for (i, candidate) in candidates.enumerated() {
             let y = CGFloat(i) * rowHeight
@@ -56,14 +49,8 @@ class CandidateListView: NSView {
                 .foregroundColor: textColor,
             ]
 
-            let numStr = "\(i + 1)" as NSString
-            let numRect = NSRect(x: horizontalPadding, y: y + 3, width: numberWidth, height: rowHeight)
-            numStr.draw(in: numRect, withAttributes: i == selectedIndex
-                ? [.font: numberFont, .foregroundColor: textColor]
-                : numberAttrs)
-
-            let textX = horizontalPadding + numberWidth + horizontalPadding
-            let textRect = NSRect(x: textX, y: y + 3, width: bounds.width - textX - horizontalPadding, height: rowHeight)
+            let textRect = NSRect(x: horizontalPadding, y: y + 3,
+                                  width: bounds.width - horizontalPadding * 2, height: rowHeight)
             (candidate as NSString).draw(in: textRect, withAttributes: textAttrs)
         }
     }

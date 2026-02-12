@@ -2,8 +2,10 @@
 // Clippy cannot verify this statically, so we allow it at crate level.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+pub mod candidates;
 pub mod converter;
 pub mod dict;
+pub mod romaji;
 pub mod unicode;
 pub mod user_history;
 
@@ -12,9 +14,11 @@ use std::path::Path;
 use std::ptr;
 use std::sync::RwLock;
 
+use candidates::{generate_candidates, CandidateResponse};
 use converter::{convert, convert_nbest, convert_nbest_with_history, convert_with_history};
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
+use romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
 use user_history::UserHistory;
 
 // --- Generic owned-pointer helpers for FFI resource management ---
@@ -695,6 +699,256 @@ pub extern "C" fn lex_dict_lookup_with_history(
     }
 }
 
+// --- Romaji Lookup FFI ---
+
+/// Result of a romaji trie lookup, returned to Swift.
+/// tag: 0=none, 1=prefix, 2=exact, 3=exactAndPrefix
+#[repr(C)]
+pub struct LexRomajiLookupResult {
+    pub tag: u8,
+    pub kana: *const c_char,
+    _owned: *mut CString,
+}
+
+impl LexRomajiLookupResult {
+    fn none() -> Self {
+        Self {
+            tag: 0,
+            kana: ptr::null(),
+            _owned: ptr::null_mut(),
+        }
+    }
+
+    fn prefix() -> Self {
+        Self {
+            tag: 1,
+            kana: ptr::null(),
+            _owned: ptr::null_mut(),
+        }
+    }
+
+    fn exact(kana: &str) -> Self {
+        let Ok(cs) = CString::new(kana) else {
+            return Self::none();
+        };
+        let ptr = cs.as_ptr();
+        let owned = Box::into_raw(Box::new(cs));
+        Self {
+            tag: 2,
+            kana: ptr,
+            _owned: owned,
+        }
+    }
+
+    fn exact_and_prefix(kana: &str) -> Self {
+        let Ok(cs) = CString::new(kana) else {
+            return Self::none();
+        };
+        let ptr = cs.as_ptr();
+        let owned = Box::into_raw(Box::new(cs));
+        Self {
+            tag: 3,
+            kana: ptr,
+            _owned: owned,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_romaji_lookup(romaji: *const c_char) -> LexRomajiLookupResult {
+    ffi_guard!(LexRomajiLookupResult::none();
+        str: romaji_str = romaji,
+    );
+    let trie = RomajiTrie::global();
+    match trie.lookup(romaji_str) {
+        TrieLookupResult::None => LexRomajiLookupResult::none(),
+        TrieLookupResult::Prefix => LexRomajiLookupResult::prefix(),
+        TrieLookupResult::Exact(kana) => LexRomajiLookupResult::exact(&kana),
+        TrieLookupResult::ExactAndPrefix(kana) => LexRomajiLookupResult::exact_and_prefix(&kana),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_romaji_lookup_free(result: LexRomajiLookupResult) {
+    if !result._owned.is_null() {
+        unsafe {
+            drop(Box::from_raw(result._owned));
+        }
+    }
+}
+
+// --- Romaji Convert FFI ---
+
+#[repr(C)]
+pub struct LexRomajiConvertResult {
+    pub composed_kana: *const c_char,
+    pub pending_romaji: *const c_char,
+    _owned: *mut (CString, CString),
+}
+
+impl LexRomajiConvertResult {
+    fn empty() -> Self {
+        Self {
+            composed_kana: ptr::null(),
+            pending_romaji: ptr::null(),
+            _owned: ptr::null_mut(),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_romaji_convert(
+    composed_kana: *const c_char,
+    pending_romaji: *const c_char,
+    force: u8,
+) -> LexRomajiConvertResult {
+    ffi_guard!(LexRomajiConvertResult::empty();
+        str: kana_str    = composed_kana,
+        str: pending_str = pending_romaji,
+    );
+    let result = convert_romaji(kana_str, pending_str, force != 0);
+    let Ok(kana_c) = CString::new(result.composed_kana) else {
+        return LexRomajiConvertResult::empty();
+    };
+    let Ok(pending_c) = CString::new(result.pending_romaji) else {
+        return LexRomajiConvertResult::empty();
+    };
+    let kana_ptr = kana_c.as_ptr();
+    let pending_ptr = pending_c.as_ptr();
+    let owned = Box::into_raw(Box::new((kana_c, pending_c)));
+    LexRomajiConvertResult {
+        composed_kana: kana_ptr,
+        pending_romaji: pending_ptr,
+        _owned: owned,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_romaji_convert_free(result: LexRomajiConvertResult) {
+    if !result._owned.is_null() {
+        unsafe {
+            drop(Box::from_raw(result._owned));
+        }
+    }
+}
+
+// --- Unified Candidate Generation FFI ---
+
+#[repr(C)]
+pub struct LexCandidateResponse {
+    pub surfaces: *const *const c_char,
+    pub surfaces_len: u32,
+    pub paths: *const LexConversionResult,
+    pub paths_len: u32,
+    _owned: *mut OwnedCandidateResponse,
+}
+
+struct OwnedCandidateResponse {
+    _surface_ptrs: Vec<*const c_char>,
+    _surface_strings: Vec<CString>,
+    _paths: Vec<LexConversionResult>,
+}
+
+impl LexCandidateResponse {
+    fn empty() -> Self {
+        Self {
+            surfaces: ptr::null(),
+            surfaces_len: 0,
+            paths: ptr::null(),
+            paths_len: 0,
+            _owned: ptr::null_mut(),
+        }
+    }
+}
+
+fn pack_candidate_response(resp: CandidateResponse) -> LexCandidateResponse {
+    let mut surface_strings: Vec<CString> = Vec::new();
+    let mut surface_ptrs: Vec<*const c_char> = Vec::new();
+
+    for s in &resp.surfaces {
+        let Ok(cs) = CString::new(s.as_str()) else {
+            continue;
+        };
+        surface_ptrs.push(cs.as_ptr());
+        surface_strings.push(cs);
+    }
+
+    let paths: Vec<LexConversionResult> =
+        resp.paths.into_iter().map(pack_conversion_result).collect();
+
+    // Box first, then read pointers (matching OwnedVec::pack pattern)
+    let owned = Box::new(OwnedCandidateResponse {
+        _surface_ptrs: surface_ptrs,
+        _surface_strings: surface_strings,
+        _paths: paths,
+    });
+    let owned_ptr = Box::into_raw(owned);
+
+    let (surfaces_ptr, surfaces_len) = unsafe {
+        let ptrs = &(*owned_ptr)._surface_ptrs;
+        if ptrs.is_empty() {
+            (ptr::null(), 0)
+        } else {
+            (ptrs.as_ptr(), ptrs.len() as u32)
+        }
+    };
+    let (paths_ptr, paths_len) = unsafe {
+        let p = &(*owned_ptr)._paths;
+        if p.is_empty() {
+            (ptr::null(), 0)
+        } else {
+            (p.as_ptr(), p.len() as u32)
+        }
+    };
+
+    LexCandidateResponse {
+        surfaces: surfaces_ptr,
+        surfaces_len,
+        paths: paths_ptr,
+        paths_len,
+        _owned: owned_ptr,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_generate_candidates(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    history: *const LexUserHistoryWrapper,
+    reading: *const c_char,
+    max_results: u32,
+) -> LexCandidateResponse {
+    ffi_guard!(LexCandidateResponse::empty();
+        ref: dict        = dict,
+        str: reading_str = reading,
+    );
+    let conn = unsafe { conn_ref(conn) };
+    let hist: Option<std::sync::RwLockReadGuard<'_, UserHistory>> = if history.is_null() {
+        None
+    } else {
+        let wrapper = unsafe { &*history };
+        wrapper.inner.read().ok()
+    };
+    let hist_ref = hist.as_deref();
+
+    let resp = generate_candidates(dict, conn, hist_ref, reading_str, max_results as usize);
+    pack_candidate_response(resp)
+}
+
+#[no_mangle]
+pub extern "C" fn lex_candidate_response_free(response: LexCandidateResponse) {
+    if !response._owned.is_null() {
+        unsafe {
+            let owned = Box::from_raw(response._owned);
+            // Free each path's owned data
+            for path in &owned._paths {
+                owned_drop(path._owned);
+            }
+            // owned box (surface_ptrs, surface_strings, paths) is dropped here
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,6 +1361,182 @@ mod tests {
         assert_eq!(list.len, 0);
         lex_conversion_result_list_free(list);
 
+        lex_dict_close(dict);
+    }
+
+    // --- Romaji Lookup FFI tests ---
+
+    #[test]
+    fn test_ffi_romaji_lookup_exact() {
+        let romaji = CString::new("ka").unwrap();
+        let result = lex_romaji_lookup(romaji.as_ptr());
+        assert_eq!(result.tag, 2, "ka should be exact");
+        let kana = unsafe { CStr::from_ptr(result.kana).to_str().unwrap() };
+        assert_eq!(kana, "か");
+        lex_romaji_lookup_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_lookup_prefix() {
+        let romaji = CString::new("k").unwrap();
+        let result = lex_romaji_lookup(romaji.as_ptr());
+        assert_eq!(result.tag, 1, "k should be prefix");
+        assert!(result.kana.is_null());
+        lex_romaji_lookup_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_lookup_none() {
+        let romaji = CString::new("xyz").unwrap();
+        let result = lex_romaji_lookup(romaji.as_ptr());
+        assert_eq!(result.tag, 0, "xyz should be none");
+        assert!(result.kana.is_null());
+        lex_romaji_lookup_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_lookup_exact_and_prefix() {
+        // "chi" → ち, and is also prefix for "cha", "chu", etc.
+        let romaji = CString::new("chi").unwrap();
+        let result = lex_romaji_lookup(romaji.as_ptr());
+        assert!(
+            result.tag == 2 || result.tag == 3,
+            "chi should be exact or exactAndPrefix"
+        );
+        let kana = unsafe { CStr::from_ptr(result.kana).to_str().unwrap() };
+        assert_eq!(kana, "ち");
+        lex_romaji_lookup_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_lookup_null_safety() {
+        let result = lex_romaji_lookup(ptr::null());
+        assert_eq!(result.tag, 0);
+        assert!(result.kana.is_null());
+        lex_romaji_lookup_free(result);
+    }
+
+    // --- Romaji Convert FFI tests ---
+
+    #[test]
+    fn test_ffi_romaji_convert_basic() {
+        let kana = CString::new("").unwrap();
+        let pending = CString::new("ka").unwrap();
+        let result = lex_romaji_convert(kana.as_ptr(), pending.as_ptr(), 0);
+        let composed = unsafe { CStr::from_ptr(result.composed_kana).to_str().unwrap() };
+        let pend = unsafe { CStr::from_ptr(result.pending_romaji).to_str().unwrap() };
+        assert_eq!(composed, "か");
+        assert_eq!(pend, "");
+        lex_romaji_convert_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_convert_sokuon() {
+        let kana = CString::new("").unwrap();
+        let pending = CString::new("kka").unwrap();
+        let result = lex_romaji_convert(kana.as_ptr(), pending.as_ptr(), 0);
+        let composed = unsafe { CStr::from_ptr(result.composed_kana).to_str().unwrap() };
+        assert_eq!(composed, "っか");
+        lex_romaji_convert_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_convert_force_n() {
+        let kana = CString::new("").unwrap();
+        let pending = CString::new("n").unwrap();
+        let result = lex_romaji_convert(kana.as_ptr(), pending.as_ptr(), 1);
+        let composed = unsafe { CStr::from_ptr(result.composed_kana).to_str().unwrap() };
+        assert_eq!(composed, "ん");
+        lex_romaji_convert_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_convert_collapse() {
+        let kana = CString::new("kあ").unwrap();
+        let pending = CString::new("").unwrap();
+        let result = lex_romaji_convert(kana.as_ptr(), pending.as_ptr(), 0);
+        let composed = unsafe { CStr::from_ptr(result.composed_kana).to_str().unwrap() };
+        assert_eq!(composed, "か");
+        lex_romaji_convert_free(result);
+    }
+
+    #[test]
+    fn test_ffi_romaji_convert_null_safety() {
+        // null composed_kana
+        let pending = CString::new("ka").unwrap();
+        let result = lex_romaji_convert(ptr::null(), pending.as_ptr(), 0);
+        assert!(result.composed_kana.is_null());
+        lex_romaji_convert_free(result);
+
+        // null pending_romaji
+        let kana = CString::new("あ").unwrap();
+        let result = lex_romaji_convert(kana.as_ptr(), ptr::null(), 0);
+        assert!(result.composed_kana.is_null());
+        lex_romaji_convert_free(result);
+    }
+
+    // --- Unified Candidate Generation FFI tests ---
+
+    #[test]
+    fn test_ffi_generate_candidates_roundtrip() {
+        let dict = make_test_dict();
+        let reading = CString::new("かんじ").unwrap();
+
+        let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), reading.as_ptr(), 10);
+        assert!(
+            resp.surfaces_len >= 1,
+            "should return at least one candidate"
+        );
+
+        unsafe {
+            let surfaces = std::slice::from_raw_parts(resp.surfaces, resp.surfaces_len as usize);
+            // First candidate should be the reading itself (kana passthrough)
+            let s0 = CStr::from_ptr(surfaces[0]).to_str().unwrap();
+            assert_eq!(s0, "かんじ");
+        }
+
+        lex_candidate_response_free(resp);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_generate_candidates_null_safety() {
+        let reading = CString::new("かんじ").unwrap();
+
+        // null dict
+        let resp =
+            lex_generate_candidates(ptr::null(), ptr::null(), ptr::null(), reading.as_ptr(), 10);
+        assert_eq!(resp.surfaces_len, 0);
+        lex_candidate_response_free(resp);
+
+        // null reading
+        let dict = make_test_dict();
+        let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), ptr::null(), 10);
+        assert_eq!(resp.surfaces_len, 0);
+        lex_candidate_response_free(resp);
+
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_generate_candidates_punctuation() {
+        // 句読点候補生成テスト
+        let dict = make_test_dict();
+        let reading = CString::new("。").unwrap();
+
+        let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), reading.as_ptr(), 10);
+        assert!(
+            resp.surfaces_len >= 1,
+            "punctuation should return candidates"
+        );
+
+        unsafe {
+            let surfaces = std::slice::from_raw_parts(resp.surfaces, resp.surfaces_len as usize);
+            let s0 = CStr::from_ptr(surfaces[0]).to_str().unwrap();
+            assert_eq!(s0, "。", "first candidate should be the punctuation itself");
+        }
+
+        lex_candidate_response_free(resp);
         lex_dict_close(dict);
     }
 }
