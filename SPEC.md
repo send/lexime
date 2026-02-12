@@ -14,7 +14,6 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 │  │  Swift: IME Frontend                   │  │
 │  │  - LeximeInputController (状態管理)     │  │
 │  │  - KeyHandlers (キー入力処理)           │  │
-│  │  - RomajiConverter / RomajiTable       │  │
 │  │  - MarkedTextManager (インライン表示)   │  │
 │  │  - CandidatePanel (候補ウィンドウ)      │  │
 │  │  - DictBridge (FFI ラッパー)            │  │
@@ -22,6 +21,8 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 │                │ FFI (C ABI)                  │
 │  ┌─────────────▼──────────────────────────┐  │
 │  │  Rust: 変換エンジン (liblex_engine)     │  │
+│  │  - romaji (ローマ字→かな変換)          │  │
+│  │  - candidates (統一候補生成)            │  │
 │  │  - dict (辞書検索・予測)                │  │
 │  │  - converter (ラティス構築・Viterbi)    │  │
 │  │  - user_history (学習・ランキング)      │  │
@@ -37,20 +38,20 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 | ファイル | 役割 |
 |---|---|
 | `main.swift` | エントリポイント。辞書・接続行列・学習データの読み込み、IMKServer 起動 |
-| `LeximeInputController.swift` | IMKInputController サブクラス。状態管理、句読点マッピング、学習記録 |
+| `LeximeInputController.swift` | IMKInputController サブクラス。状態管理、学習記録 |
 | `KeyHandlers.swift` | idle / composing 各状態のキー入力ハンドラ |
-| `RomajiTable.swift` | Trie ベースのローマ字→ひらがなテーブル（212 マッピング） |
-| `RomajiConverter.swift` | ローマ字変換ロジック（促音・撥音・バックトラック） |
-| `MarkedTextManager.swift` | インライン表示（未確定文字列、変換セグメント） |
-| `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、1-9 番号表示、ページネーション） |
-| `DictBridge.swift` | Rust FFI のラッパー関数（lookup / predict / convert） |
-| `InputState.swift` | `InputState` enum（idle / composing）と候補構造体の定義 |
+| `MarkedTextManager.swift` | インライン表示（未確定文字列） |
+| `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション） |
+| `DictBridge.swift` | Rust FFI のラッパー関数（romaji lookup / convert / generate candidates） |
+| `InputState.swift` | `InputState` enum（idle / composing） |
 
 ### Rust Engine (`engine/src/`)
 
 | モジュール | 内容 |
 |---|---|
-| `lib.rs` | FFI 関数 (20 関数)。C 互換構造体、メモリ管理（`*Owned` パターン） |
+| `lib.rs` | FFI 関数 (26 関数)。C 互換構造体、メモリ管理（`OwnedVec` パターン） |
+| `romaji/` | ローマ字→かな変換。Trie（HashMap ベース）、141+ マッピング、促音・撥音・コラプス |
+| `candidates.rs` | 統一候補生成。句読点代替、予測 + Viterbi N-best + 辞書 lookup の統合・重複排除 |
 | `dict/` | `Dictionary` trait、`TrieDictionary`（bincode）、`ConnectionMatrix`（LXCX） |
 | `dict/source/` | `DictSource` trait、`MozcSource`、`SudachiSource`、`pos_map`（POS ID リマップ） |
 | `converter/` | `Lattice` 構築、`Viterbi` N-best 探索、`Reranker`、`CostFunction` trait |
@@ -67,17 +68,19 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 
 ### FFI (C ABI)
 
-`engine/include/engine.h` で公開する 20 関数:
+`engine/include/engine.h` で公開する 26 関数:
 
 | カテゴリ | 関数 |
 |---|---|
 | ユーティリティ | `lex_engine_version`, `lex_engine_echo` |
-| 辞書 | `lex_dict_open`, `lex_dict_close`, `lex_dict_lookup`, `lex_dict_predict`, `lex_candidates_free` |
+| ローマ字 | `lex_romaji_lookup`, `lex_romaji_lookup_free`, `lex_romaji_convert`, `lex_romaji_convert_free` |
+| 辞書 | `lex_dict_open`, `lex_dict_close`, `lex_dict_lookup`, `lex_dict_predict`, `lex_dict_predict_ranked`, `lex_candidates_free` |
 | 接続行列 | `lex_conn_open`, `lex_conn_close` |
-| 変換 | `lex_convert`, `lex_conversion_free` |
+| 変換 | `lex_convert`, `lex_conversion_free`, `lex_convert_nbest`, `lex_convert_nbest_with_history`, `lex_conversion_result_list_free` |
+| 候補生成 | `lex_generate_candidates`, `lex_candidate_response_free` |
 | 学習 | `lex_history_open`, `lex_history_close`, `lex_history_record`, `lex_history_save`, `lex_convert_with_history`, `lex_dict_lookup_with_history` |
 
-メモリ管理: Rust 側が `CandidateListOwned` / `ConversionResultOwned` で文字列を所有し、呼び出し元が `*_free()` で解放する。
+メモリ管理: Rust 側が `OwnedVec` / `OwnedCandidateResponse` で文字列を所有し、呼び出し元が `*_free()` で解放する。
 
 ## 入力モデル
 
@@ -85,7 +88,6 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 
 ```
 idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab)──→ idle
-                                              (Esc×2) ──→ idle
 ```
 
 ### 各状態でのキー操作
@@ -107,11 +109,9 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab)�
 | Space / ↓ | 次の候補を選択 |
 | ↑ | 前の候補を選択 |
 | Enter | 選択中の候補（未選択ならかな）を確定 |
-| Tab | 選択中の候補を確定 |
-| 1-9 | 番号で候補を直接選択 |
-| F7 | カタカナに変換して確定 |
+| Tab | カタカナに変換して確定 |
 | Backspace | 1 文字削除（空になれば idle へ） |
-| Escape | 候補選択を解除（2 回目でキャンセル） |
+| Escape | 候補選択を解除 |
 | 句読点 | 確定後、句読点入力を開始 |
 
 **全状態共通（programmerMode）**
@@ -127,7 +127,7 @@ JIS キーボードの ¥ キー（keyCode 93）のみ対象。US キーボー�
 
 ### ローマ字変換
 
-Trie ベースで 222 のマッピングをサポート:
+Rust engine 内の Trie（HashMap ベース）で 141+ のマッピングをサポート:
 
 - 基本五十音、濁音・半濁音、拗音
 - 小書き（`xa`/`la` 系）
@@ -140,25 +140,27 @@ Trie ベースで 222 のマッピングをサポート:
 
 ### 候補生成
 
-composing 中、キーストロークごとに以下の候補を生成・統合する:
+composing 中、キーストロークごとに `lex_generate_candidates` を 1 回呼び出し、以下の候補を engine 内で統合する:
 
-1. **予測候補** — `lex_dict_predict` による prefix search（最大 5 件）
-2. **Viterbi 結果** — `lex_convert_with_history` による N-best 変換
-3. **辞書 lookup** — `lex_dict_lookup_with_history` による全読み候補
-4. **ひらがな** — 元のかな（常にフォールバック）
+1. **ひらがな** — 元のかな（常に先頭）
+2. **予測候補** — `predict_ranked` による prefix search
+3. **Viterbi 結果** — N-best 変換（学習ブースト付き）
+4. **辞書 lookup** — 全読み候補
 
-候補の表示順序は検証中（予測優先 or 混合）。重複は排除する。
+重複は engine 内で排除する。句読点入力時は代替候補（`。`→`．`/`.` 等）を生成する。
 マークドテキストにはかなを表示し、Space / ↑↓ で候補を選択すると選択中の候補に切り替わる。
 
 ## 変換パイプライン
 
 ```
 ローマ字入力
-  → ひらがな (RomajiConverter)
-  → ラティス構築 (common_prefix_search + 1文字フォールバック)
-  → Viterbi N-best 探索
-  → Reranker (structure cost + 学習ブースト)
-  → 文節グルーピング (自立語 + 付属語)
+  → ひらがな (engine/romaji)
+  → 統一候補生成 (engine/candidates)
+    → ラティス構築 (common_prefix_search + 1文字フォールバック)
+    → Viterbi N-best 探索
+    → Reranker (structure cost + 学習ブースト)
+    → 文節グルーピング (自立語 + 付属語)
+    → 予測候補 + 辞書 lookup の統合・重複排除
   → 候補表示 (CandidatePanel)
 ```
 
@@ -269,14 +271,14 @@ macOS で動作する最小限の IME を構築。
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
 | `dict-sudachi-full` | SudachiDict Full 辞書のコンパイル（Mozc POS ID にリマップ） |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
-| `dict` | Mozc + SudachiDict Full の統合辞書（フィルタ付き merge） |
+| `dict` | Mozc 辞書のコピー（`lexime-mozc.dict` → `lexime.dict`） |
 | `conn` | Mozc 接続行列のコンパイル |
 | `build` | Lexime.app ユニバーサルバイナリのビルド（depends: dict, conn） |
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `log` | ログストリーミング |
 | `icon` | アイコンアセット生成 |
-| `test-swift` | Swift ユニットテスト |
+| `test-swift` | Swift FFI ラウンドトリップテスト（depends: engine-lib） |
 | `lint` | `cargo fmt --check` + `cargo clippy` |
 | `test` | lint + `cargo test` |
 | `clean` | ビルド成果物の削除 |
