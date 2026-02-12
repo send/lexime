@@ -18,6 +18,20 @@ pub fn is_latin(c: char) -> bool {
     c.is_ascii_alphabetic()
 }
 
+/// Convert a hiragana string to katakana.
+/// Non-hiragana characters (ー, ASCII, etc.) are passed through unchanged.
+pub fn hiragana_to_katakana(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if is_hiragana(c) {
+                char::from_u32(c as u32 + 0x60).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// Check if a string is a valid hiragana reading.
 ///
 /// Accepts hiragana characters (U+3040..U+309F) and the prolonged sound mark
@@ -39,6 +53,15 @@ mod tests {
         assert!(!is_hiragana_reading("カタカナ"));
         assert!(!is_hiragana_reading("abc"));
         assert!(!is_hiragana_reading(""));
+    }
+
+    #[test]
+    fn test_hiragana_to_katakana() {
+        assert_eq!(hiragana_to_katakana("きょうは"), "キョウハ");
+        assert_eq!(hiragana_to_katakana("らーめん"), "ラーメン");
+        assert_eq!(hiragana_to_katakana(""), "");
+        assert_eq!(hiragana_to_katakana("abc"), "abc");
+        assert_eq!(hiragana_to_katakana("カタカナ"), "カタカナ");
     }
 
     #[test]

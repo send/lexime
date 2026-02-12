@@ -281,11 +281,15 @@ pub fn convert_nbest_with_cost(
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, cost_fn, oversample);
     super::reranker::rerank(&mut paths, conn);
-    paths
-        .into_iter()
-        .take(n)
-        .map(|p| p.into_segments())
-        .collect()
+
+    // Take top-n Viterbi candidates, then append synthetic candidates from rewriters
+    let mut top_paths: Vec<ScoredPath> = paths.into_iter().take(n).collect();
+
+    let katakana_rw = super::rewriter::KatakanaRewriter;
+    let rewriters: Vec<&dyn super::rewriter::Rewriter> = vec![&katakana_rw];
+    super::rewriter::run_rewriters(&rewriters, &mut top_paths, kana);
+
+    top_paths.into_iter().map(|p| p.into_segments()).collect()
 }
 
 #[cfg(test)]
@@ -499,10 +503,27 @@ mod tests {
         let best = convert(&dict, None, "きょうはいいてんき");
         let nbest = convert_nbest(&dict, None, "きょうはいいてんき", 1);
 
-        assert_eq!(nbest.len(), 1);
+        // n=1 Viterbi candidate + 1 katakana rewriter candidate
+        assert!(nbest.len() >= 1);
         let best_surfaces: Vec<&str> = best.iter().map(|s| s.surface.as_str()).collect();
         let nbest_surfaces: Vec<&str> = nbest[0].iter().map(|s| s.surface.as_str()).collect();
         assert_eq!(best_surfaces, nbest_surfaces);
+    }
+
+    #[test]
+    fn test_nbest_includes_katakana_candidate() {
+        let dict = test_dict();
+        let results = convert_nbest(&dict, None, "きょう", 10);
+
+        let surfaces: Vec<String> = results
+            .iter()
+            .map(|path| path.iter().map(|s| s.surface.as_str()).collect::<String>())
+            .collect();
+        assert!(
+            surfaces.contains(&"キョウ".to_string()),
+            "N-best should include katakana candidate, got: {:?}",
+            surfaces
+        );
     }
 
     #[test]

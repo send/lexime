@@ -1,6 +1,7 @@
 pub mod cost;
 mod lattice;
 pub(crate) mod reranker;
+pub(crate) mod rewriter;
 pub(crate) mod testutil;
 mod viterbi;
 
