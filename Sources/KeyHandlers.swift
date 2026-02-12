@@ -59,20 +59,7 @@ extension LeximeInputController {
     func handleComposing(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
         case Key.enter: // Enter — commit selected candidate with learning, or kana as-is
-            hideCandidatePanel()
-            let reading = composedKana
-            flush()
-            if !predictionCandidates.isEmpty {
-                let idx = min(selectedPredictionIndex,
-                              predictionCandidates.count - 1)
-                let surface = predictionCandidates[idx]
-                if surface != reading {
-                    recordToHistory(reading: reading, surface: surface)
-                }
-                commitText(surface, client: client)
-            } else {
-                commitComposed(client: client)
-            }
+            commitCurrentState(client: client)
             return true
 
         case Key.space: // Space — next candidate
@@ -155,12 +142,7 @@ extension LeximeInputController {
         if isRomajiInput(text) {
             if selectedPredictionIndex > 0,
                selectedPredictionIndex < predictionCandidates.count {
-                hideCandidatePanel()
-                let reading = composedKana
-                let surface = predictionCandidates[selectedPredictionIndex]
-                flush()
-                recordToHistory(reading: reading, surface: surface)
-                commitText(surface, client: client)
+                commitCurrentState(client: client)
                 state = .composing
             }
             appendAndConvert(text.lowercased(), client: client)
@@ -172,18 +154,7 @@ extension LeximeInputController {
         if !isRomajiInput(text) {
             switch lookupRomaji(text) {
             case .exact, .exactAndPrefix:
-                hideCandidatePanel()
-                if selectedPredictionIndex > 0,
-                   selectedPredictionIndex < predictionCandidates.count {
-                    let reading = composedKana
-                    let surface = predictionCandidates[selectedPredictionIndex]
-                    flush()
-                    recordToHistory(reading: reading, surface: surface)
-                    commitText(surface, client: client)
-                } else {
-                    flush()
-                    commitComposed(client: client)
-                }
+                commitCurrentState(client: client)
                 state = .composing
                 appendAndConvert(text, client: client)
                 return true
