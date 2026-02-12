@@ -386,7 +386,7 @@ pub extern "C" fn lex_dict_predict_ranked(
     let fetch_limit = if history.is_null() {
         max_results as usize
     } else {
-        (max_results as usize).max(50)
+        (max_results as usize).max(200)
     };
     let mut ranked = dict.predict_ranked(prefix_str, fetch_limit, 1000);
 
