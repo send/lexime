@@ -277,7 +277,7 @@ class LeximeInputController: IMKInputController {
         guard let history = AppContext.shared.history else { return }
 
         // Record the committed segments (whole reading → surface)
-        recordSegmentsToFFI(conversionSegments, history: history)
+        recordPairsToFFI(conversionSegments.map { ($0.reading, $0.surface) }, history: history)
 
         // Segment-level learning: when committing in single-segment mode,
         // also record individual Viterbi segments so that sub-phrase mappings
@@ -286,7 +286,7 @@ class LeximeInputController: IMKInputController {
             if let matchingPath = nbestPaths.first(where: { path in
                 path.map { $0.surface }.joined() == selectedSurface
             }), matchingPath.count > 1 {
-                recordTuplesToFFI(matchingPath, history: history)
+                recordPairsToFFI(matchingPath, history: history)
             }
         }
 
@@ -300,27 +300,10 @@ class LeximeInputController: IMKInputController {
         }
     }
 
-    private func recordSegmentsToFFI(_ segs: [ConversionSegment], history: OpaquePointer) {
+    private func recordPairsToFFI(_ pairs: [(reading: String, surface: String)], history: OpaquePointer) {
         var cStrings: [UnsafeMutablePointer<CChar>] = []
         var lexSegments: [LexSegment] = []
-        for seg in segs {
-            guard let r = strdup(seg.reading), let s = strdup(seg.surface) else { continue }
-            cStrings.append(r)
-            cStrings.append(s)
-            lexSegments.append(LexSegment(reading: r, surface: s))
-        }
-        defer { cStrings.forEach { free($0) } }
-
-        lexSegments.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return }
-            lex_history_record(history, base, UInt32(buffer.count))
-        }
-    }
-
-    private func recordTuplesToFFI(_ tuples: [(reading: String, surface: String)], history: OpaquePointer) {
-        var cStrings: [UnsafeMutablePointer<CChar>] = []
-        var lexSegments: [LexSegment] = []
-        for (reading, surface) in tuples {
+        for (reading, surface) in pairs {
             guard let r = strdup(reading), let s = strdup(surface) else { continue }
             cStrings.append(r)
             cStrings.append(s)
