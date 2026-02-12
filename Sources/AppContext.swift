@@ -14,11 +14,8 @@ class AppContext {
             fatalError("Lexime: Bundle.main.resourcePath is nil")
         }
 
-        let dictSource = UserDefaults.standard.string(forKey: "dictSource") ?? "merged"
-        NSLog("Lexime: dictSource = %@", dictSource)
-
         // Load dictionary
-        let dictPath = resourcePath + "/lexime-\(dictSource).dict"
+        let dictPath = resourcePath + "/lexime.dict"
         if let d = lex_dict_open(dictPath) {
             NSLog("Lexime: Dictionary loaded from %@", dictPath)
             let list = lex_dict_lookup(d, "かんじ")
@@ -31,7 +28,7 @@ class AppContext {
         }
 
         // Load connection matrix (optional — falls back to unigram if not found)
-        let connPath = resourcePath + "/lexime-\(dictSource).conn"
+        let connPath = resourcePath + "/lexime.conn"
         if let c = lex_conn_open(connPath) {
             NSLog("Lexime: Connection matrix loaded from %@", connPath)
             self.conn = c

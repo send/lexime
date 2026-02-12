@@ -28,19 +28,6 @@ sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
 outputs = ["engine/data/mozc-raw/.stamp"]
 run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw"
 
-[tasks.dict-sudachi]
-description = "Compile binary dictionary from SudachiDict"
-depends = ["fetch-dict-sudachi"]
-sources = ["engine/data/sudachi-raw/.stamp"]
-outputs = ["engine/data/lexime-sudachi.dict"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-cd engine
-cargo build --release --bin dictool
-target/release/dictool compile --source sudachi data/sudachi-raw data/lexime-sudachi.dict
-"""
-
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
@@ -54,30 +41,17 @@ cargo build --release --bin dictool
 target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
 """
 
-[tasks.conn-sudachi]
-description = "Compile SudachiDict connection cost matrix"
-depends = ["fetch-dict-sudachi"]
-sources = ["engine/data/sudachi-raw/matrix.def"]
-outputs = ["engine/data/lexime-sudachi.conn"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-cd engine
-cargo build --release --bin dictool
-target/release/dictool compile-conn data/sudachi-raw/matrix.def data/lexime-sudachi.conn
-"""
-
-[tasks.conn-mozc]
+[tasks.conn]
 description = "Compile Mozc connection cost matrix"
 depends = ["fetch-dict-mozc"]
 sources = ["engine/data/mozc-raw/connection_single_column.txt"]
-outputs = ["engine/data/lexime-mozc.conn"]
+outputs = ["engine/data/lexime.conn"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime-mozc.conn
+target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime.conn
 """
 
 [tasks.fetch-dict-sudachi-full]
@@ -101,32 +75,26 @@ target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def
   data/sudachi-full-raw data/lexime-sudachi-full.dict
 """
 
-[tasks.dict-merged]
+[tasks.dict]
 description = "Merge Mozc + SudachiDict full into filtered dictionary"
 depends = ["dict-mozc", "dict-sudachi-full"]
-outputs = ["engine/data/lexime-merged.dict"]
+outputs = ["engine/data/lexime.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool merge --max-cost 15000 --max-reading-len 15 data/lexime-mozc.dict data/lexime-sudachi-full.dict data/lexime-merged.dict
+target/release/dictool merge --max-cost 15000 --max-reading-len 15 data/lexime-mozc.dict data/lexime-sudachi-full.dict data/lexime.dict
 """
-
-[tasks.conn-merged]
-description = "Copy Mozc connection matrix for merged dictionary"
-depends = ["conn-mozc"]
-outputs = ["engine/data/lexime-merged.conn"]
-run = "cp engine/data/lexime-mozc.conn engine/data/lexime-merged.conn"
 
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
-depends = ["engine-lib", "dict-merged", "conn-merged"]
+depends = ["engine-lib", "dict", "conn"]
 sources = [
   "Sources/*.swift",
   "build/liblex_engine.a",
-  "engine/data/lexime-*.dict",
-  "engine/data/lexime-*.conn",
+  "engine/data/lexime.dict",
+  "engine/data/lexime.conn",
   "Info.plist",
   "Resources/icon.tiff",
   "Resources/en.lproj/InfoPlist.strings",
@@ -154,10 +122,8 @@ cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
 cp -R Resources/en.lproj "$RES/en.lproj"
 cp -R Resources/ja.lproj "$RES/ja.lproj"
-# Copy all available dictionary files (sudachi is always built; mozc is optional)
-for f in engine/data/lexime-*.dict engine/data/lexime-*.conn; do
-  [ -f "$f" ] && cp "$f" "$RES/"
-done
+cp engine/data/lexime.dict "$RES/"
+cp engine/data/lexime.conn "$RES/"
 codesign -f -s - "$APP"
 echo "Build complete: $APP"
 """
