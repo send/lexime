@@ -304,7 +304,8 @@ extension LeximeInputController {
         flush()
 
         // Single FFI call: get both 1-best segments and N-best joined surfaces
-        let (segments, nbestSurfaces) = convertKanaCombined(composedKana, n: 5)
+        let (segments, nbestSurfaces, nbestPaths) = convertKanaCombined(composedKana, n: 5)
+        self.nbestPaths = nbestPaths
 
         if segments.isEmpty {
             commitComposed(client: client)

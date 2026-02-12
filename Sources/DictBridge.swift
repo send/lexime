@@ -73,12 +73,13 @@ extension LeximeInputController {
         return converted
     }
 
-    /// Combined Viterbi N-best: returns 1-best segments AND N-best joined surfaces
-    /// in a single FFI call, replacing separate `convertKana` + `convertKanaNbest`.
+    /// Combined Viterbi N-best: returns 1-best segments, N-best joined surfaces,
+    /// and full segment decomposition for each N-best path (for segment-level learning).
     func convertKanaCombined(_ kana: String, n: Int = 5)
-        -> (segments: [ConversionSegment], nbestSurfaces: [String])
+        -> (segments: [ConversionSegment], nbestSurfaces: [String],
+            nbestPaths: [[(reading: String, surface: String)]])
     {
-        guard let dict = AppContext.shared.dict, !kana.isEmpty else { return ([], []) }
+        guard let dict = AppContext.shared.dict, !kana.isEmpty else { return ([], [], []) }
 
         let list: LexConversionResultList
         if let history = AppContext.shared.history {
@@ -88,7 +89,7 @@ extension LeximeInputController {
         }
         defer { lex_conversion_result_list_free(list) }
 
-        guard list.len > 0, let results = list.results else { return ([], []) }
+        guard list.len > 0, let results = list.results else { return ([], [], []) }
 
         // Extract 1-best segments (first result) without per-segment candidate lookup
         var segments: [ConversionSegment] = []
@@ -108,22 +109,30 @@ extension LeximeInputController {
             }
         }
 
-        // Extract all N-best joined surfaces
+        // Extract all N-best joined surfaces and segment decompositions
         var surfaces: [String] = []
+        var nbestPaths: [[(reading: String, surface: String)]] = []
         for i in 0..<Int(list.len) {
             let result = results[i]
             guard result.len > 0, let segs = result.segments else { continue }
-            let parts = (0..<Int(result.len)).compactMap { j -> String? in
-                guard let ptr = segs[j].surface else { return nil }
-                return String(cString: ptr)
+            var path: [(reading: String, surface: String)] = []
+            var parts: [String] = []
+            for j in 0..<Int(result.len) {
+                guard let rPtr = segs[j].reading,
+                      let sPtr = segs[j].surface else { continue }
+                let reading = String(cString: rPtr)
+                let surface = String(cString: sPtr)
+                path.append((reading: reading, surface: surface))
+                parts.append(surface)
             }
             let joined = parts.joined()
             if !joined.isEmpty {
                 surfaces.append(joined)
+                nbestPaths.append(path)
             }
         }
 
-        return (segments, surfaces)
+        return (segments, surfaces, nbestPaths)
     }
 
     /// Lazily load dictionary candidates for a segment that only has its
