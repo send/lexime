@@ -1,6 +1,6 @@
 use crate::dict::connection::ConnectionMatrix;
 
-use super::cost::conn_cost;
+use super::cost::{conn_cost, script_cost};
 use super::viterbi::ScoredPath;
 
 /// Weight for the segment-length variance penalty.
@@ -10,14 +10,16 @@ const LENGTH_VARIANCE_WEIGHT: i64 = 2000;
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
-/// The Viterbi core already handles dictionary cost + connection cost +
-/// segment penalty + script cost. The reranker adds features that are better
-/// evaluated on complete paths rather than locally during the forward pass:
+/// The Viterbi core handles dictionary cost + connection cost + segment penalty.
+/// The reranker adds features that are ranking preferences rather than
+/// search-quality parameters:
 ///
 /// - **Structure cost**: sum of transition costs along the path (Mozc-inspired);
 ///   paths with high accumulated transition costs tend to be fragmented
 /// - **Length variance**: penalises uneven segment splits so that more uniform
 ///   segmentations are preferred when Viterbi costs are close
+/// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
+///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
 pub fn rerank(paths: &mut [ScoredPath], conn: Option<&ConnectionMatrix>) {
     if paths.len() <= 1 {
         return;
@@ -58,6 +60,10 @@ pub fn rerank(paths: &mut [ScoredPath], conn: Option<&ConnectionMatrix>) {
             // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
             path.viterbi_cost += sum_sq_dev * LENGTH_VARIANCE_WEIGHT / (n_i64 * n_i64);
         }
+
+        // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.
+        let total_script: i64 = path.segments.iter().map(|s| script_cost(&s.surface)).sum();
+        path.viterbi_cost += total_script;
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
@@ -154,9 +160,11 @@ mod tests {
             },
         ];
 
-        // Without conn, structure cost is 0 → order preserved
+        // Without conn, structure cost is 0; "木の" gets script_cost -3000
+        // (mixed kanji+kana bonus) so it reranks to first.
         rerank(&mut paths, None);
-        assert_eq!(paths[0].viterbi_cost, 1000);
+        assert_eq!(paths[0].segments[0].surface, "木の");
+        assert_eq!(paths[0].viterbi_cost, 2000 - 3000);
     }
 
     #[test]
@@ -229,12 +237,50 @@ mod tests {
 
         rerank(&mut paths, None);
 
-        // Uneven: 5000 + 2000 = 7000
-        // Even:   6500 + 0    = 6500
-        // Even split should be ranked first
-        assert_eq!(paths[0].segments[0].surface, "出来");
-        assert_eq!(paths[0].viterbi_cost, 6500);
-        assert_eq!(paths[1].segments[0].surface, "で");
-        assert_eq!(paths[1].viterbi_cost, 7000);
+        // script_cost: "来たり" is mixed (kanji+kana) → -3000; "出来" is pure kanji → 0
+        // Uneven: 5000 + variance(2000) + script("で"=0 + "来たり"=-3000) = 4000
+        // Even:   6500 + variance(0)    + script("出来"=0 + "たり"=0)     = 6500
+        // Uneven path wins due to mixed-script bonus on "来たり"
+        assert_eq!(paths[0].segments[0].surface, "で");
+        assert_eq!(paths[0].viterbi_cost, 4000);
+        assert_eq!(paths[1].segments[0].surface, "出来");
+        assert_eq!(paths[1].viterbi_cost, 6500);
+    }
+
+    #[test]
+    fn test_rerank_applies_script_cost() {
+        // Katakana surface should receive +5000 penalty from script_cost
+        let mut paths = vec![
+            // Katakana path: タラ (katakana) → +5000 script penalty
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "たら".into(),
+                    surface: "タラ".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 3000,
+            },
+            // Hiragana path: たら (no script penalty)
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "たら".into(),
+                    surface: "たら".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 7000,
+            },
+        ];
+
+        rerank(&mut paths, None);
+
+        // Katakana: 3000 + 5000 = 8000
+        // Hiragana: 7000 + 0    = 7000
+        // Hiragana should be ranked first
+        assert_eq!(paths[0].segments[0].surface, "たら");
+        assert_eq!(paths[0].viterbi_cost, 7000);
+        assert_eq!(paths[1].segments[0].surface, "タラ");
+        assert_eq!(paths[1].viterbi_cost, 8000);
     }
 }

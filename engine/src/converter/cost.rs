@@ -81,7 +81,7 @@ impl<'a> DefaultCostFunction<'a> {
 
 impl CostFunction for DefaultCostFunction<'_> {
     fn word_cost(&self, node: &LatticeNode) -> i64 {
-        node.cost as i64 + SEGMENT_PENALTY + script_cost(&node.surface)
+        node.cost as i64 + SEGMENT_PENALTY
     }
 
     fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64 {
