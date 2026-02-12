@@ -16,6 +16,7 @@ class LeximeInputController: IMKInputController {
     var conversionSegments: [ConversionSegment] = []
     var activeSegmentIndex: Int = 0
     var viterbiSegments: [ConversionSegment] = []  // stored for segment boundary expansion
+    var nbestPaths: [[(reading: String, surface: String)]] = []
 
     var isComposing: Bool { state != .idle }
 
@@ -275,20 +276,18 @@ class LeximeInputController: IMKInputController {
     private func recordToHistory() {
         guard let history = AppContext.shared.history else { return }
 
-        // strdup ensures C string pointers remain valid independent of Swift string lifetimes
-        var cStrings: [UnsafeMutablePointer<CChar>] = []
-        var segments: [LexSegment] = []
-        for seg in conversionSegments {
-            guard let r = strdup(seg.reading), let s = strdup(seg.surface) else { continue }
-            cStrings.append(r)
-            cStrings.append(s)
-            segments.append(LexSegment(reading: r, surface: s))
-        }
-        defer { cStrings.forEach { free($0) } }
+        // Record the committed segments (whole reading → surface)
+        recordSegmentsToFFI(conversionSegments, history: history)
 
-        segments.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return }
-            lex_history_record(history, base, UInt32(buffer.count))
+        // Segment-level learning: when committing in single-segment mode,
+        // also record individual Viterbi segments so that sub-phrase mappings
+        // (e.g. ください → 下さい) are learned independently.
+        if conversionSegments.count == 1, let selectedSurface = conversionSegments.first?.surface {
+            if let matchingPath = nbestPaths.first(where: { path in
+                path.map { $0.surface }.joined() == selectedSurface
+            }), matchingPath.count > 1 {
+                recordTuplesToFFI(matchingPath, history: history)
+            }
         }
 
         // Save asynchronously to avoid blocking key handling
@@ -298,6 +297,40 @@ class LeximeInputController: IMKInputController {
             if result != 0 {
                 NSLog("Lexime: Failed to save user history to %@", path)
             }
+        }
+    }
+
+    private func recordSegmentsToFFI(_ segs: [ConversionSegment], history: OpaquePointer) {
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        var lexSegments: [LexSegment] = []
+        for seg in segs {
+            guard let r = strdup(seg.reading), let s = strdup(seg.surface) else { continue }
+            cStrings.append(r)
+            cStrings.append(s)
+            lexSegments.append(LexSegment(reading: r, surface: s))
+        }
+        defer { cStrings.forEach { free($0) } }
+
+        lexSegments.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            lex_history_record(history, base, UInt32(buffer.count))
+        }
+    }
+
+    private func recordTuplesToFFI(_ tuples: [(reading: String, surface: String)], history: OpaquePointer) {
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        var lexSegments: [LexSegment] = []
+        for (reading, surface) in tuples {
+            guard let r = strdup(reading), let s = strdup(surface) else { continue }
+            cStrings.append(r)
+            cStrings.append(s)
+            lexSegments.append(LexSegment(reading: r, surface: s))
+        }
+        defer { cStrings.forEach { free($0) } }
+
+        lexSegments.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            lex_history_record(history, base, UInt32(buffer.count))
         }
     }
 
@@ -329,6 +362,7 @@ class LeximeInputController: IMKInputController {
         conversionSegments = []
         activeSegmentIndex = 0
         viterbiSegments = []
+        nbestPaths = []
         predictionCandidates = []
         selectedPredictionIndex = 0
         isPunctuationComposing = false

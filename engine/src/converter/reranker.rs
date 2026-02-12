@@ -3,6 +3,11 @@ use crate::dict::connection::ConnectionMatrix;
 use super::cost::conn_cost;
 use super::viterbi::ScoredPath;
 
+/// Weight for the segment-length variance penalty.
+/// Penalises paths whose segments have very uneven reading lengths
+/// (e.g. 1-char + 3-char) in favour of more uniform splits (2+2).
+const LENGTH_VARIANCE_WEIGHT: i64 = 2000;
+
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
 /// The Viterbi core already handles dictionary cost + connection cost +
@@ -11,6 +16,8 @@ use super::viterbi::ScoredPath;
 ///
 /// - **Structure cost**: sum of transition costs along the path (Mozc-inspired);
 ///   paths with high accumulated transition costs tend to be fragmented
+/// - **Length variance**: penalises uneven segment splits so that more uniform
+///   segmentations are preferred when Viterbi costs are close
 pub fn rerank(paths: &mut [ScoredPath], conn: Option<&ConnectionMatrix>) {
     if paths.len() <= 1 {
         return;
@@ -30,6 +37,27 @@ pub fn rerank(paths: &mut [ScoredPath], conn: Option<&ConnectionMatrix>) {
         // Add 25% of structure cost as penalty — enough to differentiate
         // fragmented paths without dominating the Viterbi cost.
         path.viterbi_cost += structure_cost / 4;
+
+        // Length variance penalty: for paths with 2+ segments, penalise
+        // uneven reading lengths. Computed as sum-of-squared-deviations
+        // from the mean, scaled by LENGTH_VARIANCE_WEIGHT / N.
+        let n = path.segments.len();
+        if n >= 2 {
+            let lengths: Vec<i64> = path
+                .segments
+                .iter()
+                .map(|s| s.reading.chars().count() as i64)
+                .collect();
+            let sum: i64 = lengths.iter().sum();
+            // sum_sq_dev = Σ (len_i - mean)² × N  (multiplied through to stay in integers)
+            //            = N × Σ len_i² - (Σ len_i)²
+            let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
+            let n_i64 = n as i64;
+            let sum_sq_dev = n_i64 * sum_sq - sum * sum;
+            // Divide by N² to get the true variance-based penalty:
+            // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
+            path.viterbi_cost += sum_sq_dev * LENGTH_VARIANCE_WEIGHT / (n_i64 * n_i64);
+        }
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
@@ -153,5 +181,60 @@ mod tests {
         let mut paths: Vec<ScoredPath> = Vec::new();
         rerank(&mut paths, None);
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_rerank_penalizes_uneven_segments() {
+        // Uneven split: で(1) | 来たり(3) — variance penalty should apply
+        // Even split:   出来(2) | たり(2) — no variance penalty
+        let mut paths = vec![
+            // Uneven: readings 1 + 3 chars → mean=2, sum_sq_dev=2×(1+1)=4 (via formula: N*Σl²-S² = 2*10-16=4)
+            // penalty = 4 * 2000 / 4 = 2000
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "で".into(),
+                        surface: "で".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                    RichSegment {
+                        reading: "きたり".into(),
+                        surface: "来たり".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                ],
+                viterbi_cost: 5000,
+            },
+            // Even: readings 2 + 2 chars → sum_sq_dev=0, penalty=0
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "でき".into(),
+                        surface: "出来".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                    RichSegment {
+                        reading: "たり".into(),
+                        surface: "たり".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                ],
+                viterbi_cost: 6500,
+            },
+        ];
+
+        rerank(&mut paths, None);
+
+        // Uneven: 5000 + 2000 = 7000
+        // Even:   6500 + 0    = 6500
+        // Even split should be ranked first
+        assert_eq!(paths[0].segments[0].surface, "出来");
+        assert_eq!(paths[0].viterbi_cost, 6500);
+        assert_eq!(paths[1].segments[0].surface, "で");
+        assert_eq!(paths[1].viterbi_cost, 7000);
     }
 }
