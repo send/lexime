@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{DictEntry, TrieDictionary};
 
 /// Shared test dictionary for converter tests.
@@ -117,4 +118,11 @@ pub fn test_dict() -> TrieDictionary {
         ),
     ];
     TrieDictionary::from_entries(entries)
+}
+
+/// Create a zero-cost connection matrix with the given function-word ID range.
+pub fn zero_conn_with_fw(num_ids: u16, fw_min: u16, fw_max: u16) -> ConnectionMatrix {
+    let n = num_ids as usize;
+    let text = format!("{num_ids} {num_ids}\n{}", "0\n".repeat(n * n));
+    ConnectionMatrix::from_text_with_metadata(&text, fw_min, fw_max).unwrap()
 }
