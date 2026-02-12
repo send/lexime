@@ -78,15 +78,13 @@ target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def
 """
 
 [tasks.dict]
-description = "Merge Mozc + SudachiDict full into filtered dictionary"
-depends = ["dict-mozc", "dict-sudachi-full"]
+description = "Build dictionary (Mozc only)"
+depends = ["dict-mozc"]
 outputs = ["engine/data/lexime.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-cd engine
-cargo build --release --bin dictool
-target/release/dictool merge --max-cost 15000 --max-reading-len 15 data/lexime-mozc.dict data/lexime-sudachi-full.dict data/lexime.dict
+cp engine/data/lexime-mozc.dict engine/data/lexime.dict
 """
 
 [tasks.build]
