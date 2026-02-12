@@ -6,8 +6,9 @@ use memmap2::Mmap;
 use super::DictError;
 
 const MAGIC: &[u8; 4] = b"LXCX";
-const VERSION: u8 = 1;
-const HEADER_SIZE: usize = 4 + 1 + 2; // magic + version + num_ids
+const VERSION: u8 = 2;
+const HEADER_SIZE: usize = 4 + 1 + 2 + 2 + 2; // magic + version + num_ids + fw_min + fw_max
+const V1_HEADER_SIZE: usize = 4 + 1 + 2; // magic + v1 + num_ids (for backward compat)
 
 /// Backing storage for cost data: either owned or memory-mapped.
 enum CostStorage {
@@ -19,6 +20,9 @@ enum CostStorage {
 /// Used by the Viterbi algorithm to score morpheme transitions.
 pub struct ConnectionMatrix {
     num_ids: u16,
+    fw_min: u16,
+    fw_max: u16,
+    header_size: usize,
     storage: CostStorage,
 }
 
@@ -33,7 +37,7 @@ impl ConnectionMatrix {
         match &self.storage {
             CostStorage::Owned(costs) => costs.get(idx).copied().unwrap_or(0),
             CostStorage::Mapped(mmap) => {
-                let byte_offset = HEADER_SIZE + idx * 2;
+                let byte_offset = self.header_size + idx * 2;
                 mmap.get(byte_offset..byte_offset + 2)
                     .map(|b| i16::from_le_bytes([b[0], b[1]]))
                     .unwrap_or(0)
@@ -44,6 +48,12 @@ impl ConnectionMatrix {
     /// Number of morpheme IDs in this matrix.
     pub fn num_ids(&self) -> u16 {
         self.num_ids
+    }
+
+    /// Check whether a POS ID falls in the function-word range (助詞/助動詞).
+    /// Returns `false` when no range is set (both 0).
+    pub fn is_function_word(&self, id: u16) -> bool {
+        self.fw_min != 0 && self.fw_min <= id && id <= self.fw_max
     }
 
     /// Build from a text file.
@@ -152,30 +162,58 @@ impl ConnectionMatrix {
 
         Ok(Self {
             num_ids,
+            fw_min: 0,
+            fw_max: 0,
+            header_size: HEADER_SIZE,
             storage: CostStorage::Owned(costs),
         })
     }
 
-    /// Validate the binary header and return `num_ids`.
-    fn validate_header(data: &[u8]) -> Result<u16, DictError> {
-        if data.len() < HEADER_SIZE {
+    /// Build from a text file with function-word ID range metadata.
+    pub fn from_text_with_metadata(
+        text: &str,
+        fw_min: u16,
+        fw_max: u16,
+    ) -> Result<Self, DictError> {
+        let mut m = Self::from_text(text)?;
+        m.fw_min = fw_min;
+        m.fw_max = fw_max;
+        Ok(m)
+    }
+
+    /// Validate the binary header and return `(num_ids, fw_min, fw_max, header_size)`.
+    fn validate_header(data: &[u8]) -> Result<(u16, u16, u16, usize), DictError> {
+        if data.len() < V1_HEADER_SIZE {
             return Err(DictError::InvalidHeader);
         }
         if &data[..4] != MAGIC {
             return Err(DictError::InvalidMagic);
         }
-        if data[4] != VERSION {
-            return Err(DictError::UnsupportedVersion(data[4]));
-        }
-        let num_ids = u16::from_le_bytes([data[5], data[6]]);
+        let version = data[4];
+        let (num_ids, fw_min, fw_max, hdr_size) = match version {
+            1 => {
+                let num_ids = u16::from_le_bytes([data[5], data[6]]);
+                (num_ids, 0u16, 0u16, V1_HEADER_SIZE)
+            }
+            2 => {
+                if data.len() < HEADER_SIZE {
+                    return Err(DictError::InvalidHeader);
+                }
+                let num_ids = u16::from_le_bytes([data[5], data[6]]);
+                let fw_min = u16::from_le_bytes([data[7], data[8]]);
+                let fw_max = u16::from_le_bytes([data[9], data[10]]);
+                (num_ids, fw_min, fw_max, HEADER_SIZE)
+            }
+            _ => return Err(DictError::UnsupportedVersion(version)),
+        };
         let expected_bytes = num_ids as usize * num_ids as usize * 2;
-        let actual_bytes = data.len() - HEADER_SIZE;
+        let actual_bytes = data.len() - hdr_size;
         if actual_bytes != expected_bytes {
             return Err(DictError::Parse(format!(
                 "expected {expected_bytes} bytes of cost data, got {actual_bytes}",
             )));
         }
-        Ok(num_ids)
+        Ok((num_ids, fw_min, fw_max, hdr_size))
     }
 
     /// Load from compiled binary format using memory-mapped I/O.
@@ -189,41 +227,73 @@ impl ConnectionMatrix {
         // We hold the Mmap for the lifetime of this struct, so the data remains
         // valid. The file should not be modified while the IME is running.
         let mmap = unsafe { Mmap::map(&file)? };
-        let num_ids = Self::validate_header(&mmap)?;
+        let (num_ids, fw_min, fw_max, hdr_size) = Self::validate_header(&mmap)?;
         Ok(Self {
             num_ids,
+            fw_min,
+            fw_max,
+            header_size: hdr_size,
             storage: CostStorage::Mapped(mmap),
         })
     }
 
     /// Parse from compiled binary format into an owned representation.
     pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
-        let num_ids = Self::validate_header(data)?;
-        let costs: Vec<i16> = data[HEADER_SIZE..]
+        let (num_ids, fw_min, fw_max, hdr_size) = Self::validate_header(data)?;
+        let costs: Vec<i16> = data[hdr_size..]
             .chunks_exact(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         Ok(Self {
             num_ids,
+            fw_min,
+            fw_max,
+            header_size: HEADER_SIZE,
             storage: CostStorage::Owned(costs),
         })
     }
 
-    /// Serialize to compiled binary format.
+    /// Serialize to compiled binary format (always writes V2).
     pub fn to_bytes(&self) -> Vec<u8> {
         match &self.storage {
-            CostStorage::Mapped(mmap) => mmap.to_vec(),
-            CostStorage::Owned(costs) => {
+            CostStorage::Mapped(mmap) if self.header_size == HEADER_SIZE => mmap.to_vec(),
+            _ => {
+                let costs = match &self.storage {
+                    CostStorage::Owned(c) => c.as_slice(),
+                    CostStorage::Mapped(_) => {
+                        // V1 mmap → re-serialize as V2
+                        return self.to_bytes_from_mapped();
+                    }
+                };
                 let mut buf = Vec::with_capacity(HEADER_SIZE + costs.len() * 2);
                 buf.extend_from_slice(MAGIC);
                 buf.push(VERSION);
                 buf.extend_from_slice(&self.num_ids.to_le_bytes());
+                buf.extend_from_slice(&self.fw_min.to_le_bytes());
+                buf.extend_from_slice(&self.fw_max.to_le_bytes());
                 for &cost in costs {
                     buf.extend_from_slice(&cost.to_le_bytes());
                 }
                 buf
             }
         }
+    }
+
+    /// Helper: re-serialize a Mapped matrix as V2 bytes.
+    fn to_bytes_from_mapped(&self) -> Vec<u8> {
+        let n = self.num_ids as usize * self.num_ids as usize;
+        let mut buf = Vec::with_capacity(HEADER_SIZE + n * 2);
+        buf.extend_from_slice(MAGIC);
+        buf.push(VERSION);
+        buf.extend_from_slice(&self.num_ids.to_le_bytes());
+        buf.extend_from_slice(&self.fw_min.to_le_bytes());
+        buf.extend_from_slice(&self.fw_max.to_le_bytes());
+        for i in 0..n {
+            let left = (i / self.num_ids as usize) as u16;
+            let right = (i % self.num_ids as usize) as u16;
+            buf.extend_from_slice(&self.cost(left, right).to_le_bytes());
+        }
+        buf
     }
 
     /// Save compiled binary to file.
@@ -367,5 +437,77 @@ mod tests {
                 assert_eq!(m.cost(left, right), m2.cost(left, right));
             }
         }
+    }
+
+    #[test]
+    fn test_v2_roundtrip_with_metadata() {
+        let text = "3 3\n0\n10\n20\n30\n40\n50\n60\n70\n80\n";
+        let m = ConnectionMatrix::from_text_with_metadata(text, 29, 433).unwrap();
+        assert!(m.is_function_word(29));
+        assert!(m.is_function_word(200));
+        assert!(m.is_function_word(433));
+        assert!(!m.is_function_word(28));
+        assert!(!m.is_function_word(434));
+
+        let bytes = m.to_bytes();
+        let m2 = ConnectionMatrix::from_bytes(&bytes).unwrap();
+        assert_eq!(m2.num_ids(), 3);
+        assert!(m2.is_function_word(100));
+        assert!(!m2.is_function_word(0));
+        for left in 0..3 {
+            for right in 0..3 {
+                assert_eq!(m.cost(left, right), m2.cost(left, right));
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_function_word_no_range() {
+        let m = sample_matrix();
+        // fw_min == 0 && fw_max == 0 → always false
+        assert!(!m.is_function_word(0));
+        assert!(!m.is_function_word(100));
+    }
+
+    #[test]
+    fn test_v2_file_roundtrip() {
+        let dir = std::env::temp_dir().join("lexime_test_conn_v2");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_v2.conn");
+
+        let text = "2 2\n10\n20\n30\n40\n";
+        let m = ConnectionMatrix::from_text_with_metadata(text, 50, 300).unwrap();
+        m.save(&path).unwrap();
+
+        let m2 = ConnectionMatrix::open(&path).unwrap();
+        assert_eq!(m2.num_ids(), 2);
+        assert!(m2.is_function_word(100));
+        assert!(!m2.is_function_word(49));
+        assert_eq!(m2.cost(0, 0), 10);
+        assert_eq!(m2.cost(1, 1), 40);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_v1_backward_compat() {
+        // Construct a V1 binary manually
+        let mut v1_bytes = Vec::new();
+        v1_bytes.extend_from_slice(MAGIC);
+        v1_bytes.push(1); // V1
+        v1_bytes.extend_from_slice(&2u16.to_le_bytes()); // num_ids = 2
+                                                         // 4 costs: 10, 20, 30, 40
+        for cost in [10i16, 20, 30, 40] {
+            v1_bytes.extend_from_slice(&cost.to_le_bytes());
+        }
+
+        let m = ConnectionMatrix::from_bytes(&v1_bytes).unwrap();
+        assert_eq!(m.num_ids(), 2);
+        assert_eq!(m.cost(0, 0), 10);
+        assert_eq!(m.cost(0, 1), 20);
+        assert_eq!(m.cost(1, 0), 30);
+        assert_eq!(m.cost(1, 1), 40);
+        // V1 has no function-word range
+        assert!(!m.is_function_word(100));
     }
 }

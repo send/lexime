@@ -44,14 +44,16 @@ target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
 [tasks.conn]
 description = "Compile Mozc connection cost matrix"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/connection_single_column.txt"]
+sources = ["engine/data/mozc-raw/connection_single_column.txt", "engine/data/mozc-raw/id.def"]
 outputs = ["engine/data/lexime.conn"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release --bin dictool
-target/release/dictool compile-conn data/mozc-raw/connection_single_column.txt data/lexime.conn
+target/release/dictool compile-conn \
+  --id-def data/mozc-raw/id.def \
+  data/mozc-raw/connection_single_column.txt data/lexime.conn
 """
 
 [tasks.fetch-dict-sudachi-full]
