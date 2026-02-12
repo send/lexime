@@ -81,12 +81,15 @@ class LeximeInputController: IMKInputController {
             return
         }
 
+        guard !allCandidates.isEmpty else { hideCandidatePanel(); return }
+        let clampedIndex = min(selectedIndex, allCandidates.count - 1)
+
         let pageSize = Self.maxCandidateDisplay
-        let page = selectedIndex / pageSize
+        let page = clampedIndex / pageSize
         let pageStart = page * pageSize
         let pageEnd = min(pageStart + pageSize, allCandidates.count)
         let pageCandidates = Array(allCandidates[pageStart..<pageEnd])
-        let pageSelectedIndex = selectedIndex - pageStart
+        let pageSelectedIndex = clampedIndex - pageStart
 
         let rect = cursorRect(client: client)
         AppContext.shared.candidatePanel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)

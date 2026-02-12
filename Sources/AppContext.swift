@@ -38,8 +38,10 @@ class AppContext {
         }
 
         // Load user history (learning data)
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            fatalError("Lexime: Cannot find Application Support directory")
+        }
         self.historyPath = appSupport.appendingPathComponent("Lexime/user_history.lxud").path
 
         if let h = lex_history_open(self.historyPath) {
