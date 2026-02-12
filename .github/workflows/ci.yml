@@ -4,7 +4,7 @@ on:
   pull_request:
 
 jobs:
-  check:
+  engine:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,3 +23,15 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Swift tests
+        run: |
+          mkdir -p build
+          swiftc Sources/RomajiTable.swift Sources/RomajiConverter.swift \
+            Tests/TestRunner.swift Tests/TestRomajiTrie.swift Tests/TestRomajiConverter.swift \
+            -o build/test-runner && build/test-runner

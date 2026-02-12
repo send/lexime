@@ -43,7 +43,7 @@ impl Rewriter for KatakanaRewriter {
                 left_id: 0,
                 right_id: 0,
             }],
-            viterbi_cost: worst_cost + 10000,
+            viterbi_cost: worst_cost.saturating_add(10000),
         });
     }
 }

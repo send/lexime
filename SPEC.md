@@ -222,12 +222,12 @@ CostFunction
 ### ブースト計算
 
 ```
-boost = min(frequency × 500, 5000) × decay(last_used)
+boost = min(frequency × 1500, 10000) × decay(last_used)
 decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 ```
 
 - 半減期: 1 週間（168 時間）
-- 最大ブースト: 5,000（frequency ≥ 10 で到達）
+- 最大ブースト: 10,000（frequency ≥ 7 で到達）
 - Viterbi の `word_cost` / `transition_cost` から減算することで、学習した変換が優先される
 
 ### 保存
