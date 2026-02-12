@@ -15,8 +15,8 @@ const MAGIC: &[u8; 4] = b"LXUD";
 const VERSION: u8 = 1;
 const MAX_UNIGRAMS: usize = 10_000;
 const MAX_BIGRAMS: usize = 10_000;
-const BOOST_PER_USE: i64 = 500;
-const MAX_BOOST: i64 = 5000;
+const BOOST_PER_USE: i64 = 1500;
+const MAX_BOOST: i64 = 10000;
 const HALF_LIFE_HOURS: f64 = 168.0;
 
 pub struct UserHistory {

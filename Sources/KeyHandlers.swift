@@ -292,6 +292,15 @@ extension LeximeInputController {
     /// the kana is committed as-is.
     func performConversion(client: IMKTextInput) {
         hideCandidatePanel()
+
+        // Remember what was displayed before conversion so we can skip it
+        let displayedText: String
+        if selectedPredictionIndex > 0 && selectedPredictionIndex < predictionCandidates.count {
+            displayedText = predictionCandidates[selectedPredictionIndex]
+        } else {
+            displayedText = composedKana + pendingRomaji
+        }
+
         flush()
 
         // Single FFI call: get both 1-best segments and N-best joined surfaces
@@ -327,13 +336,20 @@ extension LeximeInputController {
             if seen.insert(composedKana).inserted {
                 candidates.append(composedKana)
             }
-            let surface = candidates.first ?? viterbiSurface
+
+            // If the first candidate matches what was already displayed,
+            // skip to the next one so Space always visually advances.
+            var startIndex = 0
+            if candidates.count > 1 && candidates[0] == displayedText {
+                startIndex = 1
+            }
+            let surface = candidates[startIndex]
 
             conversionSegments = [ConversionSegment(
                 reading: composedKana,
                 surface: surface,
                 candidates: candidates,
-                selectedIndex: 0
+                selectedIndex: startIndex
             )]
             activeSegmentIndex = 0
             state = .converting
