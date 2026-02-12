@@ -5,10 +5,13 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
+use lex_engine::converter::{convert, convert_nbest, convert_nbest_with_cost, convert_with_cost};
 use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::source;
 use lex_engine::dict::source::SudachiSource;
 use lex_engine::dict::{DictEntry, Dictionary, TrieDictionary};
+use lex_engine::user_history::cost::LearnedCostFunction;
+use lex_engine::user_history::UserHistory;
 
 use lex_engine::dict::source::pos_map;
 
@@ -61,6 +64,9 @@ enum Command {
         input_txt: String,
         /// Output binary file
         output_file: String,
+        /// Mozc id.def for function-word range extraction
+        #[arg(long)]
+        id_def: Option<String>,
     },
     /// Show dictionary info
     Info {
@@ -88,6 +94,35 @@ enum Command {
         dict_a: String,
         /// Second dictionary
         dict_b: String,
+    },
+    /// Look up a reading in the dictionary (exact match)
+    Lookup {
+        /// Dictionary file
+        dict_file: String,
+        /// Reading to look up (hiragana)
+        reading: String,
+    },
+    /// Common-prefix search (all readings that are prefixes of the query)
+    Prefix {
+        /// Dictionary file
+        dict_file: String,
+        /// Query string (hiragana)
+        query: String,
+    },
+    /// Convert kana to kanji (N-best)
+    Convert {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// Kana input
+        kana: String,
+        /// Number of candidates
+        #[arg(short, long, default_value = "10")]
+        n: usize,
+        /// User history file (optional)
+        #[arg(long)]
+        history: Option<String>,
     },
 }
 
@@ -128,7 +163,8 @@ fn main() {
         Command::CompileConn {
             input_txt,
             output_file,
-        } => compile_conn(&input_txt, &output_file),
+            id_def,
+        } => compile_conn(&input_txt, &output_file, id_def.as_deref()),
         Command::Info { dict_file } => info(&dict_file),
         Command::Merge {
             max_cost,
@@ -144,6 +180,15 @@ fn main() {
             merge(&dict_a, &dict_b, &output_file, &opts);
         }
         Command::Diff { dict_a, dict_b } => diff(&dict_a, &dict_b),
+        Command::Lookup { dict_file, reading } => lookup(&dict_file, &reading),
+        Command::Prefix { dict_file, query } => prefix(&dict_file, &query),
+        Command::Convert {
+            dict_file,
+            conn_file,
+            kana,
+            n,
+            history,
+        } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
     }
 }
 
@@ -201,15 +246,26 @@ fn compile(source_name: &str, remap_ids: Option<&str>, input_dir: &str, output_f
     );
 }
 
-fn compile_conn(input_txt: &str, output_file: &str) {
+fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
     let text = die!(
         fs::read_to_string(input_txt),
         "Error reading {input_txt}: {}"
     );
 
+    let (fw_min, fw_max) = if let Some(id_def_path) = id_def {
+        let (min, max) = die!(
+            pos_map::function_word_id_range(Path::new(id_def_path)),
+            "Error extracting function-word range: {}"
+        );
+        eprintln!("Function-word ID range: {min}..={max}");
+        (min, max)
+    } else {
+        (0, 0)
+    };
+
     eprintln!("Parsing connection matrix from {input_txt}...");
     let matrix = die!(
-        ConnectionMatrix::from_text(&text),
+        ConnectionMatrix::from_text_with_metadata(&text, fw_min, fw_max),
         "Error parsing connection matrix: {}"
     );
 
@@ -427,6 +483,91 @@ fn diff(dict_a_file: &str, dict_b_file: &str) {
             if let Some(entry) = a_first.get(*reading) {
                 println!("  {} -> {} (cost={})", reading, entry.surface, entry.cost);
             }
+        }
+    }
+}
+
+fn print_entries(entries: &[DictEntry]) {
+    for e in entries {
+        println!(
+            "  {} \tcost={}\tL={}\tR={}",
+            e.surface, e.cost, e.left_id, e.right_id
+        );
+    }
+}
+
+fn lookup(dict_file: &str, reading: &str) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    match dict.lookup(reading) {
+        Some(entries) => {
+            println!("{reading}: {} entries", entries.len());
+            print_entries(entries);
+        }
+        None => println!("{reading}: not found"),
+    }
+}
+
+fn prefix(dict_file: &str, query: &str) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let results = dict.common_prefix_search(query);
+    if results.is_empty() {
+        println!("{query}: no prefix matches");
+        return;
+    }
+    for r in &results {
+        println!("{} ({} entries):", r.reading, r.entries.len());
+        print_entries(r.entries);
+    }
+}
+
+fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: Option<&str>) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    let user_history = history.map(|path| {
+        die!(
+            UserHistory::open(Path::new(path)),
+            "Error opening history: {}"
+        )
+    });
+
+    if n <= 1 {
+        let result = if let Some(ref h) = user_history {
+            let cost_fn = LearnedCostFunction::new(Some(&conn), Some(&dict), h);
+            convert_with_cost(&dict, &cost_fn, Some(&conn), kana)
+        } else {
+            convert(&dict, Some(&conn), kana)
+        };
+        let segs: Vec<String> = result
+            .iter()
+            .map(|s| format!("{}({})", s.surface, s.reading))
+            .collect();
+        println!("{}", segs.join(" | "));
+    } else {
+        let nbest = if let Some(ref h) = user_history {
+            let cost_fn = LearnedCostFunction::new(Some(&conn), Some(&dict), h);
+            convert_nbest_with_cost(&dict, &cost_fn, Some(&conn), kana, n)
+        } else {
+            convert_nbest(&dict, Some(&conn), kana, n)
+        };
+        for (i, path) in nbest.iter().enumerate() {
+            let segs: Vec<String> = path
+                .iter()
+                .map(|s| format!("{}({})", s.surface, s.reading))
+                .collect();
+            println!("#{:>2}: {}", i + 1, segs.join(" | "));
         }
     }
 }

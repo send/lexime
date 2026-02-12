@@ -50,6 +50,38 @@ pub fn parse_mozc_id_def(path: &Path) -> Result<HashMap<String, u16>, DictSource
     Ok(map)
 }
 
+/// Extract the contiguous ID range for function words (助詞 and 助動詞) from Mozc `id.def`.
+///
+/// Returns `(min_id, max_id)`. If no matching entries are found, returns `(0, 0)`.
+pub fn function_word_id_range(path: &Path) -> Result<(u16, u16), DictSourceError> {
+    let content = fs::read_to_string(path).map_err(DictSourceError::Io)?;
+    let mut ids = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (id_str, pos_tag) = line
+            .split_once(' ')
+            .ok_or_else(|| DictSourceError::Parse(format!("invalid id.def line: {line}")))?;
+        if pos_tag.starts_with("助動詞,") || pos_tag.starts_with("助詞,") {
+            let id: u16 = id_str
+                .parse()
+                .map_err(|_| DictSourceError::Parse(format!("invalid id: {id_str}")))?;
+            ids.push(id);
+        }
+    }
+
+    if ids.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let min = *ids.iter().min().unwrap();
+    let max = *ids.iter().max().unwrap();
+    Ok((min, max))
+}
+
 /// Scan Sudachi CSV files and determine the most frequent POS tag for each
 /// left_id, then build a sudachi_id → mozc_id remap table.
 ///
@@ -349,6 +381,51 @@ mod tests {
         assert_eq!(map.get("動詞,自立,*,*,一段,基本形,*"), Some(&680));
         // Vocab-specific entry should be excluded
         assert!(!map.contains_key("動詞,自立,*,*,一段,基本形,食べる"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_function_word_id_range() {
+        let dir = std::env::temp_dir().join("lexime_test_fw_range");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("id.def");
+        fs::write(
+            &path,
+            make_id_def(&[
+                "0 BOS/EOS,*,*,*,*,*,*",
+                "29 助動詞,*,*,*,不変化型,基本形,*",
+                "100 助動詞,*,*,*,一段,基本形,*",
+                "267 助動詞,*,*,*,特殊・ダ,基本形,*",
+                "268 助詞,格助詞,一般,*,*,*,*",
+                "400 助詞,係助詞,*,*,*,*,*",
+                "433 助詞,終助詞,*,*,*,*,*",
+                "1852 名詞,一般,*,*,*,*,*",
+            ]),
+        )
+        .unwrap();
+
+        let (min, max) = function_word_id_range(&path).unwrap();
+        assert_eq!(min, 29);
+        assert_eq!(max, 433);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_function_word_id_range_empty() {
+        let dir = std::env::temp_dir().join("lexime_test_fw_range_empty");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("id.def");
+        fs::write(
+            &path,
+            make_id_def(&["0 BOS/EOS,*,*,*,*,*,*", "1852 名詞,一般,*,*,*,*,*"]),
+        )
+        .unwrap();
+
+        let (min, max) = function_word_id_range(&path).unwrap();
+        assert_eq!(min, 0);
+        assert_eq!(max, 0);
 
         fs::remove_dir_all(&dir).ok();
     }
