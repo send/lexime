@@ -12,10 +12,9 @@ use std::path::Path;
 use std::ptr;
 use std::sync::RwLock;
 
-use converter::{convert, convert_nbest, convert_nbest_with_cost, convert_with_cost};
+use converter::{convert, convert_nbest, convert_nbest_with_history, convert_with_history};
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
-use user_history::cost::LearnedCostFunction;
 use user_history::UserHistory;
 
 // --- Generic owned-pointer helpers for FFI resource management ---
@@ -565,9 +564,8 @@ pub extern "C" fn lex_convert_nbest_with_history(
         return LexConversionResultList::empty();
     };
 
-    let cost_fn = LearnedCostFunction::new(conn, Some(dict), &h);
-    pack_conversion_result_list(convert_nbest_with_cost(
-        dict, &cost_fn, conn, kana_str, n as usize,
+    pack_conversion_result_list(convert_nbest_with_history(
+        dict, conn, &h, kana_str, n as usize,
     ))
 }
 
@@ -670,8 +668,7 @@ pub extern "C" fn lex_convert_with_history(
         return LexConversionResult::empty();
     };
 
-    let cost_fn = LearnedCostFunction::new(conn, Some(dict), &h);
-    pack_conversion_result(convert_with_cost(dict, &cost_fn, conn, kana_str))
+    pack_conversion_result(convert_with_history(dict, conn, &h, kana_str))
 }
 
 #[no_mangle]

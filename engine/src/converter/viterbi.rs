@@ -1,5 +1,6 @@
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
+use crate::user_history::UserHistory;
 
 use super::cost::{CostFunction, DefaultCostFunction};
 use super::lattice::{build_lattice, Lattice};
@@ -292,6 +293,63 @@ pub fn convert_nbest_with_cost(
     top_paths.into_iter().map(|p| p.into_segments()).collect()
 }
 
+/// 1-best conversion with history-aware reranking.
+///
+/// Viterbi runs with `DefaultCostFunction` (no learned boosts), then
+/// `rerank` + `history_rerank` are applied on the N-best list. This avoids
+/// boost-induced lattice fragmentation while still surfacing learned
+/// candidates.
+pub fn convert_with_history(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: &UserHistory,
+    kana: &str,
+) -> Vec<ConvertedSegment> {
+    if kana.is_empty() {
+        return Vec::new();
+    }
+    let cost_fn = DefaultCostFunction::new(conn);
+    let lattice = build_lattice(dict, kana);
+    let mut paths = viterbi_nbest(&lattice, &cost_fn, 30);
+    super::reranker::rerank(&mut paths, conn);
+    super::reranker::history_rerank(&mut paths, history);
+    paths
+        .into_iter()
+        .next()
+        .map(|p| p.into_segments())
+        .unwrap_or_default()
+}
+
+/// N-best conversion with history-aware reranking.
+///
+/// Viterbi runs with `DefaultCostFunction`, then `rerank` +
+/// `history_rerank` are applied. The oversample is set to
+/// `max(n*3, 50)` to ensure enough diversity for the reranker to find
+/// learned candidates.
+pub fn convert_nbest_with_history(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: &UserHistory,
+    kana: &str,
+    n: usize,
+) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    let cost_fn = DefaultCostFunction::new(conn);
+    let lattice = build_lattice(dict, kana);
+    let oversample = (n * 3).max(50);
+    let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
+    super::reranker::rerank(&mut paths, conn);
+    super::reranker::history_rerank(&mut paths, history);
+
+    let mut top_paths: Vec<ScoredPath> = paths.into_iter().take(n).collect();
+    let katakana_rw = super::rewriter::KatakanaRewriter;
+    let rewriters: Vec<&dyn super::rewriter::Rewriter> = vec![&katakana_rw];
+    super::rewriter::run_rewriters(&rewriters, &mut top_paths, kana);
+    top_paths.into_iter().map(|p| p.into_segments()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,5 +600,62 @@ mod tests {
         let first: String = results[0].segments.iter().map(|s| &*s.surface).collect();
         let second: String = results[1].segments.iter().map(|s| &*s.surface).collect();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn test_convert_with_history_promotes_learned() {
+        let dict = test_dict();
+        // "きょう" has 今日(3000) and 京(5000). Without history, 今日 wins.
+        let baseline = convert(&dict, None, "きょう");
+        assert_eq!(baseline[0].surface, "今日");
+
+        // After learning "京", it should be promoted
+        let mut h = crate::user_history::UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let result = convert_with_history(&dict, None, &h, "きょう");
+        assert_eq!(result[0].surface, "京");
+    }
+
+    #[test]
+    fn test_convert_with_history_empty_history_matches_baseline() {
+        let dict = test_dict();
+        let h = crate::user_history::UserHistory::new();
+
+        let baseline = convert(&dict, None, "きょうはいいてんき");
+        let with_history = convert_with_history(&dict, None, &h, "きょうはいいてんき");
+
+        let baseline_surfaces: Vec<&str> = baseline.iter().map(|s| s.surface.as_str()).collect();
+        let history_surfaces: Vec<&str> = with_history.iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(baseline_surfaces, history_surfaces);
+    }
+
+    #[test]
+    fn test_convert_with_history_empty_input() {
+        let dict = test_dict();
+        let h = crate::user_history::UserHistory::new();
+        let result = convert_with_history(&dict, None, &h, "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_convert_nbest_with_history_promotes_learned() {
+        let dict = test_dict();
+        let mut h = crate::user_history::UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let results = convert_nbest_with_history(&dict, None, &h, "きょう", 5);
+        assert!(!results.is_empty());
+        assert_eq!(results[0][0].surface, "京");
+    }
+
+    #[test]
+    fn test_convert_nbest_with_history_empty_input() {
+        let dict = test_dict();
+        let h = crate::user_history::UserHistory::new();
+        assert!(convert_nbest_with_history(&dict, None, &h, "", 5).is_empty());
+        assert!(convert_nbest_with_history(&dict, None, &h, "きょう", 0).is_empty());
     }
 }
