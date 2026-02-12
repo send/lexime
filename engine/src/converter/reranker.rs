@@ -1,4 +1,5 @@
 use crate::dict::connection::ConnectionMatrix;
+use crate::user_history::UserHistory;
 
 use super::cost::{conn_cost, script_cost};
 use super::viterbi::ScoredPath;
@@ -66,6 +67,29 @@ pub fn rerank(paths: &mut [ScoredPath], conn: Option<&ConnectionMatrix>) {
         path.viterbi_cost += total_script;
     }
 
+    paths.sort_by_key(|p| p.viterbi_cost);
+}
+
+/// Apply user-history boosts to N-best paths, then re-sort.
+///
+/// Unigram and bigram boosts are subtracted from each path's cost so that
+/// learned candidates float to the top. Because this operates on complete
+/// paths (not individual lattice nodes), it cannot cause the fragmentation
+/// problems that in-Viterbi boosting could.
+pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
+    if paths.is_empty() {
+        return;
+    }
+    for path in paths.iter_mut() {
+        let mut boost: i64 = 0;
+        for seg in &path.segments {
+            boost += history.unigram_boost(&seg.reading, &seg.surface);
+        }
+        for pair in path.segments.windows(2) {
+            boost += history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface);
+        }
+        path.viterbi_cost -= boost;
+    }
     paths.sort_by_key(|p| p.viterbi_cost);
 }
 
@@ -282,5 +306,131 @@ mod tests {
         assert_eq!(paths[0].viterbi_cost, 7000);
         assert_eq!(paths[1].segments[0].surface, "タラ");
         assert_eq!(paths[1].viterbi_cost, 8000);
+    }
+
+    #[test]
+    fn test_history_rerank_unigram_boost_reorders() {
+        let mut h = UserHistory::new();
+        // Record twice to get 3000 boost (BOOST_PER_USE=1500 × 2), enough to
+        // overcome the 2000 cost gap (5000 - 3000).
+        h.record(&[("きょう".into(), "京".into())]);
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let mut paths = vec![
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "きょう".into(),
+                    surface: "今日".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 3000,
+            },
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "きょう".into(),
+                    surface: "京".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 5000,
+            },
+        ];
+
+        history_rerank(&mut paths, &h);
+
+        // "京" should be boosted to first place
+        assert_eq!(paths[0].segments[0].surface, "京");
+    }
+
+    #[test]
+    fn test_history_rerank_bigram_boost() {
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
+
+        let mut paths = vec![
+            // Path without bigram match
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "きょう".into(),
+                        surface: "京".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                    RichSegment {
+                        reading: "は".into(),
+                        surface: "は".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                ],
+                viterbi_cost: 5000,
+            },
+            // Path with bigram match: "今日" → "は"
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "きょう".into(),
+                        surface: "今日".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                    RichSegment {
+                        reading: "は".into(),
+                        surface: "は".into(),
+                        left_id: 0,
+                        right_id: 0,
+                    },
+                ],
+                viterbi_cost: 7000,
+            },
+        ];
+
+        history_rerank(&mut paths, &h);
+
+        // "今日は" path should be boosted (both unigram + bigram) to first
+        assert_eq!(paths[0].segments[0].surface, "今日");
+    }
+
+    #[test]
+    fn test_history_rerank_empty_history_preserves_order() {
+        let h = UserHistory::new();
+
+        let mut paths = vec![
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "あ".into(),
+                    surface: "亜".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 1000,
+            },
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "あ".into(),
+                    surface: "阿".into(),
+                    left_id: 0,
+                    right_id: 0,
+                }],
+                viterbi_cost: 2000,
+            },
+        ];
+
+        history_rerank(&mut paths, &h);
+
+        assert_eq!(paths[0].segments[0].surface, "亜");
+        assert_eq!(paths[0].viterbi_cost, 1000);
+        assert_eq!(paths[1].segments[0].surface, "阿");
+        assert_eq!(paths[1].viterbi_cost, 2000);
+    }
+
+    #[test]
+    fn test_history_rerank_empty_paths() {
+        let h = UserHistory::new();
+        let mut paths: Vec<ScoredPath> = Vec::new();
+        history_rerank(&mut paths, &h);
+        assert!(paths.is_empty());
     }
 }
