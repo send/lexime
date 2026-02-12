@@ -15,7 +15,7 @@ use viterbi::{viterbi_nbest, ScoredPath};
 pub use lattice::{build_lattice, Lattice, LatticeNode};
 pub use viterbi::ConvertedSegment;
 
-/// Shared post-processing pipeline: rerank → history_rerank → take(n) → rewrite.
+/// Shared post-processing pipeline: rerank → history_rerank → take(n) → rewrite → group.
 fn postprocess(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
@@ -31,7 +31,51 @@ fn postprocess(
     let katakana_rw = rewriter::KatakanaRewriter;
     let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&katakana_rw];
     rewriter::run_rewriters(&rewriters, &mut top, kana);
+    if let Some(c) = conn {
+        for path in &mut top {
+            group_segments(&mut path.segments, c);
+        }
+    }
     top.into_iter().map(|p| p.into_segments()).collect()
+}
+
+/// Group morpheme-level segments into phrase-level segments (content word + trailing function words).
+///
+/// A segment boundary is placed before each content word (non-function word),
+/// except at the very beginning. Leading function words are kept standalone.
+fn group_segments(segments: &mut Vec<viterbi::RichSegment>, conn: &ConnectionMatrix) {
+    if segments.len() <= 1 {
+        return;
+    }
+
+    let mut grouped: Vec<viterbi::RichSegment> = Vec::new();
+    let mut current: Option<viterbi::RichSegment> = None;
+
+    for seg in segments.drain(..) {
+        let is_fw = conn.is_function_word(seg.left_id);
+
+        match (&mut current, is_fw) {
+            (Some(cur), true) => {
+                cur.reading.push_str(&seg.reading);
+                cur.surface.push_str(&seg.surface);
+                cur.right_id = seg.right_id;
+            }
+            (Some(_), false) => {
+                grouped.push(current.take().unwrap());
+                current = Some(seg);
+            }
+            (None, true) => grouped.push(seg),
+            (None, false) => {
+                current = Some(seg);
+            }
+        }
+    }
+
+    if let Some(cur) = current {
+        grouped.push(cur);
+    }
+
+    *segments = grouped;
 }
 
 /// Convert a kana string to the best segmentation using Viterbi algorithm.
@@ -429,5 +473,100 @@ mod tests {
         let h = crate::user_history::UserHistory::new();
         assert!(convert_nbest_with_history(&dict, None, &h, "", 5).is_empty());
         assert!(convert_nbest_with_history(&dict, None, &h, "きょう", 0).is_empty());
+    }
+
+    // --- group_segments tests ---
+
+    use crate::converter::testutil::zero_conn_with_fw;
+    use crate::converter::viterbi::RichSegment;
+
+    fn rich(reading: &str, surface: &str, id: u16) -> RichSegment {
+        RichSegment {
+            reading: reading.into(),
+            surface: surface.into(),
+            left_id: id,
+            right_id: id,
+        }
+    }
+
+    #[test]
+    fn test_group_segments_basic() {
+        // content(100) + func(200) + content(300) → 2 segments
+        let conn = zero_conn_with_fw(301, 200, 200);
+        let mut segs = vec![
+            rich("きょう", "今日", 100),
+            rich("は", "は", 200),
+            rich("いい", "良い", 300),
+        ];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].reading, "きょうは");
+        assert_eq!(segs[0].surface, "今日は");
+        assert_eq!(segs[0].left_id, 100);
+        assert_eq!(segs[0].right_id, 200);
+        assert_eq!(segs[1].reading, "いい");
+        assert_eq!(segs[1].surface, "良い");
+    }
+
+    #[test]
+    fn test_group_segments_leading_func() {
+        // Leading function word stays standalone
+        let conn = zero_conn_with_fw(301, 200, 200);
+        let mut segs = vec![rich("は", "は", 200), rich("きょう", "今日", 100)];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].surface, "は");
+        assert_eq!(segs[1].surface, "今日");
+    }
+
+    #[test]
+    fn test_group_segments_consecutive_func() {
+        // content + func + func → all merged into one segment
+        let conn = zero_conn_with_fw(301, 200, 210);
+        let mut segs = vec![
+            rich("たべ", "食べ", 100),
+            rich("て", "て", 200),
+            rich("は", "は", 210),
+        ];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].reading, "たべては");
+        assert_eq!(segs[0].surface, "食べては");
+        assert_eq!(segs[0].left_id, 100);
+        assert_eq!(segs[0].right_id, 210);
+    }
+
+    #[test]
+    fn test_group_segments_all_content() {
+        // All content words → no grouping
+        let conn = zero_conn_with_fw(301, 200, 200);
+        let mut segs = vec![rich("きょう", "今日", 100), rich("いい", "良い", 300)];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 2);
+    }
+
+    #[test]
+    fn test_group_segments_single_and_empty() {
+        let conn = zero_conn_with_fw(301, 200, 200);
+
+        let mut single = vec![rich("きょう", "今日", 100)];
+        group_segments(&mut single, &conn);
+        assert_eq!(single.len(), 1);
+
+        let mut empty: Vec<RichSegment> = vec![];
+        group_segments(&mut empty, &conn);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_convert_groups_with_conn() {
+        // Integration test: convert with a conn that has fw_range covering は(id=200)
+        let dict = test_dict();
+        let conn = zero_conn_with_fw(1200, 200, 200);
+        let result = convert(&dict, Some(&conn), "きょうは");
+        // "今日" + "は" should be grouped into one segment "今日は"
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface, "今日は");
+        assert_eq!(result[0].reading, "きょうは");
     }
 }
