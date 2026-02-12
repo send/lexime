@@ -26,9 +26,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: engine
     steps:
       - uses: actions/checkout@v4
 
@@ -40,20 +37,25 @@ jobs:
         with:
           workspaces: engine -> target
 
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - uses: jdx/mise-action@v2
+
+      - run: mise run test
 
   swift:
     needs: changes
-    if: needs.changes.outputs.swift == 'true'
+    if: needs.changes.outputs.swift == 'true' || needs.changes.outputs.engine == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Swift tests
-        run: |
-          mkdir -p build
-          swiftc Sources/RomajiTable.swift Sources/RomajiConverter.swift \
-            Tests/TestRunner.swift Tests/TestRomajiTrie.swift Tests/TestRomajiConverter.swift \
-            -o build/test-runner && build/test-runner
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+
+      - uses: jdx/mise-action@v2
+
+      - run: mise run test-swift
