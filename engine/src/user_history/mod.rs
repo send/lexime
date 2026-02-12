@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -74,6 +73,35 @@ fn decay(last_used: u64, now: u64) -> f64 {
     1.0 / (1.0 + hours / HALF_LIFE_HOURS)
 }
 
+/// Evict lowest-score entries from a nested HashMap when exceeding capacity.
+fn evict_map<K: Clone + Eq + std::hash::Hash>(
+    map: &mut HashMap<String, HashMap<K, HistoryEntry>>,
+    max: usize,
+    now: u64,
+) {
+    let count: usize = map.values().map(|inner| inner.len()).sum();
+    if count <= max {
+        return;
+    }
+    let mut all: Vec<(String, K, f64)> = Vec::new();
+    for (outer_key, inner) in map.iter() {
+        for (inner_key, entry) in inner {
+            let score = entry.frequency as f64 * decay(entry.last_used, now);
+            all.push((outer_key.clone(), inner_key.clone(), score));
+        }
+    }
+    all.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+    let to_remove = count - max;
+    for (outer_key, inner_key, _) in all.iter().take(to_remove) {
+        if let Some(inner) = map.get_mut(outer_key) {
+            inner.remove(inner_key);
+            if inner.is_empty() {
+                map.remove(outer_key);
+            }
+        }
+    }
+}
+
 impl Default for UserHistory {
     fn default() -> Self {
         Self::new()
@@ -86,14 +114,6 @@ impl UserHistory {
             unigrams: HashMap::new(),
             bigrams: HashMap::new(),
         }
-    }
-
-    fn unigram_count(&self) -> usize {
-        self.unigrams.values().map(|inner| inner.len()).sum()
-    }
-
-    fn bigram_count(&self) -> usize {
-        self.bigrams.values().map(|inner| inner.len()).sum()
     }
 
     /// Record a confirmed conversion: list of (reading, surface) segments.
@@ -148,16 +168,10 @@ impl UserHistory {
     /// Compute bigram boost for (prev_surface → next_reading, next_surface).
     pub fn bigram_boost(&self, prev_surface: &str, next_reading: &str, next_surface: &str) -> i64 {
         let now = now_epoch();
+        let key = (next_reading.to_string(), next_surface.to_string());
         self.bigrams
             .get(prev_surface)
-            .and_then(|inner| {
-                inner
-                    .iter()
-                    .find(|((reading, surface), _)| {
-                        reading == next_reading && surface == next_surface
-                    })
-                    .map(|(_, entry)| entry)
-            })
+            .and_then(|inner| inner.get(&key))
             .map_or(0, |entry| entry.boost(now))
     }
 
@@ -289,50 +303,8 @@ impl UserHistory {
     /// Evict lowest-score entries when exceeding capacity.
     fn evict(&mut self) {
         let now = now_epoch();
-
-        // Evict unigrams
-        let count = self.unigram_count();
-        if count > MAX_UNIGRAMS {
-            let mut all: Vec<(String, String, f64)> = Vec::new();
-            for (reading, inner) in &self.unigrams {
-                for (surface, entry) in inner {
-                    let score = entry.frequency as f64 * decay(entry.last_used, now);
-                    all.push((reading.clone(), surface.clone(), score));
-                }
-            }
-            all.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
-            let to_remove = count - MAX_UNIGRAMS;
-            for (reading, surface, _) in all.iter().take(to_remove) {
-                if let Some(inner) = self.unigrams.get_mut(reading) {
-                    inner.remove(surface);
-                    if inner.is_empty() {
-                        self.unigrams.remove(reading);
-                    }
-                }
-            }
-        }
-
-        // Evict bigrams
-        let count = self.bigram_count();
-        if count > MAX_BIGRAMS {
-            let mut all: Vec<(String, (String, String), f64)> = Vec::new();
-            for (prev, inner) in &self.bigrams {
-                for (key, entry) in inner {
-                    let score = entry.frequency as f64 * decay(entry.last_used, now);
-                    all.push((prev.clone(), key.clone(), score));
-                }
-            }
-            all.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
-            let to_remove = count - MAX_BIGRAMS;
-            for (prev, key, _) in all.iter().take(to_remove) {
-                if let Some(inner) = self.bigrams.get_mut(prev) {
-                    inner.remove(key);
-                    if inner.is_empty() {
-                        self.bigrams.remove(prev);
-                    }
-                }
-            }
-        }
+        evict_map(&mut self.unigrams, MAX_UNIGRAMS, now);
+        evict_map(&mut self.bigrams, MAX_BIGRAMS, now);
     }
 }
 
@@ -402,7 +374,8 @@ mod tests {
         for i in 0..=MAX_UNIGRAMS {
             h.record(&[(format!("r{i}"), format!("s{i}"))]);
         }
-        assert!(h.unigram_count() <= MAX_UNIGRAMS);
+        let count: usize = h.unigrams.values().map(|inner| inner.len()).sum();
+        assert!(count <= MAX_UNIGRAMS);
     }
 
     #[test]
