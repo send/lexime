@@ -4,7 +4,27 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      engine: ${{ steps.filter.outputs.engine }}
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            engine:
+              - 'engine/**'
+            swift:
+              - 'Sources/**'
+              - 'Tests/**'
+
   engine:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,6 +45,8 @@ jobs:
       - run: cargo test
 
   swift:
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
