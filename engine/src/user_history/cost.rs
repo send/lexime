@@ -1,4 +1,4 @@
-use crate::converter::cost::{conn_cost, script_cost, CostFunction, SEGMENT_PENALTY};
+use crate::converter::cost::{conn_cost, CostFunction, SEGMENT_PENALTY};
 use crate::converter::LatticeNode;
 use crate::dict::connection::ConnectionMatrix;
 
@@ -18,7 +18,7 @@ impl<'a> LearnedCostFunction<'a> {
 
 impl CostFunction for LearnedCostFunction<'_> {
     fn word_cost(&self, node: &LatticeNode) -> i64 {
-        node.cost as i64 + SEGMENT_PENALTY + script_cost(&node.surface)
+        node.cost as i64 + SEGMENT_PENALTY
             - self.history.unigram_boost(&node.reading, &node.surface)
     }
 
