@@ -57,20 +57,6 @@ mise run install
 | `z/` | ・ | `z-` | 〜 |
 | `z[` | 『 | `z]` | 』 |
 
-### 辞書ソース切り替え
-
-統合辞書（Mozc + SudachiDict）をデフォルトで使用。`defaults write` で個別辞書にも切り替え可能。
-
-```sh
-# Mozc 単体に切り替え
-defaults write sh.send.inputmethod.Lexime dictSource mozc
-mise run reload
-
-# 統合辞書に戻す
-defaults write sh.send.inputmethod.Lexime dictSource merged
-mise run reload
-```
-
 ### プログラマモード
 
 JIS キーボードの ¥ キーでバックスラッシュ `\` を入力するモード。

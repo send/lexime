@@ -59,19 +59,12 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 
 ### 辞書データ
 
-ビルド時にソースごとの辞書ファイルを生成し、ランタイムで切り替え可能:
-
-| ソース | 辞書 | 接続行列 |
-|---|---|---|
-| Merged（デフォルト） | `lexime-merged.dict` | `lexime-merged.conn`（= Mozc） |
-| Mozc | `lexime-mozc.dict` | `lexime-mozc.conn` |
-| SudachiDict | `lexime-sudachi.dict` | `lexime-sudachi.conn` |
+統合辞書（Mozc + SudachiDict Full）のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 
 - **辞書**: TSV/CSV → `TrieDictionary`（bincode シリアライズ、マジック `LXDC`）
 - **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）
 - POS ID ペアの遷移コストを O(1) で参照
 - **統合辞書**: Mozc + SudachiDict Full を merge。Sudachi エントリは `pos_map` で Mozc の POS ID 体系にリマップし、Mozc の接続行列で統一的に動作
-- **ソース選択**: `UserDefaults` の `dictSource` キー（デフォルト: `merged`）で起動時に決定
 
 ### FFI (C ABI)
 
@@ -294,14 +287,11 @@ macOS で動作する最小限の IME を構築。
 | `fetch-dict-sudachi` | SudachiDict データのダウンロード |
 | `fetch-dict-sudachi-full` | SudachiDict Full データのダウンロード（core + notcore） |
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
-| `dict-sudachi` | SudachiDict 辞書バイナリのコンパイル |
 | `dict-sudachi-full` | SudachiDict Full 辞書のコンパイル（Mozc POS ID にリマップ） |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
-| `dict-merged` | Mozc + SudachiDict Full の統合辞書（フィルタ付き merge） |
-| `conn-sudachi` | SudachiDict 接続行列のコンパイル |
-| `conn-mozc` | Mozc 接続行列のコンパイル |
-| `conn-merged` | 統合辞書用接続行列（= Mozc conn のコピー） |
-| `build` | Lexime.app ユニバーサルバイナリのビルド（depends: dict-merged, conn-merged） |
+| `dict` | Mozc + SudachiDict Full の統合辞書（フィルタ付き merge） |
+| `conn` | Mozc 接続行列のコンパイル |
+| `build` | Lexime.app ユニバーサルバイナリのビルド（depends: dict, conn） |
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `log` | ログストリーミング |

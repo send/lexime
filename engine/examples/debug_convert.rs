@@ -6,8 +6,8 @@ use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::{Dictionary, TrieDictionary};
 
 fn main() {
-    let dict = TrieDictionary::open(Path::new("data/lexime-sudachi.dict")).expect("dict");
-    let conn = ConnectionMatrix::open(Path::new("data/lexime-sudachi.conn")).expect("conn");
+    let dict = TrieDictionary::open(Path::new("data/lexime.dict")).expect("dict");
+    let conn = ConnectionMatrix::open(Path::new("data/lexime.conn")).expect("conn");
 
     let input = "けんとうしたいです";
 
