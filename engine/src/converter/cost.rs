@@ -56,7 +56,7 @@ pub fn script_cost(surface: &str) -> i64 {
 }
 
 /// Trait for scoring lattice paths during Viterbi search.
-pub trait CostFunction: Send + Sync {
+pub(crate) trait CostFunction: Send + Sync {
     fn word_cost(&self, node: &LatticeNode) -> i64;
     fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64;
     fn bos_cost(&self, node: &LatticeNode) -> i64;
@@ -69,7 +69,7 @@ pub fn conn_cost(conn: Option<&ConnectionMatrix>, left: u16, right: u16) -> i64 
 }
 
 /// Default cost function using word costs and optional connection matrix.
-pub struct DefaultCostFunction<'a> {
+pub(crate) struct DefaultCostFunction<'a> {
     conn: Option<&'a ConnectionMatrix>,
 }
 

@@ -5,12 +5,13 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
-use lex_engine::converter::{convert, convert_nbest, convert_nbest_with_cost, convert_with_cost};
+use lex_engine::converter::{
+    convert, convert_nbest, convert_nbest_with_history, convert_with_history,
+};
 use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::source;
 use lex_engine::dict::source::SudachiSource;
 use lex_engine::dict::{DictEntry, Dictionary, TrieDictionary};
-use lex_engine::user_history::cost::LearnedCostFunction;
 use lex_engine::user_history::UserHistory;
 
 use lex_engine::dict::source::pos_map;
@@ -545,8 +546,7 @@ fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: 
 
     if n <= 1 {
         let result = if let Some(ref h) = user_history {
-            let cost_fn = LearnedCostFunction::new(Some(&conn), Some(&dict), h);
-            convert_with_cost(&dict, &cost_fn, Some(&conn), kana)
+            convert_with_history(&dict, Some(&conn), h, kana)
         } else {
             convert(&dict, Some(&conn), kana)
         };
@@ -557,8 +557,7 @@ fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: 
         println!("{}", segs.join(" | "));
     } else {
         let nbest = if let Some(ref h) = user_history {
-            let cost_fn = LearnedCostFunction::new(Some(&conn), Some(&dict), h);
-            convert_nbest_with_cost(&dict, &cost_fn, Some(&conn), kana, n)
+            convert_nbest_with_history(&dict, Some(&conn), h, kana, n)
         } else {
             convert_nbest(&dict, Some(&conn), kana, n)
         };
