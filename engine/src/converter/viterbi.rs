@@ -64,7 +64,7 @@ pub fn convert(
 /// Convert a kana string using a custom cost function.
 ///
 /// `conn` is passed separately for the reranker's structure cost calculation.
-pub fn convert_with_cost(
+fn convert_with_cost(
     dict: &dyn Dictionary,
     cost_fn: &dyn CostFunction,
     conn: Option<&ConnectionMatrix>,
@@ -267,7 +267,7 @@ pub fn convert_nbest(
 /// Convert a kana string to the N-best segmentations using a custom cost function.
 ///
 /// `conn` is passed separately for the reranker's structure cost calculation.
-pub fn convert_nbest_with_cost(
+fn convert_nbest_with_cost(
     dict: &dyn Dictionary,
     cost_fn: &dyn CostFunction,
     conn: Option<&ConnectionMatrix>,

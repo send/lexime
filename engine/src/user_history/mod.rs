@@ -1,5 +1,3 @@
-pub mod cost;
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;

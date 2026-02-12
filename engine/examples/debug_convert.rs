@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use lex_engine::converter::cost::{CostFunction, DefaultCostFunction};
 use lex_engine::converter::{build_lattice, convert, convert_nbest};
 use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::{Dictionary, TrieDictionary};
