@@ -327,20 +327,22 @@ fn decay(last_used: u64, now: u64) -> f64 {
 
 ## まとめ
 
-| # | 優先度 | 対象 | 概要 |
-|---|--------|------|------|
-| 1 | 高 | engine/src/lib.rs | Owned パターンのジェネリック化 |
-| 2 | 高 | engine/src/lib.rs | FFI null チェックのマクロ化 |
-| 3 | 高 | engine/src/dict/ | エラー型の統一 |
-| 4 | 高 | engine/src/user_history/ | 3段ネスト HashMap のフラット化 |
-| 5 | 中 | engine/src/dict/source/ | Mozc/Sudachi パーサーの共通化 |
-| 6 | 中 | Sources/*.swift | グローバル変数の AppContext 化 |
-| 7 | 中 | Sources/KeyHandlers.swift | handleComposing の分割 |
-| 8 | 中 | engine/src/dict/trie_dict.rs | 不要な Box dyn Iterator の除去 |
-| 9 | 中 | engine/ | Unicode 文字判定の統一 |
-| 10 | 低 | Sources/RomajiTable.swift | マッピングのデータ駆動化 |
-| 11 | 低 | Sources/MarkedTextManager.swift | marked text メソッドの統合 |
-| 12 | 低 | engine/src/user_history/ | decay() のテスタビリティ改善 |
-| 13 | 低 | engine/src/bin/dictool.rs | clap による引数パース |
+| # | 優先度 | 対象 | 概要 | 状態 |
+|---|--------|------|------|------|
+| 1 | 高 | engine/src/lib.rs | Owned パターンのジェネリック化 | **完了** (PR #26) |
+| 2 | 高 | engine/src/lib.rs | FFI null チェックのマクロ化 | **完了** (PR #23) |
+| 3 | 高 | engine/src/dict/ | エラー型の統一 | **完了** (PR #23) |
+| 4 | 高 | engine/src/user_history/ | 3段ネスト HashMap のフラット化 | **完了** (PR #23, 3段→2段に改善) |
+| 5 | 中 | engine/src/dict/source/ | Mozc/Sudachi パーサーの共通化 | **完了** (PR #27) |
+| 6 | 中 | Sources/*.swift | グローバル変数の AppContext 化 | **完了** (PR #28) |
+| 7 | 中 | Sources/KeyHandlers.swift | handleComposing の分割 | **スキップ** (Space キー処理は `performConversion()` に抽出済み、残りは許容範囲) |
+| 8 | 中 | engine/src/dict/trie_dict.rs | 不要な Box dyn Iterator の除去 | **完了** (PR #25) |
+| 9 | 中 | engine/ | Unicode 文字判定の統一 | **完了** (PR #23, `unicode.rs` モジュール導入) |
+| 10 | 低 | Sources/RomajiTable.swift | マッピングのデータ駆動化 | **完了** (PR #23, `static let mappings` 配列化) |
+| 11 | 低 | Sources/MarkedTextManager.swift | marked text メソッドの統合 | **対応不要** (2メソッドは責務が異なるため現状が正しい設計) |
+| 12 | 低 | engine/src/user_history/ | decay() のテスタビリティ改善 | **完了** (PR #23, `now` パラメータ追加) |
+| 13 | 低 | engine/src/bin/dictool.rs | clap による引数パース | **完了** (PR #29) |
 
 **全体的な印象:** コードベースは v0.1.0 としてはよく構造化されており、テストカバレッジも適切です。上記の提案は主にコード重複の削減と保守性の向上に焦点を当てています。機能的なバグやセキュリティ上の問題は発見されませんでした。
+
+**2025-02 更新:** 全13項目のうち12項目が完了、1項目はスキップ（現状で十分）。リファクタリング提案はすべて解決済みです。
