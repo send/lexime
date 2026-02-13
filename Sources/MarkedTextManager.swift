@@ -6,12 +6,10 @@ extension LeximeInputController {
     /// Update inline marked text with the given display string.
     /// Uses markedClauseSegment to prevent the client's text system from
     /// applying its own transformations (e.g. Shift-triggered katakana conversion).
-    func updateMarkedText(_ display: String? = nil, client: IMKTextInput) {
-        let text = display ?? (composedKana + pendingRomaji)
-        currentDisplay = text
+    func updateMarkedText(_ text: String, dashed: Bool, client: IMKTextInput) {
         let len = text.utf16.count
         var attrs: [NSAttributedString.Key: Any] = [.markedClauseSegment: 0]
-        if currentSubmode == .english {
+        if dashed {
             attrs[.underlineStyle] = NSUnderlineStyle.patternDash.rawValue | NSUnderlineStyle.single.rawValue
         }
         let attrStr = NSAttributedString(string: text, attributes: attrs)

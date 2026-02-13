@@ -16,6 +16,7 @@ const BOOST_PER_USE: i64 = 3000;
 const MAX_BOOST: i64 = 15000;
 const HALF_LIFE_HOURS: f64 = 168.0;
 
+#[derive(Clone)]
 pub struct UserHistory {
     /// reading → (surface → HistoryEntry)
     unigrams: HashMap<String, HashMap<String, HistoryEntry>>,

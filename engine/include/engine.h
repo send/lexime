@@ -154,4 +154,62 @@ LexCandidateResponse lex_generate_candidates(
 );
 void lex_candidate_response_free(LexCandidateResponse response);
 
+/* InputSession API */
+
+typedef struct LexSession LexSession;
+
+typedef struct {
+    uint8_t consumed;
+    const char *commit_text;       /* NULL = no commit */
+    const char *marked_text;       /* NULL = no change, "" = clear */
+    uint8_t is_dashed_underline;   /* 1 = English submode underline */
+    const char *const *candidates;
+    uint32_t candidates_len;
+    uint32_t selected_index;
+    uint8_t show_candidates;       /* 1 = show/update candidate panel */
+    uint8_t hide_candidates;       /* 1 = hide candidate panel */
+    uint8_t switch_to_abc;         /* 1 = switch to ABC input source */
+    uint8_t save_history;          /* 1 = trigger async history save */
+    uint8_t needs_candidates;      /* 1 = caller should generate candidates async */
+    const char *candidate_reading; /* reading for async generation (valid when needs_candidates=1) */
+    void *_owned;
+} LexKeyResponse;
+
+LexSession *lex_session_new(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history
+);
+void lex_session_free(LexSession *session);
+void lex_session_set_programmer_mode(LexSession *session, uint8_t enabled);
+void lex_session_set_defer_candidates(LexSession *session, uint8_t enabled);
+
+LexKeyResponse lex_session_handle_key(
+    LexSession *session,
+    uint16_t key_code,
+    const char *text,
+    uint8_t flags  /* bit0=shift, bit1=has_modifier(Cmd/Ctrl/Opt) */
+);
+
+LexKeyResponse lex_session_commit(LexSession *session);
+uint8_t lex_session_is_composing(const LexSession *session);
+
+void lex_key_response_free(LexKeyResponse response);
+
+/* Receive async candidate results and update session state.
+ * reading: the kana used for generation (staleness check).
+ * Returns a LexKeyResponse with updated marked text and candidates. */
+LexKeyResponse lex_session_receive_candidates(
+    LexSession *session,
+    const char *reading,
+    const LexCandidateResponse *candidates
+);
+
+/* Record history entries from a key response into the user history.
+ * Call this before lex_key_response_free when save_history is set. */
+void lex_key_response_record_history(
+    const LexKeyResponse *response,
+    const LexUserHistory *history
+);
+
 #endif
