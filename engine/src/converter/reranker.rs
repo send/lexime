@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn test_history_rerank_unigram_boost_reorders() {
         let mut h = UserHistory::new();
-        // Record twice to get 3000 boost (BOOST_PER_USE=1500 × 2), enough to
+        // Record twice to get 6000 boost (BOOST_PER_USE=3000 × 2), enough to
         // overcome the 2000 cost gap (5000 - 3000).
         h.record(&[("きょう".into(), "京".into())]);
         h.record(&[("きょう".into(), "京".into())]);

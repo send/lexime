@@ -109,8 +109,26 @@ fn generate_normal_candidates(
         nbest_paths.push(path.clone());
     }
 
-    // 2. Reading (kana) — always present, after Viterbi #1
-    if seen.insert(reading.to_string()) {
+    // 2. Reading (kana) — position depends on history boost.
+    //    If the user previously selected the hiragana form, promote it to
+    //    position 0 (inline preview) so it becomes the default candidate.
+    //    The kana may already exist in N-best (via fallback nodes); if so, move it.
+    let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading));
+    let kana_existing_pos = surfaces.iter().position(|s| s == reading);
+    if kana_boost > 0 {
+        match kana_existing_pos {
+            Some(0) => {} // already at top
+            Some(pos) => {
+                surfaces.remove(pos);
+                surfaces.insert(0, reading.to_string());
+            }
+            None => {
+                seen.insert(reading.to_string());
+                surfaces.insert(0, reading.to_string());
+            }
+        }
+    } else if kana_existing_pos.is_none() {
+        seen.insert(reading.to_string());
         surfaces.push(reading.to_string());
     }
 
@@ -135,7 +153,7 @@ fn generate_normal_candidates(
         }
     }
 
-    // 4. Dictionary lookup
+    // 5. Dictionary lookup
     let lookup_entries: Vec<&DictEntry> = if let Some(h) = history {
         if let Some(entries) = dict.lookup(reading) {
             let reordered = h.reorder_candidates(reading, entries);
@@ -283,5 +301,36 @@ mod tests {
         assert!(punctuation_alternatives("、").is_some());
         assert!(punctuation_alternatives("？").is_some());
         assert!(punctuation_alternatives("きょう").is_none());
+    }
+
+    #[test]
+    fn test_kana_promoted_by_history() {
+        let dict = make_dict();
+        let mut h = UserHistory::new();
+        // Record hiragana selection: user chose "きょう" (kana) for reading "きょう"
+        h.record(&[("きょう".into(), "きょう".into())]);
+
+        let resp = generate_candidates(&dict, None, Some(&h), "きょう", 9);
+        // Kana "きょう" should appear at position 1 (after Viterbi #1, before other N-best)
+        assert_eq!(
+            resp.surfaces[0], "きょう",
+            "kana should be promoted to position 0 (inline preview)"
+        );
+    }
+
+    #[test]
+    fn test_kana_not_promoted_without_history() {
+        let dict = make_dict();
+        let resp = generate_candidates(&dict, None, None, "きょう", 9);
+        // Without history, kana should NOT be at position 1
+        // (it should be after all N-best paths)
+        if resp.surfaces.len() >= 2 {
+            // Position 0 is Viterbi #1 (likely kanji), kana comes after N-best
+            let kana_pos = resp.surfaces.iter().position(|s| s == "きょう").unwrap();
+            assert!(
+                kana_pos > 0,
+                "kana should not be at position 0 without history"
+            );
+        }
     }
 }

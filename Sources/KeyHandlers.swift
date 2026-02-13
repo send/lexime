@@ -122,6 +122,10 @@ extension LeximeInputController {
 
         case Key.escape: // Escape — commit kana (IMKit forces commitComposition after Escape)
             hideCandidatePanel()
+            flush()
+            if !composedKana.isEmpty {
+                recordToHistory(reading: composedKana, surface: composedKana)
+            }
             predictionCandidates = []
             selectedPredictionIndex = 0
             return true
