@@ -18,6 +18,11 @@ class LeximeInputController: IMKInputController {
     var isComposing: Bool { state != .idle }
 
     var selectedPredictionIndex: Int = 0
+
+    /// Reading of the first Viterbi segment at the previous keystroke.
+    var previousFirstSegmentReading: String?
+    /// Consecutive keystrokes where the first segment reading stayed the same.
+    var firstSegmentStableCount: Int = 0
     var programmerMode: Bool {
         UserDefaults.standard.bool(forKey: "programmerMode")
     }
@@ -26,6 +31,9 @@ class LeximeInputController: IMKInputController {
 
     // Realtime prediction state
     var predictionCandidates: [String] = []
+
+    private let candidateQueue = DispatchQueue(label: "sh.send.lexime.candidates")
+    private var candidateGeneration: UInt64 = 0
 
     private static var hasShownDictWarning = false
 
@@ -162,22 +170,38 @@ class LeximeInputController: IMKInputController {
 
     func updateCandidates() {
         selectedPredictionIndex = 0
+        candidateGeneration &+= 1
+
         guard !composedKana.isEmpty else {
             predictionCandidates = []
             hideCandidatePanel()
+            previousFirstSegmentReading = nil
+            firstSegmentStableCount = 0
             return
         }
 
-        let (candidates, paths) = generateCandidates(composedKana)
-        predictionCandidates = candidates
-        nbestPaths = paths
+        let gen = candidateGeneration
+        let kana = composedKana
 
-        // Real-time conversion: show Viterbi #1 inline and open candidate panel
-        if let client = self.client() {
-            if let best = candidates.first {
-                updateMarkedText(best, client: client)
+        candidateQueue.async { [self] in
+            let (candidates, paths) = generateCandidates(kana)
+
+            DispatchQueue.main.async { [self] in
+                guard gen == candidateGeneration else { return }
+
+                predictionCandidates = candidates
+                nbestPaths = paths
+
+                trackSegmentStability()
+
+                if let client = self.client() {
+                    if let best = candidates.first {
+                        updateMarkedText(best, client: client)
+                    }
+                    showCandidatePanel(client: client)
+                    tryAutoCommit(client: client)
+                }
             }
-            showCandidatePanel(client: client)
         }
     }
 
@@ -224,9 +248,7 @@ class LeximeInputController: IMKInputController {
             if selectedPredictionIndex < predictionCandidates.count {
                 let reading = composedKana
                 let surface = predictionCandidates[selectedPredictionIndex]
-                if surface != reading {
-                    recordToHistory(reading: reading, surface: surface)
-                }
+                recordToHistory(reading: reading, surface: surface)
                 commitText(surface, client: client)
             } else {
                 commitComposed(client: client)
@@ -278,6 +300,92 @@ class LeximeInputController: IMKInputController {
         }
     }
 
+    // MARK: - Segment Stability Auto-Commit
+
+    private func trackSegmentStability() {
+        guard let bestPath = nbestPaths.first,
+              bestPath.count >= 2 else {
+            previousFirstSegmentReading = nil
+            firstSegmentStableCount = 0
+            return
+        }
+        let firstReading = bestPath[0].reading
+        if firstReading == previousFirstSegmentReading {
+            firstSegmentStableCount += 1
+        } else {
+            previousFirstSegmentReading = firstReading
+            firstSegmentStableCount = 1
+        }
+    }
+
+    private func tryAutoCommit(client: IMKTextInput) {
+        guard firstSegmentStableCount >= 3,
+              let bestPath = nbestPaths.first,
+              bestPath.count >= 4,
+              selectedPredictionIndex == 0,
+              pendingRomaji.isEmpty else { return }
+
+        // 安定度チェック済みの先頭セグメントのみ確定する
+        let firstSeg = bestPath[0]
+        let committedReading = firstSeg.reading
+
+        let committedSurface = firstSeg.surface
+
+        guard composedKana.hasPrefix(committedReading) else {
+            NSLog("Lexime: auto-commit skipped — reading mismatch")
+            return
+        }
+
+        NSLog("Lexime: auto-commit %@ (%@)", committedSurface, committedReading)
+        client.insertText(committedSurface,
+                          replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        recordAutoCommitToHistory(segments: [firstSeg])
+
+        composedKana = String(composedKana.dropFirst(committedReading.count))
+
+        previousFirstSegmentReading = nil
+        firstSegmentStableCount = 0
+
+        // Show remaining kana as marked text immediately, then
+        // defer Viterbi re-generation to the next run-loop iteration
+        // so the keystroke handler returns without a double Viterbi cost.
+        if composedKana.isEmpty {
+            predictionCandidates = []
+            nbestPaths = []
+            hideCandidatePanel()
+        } else {
+            updateMarkedText(client: client)
+            DispatchQueue.main.async { [self] in
+                updateCandidates()
+            }
+        }
+    }
+
+    private func recordAutoCommitToHistory(
+        segments: [(reading: String, surface: String)]
+    ) {
+        guard let history = AppContext.shared.history else { return }
+
+        let wholeReading = segments.map { $0.reading }.joined()
+        let wholeSurface = segments.map { $0.surface }.joined()
+        if wholeSurface != wholeReading {
+            recordPairsToFFI([(wholeReading, wholeSurface)], history: history)
+        }
+
+        if segments.count > 1 {
+            recordPairsToFFI(segments, history: history)
+        }
+
+        let path = AppContext.shared.historyPath
+        Self.historySaveQueue.async {
+            let result = lex_history_save(history, path)
+            if result != 0 {
+                NSLog("Lexime: Failed to save user history to %@", path)
+            }
+        }
+    }
+
     override func composedString(_ sender: Any!) -> Any! {
         return currentDisplay ?? (composedKana + pendingRomaji)
     }
@@ -306,6 +414,8 @@ class LeximeInputController: IMKInputController {
         predictionCandidates = []
         selectedPredictionIndex = 0
         currentDisplay = nil
+        previousFirstSegmentReading = nil
+        firstSegmentStableCount = 0
         state = .idle
     }
 }
