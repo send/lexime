@@ -817,17 +817,22 @@ impl<'a> InputSession<'a> {
                 provisional.push(c.kana.clone());
             }
 
+            // kana is guaranteed non-empty here (empty case handled above),
+            // so provisional always has at least the kana entry.
+            debug_assert!(!provisional.is_empty());
+
             c.candidates.clear();
 
-            if !provisional.is_empty() {
-                resp.marked_text = Some(provisional[0].clone());
-                resp.candidates.clone_from(&provisional);
-                resp.selected_index = 0;
-                resp.show_candidates = true;
-            } else {
-                resp.marked_text = Some(c.display_kana());
-                resp.hide_candidates = true;
-            }
+            // Store provisional candidates in session state so that candidate
+            // navigation (Space / Arrow) works during the async phase.
+            c.candidates.surfaces.clone_from(&provisional);
+
+            // prefix.text was already consumed into commit_text via std::mem::take
+            // above (line 790), so it is empty here — no need to prepend it.
+            resp.marked_text = Some(provisional[0].clone());
+            resp.candidates.clone_from(&provisional);
+            resp.selected_index = 0;
+            resp.show_candidates = true;
             resp.needs_candidates = true;
             resp.candidate_reading = Some(c.kana.clone());
         } else {
@@ -1910,6 +1915,12 @@ mod tests {
         assert!(
             resp.needs_candidates,
             "deferred auto-commit should request async candidate generation"
+        );
+        // Session state should also hold provisional candidates
+        // so that candidate navigation works during the async phase.
+        assert!(
+            !session.comp().candidates.surfaces.is_empty(),
+            "session should retain provisional candidates for navigation"
         );
     }
 }
