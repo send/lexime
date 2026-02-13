@@ -27,15 +27,157 @@ const MAX_COMPOSED_KANA_LENGTH: usize = 100;
 const MAX_CANDIDATES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Idle,
-    Composing,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Submode {
     Japanese,
     English,
+}
+
+enum SessionState {
+    Idle,
+    Composing(Composition),
+}
+
+struct Composition {
+    submode: Submode,
+    kana: String,
+    pending: String,
+    prefix: FrozenPrefix,
+    candidates: CandidateState,
+    stability: StabilityTracker,
+}
+
+impl Composition {
+    fn new(submode: Submode) -> Self {
+        Self {
+            submode,
+            kana: String::new(),
+            pending: String::new(),
+            prefix: FrozenPrefix::new(),
+            candidates: CandidateState::new(),
+            stability: StabilityTracker::new(),
+        }
+    }
+
+    /// Compute the display string (replaces `current_display` field).
+    /// Uses the selected candidate surface in Japanese mode, falls back to kana + pending.
+    fn display(&self) -> String {
+        let segment = if self.submode == Submode::Japanese {
+            if let Some(surface) = self.candidates.surfaces.get(self.candidates.selected) {
+                surface.clone()
+            } else {
+                format!("{}{}", self.kana, self.pending)
+            }
+        } else {
+            format!("{}{}", self.kana, self.pending)
+        };
+        format!("{}{}", self.prefix.text, segment)
+    }
+
+    /// Display string without candidates (always kana + pending).
+    fn display_kana(&self) -> String {
+        format!("{}{}{}", self.prefix.text, self.kana, self.pending)
+    }
+}
+
+// --- Sub-structures for grouping related state ---
+
+struct CandidateState {
+    surfaces: Vec<String>,
+    paths: Vec<Vec<ConvertedSegment>>,
+    selected: usize,
+}
+
+impl CandidateState {
+    fn new() -> Self {
+        Self {
+            surfaces: Vec::new(),
+            paths: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.surfaces.clear();
+        self.paths.clear();
+        self.selected = 0;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.surfaces.is_empty()
+    }
+}
+
+struct StabilityTracker {
+    prev_first_seg_reading: Option<String>,
+    count: usize,
+}
+
+impl StabilityTracker {
+    fn new() -> Self {
+        Self {
+            prev_first_seg_reading: None,
+            count: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prev_first_seg_reading = None;
+        self.count = 0;
+    }
+
+    fn track(&mut self, paths: &[Vec<ConvertedSegment>]) {
+        let best_path = match paths.first() {
+            Some(path) if path.len() >= 2 => path,
+            _ => {
+                self.reset();
+                return;
+            }
+        };
+
+        let first_reading = &best_path[0].reading;
+        if Some(first_reading) == self.prev_first_seg_reading.as_ref() {
+            self.count += 1;
+        } else {
+            self.prev_first_seg_reading = Some(first_reading.clone());
+            self.count = 1;
+        }
+    }
+}
+
+struct FrozenPrefix {
+    text: String,
+    has_boundary_space: bool,
+}
+
+impl FrozenPrefix {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            has_boundary_space: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    fn push_str(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    fn pop(&mut self) -> Option<char> {
+        self.text.pop()
+    }
+
+    fn undo_boundary_space(&mut self) -> bool {
+        if self.has_boundary_space && self.text.ends_with(' ') {
+            self.text.pop();
+            self.has_boundary_space = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Response from handle_key / commit, returned to the caller (Swift via FFI).
@@ -81,6 +223,19 @@ impl KeyResponse {
             ..Self::not_consumed()
         }
     }
+
+    /// Merge: keep commit_text from self, take display-related fields from `other`.
+    fn with_display_from(mut self, other: KeyResponse) -> KeyResponse {
+        self.marked_text = other.marked_text;
+        self.candidates = other.candidates;
+        self.selected_index = other.selected_index;
+        self.show_candidates = other.show_candidates;
+        self.hide_candidates = other.hide_candidates;
+        self.is_dashed_underline = other.is_dashed_underline;
+        self.needs_candidates = other.needs_candidates;
+        self.candidate_reading = other.candidate_reading;
+        self
+    }
 }
 
 /// Stateful IME session encapsulating all input processing logic.
@@ -89,31 +244,13 @@ pub struct InputSession<'a> {
     conn: Option<&'a ConnectionMatrix>,
     history: Option<&'a UserHistory>,
 
-    // Input state
-    state: State,
-    submode: Submode,
-    composed_kana: String,
-    pending_romaji: String,
-
-    // Candidate state
-    candidates: Vec<String>,
-    nbest_paths: Vec<Vec<ConvertedSegment>>,
-    selected_index: usize,
-
-    // Auto-commit state
-    prev_first_seg_reading: Option<String>,
-    first_seg_stable_count: usize,
-
-    // Display state
-    current_display: Option<String>,
-
-    /// Frozen text from previous submode segments (e.g., Viterbi result before
-    /// switching to English). Prepended to all display and commit output.
-    display_prefix: String,
+    state: SessionState,
+    /// Submode to use when starting a new composition from Idle.
+    /// Reset to Japanese on commit/reset, toggled by Tab in Idle.
+    idle_submode: Submode,
 
     // Settings
     programmer_mode: bool,
-    did_insert_boundary_space: bool,
     /// When true, handle_key skips synchronous candidate generation and
     /// sets `needs_candidates` in the response for async generation by the caller.
     defer_candidates: bool,
@@ -132,19 +269,9 @@ impl<'a> InputSession<'a> {
             dict,
             conn,
             history,
-            state: State::Idle,
-            submode: Submode::Japanese,
-            composed_kana: String::new(),
-            pending_romaji: String::new(),
-            candidates: Vec::new(),
-            nbest_paths: Vec::new(),
-            selected_index: 0,
-            prev_first_seg_reading: None,
-            first_seg_stable_count: 0,
-            current_display: None,
-            display_prefix: String::new(),
+            state: SessionState::Idle,
+            idle_submode: Submode::Japanese,
             programmer_mode: false,
-            did_insert_boundary_space: false,
             defer_candidates: false,
             history_records: Vec::new(),
         }
@@ -164,18 +291,29 @@ impl<'a> InputSession<'a> {
     }
 
     pub fn is_composing(&self) -> bool {
-        self.state != State::Idle
+        matches!(self.state, SessionState::Composing(_))
     }
 
-    pub fn composed_string(&self) -> &str {
-        if let Some(ref display) = self.current_display {
-            display
-        } else {
-            // Fallback: composedKana + pendingRomaji
-            // Since we can't return a concatenation by reference,
-            // we rely on current_display always being set when composing.
-            // In idle state, return empty.
-            ""
+    /// Current submode, whether composing or idle.
+    fn submode(&self) -> Submode {
+        match &self.state {
+            SessionState::Composing(c) => c.submode,
+            SessionState::Idle => self.idle_submode,
+        }
+    }
+
+    /// Mutable reference to the composing state. Panics if Idle.
+    fn comp(&mut self) -> &mut Composition {
+        match &mut self.state {
+            SessionState::Composing(ref mut c) => c,
+            SessionState::Idle => unreachable!("comp() called in Idle state"),
+        }
+    }
+
+    pub fn composed_string(&self) -> String {
+        match &self.state {
+            SessionState::Composing(c) => c.display(),
+            SessionState::Idle => String::new(),
         }
     }
 
@@ -227,9 +365,9 @@ impl<'a> InputSession<'a> {
             return resp;
         }
 
-        match self.state {
-            State::Idle => self.handle_idle(key_code, text),
-            State::Composing => self.handle_composing(key_code, text),
+        match &self.state {
+            SessionState::Idle => self.handle_idle(key_code, text),
+            SessionState::Composing(_) => self.handle_composing(key_code, text),
         }
     }
 
@@ -255,13 +393,13 @@ impl<'a> InputSession<'a> {
         }
 
         // English submode: add characters directly
-        if self.submode == Submode::English {
+        if self.idle_submode == Submode::English {
             if let Some(scalar) = text.chars().next() {
                 let val = scalar as u32;
                 if (0x20..0x7F).contains(&val) {
-                    self.state = State::Composing;
-                    self.did_insert_boundary_space = false;
-                    self.composed_kana.push_str(text);
+                    self.state = SessionState::Composing(Composition::new(Submode::English));
+                    self.comp().prefix.has_boundary_space = false;
+                    self.comp().kana.push_str(text);
                     return self.make_marked_text_response();
                 }
             }
@@ -270,7 +408,7 @@ impl<'a> InputSession<'a> {
 
         // Romaji input
         if is_romaji_input(text) {
-            self.state = State::Composing;
+            self.state = SessionState::Composing(Composition::new(Submode::Japanese));
             return self.append_and_convert(&text.to_lowercase());
         }
 
@@ -278,7 +416,7 @@ impl<'a> InputSession<'a> {
         let trie = RomajiTrie::global();
         match trie.lookup(text) {
             TrieLookupResult::Exact(_) | TrieLookupResult::ExactAndPrefix(_) => {
-                self.state = State::Composing;
+                self.state = SessionState::Composing(Composition::new(Submode::Japanese));
                 self.append_and_convert(text)
             }
             _ => KeyResponse::not_consumed(),
@@ -292,13 +430,13 @@ impl<'a> InputSession<'a> {
     fn handle_composing(&mut self, key_code: u16, text: &str) -> KeyResponse {
         match key_code {
             key::ENTER => {
-                if self.submode == Submode::English {
+                if self.comp().submode == Submode::English {
                     let mut resp = self.commit_composed();
                     resp.hide_candidates = true;
                     resp
                 } else {
                     // Lazy generate: ensure candidates are available for commit
-                    if self.candidates.is_empty() && !self.composed_kana.is_empty() {
+                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
                         self.update_candidates();
                     }
                     self.commit_current_state()
@@ -306,20 +444,21 @@ impl<'a> InputSession<'a> {
             }
 
             key::SPACE => {
-                if self.submode == Submode::English {
-                    self.composed_kana.push(' ');
+                if self.comp().submode == Submode::English {
+                    self.comp().kana.push(' ');
                     self.make_marked_text_response()
                 } else {
                     // Lazy generate: ensure candidates for Space cycling
-                    if self.candidates.is_empty() && !self.composed_kana.is_empty() {
+                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
                         self.update_candidates();
                     }
-                    if !self.candidates.is_empty() {
-                        if self.selected_index == 0 && self.candidates.len() > 1 {
-                            self.selected_index = 1;
+                    let c = self.comp();
+                    if !c.candidates.is_empty() {
+                        if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
+                            c.candidates.selected = 1;
                         } else {
-                            self.selected_index =
-                                cyclic_index(self.selected_index, 1, self.candidates.len());
+                            c.candidates.selected =
+                                cyclic_index(c.candidates.selected, 1, c.candidates.surfaces.len());
                         }
                         self.make_candidate_selection_response()
                     } else {
@@ -330,12 +469,13 @@ impl<'a> InputSession<'a> {
 
             key::DOWN => {
                 // Lazy generate: ensure candidates for arrow cycling
-                if self.candidates.is_empty() && !self.composed_kana.is_empty() {
+                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
                     self.update_candidates();
                 }
-                if !self.candidates.is_empty() {
-                    self.selected_index =
-                        cyclic_index(self.selected_index, 1, self.candidates.len());
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    c.candidates.selected =
+                        cyclic_index(c.candidates.selected, 1, c.candidates.surfaces.len());
                     self.make_candidate_selection_response()
                 } else {
                     KeyResponse::consumed()
@@ -344,12 +484,13 @@ impl<'a> InputSession<'a> {
 
             key::UP => {
                 // Lazy generate: ensure candidates for arrow cycling
-                if self.candidates.is_empty() && !self.composed_kana.is_empty() {
+                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
                     self.update_candidates();
                 }
-                if !self.candidates.is_empty() {
-                    self.selected_index =
-                        cyclic_index(self.selected_index, -1, self.candidates.len());
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    c.candidates.selected =
+                        cyclic_index(c.candidates.selected, -1, c.candidates.surfaces.len());
                     self.make_candidate_selection_response()
                 } else {
                     KeyResponse::consumed()
@@ -362,23 +503,21 @@ impl<'a> InputSession<'a> {
 
             key::ESCAPE => {
                 self.flush();
-                if self.submode == Submode::Japanese && !self.composed_kana.is_empty() {
-                    self.record_history(self.composed_kana.clone(), self.composed_kana.clone());
+                {
+                    let c = self.comp();
+                    if c.submode == Submode::Japanese && !c.kana.is_empty() {
+                        let kana = c.kana.clone();
+                        self.record_history(kana.clone(), kana);
+                    }
                 }
-                self.candidates.clear();
-                self.selected_index = 0;
+                self.comp().candidates.clear();
                 let mut resp = KeyResponse::consumed();
                 resp.hide_candidates = true;
                 if !self.history_records.is_empty() {
                     resp.save_history = true;
                 }
-                // Escape: IMKit will call commitComposition after, so we just signal flush.
-                // Set marked text so composedString is correct for the auto-commit.
-                let display = format!(
-                    "{}{}{}",
-                    self.display_prefix, self.composed_kana, self.pending_romaji
-                );
-                self.current_display = Some(display);
+                // Escape: IMKit will call commitComposition after.
+                // composedString() uses display() which computes from current state.
                 resp
             }
 
@@ -388,21 +527,21 @@ impl<'a> InputSession<'a> {
 
     fn handle_composing_text(&mut self, text: &str) -> KeyResponse {
         // English submode: add characters directly
-        if self.submode == Submode::English {
+        if self.comp().submode == Submode::English {
             if let Some(scalar) = text.chars().next() {
                 let val = scalar as u32;
                 if (0x20..0x7F).contains(&val) {
-                    self.did_insert_boundary_space = false;
-                    self.composed_kana.push_str(text);
+                    self.comp().prefix.has_boundary_space = false;
+                    self.comp().kana.push_str(text);
                     return self.make_marked_text_response();
                 }
             }
             return KeyResponse::consumed();
         }
 
-        // z-sequences: composing 中、pendingRomaji + text が trie にマッチする場合
-        if !self.pending_romaji.is_empty() {
-            let candidate = format!("{}{}", self.pending_romaji, text);
+        // z-sequences: composing 中、pending + text が trie にマッチする場合
+        if !self.comp().pending.is_empty() {
+            let candidate = format!("{}{}", self.comp().pending, text);
             let trie = RomajiTrie::global();
             match trie.lookup(&candidate) {
                 TrieLookupResult::Exact(_)
@@ -416,24 +555,18 @@ impl<'a> InputSession<'a> {
 
         if is_romaji_input(text) {
             // If user has selected a non-default candidate, commit it first
-            if self.selected_index > 0 && self.selected_index < self.candidates.len() {
-                let mut commit_resp = self.commit_current_state();
-                self.state = State::Composing;
+            let c = self.comp();
+            if c.candidates.selected > 0 && c.candidates.selected < c.candidates.surfaces.len() {
+                let commit_resp = self.commit_current_state();
+                self.state = SessionState::Composing(Composition::new(Submode::Japanese));
                 let append_resp = self.append_and_convert(&text.to_lowercase());
-                // Merge: commit from first, marked+candidates from second
-                commit_resp.marked_text = append_resp.marked_text;
-                commit_resp.candidates = append_resp.candidates;
-                commit_resp.selected_index = append_resp.selected_index;
-                commit_resp.show_candidates = append_resp.show_candidates;
-                commit_resp.hide_candidates = append_resp.hide_candidates;
-                commit_resp.is_dashed_underline = append_resp.is_dashed_underline;
-                return commit_resp;
+                return commit_resp.with_display_from(append_resp);
             }
             return self.append_and_convert(&text.to_lowercase());
         }
 
         // Direct trie match for non-romaji chars (punctuation auto-commit)
-        if !is_romaji_input(text) {
+        {
             let trie = RomajiTrie::global();
             match trie.lookup(text) {
                 TrieLookupResult::Exact(_) | TrieLookupResult::ExactAndPrefix(_) => {
@@ -452,8 +585,8 @@ impl<'a> InputSession<'a> {
             }
         }
 
-        // Unrecognized non-romaji character — add to composedKana
-        self.composed_kana.push_str(text);
+        // Unrecognized non-romaji character — add to kana
+        self.comp().kana.push_str(text);
         if self.defer_candidates {
             self.make_deferred_candidates_response()
         } else {
@@ -468,36 +601,28 @@ impl<'a> InputSession<'a> {
 
     fn append_and_convert(&mut self, input: &str) -> KeyResponse {
         // Overflow: flush + commit if kana too long
-        if self.composed_kana.len() >= MAX_COMPOSED_KANA_LENGTH {
-            let mut resp = self.commit_composed();
-            self.state = State::Composing;
-            self.pending_romaji.push_str(input);
+        if self.comp().kana.len() >= MAX_COMPOSED_KANA_LENGTH {
+            let resp = self.commit_composed();
+            self.state = SessionState::Composing(Composition::new(Submode::Japanese));
+            self.comp().pending.push_str(input);
             self.drain_pending(false);
             let sub_resp = if self.defer_candidates {
                 self.make_deferred_candidates_response()
             } else {
-                if self.pending_romaji.is_empty() {
+                if self.comp().pending.is_empty() {
                     self.update_candidates();
                 }
                 self.make_marked_text_and_candidates_response()
             };
-            resp.marked_text = sub_resp.marked_text;
-            resp.candidates = sub_resp.candidates;
-            resp.selected_index = sub_resp.selected_index;
-            resp.show_candidates = sub_resp.show_candidates;
-            resp.hide_candidates = sub_resp.hide_candidates;
-            resp.is_dashed_underline = sub_resp.is_dashed_underline;
-            resp.needs_candidates = sub_resp.needs_candidates;
-            resp.candidate_reading = sub_resp.candidate_reading;
-            return resp;
+            return resp.with_display_from(sub_resp);
         }
 
-        self.did_insert_boundary_space = false;
-        self.pending_romaji.push_str(input);
+        self.comp().prefix.has_boundary_space = false;
+        self.comp().pending.push_str(input);
         self.drain_pending(false);
 
         if self.defer_candidates {
-            if self.pending_romaji.is_empty() {
+            if self.comp().pending.is_empty() {
                 // Kana resolved — defer candidate generation to caller
                 self.make_deferred_candidates_response()
             } else {
@@ -506,7 +631,7 @@ impl<'a> InputSession<'a> {
             }
         } else {
             // Sync mode: generate candidates immediately when romaji resolves
-            if self.pending_romaji.is_empty() {
+            if self.comp().pending.is_empty() {
                 self.update_candidates();
             }
             self.make_marked_text_and_candidates_response()
@@ -514,9 +639,10 @@ impl<'a> InputSession<'a> {
     }
 
     fn drain_pending(&mut self, force: bool) {
-        let result = convert_romaji(&self.composed_kana, &self.pending_romaji, force);
-        self.composed_kana = result.composed_kana;
-        self.pending_romaji = result.pending_romaji;
+        let c = self.comp();
+        let result = convert_romaji(&c.kana, &c.pending, force);
+        c.kana = result.composed_kana;
+        c.pending = result.pending_romaji;
     }
 
     fn flush(&mut self) {
@@ -528,13 +654,12 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn update_candidates(&mut self) {
-        self.selected_index = 0;
+        self.comp().candidates.selected = 0;
 
-        if self.composed_kana.is_empty() {
-            self.candidates.clear();
-            self.nbest_paths.clear();
-            self.prev_first_seg_reading = None;
-            self.first_seg_stable_count = 0;
+        if self.comp().kana.is_empty() {
+            let c = self.comp();
+            c.candidates.clear();
+            c.stability.reset();
             return;
         }
 
@@ -542,37 +667,29 @@ impl<'a> InputSession<'a> {
             self.dict,
             self.conn,
             self.history,
-            &self.composed_kana,
+            &self.comp().kana,
             MAX_CANDIDATES,
         );
-        self.candidates = surfaces;
-        self.nbest_paths = paths;
-
-        self.track_segment_stability();
+        let c = self.comp();
+        c.candidates.surfaces = surfaces;
+        c.candidates.paths = paths;
+        c.stability.track(&c.candidates.paths);
     }
 
     /// Build a response that defers candidate generation to the caller.
-    /// Clears stale internal candidates (for correct lazy generation on Space/Enter),
-    /// shows kana as marked text, and sets `needs_candidates` for async generation.
-    /// Does NOT hide the candidate panel — old candidates stay visible until
-    /// the async result replaces them, avoiding a visible hide→show flash.
     fn make_deferred_candidates_response(&mut self) -> KeyResponse {
-        self.candidates.clear();
-        self.nbest_paths.clear();
-        self.selected_index = 0;
-        // Do NOT reset prev_first_seg_reading / first_seg_stable_count here.
-        // Stability tracking is updated only when fresh candidates arrive
-        // (in receive_candidates), allowing the count to accumulate across keystrokes.
+        self.comp().candidates.clear();
+        // Do NOT reset stability here. It accumulates across keystrokes.
         let mut resp = self.make_marked_text_response();
-        if !self.composed_kana.is_empty() {
+        if !self.comp().kana.is_empty() {
             resp.needs_candidates = true;
-            resp.candidate_reading = Some(self.composed_kana.clone());
+            resp.candidate_reading = Some(self.comp().kana.clone());
         }
         resp
     }
 
     /// Receive asynchronously generated candidates and update session state.
-    /// Returns `None` if the reading is stale (composed_kana has changed).
+    /// Returns `None` if the reading is stale (kana has changed).
     pub fn receive_candidates(
         &mut self,
         reading: &str,
@@ -580,17 +697,16 @@ impl<'a> InputSession<'a> {
         paths: Vec<Vec<ConvertedSegment>>,
     ) -> Option<KeyResponse> {
         // Stale check: reading must match current state
-        if reading != self.composed_kana
-            || self.state != State::Composing
-            || self.submode != Submode::Japanese
-        {
-            return None;
+        match &self.state {
+            SessionState::Composing(c) if c.kana == reading && c.submode == Submode::Japanese => {}
+            _ => return None,
         }
 
-        self.candidates = surfaces;
-        self.nbest_paths = paths;
-        self.selected_index = 0;
-        self.track_segment_stability();
+        let c = self.comp();
+        c.candidates.surfaces = surfaces;
+        c.candidates.paths = paths;
+        c.candidates.selected = 0;
+        c.stability.track(&c.candidates.paths);
 
         // Try auto-commit with fresh candidates
         if let Some(auto_resp) = self.try_auto_commit() {
@@ -605,113 +721,105 @@ impl<'a> InputSession<'a> {
     // Segment stability auto-commit
     // -----------------------------------------------------------------------
 
-    fn track_segment_stability(&mut self) {
-        let best_path = match self.nbest_paths.first() {
-            Some(path) if path.len() >= 2 => path,
-            _ => {
-                self.prev_first_seg_reading = None;
-                self.first_seg_stable_count = 0;
-                return;
+    fn try_auto_commit(&mut self) -> Option<KeyResponse> {
+        // Extract data from comp() in a block so the borrow is dropped before
+        // we access self.history_records.
+        let (committed_reading, committed_surface, seg_pairs) = {
+            let c = self.comp();
+            if c.stability.count < 3 {
+                return None;
             }
+            let best_path = c.candidates.paths.first()?;
+            if best_path.len() < 4 {
+                return None;
+            }
+            if c.candidates.selected != 0 {
+                return None;
+            }
+            if !c.pending.is_empty() {
+                return None;
+            }
+
+            // Count how many segments to commit (group consecutive ASCII)
+            let mut commit_count = 1;
+            if best_path[0].surface.is_ascii() {
+                while commit_count < best_path.len() - 1
+                    && best_path[commit_count].surface.is_ascii()
+                {
+                    commit_count += 1;
+                }
+            }
+
+            let segments: Vec<&ConvertedSegment> = best_path[0..commit_count].iter().collect();
+            let committed_reading: String = segments.iter().map(|s| s.reading.as_str()).collect();
+            let committed_surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+
+            if !c.kana.starts_with(&committed_reading) {
+                return None;
+            }
+
+            let seg_pairs: Option<Vec<(String, String)>> = if commit_count > 1 {
+                Some(
+                    segments
+                        .iter()
+                        .map(|s| (s.reading.clone(), s.surface.clone()))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            (committed_reading, committed_surface, seg_pairs)
         };
 
-        let first_reading = &best_path[0].reading;
-        if Some(first_reading) == self.prev_first_seg_reading.as_ref() {
-            self.first_seg_stable_count += 1;
-        } else {
-            self.prev_first_seg_reading = Some(first_reading.clone());
-            self.first_seg_stable_count = 1;
-        }
-    }
-
-    fn try_auto_commit(&mut self) -> Option<KeyResponse> {
-        if self.first_seg_stable_count < 3 {
-            return None;
-        }
-        let best_path = self.nbest_paths.first()?;
-        if best_path.len() < 4 {
-            return None;
-        }
-        if self.selected_index != 0 {
-            return None;
-        }
-        if !self.pending_romaji.is_empty() {
-            return None;
-        }
-
-        // Count how many segments to commit (group consecutive ASCII)
-        let mut commit_count = 1;
-        if best_path[0].surface.is_ascii() {
-            while commit_count < best_path.len() - 1 && best_path[commit_count].surface.is_ascii() {
-                commit_count += 1;
-            }
-        }
-
-        let segments: Vec<&ConvertedSegment> = best_path[0..commit_count].iter().collect();
-        let committed_reading: String = segments.iter().map(|s| s.reading.as_str()).collect();
-        let committed_surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
-
-        if !self.composed_kana.starts_with(&committed_reading) {
-            return None;
-        }
-
-        // Record to history
+        // Record to history (comp() borrow is dropped)
         if committed_surface != committed_reading {
-            let pairs: Vec<(String, String)> =
-                vec![(committed_reading.clone(), committed_surface.clone())];
+            let pairs = vec![(committed_reading.clone(), committed_surface.clone())];
             self.history_records.push(pairs);
         }
-        if commit_count > 1 {
-            let seg_pairs: Vec<(String, String)> = segments
-                .iter()
-                .map(|s| (s.reading.clone(), s.surface.clone()))
-                .collect();
+        if let Some(seg_pairs) = seg_pairs {
             self.history_records.push(seg_pairs);
         }
 
-        // Remove committed reading from composed_kana
-        self.composed_kana = self.composed_kana[committed_reading.len()..].to_string();
-        self.prev_first_seg_reading = None;
-        self.first_seg_stable_count = 0;
+        // Remove committed reading from kana
+        let c = self.comp();
+        c.kana = c.kana[committed_reading.len()..].to_string();
+        c.stability.reset();
 
-        // Include display_prefix in the committed text, then clear it
-        let prefix = std::mem::take(&mut self.display_prefix);
+        // Include prefix in the committed text, then clear it
+        let prefix_text = std::mem::take(&mut c.prefix.text);
+        c.prefix.has_boundary_space = false;
         let mut resp = KeyResponse::consumed();
-        resp.commit_text = Some(format!("{}{}", prefix, committed_surface));
+        resp.commit_text = Some(format!("{}{}", prefix_text, committed_surface));
         resp.save_history = true;
 
-        if self.composed_kana.is_empty() {
-            self.candidates.clear();
-            self.nbest_paths.clear();
+        if self.comp().kana.is_empty() {
+            self.comp().candidates.clear();
             resp.hide_candidates = true;
             resp.marked_text = Some(String::new());
-            self.current_display = Some(String::new());
         } else if self.defer_candidates {
             // Async mode: show kana, request async candidate generation
-            self.candidates.clear();
-            self.nbest_paths.clear();
-            self.selected_index = 0;
-            let display = format!("{}{}", self.composed_kana, self.pending_romaji);
-            self.current_display = Some(display.clone());
+            let c = self.comp();
+            c.candidates.clear();
+            let display = c.display_kana();
             resp.marked_text = Some(display);
             resp.hide_candidates = true;
             resp.needs_candidates = true;
-            resp.candidate_reading = Some(self.composed_kana.clone());
+            resp.candidate_reading = Some(c.kana.clone());
         } else {
             // Sync mode: re-generate candidates for remaining input
-            let display = format!("{}{}", self.composed_kana, self.pending_romaji);
-            self.current_display = Some(display.clone());
+            let c = self.comp();
+            let display = c.display_kana();
             resp.marked_text = Some(display);
-            resp.is_dashed_underline = self.submode == Submode::English;
+            resp.is_dashed_underline = c.submode == Submode::English;
             self.update_candidates();
-            if let Some(best) = self.candidates.first() {
-                let best_display = best.clone();
-                self.current_display = Some(best_display.clone());
-                resp.marked_text = Some(best_display);
+            let c = self.comp();
+            if let Some(best) = c.candidates.surfaces.first() {
+                resp.marked_text = Some(format!("{}{}", c.prefix.text, best));
             }
-            resp.candidates.clone_from(&self.candidates);
-            resp.selected_index = self.selected_index as u32;
-            resp.show_candidates = !self.candidates.is_empty();
+            resp.candidates.clone_from(&c.candidates.surfaces);
+            resp.selected_index = c.candidates.selected as u32;
+            resp.show_candidates = !c.candidates.is_empty();
         }
 
         Some(resp)
@@ -723,7 +831,8 @@ impl<'a> InputSession<'a> {
 
     fn commit_composed(&mut self) -> KeyResponse {
         let mut resp = KeyResponse::consumed();
-        let text = format!("{}{}", self.display_prefix, self.composed_kana);
+        let c = self.comp();
+        let text = format!("{}{}", c.prefix.text, c.kana);
         if !text.is_empty() {
             resp.commit_text = Some(text);
         } else {
@@ -734,32 +843,35 @@ impl<'a> InputSession<'a> {
     }
 
     fn commit_current_state(&mut self) -> KeyResponse {
-        match self.state {
-            State::Idle => KeyResponse::consumed(),
-            State::Composing => {
-                let mut resp = KeyResponse::consumed();
-                resp.hide_candidates = true;
-                self.flush();
+        if !self.is_composing() {
+            return KeyResponse::consumed();
+        }
 
-                let prefix = std::mem::take(&mut self.display_prefix);
+        let mut resp = KeyResponse::consumed();
+        resp.hide_candidates = true;
+        self.flush();
 
-                if self.selected_index < self.candidates.len() {
-                    let reading = self.composed_kana.clone();
-                    let surface = self.candidates[self.selected_index].clone();
+        let c = self.comp();
+        let prefix_text = std::mem::take(&mut c.prefix.text);
 
-                    self.record_history(reading, surface.clone());
-                    resp.save_history = true;
-                    resp.commit_text = Some(format!("{}{}", prefix, surface));
-                } else if !self.composed_kana.is_empty() || !prefix.is_empty() {
-                    resp.commit_text = Some(format!("{}{}", prefix, self.composed_kana));
-                } else {
-                    resp.marked_text = Some(String::new());
-                }
+        if c.candidates.selected < c.candidates.surfaces.len() {
+            let reading = c.kana.clone();
+            let surface = c.candidates.surfaces[c.candidates.selected].clone();
 
-                self.reset_state();
-                resp
+            self.record_history(reading, surface.clone());
+            resp.save_history = true;
+            resp.commit_text = Some(format!("{}{}", prefix_text, surface));
+        } else {
+            let c = self.comp();
+            if !c.kana.is_empty() || !prefix_text.is_empty() {
+                resp.commit_text = Some(format!("{}{}", prefix_text, c.kana));
+            } else {
+                resp.marked_text = Some(String::new());
             }
         }
+
+        self.reset_state();
+        resp
     }
 
     fn record_history(&mut self, reading: String, surface: String) {
@@ -772,7 +884,9 @@ impl<'a> InputSession<'a> {
 
         // Sub-phrase learning: if a matching N-best path exists
         if let Some(matching_path) = self
-            .nbest_paths
+            .comp()
+            .candidates
+            .paths
             .iter()
             .find(|path| path.iter().map(|s| s.surface.as_str()).collect::<String>() == surface)
         {
@@ -787,18 +901,8 @@ impl<'a> InputSession<'a> {
     }
 
     fn reset_state(&mut self) {
-        self.composed_kana.clear();
-        self.pending_romaji.clear();
-        self.nbest_paths.clear();
-        self.candidates.clear();
-        self.selected_index = 0;
-        self.current_display = None;
-        self.display_prefix.clear();
-        self.prev_first_seg_reading = None;
-        self.first_seg_stable_count = 0;
-        self.submode = Submode::Japanese;
-        self.did_insert_boundary_space = false;
-        self.state = State::Idle;
+        self.state = SessionState::Idle;
+        self.idle_submode = Submode::Japanese;
     }
 
     // -----------------------------------------------------------------------
@@ -806,46 +910,40 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn handle_backspace(&mut self) -> KeyResponse {
-        if !self.pending_romaji.is_empty() {
-            self.pending_romaji.pop();
-        } else if !self.composed_kana.is_empty() {
-            self.composed_kana.pop();
-        } else if !self.display_prefix.is_empty() {
-            // Delete from the frozen prefix
-            self.display_prefix.pop();
+        {
+            let c = self.comp();
+            if !c.pending.is_empty() {
+                c.pending.pop();
+            } else if !c.kana.is_empty() {
+                c.kana.pop();
+            } else if !c.prefix.is_empty() {
+                c.prefix.pop();
+            }
         }
 
-        let all_empty = self.composed_kana.is_empty()
-            && self.pending_romaji.is_empty()
-            && self.display_prefix.is_empty();
+        let c = self.comp();
+        let all_empty = c.kana.is_empty() && c.pending.is_empty() && c.prefix.is_empty();
 
         if all_empty {
             let mut resp = KeyResponse::consumed();
             resp.hide_candidates = true;
             resp.marked_text = Some(String::new());
-            self.current_display = Some(String::new());
-            self.state = State::Idle;
-            self.candidates.clear();
-            self.nbest_paths.clear();
-            self.selected_index = 0;
-            self.submode = Submode::Japanese;
+            self.reset_state();
             resp
-        } else if self.composed_kana.is_empty() && self.pending_romaji.is_empty() {
-            // Current segment is empty but display_prefix has content
-            self.candidates.clear();
-            self.nbest_paths.clear();
-            self.selected_index = 0;
-            let display = self.display_prefix.clone();
-            self.current_display = Some(display.clone());
+        } else if self.comp().kana.is_empty() && self.comp().pending.is_empty() {
+            // Current segment is empty but prefix has content
+            let c = self.comp();
+            c.candidates.clear();
+            let display = c.display();
             let mut resp = KeyResponse::consumed();
             resp.marked_text = Some(display);
             resp.hide_candidates = true;
-            resp.is_dashed_underline = self.submode == Submode::English;
+            resp.is_dashed_underline = c.submode == Submode::English;
             resp
-        } else if self.defer_candidates && self.submode == Submode::Japanese {
+        } else if self.defer_candidates && self.comp().submode == Submode::Japanese {
             self.make_deferred_candidates_response()
         } else {
-            if self.submode == Submode::Japanese {
+            if self.comp().submode == Submode::Japanese {
                 self.update_candidates();
             }
             self.make_marked_text_and_candidates_response()
@@ -857,92 +955,86 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn toggle_submode(&mut self) -> KeyResponse {
-        let new_submode = match self.submode {
+        let current_submode = self.submode();
+        let new_submode = match current_submode {
             Submode::Japanese => Submode::English,
             Submode::English => Submode::Japanese,
         };
 
-        // Flush pending romaji before switching
-        if !self.pending_romaji.is_empty() {
-            self.flush();
-        }
-
-        // Undo boundary space if nothing was typed since the last toggle
-        let undid_boundary_space =
-            self.did_insert_boundary_space && self.display_prefix.ends_with(' ');
-        if undid_boundary_space {
-            self.display_prefix.pop();
-            self.did_insert_boundary_space = false;
-        }
-
-        // Crystallize the current segment into display_prefix.
         if self.is_composing() {
-            match self.submode {
+            // Flush pending romaji before switching
+            if !self.comp().pending.is_empty() {
+                self.flush();
+            }
+
+            // Undo boundary space if nothing was typed since the last toggle
+            self.comp().prefix.undo_boundary_space();
+
+            // Crystallize the current segment into prefix.
+            match current_submode {
                 Submode::Japanese => {
-                    // Freeze the Viterbi result (or kana if no candidates)
-                    let frozen = if self.selected_index < self.candidates.len() {
-                        let reading = self.composed_kana.clone();
-                        let surface = self.candidates[self.selected_index].clone();
+                    let c = self.comp();
+                    let frozen = if c.candidates.selected < c.candidates.surfaces.len() {
+                        let reading = c.kana.clone();
+                        let surface = c.candidates.surfaces[c.candidates.selected].clone();
                         self.record_history(reading, surface.clone());
                         surface
                     } else {
-                        self.composed_kana.clone()
+                        self.comp().kana.clone()
                     };
-                    self.display_prefix.push_str(&frozen);
+                    self.comp().prefix.push_str(&frozen);
                 }
                 Submode::English => {
-                    // English text goes directly into prefix
-                    self.display_prefix.push_str(&self.composed_kana);
+                    let kana = self.comp().kana.clone();
+                    self.comp().prefix.push_str(&kana);
                 }
             }
             // Clear the current segment for the new submode
-            self.composed_kana.clear();
-            self.pending_romaji.clear();
-            self.candidates.clear();
-            self.nbest_paths.clear();
-            self.selected_index = 0;
-            self.prev_first_seg_reading = None;
-            self.first_seg_stable_count = 0;
-        }
+            let c = self.comp();
+            c.kana.clear();
+            c.pending.clear();
+            c.candidates.clear();
+            c.stability.reset();
 
-        // Programmer mode: insert space at submode boundary
-        self.did_insert_boundary_space = false;
-        if self.programmer_mode && !self.display_prefix.is_empty() {
-            if let Some(last) = self.display_prefix.chars().last() {
-                let last_is_ascii = last.is_ascii();
-                let should_insert = (self.submode == Submode::Japanese
-                    && new_submode == Submode::English
-                    && !last_is_ascii)
-                    || (self.submode == Submode::English
-                        && new_submode == Submode::Japanese
-                        && last_is_ascii
-                        && last != ' ');
-                if should_insert {
-                    self.display_prefix.push(' ');
-                    self.did_insert_boundary_space = true;
+            // Programmer mode: insert space at submode boundary
+            c.prefix.has_boundary_space = false;
+            if self.programmer_mode && !self.comp().prefix.is_empty() {
+                if let Some(last) = self.comp().prefix.text.chars().last() {
+                    let last_is_ascii = last.is_ascii();
+                    let should_insert = (current_submode == Submode::Japanese
+                        && new_submode == Submode::English
+                        && !last_is_ascii)
+                        || (current_submode == Submode::English
+                            && new_submode == Submode::Japanese
+                            && last_is_ascii
+                            && last != ' ');
+                    if should_insert {
+                        self.comp().prefix.text.push(' ');
+                        self.comp().prefix.has_boundary_space = true;
+                    }
                 }
             }
-        }
 
-        self.submode = new_submode;
+            self.comp().submode = new_submode;
 
-        // If we have a display_prefix, we're still composing
-        if !self.display_prefix.is_empty() {
-            self.state = State::Composing;
+            let display = self.comp().display();
+            let mut resp = KeyResponse::consumed();
+            if !display.is_empty() {
+                resp.marked_text = Some(display);
+            }
+            resp.is_dashed_underline = new_submode == Submode::English;
+            resp.hide_candidates = true;
+            if !self.history_records.is_empty() {
+                resp.save_history = true;
+            }
+            resp
+        } else {
+            // Idle: just toggle the idle_submode
+            self.idle_submode = new_submode;
+            let mut resp = KeyResponse::consumed();
+            resp.is_dashed_underline = new_submode == Submode::English;
+            resp
         }
-
-        let display = format!("{}{}", self.display_prefix, self.composed_kana);
-        self.current_display = Some(display.clone());
-        let mut resp = KeyResponse::consumed();
-        if !display.is_empty() {
-            resp.marked_text = Some(display);
-        }
-        resp.is_dashed_underline = self.submode == Submode::English;
-        resp.hide_candidates = true;
-        if !self.history_records.is_empty() {
-            resp.save_history = true;
-        }
-        resp
     }
 
     // -----------------------------------------------------------------------
@@ -950,51 +1042,31 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn make_marked_text_response(&mut self) -> KeyResponse {
-        let display = format!(
-            "{}{}{}",
-            self.display_prefix, self.composed_kana, self.pending_romaji
-        );
-        self.current_display = Some(display.clone());
-
+        let c = self.comp();
+        let display = c.display_kana();
         let mut resp = KeyResponse::consumed();
         resp.marked_text = Some(display);
-        resp.is_dashed_underline = self.submode == Submode::English;
+        resp.is_dashed_underline = c.submode == Submode::English;
         resp
     }
 
     fn make_marked_text_and_candidates_response(&mut self) -> KeyResponse {
         let mut resp = KeyResponse::consumed();
 
-        // Set marked text: use best candidate if available, else kana + pending
-        let segment_display = if self.submode == Submode::Japanese {
-            if let Some(best) = self.candidates.first() {
-                best.clone()
-            } else {
-                format!("{}{}", self.composed_kana, self.pending_romaji)
-            }
-        } else {
-            format!("{}{}", self.composed_kana, self.pending_romaji)
-        };
-        let display = format!("{}{}", self.display_prefix, segment_display);
-        self.current_display = Some(display.clone());
+        let c = self.comp();
+        let display = c.display();
         resp.marked_text = Some(display);
-        resp.is_dashed_underline = self.submode == Submode::English;
+        resp.is_dashed_underline = c.submode == Submode::English;
 
         // Candidates
-        resp.candidates.clone_from(&self.candidates);
-        resp.selected_index = self.selected_index as u32;
-        resp.show_candidates = !self.candidates.is_empty();
+        resp.candidates.clone_from(&c.candidates.surfaces);
+        resp.selected_index = c.candidates.selected as u32;
+        resp.show_candidates = !c.candidates.is_empty();
 
         // Try auto-commit (only in sync mode; async mode handles it in receive_candidates)
         if !self.defer_candidates {
             if let Some(auto_resp) = self.try_auto_commit() {
-                resp.commit_text = auto_resp.commit_text;
-                resp.marked_text = auto_resp.marked_text;
-                resp.candidates = auto_resp.candidates;
-                resp.selected_index = auto_resp.selected_index;
-                resp.show_candidates = auto_resp.show_candidates;
-                resp.hide_candidates = auto_resp.hide_candidates;
-                resp.save_history = auto_resp.save_history;
+                resp = auto_resp;
             }
         }
 
@@ -1004,18 +1076,10 @@ impl<'a> InputSession<'a> {
     fn make_candidate_selection_response(&mut self) -> KeyResponse {
         let mut resp = KeyResponse::consumed();
 
-        // Update marked text to selected candidate
-        if self.selected_index < self.candidates.len() {
-            let display = format!(
-                "{}{}",
-                self.display_prefix, self.candidates[self.selected_index]
-            );
-            self.current_display = Some(display.clone());
-            resp.marked_text = Some(display);
-        }
-
-        resp.candidates.clone_from(&self.candidates);
-        resp.selected_index = self.selected_index as u32;
+        let c = self.comp();
+        resp.marked_text = Some(c.display());
+        resp.candidates.clone_from(&c.candidates.surfaces);
+        resp.selected_index = c.candidates.selected as u32;
         resp.show_candidates = true;
         resp
     }
@@ -1201,8 +1265,8 @@ mod tests {
 
         type_string(&mut session, "kyou");
         assert!(session.is_composing());
-        assert_eq!(session.composed_kana, "きょう");
-        assert!(session.pending_romaji.is_empty());
+        assert_eq!(session.comp().kana, "きょう");
+        assert!(session.comp().pending.is_empty());
     }
 
     #[test]
@@ -1211,7 +1275,7 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kka");
-        assert_eq!(session.composed_kana, "っか");
+        assert_eq!(session.comp().kana, "っか");
     }
 
     // --- Backspace ---
@@ -1222,12 +1286,11 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "k"); // pending_romaji = "k"
-        assert_eq!(session.pending_romaji, "k");
+        assert_eq!(session.comp().pending, "k");
 
         let resp = session.handle_key(key::BACKSPACE, "", 0);
         assert!(resp.consumed);
-        assert!(session.pending_romaji.is_empty());
-        assert!(!session.is_composing()); // back to idle
+        assert!(!session.is_composing()); // back to idle (composition dropped)
     }
 
     #[test]
@@ -1236,12 +1299,11 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "ka"); // composedKana = "か"
-        assert_eq!(session.composed_kana, "か");
+        assert_eq!(session.comp().kana, "か");
 
         let resp = session.handle_key(key::BACKSPACE, "", 0);
         assert!(resp.consumed);
-        assert!(session.composed_kana.is_empty());
-        assert!(!session.is_composing()); // back to idle
+        assert!(!session.is_composing()); // back to idle (composition dropped)
     }
 
     #[test]
@@ -1250,12 +1312,12 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kak"); // "か" + pending "k"
-        assert_eq!(session.composed_kana, "か");
-        assert_eq!(session.pending_romaji, "k");
+        assert_eq!(session.comp().kana, "か");
+        assert_eq!(session.comp().pending, "k");
 
         session.handle_key(key::BACKSPACE, "", 0);
-        assert_eq!(session.composed_kana, "か");
-        assert!(session.pending_romaji.is_empty());
+        assert_eq!(session.comp().kana, "か");
+        assert!(session.comp().pending.is_empty());
         assert!(session.is_composing());
     }
 
@@ -1272,8 +1334,8 @@ mod tests {
         assert!(resp.consumed);
         assert!(resp.hide_candidates);
         // After escape, kana is flushed (n → ん)
-        assert_eq!(session.composed_kana, "きょうん");
-        assert!(session.pending_romaji.is_empty());
+        assert_eq!(session.comp().kana, "きょうん");
+        assert!(session.comp().pending.is_empty());
     }
 
     // --- Enter (commit) ---
@@ -1284,7 +1346,7 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kyou");
-        assert!(!session.candidates.is_empty());
+        assert!(!session.comp().candidates.is_empty());
 
         let resp = session.handle_key(key::ENTER, "", 0);
         assert!(resp.consumed);
@@ -1301,20 +1363,20 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kyou");
-        let initial_count = session.candidates.len();
+        let initial_count = session.comp().candidates.surfaces.len();
         assert!(initial_count > 1);
-        assert_eq!(session.selected_index, 0);
+        assert_eq!(session.comp().candidates.selected, 0);
 
         // First space jumps to index 1
         let resp = session.handle_key(key::SPACE, "", 0);
         assert!(resp.consumed);
-        assert_eq!(session.selected_index, 1);
+        assert_eq!(session.comp().candidates.selected, 1);
         assert!(resp.show_candidates);
 
         // Second space goes to index 2
         let resp = session.handle_key(key::SPACE, "", 0);
         assert!(resp.consumed);
-        assert_eq!(session.selected_index, 2);
+        assert_eq!(session.comp().candidates.selected, 2);
     }
 
     // --- Arrow keys ---
@@ -1325,18 +1387,18 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kyou");
-        let count = session.candidates.len();
+        let count = session.comp().candidates.surfaces.len();
         assert!(count > 1);
 
         session.handle_key(key::DOWN, "", 0);
-        assert_eq!(session.selected_index, 1);
+        assert_eq!(session.comp().candidates.selected, 1);
 
         session.handle_key(key::UP, "", 0);
-        assert_eq!(session.selected_index, 0);
+        assert_eq!(session.comp().candidates.selected, 0);
 
         // Up from 0 wraps to last
         session.handle_key(key::UP, "", 0);
-        assert_eq!(session.selected_index, count - 1);
+        assert_eq!(session.comp().candidates.selected, count - 1);
     }
 
     // --- Tab (submode toggle) ---
@@ -1346,11 +1408,11 @@ mod tests {
         let dict = make_test_dict();
         let mut session = InputSession::new(&dict, None, None);
 
-        assert_eq!(session.submode, Submode::Japanese);
+        assert_eq!(session.submode(), Submode::Japanese);
         session.handle_key(key::TAB, "", 0);
-        assert_eq!(session.submode, Submode::English);
+        assert_eq!(session.submode(), Submode::English);
         session.handle_key(key::TAB, "", 0);
-        assert_eq!(session.submode, Submode::Japanese);
+        assert_eq!(session.submode(), Submode::Japanese);
     }
 
     #[test]
@@ -1362,12 +1424,12 @@ mod tests {
         let resp = session.handle_key(0, "h", 0);
         assert!(resp.consumed);
         assert!(session.is_composing());
-        assert_eq!(session.composed_kana, "h");
+        assert_eq!(session.comp().kana, "h");
         assert!(resp.is_dashed_underline);
 
         let resp = session.handle_key(0, "i", 0);
         assert!(resp.consumed);
-        assert_eq!(session.composed_kana, "hi");
+        assert_eq!(session.comp().kana, "hi");
     }
 
     // --- Modifier pass-through ---
@@ -1591,20 +1653,20 @@ mod tests {
 
         // Type Japanese, toggle to English
         type_string(&mut session, "kyou");
-        let best = session.candidates[0].clone();
+        let best = session.comp().candidates.surfaces[0].clone();
         session.handle_key(key::TAB, "", 0); // → English
                                              // Boundary space should be in display_prefix after crystallization
-        assert!(session.display_prefix.ends_with(' '));
-        assert!(session.did_insert_boundary_space);
+        assert!(session.comp().prefix.text.ends_with(' '));
+        assert!(session.comp().prefix.has_boundary_space);
         // composed_kana should be cleared (crystallized into prefix)
-        assert!(session.composed_kana.is_empty());
+        assert!(session.comp().kana.is_empty());
 
         // Toggle back without typing → space should be removed
         session.handle_key(key::TAB, "", 0); // → Japanese
-        assert!(!session.display_prefix.ends_with(' '));
-        assert!(!session.did_insert_boundary_space);
+        assert!(!session.comp().prefix.text.ends_with(' '));
+        assert!(!session.comp().prefix.has_boundary_space);
         // Prefix should still contain the crystallized conversion (without space)
-        assert_eq!(session.display_prefix, best);
+        assert_eq!(session.comp().prefix.text, best);
     }
 
     #[test]
@@ -1614,11 +1676,11 @@ mod tests {
 
         // Type "kyou" → candidates include "今日" (Viterbi best)
         type_string(&mut session, "kyou");
-        assert!(!session.candidates.is_empty());
-        let best = session.candidates[0].clone();
+        assert!(!session.comp().candidates.is_empty());
+        let best = session.comp().candidates.surfaces[0].clone();
 
-        // current_display should be the Viterbi best
-        assert_eq!(session.current_display.as_deref(), Some(best.as_str()));
+        // display() should return the Viterbi best
+        assert_eq!(session.comp().display(), best);
 
         // Toggle to English — display must preserve the conversion, not revert to kana
         let resp = session.handle_key(key::TAB, "", 0);
@@ -1632,8 +1694,8 @@ mod tests {
         // Candidates are cleared after crystallization
         assert!(resp.hide_candidates);
         // Conversion should be crystallized into display_prefix
-        assert_eq!(session.display_prefix, best);
-        assert!(session.composed_kana.is_empty());
+        assert_eq!(session.comp().prefix.text, best);
+        assert!(session.comp().kana.is_empty());
     }
 
     // --- Mixed mode (Japanese + English) ---
@@ -1645,12 +1707,12 @@ mod tests {
 
         // Type "kyou" → "今日", then Tab to English, type "test", then Enter
         type_string(&mut session, "kyou");
-        let best = session.candidates[0].clone();
+        let best = session.comp().candidates.surfaces[0].clone();
         session.handle_key(key::TAB, "", 0); // → English
         type_string(&mut session, "test");
 
         // Marked text should show "今日test"
-        let display = session.current_display.as_deref().unwrap();
+        let display = session.comp().display();
         assert_eq!(display, format!("{}test", best));
 
         // Commit should produce "今日test"
@@ -1669,14 +1731,14 @@ mod tests {
 
         // Type Japanese → English → Japanese
         type_string(&mut session, "kyou");
-        let best = session.candidates[0].clone();
+        let best = session.comp().candidates.surfaces[0].clone();
         session.handle_key(key::TAB, "", 0); // → English
         type_string(&mut session, "hello");
         session.handle_key(key::TAB, "", 0); // → Japanese
         type_string(&mut session, "kyou");
 
         // Display should be "<best>hello<new_best>"
-        let display = session.current_display.as_deref().unwrap();
+        let display = session.comp().display();
         assert!(
             display.starts_with(&best),
             "display should start with first conversion: got {}",
@@ -1696,20 +1758,20 @@ mod tests {
 
         // Type Japanese, toggle to English
         type_string(&mut session, "kyou");
-        let best = session.candidates[0].clone();
+        let best = session.comp().candidates.surfaces[0].clone();
         session.handle_key(key::TAB, "", 0); // → English
         type_string(&mut session, "ab");
 
         // Backspace twice to empty English segment
         session.handle_key(key::BACKSPACE, "", 0);
         session.handle_key(key::BACKSPACE, "", 0);
-        assert!(session.composed_kana.is_empty());
+        assert!(session.comp().kana.is_empty());
         // display_prefix still has the frozen conversion
-        assert_eq!(session.display_prefix, best);
+        assert_eq!(session.comp().prefix.text, best);
 
         // One more backspace deletes from prefix
         session.handle_key(key::BACKSPACE, "", 0);
-        assert!(session.display_prefix.len() < best.len());
+        assert!(session.comp().prefix.text.len() < best.len());
     }
 
     // --- Space in English mode ---
@@ -1722,7 +1784,7 @@ mod tests {
         session.handle_key(key::TAB, "", 0); // → English
         type_string(&mut session, "hi");
         session.handle_key(key::SPACE, "", 0);
-        assert_eq!(session.composed_kana, "hi ");
+        assert_eq!(session.comp().kana, "hi ");
     }
 
     // --- Candidates are generated ---
@@ -1733,8 +1795,8 @@ mod tests {
         let mut session = InputSession::new(&dict, None, None);
 
         type_string(&mut session, "kyou");
-        assert!(!session.candidates.is_empty());
-        assert!(!session.nbest_paths.is_empty());
+        assert!(!session.comp().candidates.is_empty());
+        assert!(!session.comp().candidates.paths.is_empty());
     }
 
     // --- Non-romaji char in composing ---
@@ -1746,7 +1808,7 @@ mod tests {
 
         type_string(&mut session, "ka"); // "か"
         session.handle_key(0, "1", 0); // unrecognized
-        assert!(session.composed_kana.ends_with('1'));
+        assert!(session.comp().kana.ends_with('1'));
     }
 
     // --- z-sequence ---
@@ -1758,6 +1820,6 @@ mod tests {
 
         // "z" is a prefix in the romaji trie, "zh" → "←"
         type_string(&mut session, "zh");
-        assert_eq!(session.composed_kana, "←");
+        assert_eq!(session.comp().kana, "←");
     }
 }
