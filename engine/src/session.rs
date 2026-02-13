@@ -724,7 +724,7 @@ impl<'a> InputSession<'a> {
     fn try_auto_commit(&mut self) -> Option<KeyResponse> {
         // Extract data from comp() in a block so the borrow is dropped before
         // we access self.history_records.
-        let (committed_reading, committed_surface, seg_pairs) = {
+        let (committed_reading, committed_surface, seg_pairs, commit_count) = {
             let c = self.comp();
             if c.stability.count < 3 {
                 return None;
@@ -769,7 +769,7 @@ impl<'a> InputSession<'a> {
                 None
             };
 
-            (committed_reading, committed_surface, seg_pairs)
+            (committed_reading, committed_surface, seg_pairs, commit_count)
         };
 
         // Record to history (comp() borrow is dropped)
@@ -798,12 +798,36 @@ impl<'a> InputSession<'a> {
             resp.hide_candidates = true;
             resp.marked_text = Some(String::new());
         } else if self.defer_candidates {
-            // Async mode: show kana, request async candidate generation
+            // Async mode: extract provisional candidates from remaining N-best
+            // segments so the candidate panel stays visible (no flicker).
             let c = self.comp();
+            let mut provisional: Vec<String> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for path in &c.candidates.paths {
+                if path.len() > commit_count {
+                    let remaining: String =
+                        path[commit_count..].iter().map(|s| s.surface.as_str()).collect();
+                    if !remaining.is_empty() && seen.insert(remaining.clone()) {
+                        provisional.push(remaining);
+                    }
+                }
+            }
+            // Always include kana as a fallback candidate
+            if seen.insert(c.kana.clone()) {
+                provisional.push(c.kana.clone());
+            }
+
             c.candidates.clear();
-            let display = c.display_kana();
-            resp.marked_text = Some(display);
-            resp.hide_candidates = true;
+
+            if !provisional.is_empty() {
+                resp.marked_text = Some(provisional[0].clone());
+                resp.candidates.clone_from(&provisional);
+                resp.selected_index = 0;
+                resp.show_candidates = true;
+            } else {
+                resp.marked_text = Some(c.display_kana());
+                resp.hide_candidates = true;
+            }
             resp.needs_candidates = true;
             resp.candidate_reading = Some(c.kana.clone());
         } else {
@@ -1821,5 +1845,71 @@ mod tests {
         // "z" is a prefix in the romaji trie, "zh" → "←"
         type_string(&mut session, "zh");
         assert_eq!(session.comp().kana, "←");
+    }
+
+    // --- Deferred auto-commit provisional candidates ---
+
+    #[test]
+    fn test_deferred_auto_commit_shows_provisional_candidates() {
+        use crate::candidates::generate_candidates;
+
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_defer_candidates(true);
+
+        // Helper: complete one async candidate cycle.
+        // Returns the response from receive_candidates (None if stale).
+        fn complete_cycle(
+            session: &mut InputSession,
+            dict: &TrieDictionary,
+        ) -> Option<KeyResponse> {
+            let reading = session.comp().kana.clone();
+            if reading.is_empty() {
+                return None;
+            }
+            let cand = generate_candidates(dict, None, None, &reading, 20);
+            session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        }
+
+        // Build up "きょうはいいてんき" with async cycles after each romaji group.
+        // Each cycle increments the stability counter (first segment = "きょう").
+        type_string(&mut session, "kyou"); // "きょう"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(r.unwrap().commit_text.is_none(), "no auto-commit yet");
+
+        type_string(&mut session, "ha"); // "きょうは"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(r.unwrap().commit_text.is_none(), "no auto-commit yet");
+
+        type_string(&mut session, "ii"); // "きょうはいい"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(r.unwrap().commit_text.is_none(), "no auto-commit yet (< 4 segments)");
+
+        type_string(&mut session, "tenki"); // "きょうはいいてんき"
+        let r = complete_cycle(&mut session, &dict);
+        let resp = r.expect("receive_candidates should return a response");
+
+        // Auto-commit should fire: first segment committed, remaining shown
+        assert!(resp.commit_text.is_some(), "auto-commit should produce commit_text");
+        assert!(
+            resp.show_candidates,
+            "deferred auto-commit should show provisional candidates (not hide)"
+        );
+        assert!(
+            !resp.hide_candidates,
+            "deferred auto-commit should NOT hide candidates"
+        );
+        assert!(
+            !resp.candidates.is_empty(),
+            "deferred auto-commit should provide provisional candidates"
+        );
+        // Async generation should still be requested for proper results
+        assert!(
+            resp.needs_candidates,
+            "deferred auto-commit should request async candidate generation"
+        );
     }
 }
