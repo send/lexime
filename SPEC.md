@@ -43,7 +43,7 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 | `MarkedTextManager.swift` | インライン表示（未確定文字列） |
 | `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション） |
 | `DictBridge.swift` | Rust FFI のラッパー関数（romaji lookup / convert / generate candidates） |
-| `InputState.swift` | `InputState` enum（idle / composing） |
+| `InputState.swift` | `InputState` enum（idle / composing）、`InputSubmode` enum（japanese / english） |
 
 ### Rust Engine (`engine/src/`)
 
@@ -87,7 +87,9 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 ### 状態遷移
 
 ```
-idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
+idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape)──→ idle
+                                    │
+                                    └──(Tab)──→ サブモード切替（japanese ↔ english）
 ```
 
 ### 各状態でのキー操作
@@ -98,9 +100,10 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 |---|---|
 | ローマ字 | composing へ遷移 |
 | 句読点（`,` `.` 等） | 全角句読点で composing へ遷移 |
+| Tab | 日英サブモードをトグル |
 | 英数キー | システム ABC 入力ソースに切替 |
 
-**composing**
+**composing（japanese サブモード）**
 
 | キー | 動作 |
 |---|---|
@@ -109,11 +112,22 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Space / ↓ | 次の候補を選択（初回 Space は index 1 から開始） |
 | ↑ | 前の候補を選択 |
 | Enter | 表示中の候補を確定（変換結果 + 学習記録） |
-| Tab | カタカナに変換して確定 |
+| Tab | english サブモードへ切替 |
 | Backspace | 1 文字削除（空になれば idle へ） |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 | その他の文字 | composedKana に追加（Backspace で削除可能） |
+
+**composing（english サブモード）**
+
+| キー | 動作 |
+|---|---|
+| 印字可能 ASCII | composedKana にそのまま追加（大文字小文字保持、Viterbi スキップ） |
+| Space | スペース文字を composedKana に追加 |
+| Enter | composedKana をそのまま確定（学習なし） |
+| Tab | japanese サブモードへ切替 |
+| Backspace | 1 文字削除（空になれば idle へ） |
+| Escape | composedKana をそのまま確定 |
 
 **全状態共通（programmerMode）**
 
@@ -272,13 +286,14 @@ macOS で動作する最小限の IME を構築。
 - Escape はひらがなで確定（IMKit の制約: Escape 後に `commitComposition` が呼ばれる）
 - `currentDisplay` トラッキングで `composedString` とマークドテキストを同期
 
-**Shift インライン英字**
+**Tab インライン英字** — **完了**
 
-- Shift 空打ち（キーのみリリース）で英字/日本語サブモードをトグル
-- 英字モード中はローマ字変換をバイパスし、入力をそのまま挿入
-- programmerMode 時は英語と日本語の境界に自動スペース挿入
+- Tab キーで japanese / english サブモードをトグル
+- english モード中はローマ字変換をバイパスし、入力をそのまま composedKana に追加（大文字小文字保持）
+- programmerMode 時は日英境界に自動スペース挿入（未使用時は再トグルで取消）
   - 例: `今日 React のコンポーネントを commit した`
-- モード表現: マークドテキストの下線スタイルを変える（詳細は実装時に検討）
+- english モードはマークドテキストに点線下線（patternDash）で表示
+- 自動確定は連続 ASCII セグメントを単語単位でまとめて確定
 
 **候補パネルのカーソル追従**
 
@@ -323,9 +338,9 @@ macOS で動作する最小限の IME を構築。
 `.github/workflows/ci.yml`:
 
 - **トリガー**: pull_request
-- **パスフィルタ**: `engine/**` 変更時のみ Rust CI、`Sources/**` or `Tests/**` 変更時のみ Swift CI を実行
+- **パスフィルタ**: `engine/**` 変更時のみ Rust CI、`engine/**` かつ `Sources/**`/`Tests/**` 両方変更時のみ Swift CI を実行
 - **engine ジョブ** (ubuntu-latest): `mise run test`（lint + cargo test）
-- **swift ジョブ** (macos-latest): `mise run test-swift`（engine-lib ビルド + FFI テスト）
+- **swift ジョブ** (macos-latest): `mise run test-swift`（engine-lib ビルド + FFI テスト）。macOS クレジット節約のため両方変更時のみ実行
 
 ## 未決事項
 
