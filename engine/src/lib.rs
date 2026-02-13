@@ -6,6 +6,7 @@ pub mod candidates;
 pub mod converter;
 pub mod dict;
 pub mod romaji;
+pub mod session;
 pub mod unicode;
 pub mod user_history;
 
@@ -646,10 +647,17 @@ pub extern "C" fn lex_history_save(
         ref: wrapper  = history,
         str: path_str = path,
     );
-    let Ok(h) = wrapper.inner.read() else {
-        return -1;
+    // Clone the data under a short-lived read lock, then write to disk
+    // without holding the lock.  This prevents blocking write-lock callers
+    // (record_history) during file I/O, which in turn unblocks handle_key's
+    // read-lock acquisition (RwLock starves readers while a writer waits).
+    let snapshot = {
+        let Ok(h) = wrapper.inner.read() else {
+            return -1;
+        };
+        h.clone()
     };
-    match h.save(Path::new(path_str)) {
+    match snapshot.save(Path::new(path_str)) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -945,6 +953,404 @@ pub extern "C" fn lex_candidate_response_free(response: LexCandidateResponse) {
                 owned_drop(path._owned);
             }
             // owned box (surface_ptrs, surface_strings, paths) is dropped here
+        }
+    }
+}
+
+// --- InputSession FFI ---
+
+use session::{InputSession, KeyResponse};
+
+/// Opaque wrapper to hold InputSession with raw pointers for FFI lifetime.
+///
+/// The caller guarantees dict/conn/history outlive the session.
+pub struct LexSession {
+    inner: InputSession<'static>,
+    history_ptr: *const LexUserHistoryWrapper,
+}
+
+#[repr(C)]
+pub struct LexKeyResponse {
+    pub consumed: u8,
+    pub commit_text: *const c_char,
+    pub marked_text: *const c_char,
+    pub is_dashed_underline: u8,
+    pub candidates: *const *const c_char,
+    pub candidates_len: u32,
+    pub selected_index: u32,
+    pub show_candidates: u8,
+    pub hide_candidates: u8,
+    pub switch_to_abc: u8,
+    pub save_history: u8,
+    pub needs_candidates: u8,
+    pub candidate_reading: *const c_char,
+    _owned: *mut OwnedKeyResponse,
+}
+
+struct OwnedKeyResponse {
+    _commit_text: Option<CString>,
+    _marked_text: Option<CString>,
+    _candidate_ptrs: Vec<*const c_char>,
+    _candidate_strings: Vec<CString>,
+    _candidate_reading: Option<CString>,
+    /// History records to be fed to UserHistory::record().
+    history_records: Vec<Vec<(String, String)>>,
+}
+
+impl LexKeyResponse {
+    fn empty() -> Self {
+        Self {
+            consumed: 0,
+            commit_text: ptr::null(),
+            marked_text: ptr::null(),
+            is_dashed_underline: 0,
+            candidates: ptr::null(),
+            candidates_len: 0,
+            selected_index: 0,
+            show_candidates: 0,
+            hide_candidates: 0,
+            switch_to_abc: 0,
+            save_history: 0,
+            needs_candidates: 0,
+            candidate_reading: ptr::null(),
+            _owned: ptr::null_mut(),
+        }
+    }
+}
+
+fn pack_key_response(
+    resp: KeyResponse,
+    history_records: Vec<Vec<(String, String)>>,
+) -> LexKeyResponse {
+    let commit_cstr = resp.commit_text.and_then(|s| CString::new(s).ok());
+    let marked_cstr = resp.marked_text.and_then(|s| CString::new(s).ok());
+    let reading_cstr = resp.candidate_reading.and_then(|s| CString::new(s).ok());
+
+    let mut candidate_strings: Vec<CString> = Vec::new();
+    let mut candidate_ptrs: Vec<*const c_char> = Vec::new();
+    for s in &resp.candidates {
+        if let Ok(cs) = CString::new(s.as_str()) {
+            candidate_ptrs.push(cs.as_ptr());
+            candidate_strings.push(cs);
+        }
+    }
+
+    let owned = Box::new(OwnedKeyResponse {
+        _commit_text: commit_cstr,
+        _marked_text: marked_cstr,
+        _candidate_ptrs: candidate_ptrs,
+        _candidate_strings: candidate_strings,
+        _candidate_reading: reading_cstr,
+        history_records,
+    });
+    let owned_ptr = Box::into_raw(owned);
+
+    let commit_ptr = unsafe {
+        (*owned_ptr)
+            ._commit_text
+            .as_ref()
+            .map_or(ptr::null(), |cs| cs.as_ptr())
+    };
+    let marked_ptr = unsafe {
+        (*owned_ptr)
+            ._marked_text
+            .as_ref()
+            .map_or(ptr::null(), |cs| cs.as_ptr())
+    };
+    let reading_ptr = unsafe {
+        (*owned_ptr)
+            ._candidate_reading
+            .as_ref()
+            .map_or(ptr::null(), |cs| cs.as_ptr())
+    };
+    let (cand_ptr, cand_len) = unsafe {
+        let ptrs = &(*owned_ptr)._candidate_ptrs;
+        if ptrs.is_empty() {
+            (ptr::null(), 0)
+        } else {
+            (ptrs.as_ptr(), ptrs.len() as u32)
+        }
+    };
+
+    LexKeyResponse {
+        consumed: resp.consumed as u8,
+        commit_text: commit_ptr,
+        marked_text: marked_ptr,
+        is_dashed_underline: resp.is_dashed_underline as u8,
+        candidates: cand_ptr,
+        candidates_len: cand_len,
+        selected_index: resp.selected_index,
+        show_candidates: resp.show_candidates as u8,
+        hide_candidates: resp.hide_candidates as u8,
+        switch_to_abc: resp.switch_to_abc as u8,
+        save_history: resp.save_history as u8,
+        needs_candidates: resp.needs_candidates as u8,
+        candidate_reading: reading_ptr,
+        _owned: owned_ptr,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_session_new(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    history: *const LexUserHistoryWrapper,
+) -> *mut LexSession {
+    if dict.is_null() {
+        return ptr::null_mut();
+    }
+    let dict_ref: &'static TrieDictionary = unsafe { &*dict };
+    let conn_ref: Option<&'static ConnectionMatrix> = if conn.is_null() {
+        None
+    } else {
+        Some(unsafe { &*conn })
+    };
+
+    // History is set temporarily during handle_key/commit via with_history_lock().
+    let inner = InputSession::new(dict_ref, conn_ref, None);
+
+    owned_new(LexSession {
+        inner,
+        history_ptr: history,
+    })
+}
+
+ffi_close!(lex_session_free, LexSession);
+
+#[no_mangle]
+pub extern "C" fn lex_session_set_programmer_mode(session: *mut LexSession, enabled: u8) {
+    if session.is_null() {
+        return;
+    }
+    let session = unsafe { &mut *session };
+    session.inner.set_programmer_mode(enabled != 0);
+}
+
+#[no_mangle]
+pub extern "C" fn lex_session_set_defer_candidates(session: *mut LexSession, enabled: u8) {
+    if session.is_null() {
+        return;
+    }
+    let session = unsafe { &mut *session };
+    session.inner.set_defer_candidates(enabled != 0);
+}
+
+/// Receive asynchronously generated candidates and update session state.
+/// Called on the main thread after `lex_generate_candidates` completes on a background thread.
+/// `reading` must match the reading used for generation (staleness check).
+/// Returns a `LexKeyResponse` with updated marked text and candidates,
+/// or an empty response if the candidates are stale.
+#[no_mangle]
+pub extern "C" fn lex_session_receive_candidates(
+    session: *mut LexSession,
+    reading: *const c_char,
+    candidates: *const LexCandidateResponse,
+) -> LexKeyResponse {
+    if session.is_null() || candidates.is_null() {
+        return LexKeyResponse::empty();
+    }
+    let reading_str = unsafe { cptr_to_str(reading) }.unwrap_or("");
+    let session = unsafe { &mut *session };
+    let cand_resp = unsafe { &*candidates };
+
+    // Unpack surfaces from the FFI struct
+    let surfaces = unpack_candidate_surfaces(cand_resp);
+    let paths = unpack_candidate_paths(cand_resp);
+
+    // Acquire history lock for potential history recording during auto-commit
+    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
+
+    let resp = match session
+        .inner
+        .receive_candidates(reading_str, surfaces, paths)
+    {
+        Some(resp) => resp,
+        None => {
+            session.inner.set_history(None);
+            return LexKeyResponse::empty();
+        }
+    };
+
+    session.inner.set_history(None);
+    drop(_guard);
+    let records = session.inner.take_history_records();
+    pack_key_response(resp, records)
+}
+
+fn unpack_candidate_surfaces(resp: &LexCandidateResponse) -> Vec<String> {
+    let mut result = Vec::new();
+    if resp.surfaces.is_null() || resp.surfaces_len == 0 {
+        return result;
+    }
+    for i in 0..resp.surfaces_len as usize {
+        let ptr = unsafe { *resp.surfaces.add(i) };
+        if !ptr.is_null() {
+            if let Ok(s) = unsafe { CStr::from_ptr(ptr) }.to_str() {
+                result.push(s.to_owned());
+            }
+        }
+    }
+    result
+}
+
+fn unpack_candidate_paths(resp: &LexCandidateResponse) -> Vec<Vec<converter::ConvertedSegment>> {
+    let mut result = Vec::new();
+    if resp.paths.is_null() || resp.paths_len == 0 {
+        return result;
+    }
+    for i in 0..resp.paths_len as usize {
+        let path_result = unsafe { &*resp.paths.add(i) };
+        let mut segments = Vec::new();
+        if !path_result.segments.is_null() && path_result.len > 0 {
+            for j in 0..path_result.len as usize {
+                let seg = unsafe { &*path_result.segments.add(j) };
+                if !seg.reading.is_null() && !seg.surface.is_null() {
+                    if let (Ok(r), Ok(s)) = (
+                        unsafe { CStr::from_ptr(seg.reading) }.to_str(),
+                        unsafe { CStr::from_ptr(seg.surface) }.to_str(),
+                    ) {
+                        segments.push(converter::ConvertedSegment {
+                            reading: r.to_owned(),
+                            surface: s.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        result.push(segments);
+    }
+    result
+}
+
+/// Acquire a read lock on the history and set it on the session's inner.
+/// Returns the guard so it stays alive during use.
+///
+/// # Safety
+/// The returned guard must be kept alive while the session's history reference is used.
+/// Call `session.inner.set_history(None)` before dropping the guard.
+unsafe fn acquire_history_lock(
+    history_ptr: *const LexUserHistoryWrapper,
+    inner: &mut InputSession<'static>,
+) -> Option<std::sync::RwLockReadGuard<'static, UserHistory>> {
+    if history_ptr.is_null() {
+        inner.set_history(None);
+        return None;
+    }
+    let wrapper = &*history_ptr;
+    match wrapper.inner.read() {
+        Ok(guard) => {
+            // SAFETY: The guard is kept alive by the caller. The transmute extends
+            // the lifetime to 'static which is safe as long as the guard outlives
+            // the session's use of the reference.
+            let hist_ref: &UserHistory = &guard;
+            let hist_static: &'static UserHistory = std::mem::transmute(hist_ref);
+            inner.set_history(Some(hist_static));
+            let guard: std::sync::RwLockReadGuard<'static, UserHistory> =
+                std::mem::transmute(guard);
+            Some(guard)
+        }
+        Err(_) => {
+            inner.set_history(None);
+            None
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lex_session_handle_key(
+    session: *mut LexSession,
+    key_code: u16,
+    text: *const c_char,
+    flags: u8,
+) -> LexKeyResponse {
+    if session.is_null() {
+        return LexKeyResponse::empty();
+    }
+    let session = unsafe { &mut *session };
+    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
+    let text_str = unsafe { cptr_to_str(text) }.unwrap_or("");
+    let resp = session.inner.handle_key(key_code, text_str, flags);
+    session.inner.set_history(None);
+    drop(_guard);
+    let records = session.inner.take_history_records();
+    pack_key_response(resp, records)
+}
+
+#[no_mangle]
+pub extern "C" fn lex_session_commit(session: *mut LexSession) -> LexKeyResponse {
+    if session.is_null() {
+        return LexKeyResponse::empty();
+    }
+    let session = unsafe { &mut *session };
+    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
+    let resp = session.inner.commit();
+    session.inner.set_history(None);
+    drop(_guard);
+    let records = session.inner.take_history_records();
+    pack_key_response(resp, records)
+}
+
+#[no_mangle]
+pub extern "C" fn lex_session_is_composing(session: *const LexSession) -> u8 {
+    if session.is_null() {
+        return 0;
+    }
+    let session = unsafe { &*session };
+    session.inner.is_composing() as u8
+}
+
+/// Get the composed string for IMKit's composedString callback.
+/// Note: the caller should prefer using marked_text from LexKeyResponse
+/// since this function cannot return the internal string without extra allocation.
+#[no_mangle]
+pub extern "C" fn lex_session_composed_string(_session: *const LexSession) -> *const c_char {
+    c"".as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn lex_key_response_free(response: LexKeyResponse) {
+    if !response._owned.is_null() {
+        unsafe {
+            drop(Box::from_raw(response._owned));
+        }
+    }
+}
+
+/// Get the history records from the last key response.
+/// Returns the number of record groups. The caller should iterate and call
+/// lex_history_record for each group, then lex_history_save asynchronously.
+#[no_mangle]
+pub extern "C" fn lex_key_response_history_count(response: *const LexKeyResponse) -> u32 {
+    if response.is_null() {
+        return 0;
+    }
+    let resp = unsafe { &*response };
+    if resp._owned.is_null() {
+        return 0;
+    }
+    let owned = unsafe { &*resp._owned };
+    owned.history_records.len() as u32
+}
+
+/// Record history entries from a key response into the user history.
+/// This should be called before lex_key_response_free.
+#[no_mangle]
+pub extern "C" fn lex_key_response_record_history(
+    response: *const LexKeyResponse,
+    history: *const LexUserHistoryWrapper,
+) {
+    if response.is_null() || history.is_null() {
+        return;
+    }
+    let resp = unsafe { &*response };
+    if resp._owned.is_null() {
+        return;
+    }
+    let owned = unsafe { &*resp._owned };
+    let wrapper = unsafe { &*history };
+    if let Ok(mut h) = wrapper.inner.write() {
+        for records in &owned.history_records {
+            h.record(records);
         }
     }
 }
@@ -1544,6 +1950,115 @@ mod tests {
         }
 
         lex_candidate_response_free(resp);
+        lex_dict_close(dict);
+    }
+
+    // --- InputSession FFI tests ---
+
+    #[test]
+    fn test_ffi_session_roundtrip() {
+        let dict = make_test_dict();
+        let session = lex_session_new(dict, ptr::null(), ptr::null());
+        assert!(!session.is_null());
+
+        // Type "ka" → should produce か
+        let k = CString::new("k").unwrap();
+        let resp = lex_session_handle_key(session, 0, k.as_ptr(), 0);
+        assert_eq!(resp.consumed, 1);
+        assert_eq!(lex_session_is_composing(session), 1);
+        lex_key_response_free(resp);
+
+        let a = CString::new("a").unwrap();
+        let resp = lex_session_handle_key(session, 0, a.as_ptr(), 0);
+        assert_eq!(resp.consumed, 1);
+        assert!(!resp.marked_text.is_null());
+        lex_key_response_free(resp);
+
+        // Commit with Enter (key code 36)
+        let empty = CString::new("").unwrap();
+        let resp = lex_session_handle_key(session, 36, empty.as_ptr(), 0);
+        assert_eq!(resp.consumed, 1);
+        assert!(!resp.commit_text.is_null());
+        assert_eq!(lex_session_is_composing(session), 0);
+        lex_key_response_free(resp);
+
+        lex_session_free(session);
+        lex_dict_close(dict);
+    }
+
+    #[test]
+    fn test_ffi_session_null_safety() {
+        // null session
+        let resp = lex_session_handle_key(ptr::null_mut(), 0, ptr::null(), 0);
+        assert_eq!(resp.consumed, 0);
+        lex_key_response_free(resp);
+
+        let resp = lex_session_commit(ptr::null_mut());
+        assert_eq!(resp.consumed, 0);
+        lex_key_response_free(resp);
+
+        assert_eq!(lex_session_is_composing(ptr::null()), 0);
+
+        // null dict → null session
+        let session = lex_session_new(ptr::null(), ptr::null(), ptr::null());
+        assert!(session.is_null());
+    }
+
+    #[test]
+    fn test_ffi_session_with_history() {
+        let dict = make_test_dict();
+        let dir = std::env::temp_dir().join("lexime_test_ffi_session_hist");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.lxud");
+        let path_cstr = CString::new(path.to_str().unwrap()).unwrap();
+
+        let history = lex_history_open(path_cstr.as_ptr());
+        assert!(!history.is_null());
+
+        let session = lex_session_new(dict, ptr::null(), history);
+        assert!(!session.is_null());
+
+        // Type "kyou" and commit → should record history
+        for ch in "kyou".chars() {
+            let s = CString::new(ch.to_string()).unwrap();
+            let resp = lex_session_handle_key(session, 0, s.as_ptr(), 0);
+            lex_key_response_free(resp);
+        }
+
+        let empty = CString::new("").unwrap();
+        let resp = lex_session_handle_key(session, 36, empty.as_ptr(), 0);
+        assert_eq!(resp.consumed, 1);
+        assert_eq!(resp.save_history, 1);
+        // Record history entries
+        lex_key_response_record_history(&resp, history);
+        lex_key_response_free(resp);
+
+        // Save history
+        assert_eq!(lex_history_save(history, path_cstr.as_ptr()), 0);
+
+        lex_session_free(session);
+        lex_history_close(history);
+        lex_dict_close(dict);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_ffi_session_programmer_mode() {
+        let dict = make_test_dict();
+        let session = lex_session_new(dict, ptr::null(), ptr::null());
+        lex_session_set_programmer_mode(session, 1);
+
+        // ¥ key (93) should produce backslash
+        let yen = CString::new("¥").unwrap();
+        let resp = lex_session_handle_key(session, 93, yen.as_ptr(), 0);
+        assert_eq!(resp.consumed, 1);
+        unsafe {
+            let text = CStr::from_ptr(resp.commit_text).to_str().unwrap();
+            assert_eq!(text, "\\");
+        }
+        lex_key_response_free(resp);
+
+        lex_session_free(session);
         lex_dict_close(dict);
     }
 }

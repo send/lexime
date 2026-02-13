@@ -7,47 +7,50 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - State
 
-    var state: InputState = .idle
-    var currentSubmode: InputSubmode = .japanese
-    var composedKana: String = ""
-    var pendingRomaji: String = ""
+    var session: OpaquePointer?
 
-    /// True when toggleSubmode auto-inserted a boundary space (cleared on next keystroke).
-    var didInsertBoundarySpace: Bool = false
-
-    var nbestPaths: [[(reading: String, surface: String)]] = []
     /// Tracks the currently displayed marked text so composedString stays in sync.
     var currentDisplay: String?
 
-    var isComposing: Bool { state != .idle }
-
-    var selectedPredictionIndex: Int = 0
-
-    /// Reading of the first Viterbi segment at the previous keystroke.
-    var previousFirstSegmentReading: String?
-    /// Consecutive keystrokes where the first segment reading stayed the same.
-    var firstSegmentStableCount: Int = 0
-    var programmerMode: Bool {
-        UserDefaults.standard.bool(forKey: "programmerMode")
+    var isComposing: Bool {
+        guard let session else { return false }
+        return lex_session_is_composing(session) != 0
     }
 
-    static let maxComposedKanaLength = 100
-
-    // Realtime prediction state
+    // Candidate panel state (for pagination)
     var predictionCandidates: [String] = []
+    var selectedPredictionIndex: Int = 0
 
-    private let candidateQueue = DispatchQueue(label: "sh.send.lexime.candidates")
+    // Async candidate generation
+    private let candidateQueue = DispatchQueue(label: "sh.send.lexime.candidates", qos: .userInitiated)
     private var candidateGeneration: UInt64 = 0
 
     private static var hasShownDictWarning = false
+    private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = String(cString: lex_engine_version())
         NSLog("Lexime: InputController initialized (engine: %@)", version)
-        if AppContext.shared.dict == nil && !Self.hasShownDictWarning {
-            Self.hasShownDictWarning = true
-            NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
+
+        guard let dict = AppContext.shared.dict else {
+            if !Self.hasShownDictWarning {
+                Self.hasShownDictWarning = true
+                NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
+            }
+            return
+        }
+
+        session = lex_session_new(dict, AppContext.shared.conn, AppContext.shared.history)
+        lex_session_set_defer_candidates(session, 1)
+        if UserDefaults.standard.bool(forKey: "programmerMode") {
+            lex_session_set_programmer_mode(session, 1)
+        }
+    }
+
+    deinit {
+        if let s = session {
+            lex_session_free(s)
         }
     }
 
@@ -67,8 +70,6 @@ class LeximeInputController: IMKInputController {
     }
 
     func showCandidatePanel(client: IMKTextInput) {
-        guard state == .composing else { return }
-
         let allCandidates = predictionCandidates
         let selectedIndex = selectedPredictionIndex
 
@@ -93,59 +94,142 @@ class LeximeInputController: IMKInputController {
     // MARK: - Key Handling
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event = event, let client = sender as? IMKTextInput else {
+        guard let session, let event, let client = sender as? IMKTextInput else {
             return false
         }
 
         guard event.type == .keyDown else {
-            // Consume modifier-only events (e.g. Shift press) while composing
-            // to prevent IMKit's default handling from interfering.
+            // Consume modifier-only events while composing
             return isComposing
         }
 
-        // Eisu key (102) → switch to ABC input source
-        if event.keyCode == Key.eisu {
-            if isComposing { commitCurrentState(client: client) }
-            selectABCInputSource()
-            return true
-        }
-        // Kana key (104) → already in Japanese mode, consume the event
-        if event.keyCode == Key.kana {
-            return true
-        }
+        // Sync programmerMode setting on each key event
+        lex_session_set_programmer_mode(
+            session,
+            UserDefaults.standard.bool(forKey: "programmerMode") ? 1 : 0
+        )
 
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
+        let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
+        let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
+        let flags = shift | (hasModifier << 1)
 
-        // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
-        // Shift alone is excluded (used for normal text input like ?, !, ~)
-        if !dominated.subtracting(.shift).isEmpty {
-            NSLog("Lexime: modifier key pass-through (dominated=%lu, composing=%d)",
-                  dominated.rawValue, isComposing ? 1 : 0)
-            if isComposing {
-                commitCurrentState(client: client)
+        // Invalidate any pending async candidate results
+        candidateGeneration += 1
+
+        let text = event.characters ?? ""
+        let resp = lex_session_handle_key(session, event.keyCode, text, flags)
+        defer { lex_key_response_free(resp) }
+        applyResponse(resp, client: client)
+        return resp.consumed != 0
+    }
+
+    // MARK: - Apply Response
+
+    private func applyResponse(_ resp: LexKeyResponse, client: IMKTextInput) {
+        // 1. Commit text
+        if resp.commit_text != nil {
+            let text = String(cString: resp.commit_text)
+            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+
+        // 2. Marked text
+        if resp.marked_text != nil {
+            let text = String(cString: resp.marked_text)
+            currentDisplay = text
+            updateMarkedText(text, dashed: resp.is_dashed_underline != 0, client: client)
+        }
+
+        // 3. Candidate panel
+        if resp.hide_candidates != 0 {
+            hideCandidatePanel()
+        }
+        if resp.show_candidates != 0 {
+            predictionCandidates = extractCandidates(resp)
+            selectedPredictionIndex = Int(resp.selected_index)
+            showCandidatePanel(client: client)
+        }
+
+        // 4. Side effects
+        if resp.switch_to_abc != 0 {
+            selectABCInputSource()
+        }
+        if resp.save_history != 0 {
+            recordAndSaveHistory(resp)
+        }
+
+        // 5. Async candidate generation
+        if resp.needs_candidates != 0, resp.candidate_reading != nil {
+            dispatchAsyncCandidates(reading: String(cString: resp.candidate_reading))
+        }
+    }
+
+    // MARK: - Async Candidates
+
+    private func dispatchAsyncCandidates(reading: String) {
+        let gen = candidateGeneration
+        // These opaque pointers are long-lived (outlive the session) and read-only
+        // on the background thread, so cross-thread capture is safe.
+        nonisolated(unsafe) let dict = AppContext.shared.dict
+        nonisolated(unsafe) let conn = AppContext.shared.conn
+        nonisolated(unsafe) let history = AppContext.shared.history
+        let sessionPtr = self.session
+
+        candidateQueue.async { [weak self] in
+            var result = reading.withCString { readingCStr in
+                lex_generate_candidates(dict, conn, history, readingCStr, 20)
             }
-            return false
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let sessionPtr else {
+                    lex_candidate_response_free(result)
+                    return
+                }
+                guard self.candidateGeneration == gen else {
+                    lex_candidate_response_free(result)
+                    return
+                }
+                guard let client = self.client() else {
+                    lex_candidate_response_free(result)
+                    return
+                }
+                let resp = reading.withCString { readingCStr in
+                    lex_session_receive_candidates(sessionPtr, readingCStr, &result)
+                }
+                lex_candidate_response_free(result)
+                defer { lex_key_response_free(resp) }
+                self.applyResponse(resp, client: client)
+            }
         }
+    }
 
-        // Programmer mode: ¥ key → insert backslash (Shift+¥ = pipe is excluded)
-        if event.keyCode == Key.yen && programmerMode && !dominated.contains(.shift) {
-            if isComposing { commitCurrentState(client: client) }
-            client.insertText("\\", replacementRange: NSRange(location: NSNotFound, length: 0))
-            return true
-        }
+    // MARK: - History
 
-        let keyCode = event.keyCode
-        guard let text = event.characters, !text.isEmpty else {
-            return false
+    private func recordAndSaveHistory(_ resp: LexKeyResponse) {
+        guard let history = AppContext.shared.history else { return }
+        withUnsafePointer(to: resp) { respPtr in
+            lex_key_response_record_history(respPtr, history)
         }
+        let path = AppContext.shared.historyPath
+        Self.historySaveQueue.async {
+            let result = lex_history_save(history, path)
+            if result != 0 {
+                NSLog("Lexime: Failed to save user history to %@", path)
+            }
+        }
+    }
 
-        switch state {
-        case .idle:
-            return handleIdle(keyCode: keyCode, text: text, client: client)
-        case .composing:
-            return handleComposing(keyCode: keyCode, text: text, client: client)
+    // MARK: - Helpers
+
+    private func extractCandidates(_ resp: LexKeyResponse) -> [String] {
+        var result: [String] = []
+        guard resp.candidates_len > 0, let ptrs = resp.candidates else { return result }
+        for i in 0..<Int(resp.candidates_len) {
+            if let ptr = ptrs[i] {
+                result.append(String(cString: ptr))
+            }
         }
+        return result
     }
 
     private func selectABCInputSource() {
@@ -158,317 +242,26 @@ class LeximeInputController: IMKInputController {
         TISSelectInputSource(source)
     }
 
-    // MARK: - Submode Toggle
-
-    func toggleSubmode(client: IMKTextInput) {
-        let newSubmode: InputSubmode = (currentSubmode == .japanese) ? .english : .japanese
-
-        // Flush pending romaji before switching
-        if !pendingRomaji.isEmpty {
-            flush()
-        }
-
-        // Undo boundary space if nothing was typed since the last toggle
-        if didInsertBoundarySpace && composedKana.hasSuffix(" ") {
-            composedKana.removeLast()
-            didInsertBoundarySpace = false
-        }
-
-        // programmerMode: insert space at Japanese↔English boundary
-        didInsertBoundarySpace = false
-        if programmerMode && !composedKana.isEmpty {
-            if let last = composedKana.unicodeScalars.last {
-                let lastIsASCII = last.isASCII
-                if (currentSubmode == .japanese && newSubmode == .english && !lastIsASCII) ||
-                   (currentSubmode == .english && newSubmode == .japanese && lastIsASCII && last != " ") {
-                    composedKana.append(" ")
-                    didInsertBoundarySpace = true
-                }
-            }
-        }
-
-        currentSubmode = newSubmode
-        NSLog("Lexime: submode → %@", newSubmode == .english ? "english" : "japanese")
-
-        if isComposing {
-            updateMarkedText(client: client)
-        }
-    }
-
-    // MARK: - Romaji Conversion
-
-    func appendAndConvert(_ input: String, client: IMKTextInput) {
-        if composedKana.count >= Self.maxComposedKanaLength {
-            flush()
-            commitComposed(client: client)
-            state = .composing
-        }
-        didInsertBoundarySpace = false
-        pendingRomaji += input
-        drainPending(force: false)
-        updateMarkedText(client: client)
-        updateCandidates()
-    }
-
-    func updateCandidates() {
-        selectedPredictionIndex = 0
-        candidateGeneration &+= 1
-
-        guard !composedKana.isEmpty else {
-            predictionCandidates = []
-            hideCandidatePanel()
-            previousFirstSegmentReading = nil
-            firstSegmentStableCount = 0
-            return
-        }
-
-        let gen = candidateGeneration
-        let kana = composedKana
-
-        candidateQueue.async { [self] in
-            let (candidates, paths) = generateCandidates(kana)
-
-            DispatchQueue.main.async { [self] in
-                guard gen == candidateGeneration else { return }
-
-                predictionCandidates = candidates
-                nbestPaths = paths
-
-                trackSegmentStability()
-
-                if let client = self.client() {
-                    if let best = candidates.first {
-                        updateMarkedText(best, client: client)
-                    }
-                    showCandidatePanel(client: client)
-                    tryAutoCommit(client: client)
-                }
-            }
-        }
-    }
-
-    private func drainPending(force: Bool) {
-        let result = convertRomaji(
-            composedKana: composedKana,
-            pendingRomaji: pendingRomaji,
-            force: force)
-        composedKana = result.composedKana
-        pendingRomaji = result.pendingRomaji
-    }
-
-    // MARK: - Flush & Commit
-
-    func flush() {
-        drainPending(force: true)
-    }
-
-    func commitComposed(client: IMKTextInput) {
-        if !composedKana.isEmpty {
-            NSLog("Lexime: commit %@", composedKana)
-            client.insertText(composedKana, replacementRange: NSRange(location: NSNotFound, length: 0))
-        } else {
-            client.setMarkedText("",
-                                 selectionRange: NSRange(location: 0, length: 0),
-                                 replacementRange: NSRange(location: NSNotFound, length: 0))
-        }
-        resetState()
-    }
-
-    func commitText(_ text: String, client: IMKTextInput) {
-        NSLog("Lexime: commit %@", text)
-        client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-        resetState()
-    }
-
-    func commitCurrentState(client: IMKTextInput) {
-        switch state {
-        case .idle:
-            break
-        case .composing:
-            hideCandidatePanel()
-            flush()
-            if selectedPredictionIndex < predictionCandidates.count {
-                let reading = composedKana
-                let surface = predictionCandidates[selectedPredictionIndex]
-                recordToHistory(reading: reading, surface: surface)
-                commitText(surface, client: client)
-            } else {
-                commitComposed(client: client)
-            }
-        }
-    }
-
-    private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
-
-    func recordToHistory(reading: String, surface: String) {
-        guard let history = AppContext.shared.history else { return }
-
-        // Record the committed pair (whole reading → surface)
-        recordPairsToFFI([(reading, surface)], history: history)
-
-        // Sub-phrase learning: if there's a matching N-best path whose
-        // joined surface equals the committed surface, also record its
-        // individual segments so sub-phrase mappings are learned.
-        if let matchingPath = nbestPaths.first(where: { path in
-            path.map { $0.surface }.joined() == surface
-        }), matchingPath.count > 1 {
-            recordPairsToFFI(matchingPath, history: history)
-        }
-
-        // Save asynchronously to avoid blocking key handling
-        let path = AppContext.shared.historyPath
-        Self.historySaveQueue.async {
-            let result = lex_history_save(history, path)
-            if result != 0 {
-                NSLog("Lexime: Failed to save user history to %@", path)
-            }
-        }
-    }
-
-    private func recordPairsToFFI(_ pairs: [(reading: String, surface: String)], history: OpaquePointer) {
-        var cStrings: [UnsafeMutablePointer<CChar>] = []
-        var lexSegments: [LexSegment] = []
-        for (reading, surface) in pairs {
-            guard let r = strdup(reading), let s = strdup(surface) else { continue }
-            cStrings.append(r)
-            cStrings.append(s)
-            lexSegments.append(LexSegment(reading: r, surface: s))
-        }
-        defer { cStrings.forEach { free($0) } }
-
-        lexSegments.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return }
-            lex_history_record(history, base, UInt32(buffer.count))
-        }
-    }
-
-    // MARK: - Segment Stability Auto-Commit
-
-    private func trackSegmentStability() {
-        guard let bestPath = nbestPaths.first,
-              bestPath.count >= 2 else {
-            previousFirstSegmentReading = nil
-            firstSegmentStableCount = 0
-            return
-        }
-        let firstReading = bestPath[0].reading
-        if firstReading == previousFirstSegmentReading {
-            firstSegmentStableCount += 1
-        } else {
-            previousFirstSegmentReading = firstReading
-            firstSegmentStableCount = 1
-        }
-    }
-
-    private func tryAutoCommit(client: IMKTextInput) {
-        guard firstSegmentStableCount >= 3,
-              let bestPath = nbestPaths.first,
-              bestPath.count >= 4,
-              selectedPredictionIndex == 0,
-              pendingRomaji.isEmpty else { return }
-
-        // 安定度チェック済みの先頭セグメントを確定する。
-        // ASCII セグメント（英字フォールバック）が連続する場合は
-        // 単語単位でまとめて確定する（1文字ずつの確定を防ぐ）。
-        var commitCount = 1
-        if bestPath[0].surface.unicodeScalars.allSatisfy({ $0.isASCII }) {
-            while commitCount < bestPath.count - 1,
-                  bestPath[commitCount].surface.unicodeScalars.allSatisfy({ $0.isASCII }) {
-                commitCount += 1
-            }
-        }
-
-        let segments = Array(bestPath[0..<commitCount])
-        let committedReading = segments.map { $0.reading }.joined()
-        let committedSurface = segments.map { $0.surface }.joined()
-
-        guard composedKana.hasPrefix(committedReading) else {
-            NSLog("Lexime: auto-commit skipped — reading mismatch")
-            return
-        }
-
-        NSLog("Lexime: auto-commit %@ (%@)", committedSurface, committedReading)
-        client.insertText(committedSurface,
-                          replacementRange: NSRange(location: NSNotFound, length: 0))
-
-        recordAutoCommitToHistory(segments: segments)
-
-        composedKana = String(composedKana.dropFirst(committedReading.count))
-
-        previousFirstSegmentReading = nil
-        firstSegmentStableCount = 0
-
-        // Show remaining kana as marked text immediately, then
-        // defer Viterbi re-generation to the next run-loop iteration
-        // so the keystroke handler returns without a double Viterbi cost.
-        if composedKana.isEmpty {
-            predictionCandidates = []
-            nbestPaths = []
-            hideCandidatePanel()
-        } else {
-            updateMarkedText(client: client)
-            DispatchQueue.main.async { [self] in
-                updateCandidates()
-            }
-        }
-    }
-
-    private func recordAutoCommitToHistory(
-        segments: [(reading: String, surface: String)]
-    ) {
-        guard let history = AppContext.shared.history else { return }
-
-        let wholeReading = segments.map { $0.reading }.joined()
-        let wholeSurface = segments.map { $0.surface }.joined()
-        if wholeSurface != wholeReading {
-            recordPairsToFFI([(wholeReading, wholeSurface)], history: history)
-        }
-
-        if segments.count > 1 {
-            recordPairsToFFI(segments, history: history)
-        }
-
-        let path = AppContext.shared.historyPath
-        Self.historySaveQueue.async {
-            let result = lex_history_save(history, path)
-            if result != 0 {
-                NSLog("Lexime: Failed to save user history to %@", path)
-            }
-        }
-    }
+    // MARK: - IMKInputController Overrides
 
     override func composedString(_ sender: Any!) -> Any! {
-        return currentDisplay ?? (composedKana + pendingRomaji)
+        return currentDisplay ?? ""
     }
 
     override func originalString(_ sender: Any!) -> NSAttributedString! {
-        return NSAttributedString(string: composedKana + pendingRomaji)
+        return NSAttributedString(string: currentDisplay ?? "")
     }
 
     override func commitComposition(_ sender: Any!) {
-        if let client = sender as? IMKTextInput {
-            commitCurrentState(client: client)
-        }
+        guard let session, let client = sender as? IMKTextInput else { return }
+        let resp = lex_session_commit(session)
+        defer { lex_key_response_free(resp) }
+        applyResponse(resp, client: client)
     }
 
-    // Block IMKit's built-in mode switching (e.g. Shift→katakana)
-    // which would interfere with our own composing state management.
+    // Block IMKit's built-in mode switching (e.g. Shift -> katakana)
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         if isComposing { return }
         super.setValue(value, forTag: tag, client: sender)
-    }
-
-    func resetState() {
-        composedKana = ""
-        pendingRomaji = ""
-        nbestPaths = []
-        predictionCandidates = []
-        selectedPredictionIndex = 0
-        currentDisplay = nil
-        previousFirstSegmentReading = nil
-        firstSegmentStableCount = 0
-        currentSubmode = .japanese
-        didInsertBoundarySpace = false
-        state = .idle
     }
 }
