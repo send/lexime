@@ -172,9 +172,10 @@ extension LeximeInputController {
             }
         }
 
-        hideCandidatePanel()
-        flush()
-        commitComposed(client: client)
-        return false
+        // Unrecognized non-romaji character — add to composedKana so user can backspace.
+        composedKana.append(text)
+        updateMarkedText(client: client)
+        updateCandidates()
+        return true
     }
 }
