@@ -37,6 +37,16 @@ pub enum DictError {
     Parse(String),
 }
 
+impl From<lexime_trie::TrieError> for DictError {
+    fn from(e: lexime_trie::TrieError) -> Self {
+        match e {
+            lexime_trie::TrieError::InvalidMagic => DictError::InvalidMagic,
+            lexime_trie::TrieError::InvalidVersion => DictError::UnsupportedVersion(0),
+            lexime_trie::TrieError::TruncatedData => DictError::InvalidHeader,
+        }
+    }
+}
+
 pub struct SearchResult<'a> {
     pub reading: String,
     pub entries: &'a [DictEntry],
