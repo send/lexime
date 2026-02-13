@@ -12,6 +12,8 @@ class LeximeInputController: IMKInputController {
     var pendingRomaji: String = ""
 
     var nbestPaths: [[(reading: String, surface: String)]] = []
+    /// Tracks the currently displayed marked text so composedString stays in sync.
+    var currentDisplay: String?
 
     var isComposing: Bool { state != .idle }
 
@@ -170,7 +172,11 @@ class LeximeInputController: IMKInputController {
         predictionCandidates = candidates
         nbestPaths = paths
 
+        // Real-time conversion: show Viterbi #1 inline and open candidate panel
         if let client = self.client() {
+            if let best = candidates.first {
+                updateMarkedText(best, client: client)
+            }
             showCandidatePanel(client: client)
         }
     }
@@ -215,8 +221,7 @@ class LeximeInputController: IMKInputController {
         case .composing:
             hideCandidatePanel()
             flush()
-            if selectedPredictionIndex > 0,
-               selectedPredictionIndex < predictionCandidates.count {
+            if selectedPredictionIndex < predictionCandidates.count {
                 let reading = composedKana
                 let surface = predictionCandidates[selectedPredictionIndex]
                 if surface != reading {
@@ -274,7 +279,7 @@ class LeximeInputController: IMKInputController {
     }
 
     override func composedString(_ sender: Any!) -> Any! {
-        return composedKana + pendingRomaji
+        return currentDisplay ?? (composedKana + pendingRomaji)
     }
 
     override func originalString(_ sender: Any!) -> NSAttributedString! {
@@ -300,6 +305,7 @@ class LeximeInputController: IMKInputController {
         nbestPaths = []
         predictionCandidates = []
         selectedPredictionIndex = 0
+        currentDisplay = nil
         state = .idle
     }
 }

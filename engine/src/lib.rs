@@ -1490,9 +1490,16 @@ mod tests {
 
         unsafe {
             let surfaces = std::slice::from_raw_parts(resp.surfaces, resp.surfaces_len as usize);
-            // First candidate should be the reading itself (kana passthrough)
-            let s0 = CStr::from_ptr(surfaces[0]).to_str().unwrap();
-            assert_eq!(s0, "かんじ");
+            // First candidate is Viterbi #1 (conversion result); kana should also be present
+            let all: Vec<&str> = surfaces
+                .iter()
+                .map(|&p| CStr::from_ptr(p).to_str().unwrap())
+                .collect();
+            assert!(
+                all.contains(&"かんじ"),
+                "kana should be present in candidates: {:?}",
+                all,
+            );
         }
 
         lex_candidate_response_free(resp);

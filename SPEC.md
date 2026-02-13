@@ -87,7 +87,7 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 ### 状態遷移
 
 ```
-idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab)──→ idle
+idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
 ```
 
 ### 各状態でのキー操作
@@ -104,15 +104,15 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab)�
 
 | キー | 動作 |
 |---|---|
-| ローマ字 | かな追加、候補更新（予測 + Viterbi） |
+| ローマ字 | かな追加、候補更新（Viterbi #1 をインライン表示） |
 | z + `h/j/k/l/.,/-/[/]` | Mozc 互換 z-sequence（矢印・記号）を入力 |
-| Space / ↓ | 次の候補を選択 |
+| Space / ↓ | 次の候補を選択（初回 Space は index 1 から開始） |
 | ↑ | 前の候補を選択 |
-| Enter | 選択中の候補（未選択ならかな）を確定 |
+| Enter | 表示中の候補を確定（変換結果 + 学習記録） |
 | Tab | カタカナに変換して確定 |
 | Backspace | 1 文字削除（空になれば idle へ） |
-| Escape | 候補選択を解除 |
-| 句読点 | 確定後、句読点入力を開始 |
+| Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
+| 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 
 **全状態共通（programmerMode）**
 
@@ -142,13 +142,14 @@ Rust engine 内の Trie（HashMap ベース）で 141+ のマッピングをサ�
 
 composing 中、キーストロークごとに `lex_generate_candidates` を 1 回呼び出し、以下の候補を engine 内で統合する:
 
-1. **ひらがな** — 元のかな（常に先頭）
-2. **予測候補** — `predict_ranked` による prefix search
-3. **Viterbi 結果** — N-best 変換（学習ブースト付き）
-4. **辞書 lookup** — 全読み候補
+1. **Viterbi #1** — N-best 変換の最良候補（先頭、リアルタイム表示用）
+2. **ひらがな** — 元のかな（Viterbi #1 と同一なら重複排除でスキップ）
+3. **予測候補** — `predict_ranked` による prefix search
+4. **Viterbi #2+** — N-best 変換の 2 位以降
+5. **辞書 lookup** — 全読み候補
 
 重複は engine 内で排除する。句読点入力時は代替候補（`。`→`．`/`.` 等）を生成する。
-マークドテキストにはかなを表示し、Space / ↑↓ で候補を選択すると選択中の候補に切り替わる。
+マークドテキストには Viterbi #1（変換結果）をリアルタイム表示し、Space / ↑↓ で他の候補に切り替える。
 
 ## 変換パイプライン
 
@@ -262,11 +263,13 @@ macOS で動作する最小限の IME を構築。
 - 学習収束の高速化（1-2 回の使用で十分なブースト）
 - バイグラム活用の強化（直前の文脈を変換精度に反映）
 
-**リアルタイム変換表示 + 句読点自動確定**
+**リアルタイム変換表示 + 句読点自動確定** — **完了**
 
-- マークドテキストにかなではなく 1 位変換結果をリアルタイム表示
-- 句読点入力で直前の変換を自動コミット（Space/Enter 不要）
-- composedKana は長く保持（Viterbi の文脈を最大化）
+- マークドテキストに Viterbi #1 をリアルタイム表示（かなではなく変換結果）
+- 句読点入力で直前の変換を自動コミット＋句読点を直接挿入
+- Enter で index 0（Viterbi #1）も学習付きで確定
+- Escape はひらがなで確定（IMKit の制約: Escape 後に `commitComposition` が呼ばれる）
+- `currentDisplay` トラッキングで `composedString` とマークドテキストを同期
 
 **Shift インライン英字**
 
