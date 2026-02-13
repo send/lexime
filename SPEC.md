@@ -113,6 +113,7 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Backspace | 1 文字削除（空になれば idle へ） |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
+| その他の文字 | composedKana に追加（Backspace で削除可能） |
 
 **全状態共通（programmerMode）**
 
