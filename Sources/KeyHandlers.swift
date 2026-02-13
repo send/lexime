@@ -37,6 +37,23 @@ extension LeximeInputController {
     // MARK: - Idle State
 
     func handleIdle(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
+        // Tab — toggle Japanese/English submode
+        if keyCode == Key.tab {
+            toggleSubmode(client: client)
+            return true
+        }
+
+        // English submode: add characters directly (no romaji conversion)
+        if currentSubmode == .english {
+            guard let scalar = text.unicodeScalars.first,
+                  scalar.value >= 0x20, scalar.value < 0x7F else { return false }
+            state = .composing
+            didInsertBoundarySpace = false
+            composedKana.append(text)
+            updateMarkedText(client: client)
+            return true
+        }
+
         if isRomajiInput(text) {
             state = .composing
             appendAndConvert(text.lowercased(), client: client)
@@ -59,10 +76,22 @@ extension LeximeInputController {
     func handleComposing(keyCode: UInt16, text: String, client: IMKTextInput) -> Bool {
         switch keyCode {
         case Key.enter: // Enter — commit selected candidate with learning, or kana as-is
-            commitCurrentState(client: client)
+            if currentSubmode == .english {
+                // English-only: commit as-is without learning
+                hideCandidatePanel()
+                commitComposed(client: client)
+            } else {
+                commitCurrentState(client: client)
+            }
             return true
 
-        case Key.space: // Space — next candidate (skip index 0 on first press; it's already displayed)
+        case Key.space: // Space
+            if currentSubmode == .english {
+                // English mode: insert literal space
+                composedKana.append(" ")
+                updateMarkedText(client: client)
+                return true
+            }
             if !predictionCandidates.isEmpty {
                 if selectedPredictionIndex == 0 && predictionCandidates.count > 1 {
                     selectedPredictionIndex = 1
@@ -94,12 +123,8 @@ extension LeximeInputController {
             }
             return true
 
-        case Key.tab: // Tab — katakana conversion
-            hideCandidatePanel()
-            flush()
-            let katakana = composedKana.applyingTransform(.hiraganaToKatakana, reverse: false)
-                ?? composedKana
-            commitText(katakana, client: client)
+        case Key.tab: // Tab — toggle Japanese/English submode
+            toggleSubmode(client: client)
             return true
 
         case Key.backspace: // Backspace
@@ -116,14 +141,16 @@ extension LeximeInputController {
                                     replacementRange: NSRange(location: NSNotFound, length: 0))
             } else {
                 updateMarkedText(client: client)
-                updateCandidates()
+                if currentSubmode == .japanese {
+                    updateCandidates()
+                }
             }
             return true
 
         case Key.escape: // Escape — commit kana (IMKit forces commitComposition after Escape)
             hideCandidatePanel()
             flush()
-            if !composedKana.isEmpty {
+            if currentSubmode == .japanese && !composedKana.isEmpty {
                 recordToHistory(reading: composedKana, surface: composedKana)
             }
             predictionCandidates = []
@@ -132,6 +159,16 @@ extension LeximeInputController {
 
         default:
             break
+        }
+
+        // English submode: add characters directly
+        if currentSubmode == .english {
+            guard let scalar = text.unicodeScalars.first,
+                  scalar.value >= 0x20, scalar.value < 0x7F else { return true }
+            didInsertBoundarySpace = false
+            composedKana.append(text)
+            updateMarkedText(client: client)
+            return true
         }
 
         // z-sequences: composing 中、pendingRomaji + text が trie にマッチする場合は通す

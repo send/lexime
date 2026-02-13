@@ -10,7 +10,10 @@ extension LeximeInputController {
         let text = display ?? (composedKana + pendingRomaji)
         currentDisplay = text
         let len = text.utf16.count
-        let attrs: [NSAttributedString.Key: Any] = [.markedClauseSegment: 0]
+        var attrs: [NSAttributedString.Key: Any] = [.markedClauseSegment: 0]
+        if currentSubmode == .english {
+            attrs[.underlineStyle] = NSUnderlineStyle.patternDash.rawValue | NSUnderlineStyle.single.rawValue
+        }
         let attrStr = NSAttributedString(string: text, attributes: attrs)
         client.setMarkedText(attrStr,
                              selectionRange: NSRange(location: len, length: 0),

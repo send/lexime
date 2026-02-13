@@ -8,8 +8,12 @@ class LeximeInputController: IMKInputController {
     // MARK: - State
 
     var state: InputState = .idle
+    var currentSubmode: InputSubmode = .japanese
     var composedKana: String = ""
     var pendingRomaji: String = ""
+
+    /// True when toggleSubmode auto-inserted a boundary space (cleared on next keystroke).
+    var didInsertBoundarySpace: Bool = false
 
     var nbestPaths: [[(reading: String, surface: String)]] = []
     /// Tracks the currently displayed marked text so composedString stays in sync.
@@ -154,6 +158,43 @@ class LeximeInputController: IMKInputController {
         TISSelectInputSource(source)
     }
 
+    // MARK: - Submode Toggle
+
+    func toggleSubmode(client: IMKTextInput) {
+        let newSubmode: InputSubmode = (currentSubmode == .japanese) ? .english : .japanese
+
+        // Flush pending romaji before switching
+        if !pendingRomaji.isEmpty {
+            flush()
+        }
+
+        // Undo boundary space if nothing was typed since the last toggle
+        if didInsertBoundarySpace && composedKana.hasSuffix(" ") {
+            composedKana.removeLast()
+            didInsertBoundarySpace = false
+        }
+
+        // programmerMode: insert space at Japanese↔English boundary
+        didInsertBoundarySpace = false
+        if programmerMode && !composedKana.isEmpty {
+            if let last = composedKana.unicodeScalars.last {
+                let lastIsASCII = last.isASCII
+                if (currentSubmode == .japanese && newSubmode == .english && !lastIsASCII) ||
+                   (currentSubmode == .english && newSubmode == .japanese && lastIsASCII && last != " ") {
+                    composedKana.append(" ")
+                    didInsertBoundarySpace = true
+                }
+            }
+        }
+
+        currentSubmode = newSubmode
+        NSLog("Lexime: submode → %@", newSubmode == .english ? "english" : "japanese")
+
+        if isComposing {
+            updateMarkedText(client: client)
+        }
+    }
+
     // MARK: - Romaji Conversion
 
     func appendAndConvert(_ input: String, client: IMKTextInput) {
@@ -162,6 +203,7 @@ class LeximeInputController: IMKInputController {
             commitComposed(client: client)
             state = .composing
         }
+        didInsertBoundarySpace = false
         pendingRomaji += input
         drainPending(force: false)
         updateMarkedText(client: client)
@@ -325,11 +367,20 @@ class LeximeInputController: IMKInputController {
               selectedPredictionIndex == 0,
               pendingRomaji.isEmpty else { return }
 
-        // 安定度チェック済みの先頭セグメントのみ確定する
-        let firstSeg = bestPath[0]
-        let committedReading = firstSeg.reading
+        // 安定度チェック済みの先頭セグメントを確定する。
+        // ASCII セグメント（英字フォールバック）が連続する場合は
+        // 単語単位でまとめて確定する（1文字ずつの確定を防ぐ）。
+        var commitCount = 1
+        if bestPath[0].surface.unicodeScalars.allSatisfy({ $0.isASCII }) {
+            while commitCount < bestPath.count - 1,
+                  bestPath[commitCount].surface.unicodeScalars.allSatisfy({ $0.isASCII }) {
+                commitCount += 1
+            }
+        }
 
-        let committedSurface = firstSeg.surface
+        let segments = Array(bestPath[0..<commitCount])
+        let committedReading = segments.map { $0.reading }.joined()
+        let committedSurface = segments.map { $0.surface }.joined()
 
         guard composedKana.hasPrefix(committedReading) else {
             NSLog("Lexime: auto-commit skipped — reading mismatch")
@@ -340,7 +391,7 @@ class LeximeInputController: IMKInputController {
         client.insertText(committedSurface,
                           replacementRange: NSRange(location: NSNotFound, length: 0))
 
-        recordAutoCommitToHistory(segments: [firstSeg])
+        recordAutoCommitToHistory(segments: segments)
 
         composedKana = String(composedKana.dropFirst(committedReading.count))
 
@@ -416,6 +467,8 @@ class LeximeInputController: IMKInputController {
         currentDisplay = nil
         previousFirstSegmentReading = nil
         firstSegmentStableCount = 0
+        currentSubmode = .japanese
+        didInsertBoundarySpace = false
         state = .idle
     }
 }
