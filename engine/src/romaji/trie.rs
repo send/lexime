@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
+
+use lexime_trie::DoubleArray;
 
 use super::table::MAPPINGS;
 
@@ -11,22 +13,9 @@ pub enum TrieLookupResult {
     ExactAndPrefix(String),
 }
 
-struct Node {
-    children: HashMap<u8, Node>,
-    kana: Option<String>,
-}
-
-impl Node {
-    fn new() -> Self {
-        Self {
-            children: HashMap::new(),
-            kana: None,
-        }
-    }
-}
-
 pub struct RomajiTrie {
-    root: Node,
+    da: DoubleArray<u8>,
+    values: Vec<String>,
 }
 
 impl RomajiTrie {
@@ -34,47 +23,29 @@ impl RomajiTrie {
     pub fn global() -> &'static RomajiTrie {
         static INSTANCE: OnceLock<RomajiTrie> = OnceLock::new();
         INSTANCE.get_or_init(|| {
-            let mut trie = RomajiTrie { root: Node::new() };
+            // Deduplicate: last occurrence wins (matches old HashMap insert behavior).
+            // BTreeMap keeps keys sorted by byte order.
+            let mut map = BTreeMap::new();
             for &(romaji, kana) in MAPPINGS {
-                trie.insert(romaji, kana);
+                map.insert(romaji, kana);
             }
-            trie
+
+            let keys: Vec<&[u8]> = map.keys().map(|r| r.as_bytes()).collect();
+            let values: Vec<String> = map.values().map(|k| k.to_string()).collect();
+            let da = DoubleArray::<u8>::build(&keys);
+
+            RomajiTrie { da, values }
         })
     }
 
     pub fn lookup(&self, romaji: &str) -> TrieLookupResult {
-        let mut node = &self.root;
-        for &b in romaji.as_bytes() {
-            match node.children.get(&b) {
-                Some(child) => node = child,
-                None => return TrieLookupResult::None,
-            }
+        let pr = self.da.probe(romaji.as_bytes());
+        match (pr.value, pr.has_children) {
+            (None, false) => TrieLookupResult::None,
+            (None, true) => TrieLookupResult::Prefix,
+            (Some(id), false) => TrieLookupResult::Exact(self.values[id as usize].clone()),
+            (Some(id), true) => TrieLookupResult::ExactAndPrefix(self.values[id as usize].clone()),
         }
-        let has_children = !node.children.is_empty();
-        match &node.kana {
-            Some(kana) => {
-                if has_children {
-                    TrieLookupResult::ExactAndPrefix(kana.clone())
-                } else {
-                    TrieLookupResult::Exact(kana.clone())
-                }
-            }
-            None => {
-                if has_children {
-                    TrieLookupResult::Prefix
-                } else {
-                    TrieLookupResult::None
-                }
-            }
-        }
-    }
-
-    fn insert(&mut self, romaji: &str, kana: &str) {
-        let mut node = &mut self.root;
-        for &b in romaji.as_bytes() {
-            node = node.children.entry(b).or_insert_with(Node::new);
-        }
-        node.kana = Some(kana.to_string());
     }
 }
 

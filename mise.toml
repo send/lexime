@@ -87,6 +87,16 @@ set -euo pipefail
 cp engine/data/lexime-mozc.dict engine/data/lexime.dict
 """
 
+[tasks.dict-clean]
+description = "Remove compiled dictionaries (forces rebuild on next dict/build)"
+run = """
+#!/usr/bin/env bash
+rm -f engine/data/lexime-mozc.dict engine/data/lexime-sudachi.dict \
+      engine/data/lexime-sudachi-full.dict engine/data/lexime.dict \
+      engine/data/lexime.conn
+echo "Removed compiled dictionaries"
+"""
+
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
 depends = ["engine-lib", "dict", "conn"]
