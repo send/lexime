@@ -62,11 +62,15 @@ extension LeximeInputController {
             commitCurrentState(client: client)
             return true
 
-        case Key.space: // Space — next candidate
+        case Key.space: // Space — next candidate (skip index 0 on first press; it's already displayed)
             if !predictionCandidates.isEmpty {
-                selectedPredictionIndex = cyclicIndex(
-                    selectedPredictionIndex, delta: 1,
-                    count: predictionCandidates.count)
+                if selectedPredictionIndex == 0 && predictionCandidates.count > 1 {
+                    selectedPredictionIndex = 1
+                } else {
+                    selectedPredictionIndex = cyclicIndex(
+                        selectedPredictionIndex, delta: 1,
+                        count: predictionCandidates.count)
+                }
                 updateMarkedText(
                     predictionCandidates[selectedPredictionIndex],
                     client: client)
@@ -116,11 +120,10 @@ extension LeximeInputController {
             }
             return true
 
-        case Key.escape: // Escape — dismiss candidates, back to kana
+        case Key.escape: // Escape — commit kana (IMKit forces commitComposition after Escape)
             hideCandidatePanel()
             predictionCandidates = []
             selectedPredictionIndex = 0
-            updateMarkedText(client: client)
             return true
 
         default:
@@ -150,13 +153,19 @@ extension LeximeInputController {
         }
 
         // Direct trie match for non-romaji chars (punctuation, etc.)
-        // Commit current composition, then start new one.
+        // Auto-commit: commit current conversion, then insert punctuation directly.
         if !isRomajiInput(text) {
             switch lookupRomaji(text) {
             case .exact, .exactAndPrefix:
                 commitCurrentState(client: client)
-                state = .composing
-                appendAndConvert(text, client: client)
+                let result = convertRomaji(
+                    composedKana: "", pendingRomaji: text, force: true)
+                if !result.composedKana.isEmpty {
+                    client.insertText(
+                        result.composedKana,
+                        replacementRange: NSRange(
+                            location: NSNotFound, length: 0))
+                }
                 return true
             default:
                 break

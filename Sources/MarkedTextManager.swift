@@ -8,6 +8,7 @@ extension LeximeInputController {
     /// applying its own transformations (e.g. Shift-triggered katakana conversion).
     func updateMarkedText(_ display: String? = nil, client: IMKTextInput) {
         let text = display ?? (composedKana + pendingRomaji)
+        currentDisplay = text
         let len = text.utf16.count
         let attrs: [NSAttributedString.Key: Any] = [.markedClauseSegment: 0]
         let attrStr = NSAttributedString(string: text, attributes: attrs)

@@ -92,11 +92,29 @@ fn generate_normal_candidates(
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
-    // 1. Reading (kana) itself as first candidate
-    seen.insert(reading.to_string());
-    surfaces.push(reading.to_string());
+    // 1. N-best Viterbi conversion (best candidate first for real-time display)
+    let nbest = 5usize;
+    let paths = if let Some(h) = history {
+        convert_nbest_with_history(dict, conn, h, reading, nbest)
+    } else {
+        convert_nbest(dict, conn, reading, nbest)
+    };
 
-    // 2. Predictions (ranked by history if available)
+    let mut nbest_paths = Vec::new();
+    for path in &paths {
+        let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
+        if !joined.is_empty() && seen.insert(joined.clone()) {
+            surfaces.push(joined);
+        }
+        nbest_paths.push(path.clone());
+    }
+
+    // 2. Reading (kana) — always present, after Viterbi #1
+    if seen.insert(reading.to_string()) {
+        surfaces.push(reading.to_string());
+    }
+
+    // 3. Predictions (ranked by history if available)
     let fetch_limit = if history.is_some() {
         max_results.max(200)
     } else {
@@ -115,23 +133,6 @@ fn generate_normal_candidates(
         if !entry.surface.is_empty() && seen.insert(entry.surface.clone()) {
             surfaces.push(entry.surface.clone());
         }
-    }
-
-    // 3. N-best Viterbi conversion
-    let nbest = 5usize;
-    let paths = if let Some(h) = history {
-        convert_nbest_with_history(dict, conn, h, reading, nbest)
-    } else {
-        convert_nbest(dict, conn, reading, nbest)
-    };
-
-    let mut nbest_paths = Vec::new();
-    for path in &paths {
-        let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
-        if !joined.is_empty() && seen.insert(joined.clone()) {
-            surfaces.push(joined);
-        }
-        nbest_paths.push(path.clone());
     }
 
     // 4. Dictionary lookup
@@ -247,9 +248,9 @@ mod tests {
     fn test_normal_candidates() {
         let dict = make_dict();
         let resp = generate_candidates(&dict, None, None, "きょう", 9);
-        // First candidate should be the reading itself
-        assert_eq!(resp.surfaces[0], "きょう");
-        // Should include 今日 and 京
+        // Viterbi #1 should be first (conversion result, not kana)
+        // Kana should still be present
+        assert!(resp.surfaces.contains(&"きょう".to_string()));
         assert!(resp.surfaces.contains(&"今日".to_string()));
         assert!(resp.surfaces.contains(&"京".to_string()));
         // N-best paths should be non-empty
