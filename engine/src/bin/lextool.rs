@@ -28,6 +28,9 @@ enum Command {
         conn_file: String,
         /// Kana reading to explain
         reading: String,
+        /// Filter to paths containing this surface (optional)
+        #[arg(long)]
+        surface: Option<String>,
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
@@ -80,14 +83,7 @@ enum Command {
 #[derive(Debug, Serialize, Deserialize)]
 struct SnapshotEntry {
     reading: String,
-    results: Vec<SnapshotResult>,
-}
-
-/// A ranked result within a snapshot entry.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-struct SnapshotResult {
-    rank: usize,
-    surface: String,
+    surfaces: Vec<String>,
 }
 
 fn open_resources(
@@ -141,18 +137,10 @@ fn run_snapshot(
     n: usize,
 ) -> SnapshotEntry {
     let result = explain::explain(dict, Some(conn), hist, reading, n);
-    let results: Vec<SnapshotResult> = result
-        .paths_final
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let surface: String = p.segments.iter().map(|s| s.surface.as_str()).collect();
-            SnapshotResult { rank: i, surface }
-        })
-        .collect();
+    let surfaces: Vec<String> = result.paths.iter().map(|p| p.surface()).collect();
     SnapshotEntry {
         reading: reading.to_string(),
-        results,
+        surfaces,
     }
 }
 
@@ -164,12 +152,20 @@ fn main() {
             dict_file,
             conn_file,
             reading,
+            surface,
             history,
             n,
             json,
         } => {
             let (dict, conn, hist) = open_resources(&dict_file, &conn_file, &history);
-            let result = explain::explain(&dict, Some(&conn), hist.as_ref(), &reading, n);
+            // Over-fetch when filtering by surface
+            let fetch_n = if surface.is_some() { n.max(20) } else { n };
+            let mut result = explain::explain(&dict, Some(&conn), hist.as_ref(), &reading, fetch_n);
+
+            if let Some(ref filter) = surface {
+                result.paths.retain(|p| p.surface().contains(filter));
+                result.paths.truncate(n);
+            }
 
             if json {
                 println!(
@@ -208,7 +204,7 @@ fn main() {
             }
 
             eprintln!(
-                "Snapshot written: {} readings → {}",
+                "Snapshot written: {} readings -> {}",
                 readings.len(),
                 output_file
             );
@@ -244,6 +240,8 @@ fn main() {
             }
 
             let mut changed = 0usize;
+            let mut same = 0usize;
+            let mut new_count = 0usize;
             let total = readings.len();
 
             for reading in &readings {
@@ -251,33 +249,53 @@ fn main() {
 
                 match baseline.get(reading) {
                     Some(base) => {
-                        if base.results != current.results {
+                        if base.surfaces != current.surfaces {
                             changed += 1;
-                            let base_surfaces: Vec<&str> =
-                                base.results.iter().map(|r| r.surface.as_str()).collect();
-                            let curr_surfaces: Vec<&str> =
-                                current.results.iter().map(|r| r.surface.as_str()).collect();
-                            println!("CHANGED: {}", reading);
-                            println!("  baseline: {:?}", base_surfaces);
-                            println!("  current:  {:?}", curr_surfaces);
-                            println!();
+                            let base_first = base
+                                .surfaces
+                                .first()
+                                .map(|s| s.as_str())
+                                .unwrap_or("(empty)");
+                            let curr_first = current
+                                .surfaces
+                                .first()
+                                .map(|s| s.as_str())
+                                .unwrap_or("(empty)");
+                            if base_first != curr_first {
+                                println!(
+                                    "  CHANGED: {} -> {} (was: {})",
+                                    reading, curr_first, base_first
+                                );
+                            } else {
+                                println!(
+                                    "  changed: {} -> {} (same #1, later candidates differ)",
+                                    reading, curr_first
+                                );
+                            }
+                        } else {
+                            same += 1;
                         }
                     }
                     None => {
-                        changed += 1;
-                        let curr_surfaces: Vec<&str> =
-                            current.results.iter().map(|r| r.surface.as_str()).collect();
-                        println!("NEW: {}", reading);
-                        println!("  current:  {:?}", curr_surfaces);
-                        println!();
+                        new_count += 1;
+                        let curr_first = current
+                            .surfaces
+                            .first()
+                            .map(|s| s.as_str())
+                            .unwrap_or("(empty)");
+                        println!("  NEW:     {} -> {}", reading, curr_first);
                     }
                 }
             }
 
-            if changed == 0 {
-                eprintln!("{}/{} readings unchanged", total, total);
-            } else {
-                eprintln!("{}/{} readings changed", changed, total);
+            println!();
+            println!("=== Summary ===");
+            println!("  Total:    {total}");
+            println!("  Same:     {same}");
+            println!("  Changed:  {changed}");
+            println!("  New:      {new_count}");
+
+            if changed > 0 {
                 process::exit(1);
             }
         }

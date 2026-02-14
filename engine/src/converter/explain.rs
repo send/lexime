@@ -4,9 +4,8 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
-use super::cost::DefaultCostFunction;
+use super::cost::{conn_cost, script_cost, DefaultCostFunction, SEGMENT_PENALTY};
 use super::lattice::{build_lattice, LatticeNode};
-use super::reranker;
 use super::viterbi::viterbi_nbest;
 
 /// Full diagnostic result for a single reading.
@@ -15,9 +14,7 @@ pub struct ExplainResult {
     pub reading: String,
     pub lattice_char_count: usize,
     pub lattice_nodes: Vec<ExplainNode>,
-    pub paths_before_rerank: Vec<ExplainPath>,
-    pub paths_after_rerank: Vec<ExplainPath>,
-    pub paths_final: Vec<ExplainPath>,
+    pub paths: Vec<ExplainPath>,
 }
 
 /// A lattice node for diagnostic display.
@@ -46,24 +43,40 @@ impl From<&LatticeNode> for ExplainNode {
     }
 }
 
-/// A conversion path for diagnostic display.
+/// A complete path with full cost breakdown.
 #[derive(Debug, Serialize)]
 pub struct ExplainPath {
     pub segments: Vec<ExplainSegment>,
     pub viterbi_cost: i64,
+    /// Cost delta from structure reranking.
+    pub rerank_delta: i64,
+    /// Total history boost applied (negative = better).
+    pub history_boost: i64,
+    /// Final cost after all adjustments.
+    pub final_cost: i64,
 }
 
-/// A segment within a conversion path.
+impl ExplainPath {
+    pub fn surface(&self) -> String {
+        self.segments.iter().map(|s| s.surface.as_str()).collect()
+    }
+}
+
+/// A segment within a conversion path, with full cost breakdown.
 #[derive(Debug, Serialize)]
 pub struct ExplainSegment {
     pub reading: String,
     pub surface: String,
-    pub word_cost: i16,
+    pub word_cost: i64,
+    pub segment_penalty: i64,
+    pub script_cost: i64,
+    /// Connection cost from BOS or previous segment.
+    pub connection_cost: i64,
     pub left_id: u16,
     pub right_id: u16,
 }
 
-/// Run the full conversion pipeline and capture intermediate results at each stage.
+/// Run the full conversion pipeline and capture detailed cost breakdown.
 pub fn explain(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -76,78 +89,88 @@ pub fn explain(
 
     let cost_fn = DefaultCostFunction::new(conn);
     let oversample = (n * 3).max(50);
-    let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
+    let raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
-    let paths_before_rerank: Vec<ExplainPath> = paths
+    // Build explained paths with per-segment cost breakdown
+    let mut paths: Vec<ExplainPath> = raw_paths
         .iter()
-        .take(n)
-        .map(|p| ExplainPath {
-            segments: p
-                .segments
-                .iter()
-                .map(|s| ExplainSegment {
-                    reading: s.reading.clone(),
-                    surface: s.surface.clone(),
-                    word_cost: s.word_cost,
-                    left_id: s.left_id,
-                    right_id: s.right_id,
-                })
-                .collect(),
-            viterbi_cost: p.viterbi_cost,
+        .map(|scored| {
+            let mut segments = Vec::new();
+            for (i, seg) in scored.segments.iter().enumerate() {
+                let raw_cost = seg.word_cost as i64;
+                let script = script_cost(&seg.surface);
+                let connection = if i == 0 {
+                    conn_cost(conn, 0, seg.left_id)
+                } else {
+                    let prev = &scored.segments[i - 1];
+                    conn_cost(conn, prev.right_id, seg.left_id)
+                };
+
+                segments.push(ExplainSegment {
+                    reading: seg.reading.clone(),
+                    surface: seg.surface.clone(),
+                    word_cost: raw_cost,
+                    segment_penalty: SEGMENT_PENALTY,
+                    script_cost: script,
+                    connection_cost: connection,
+                    left_id: seg.left_id,
+                    right_id: seg.right_id,
+                });
+            }
+
+            ExplainPath {
+                segments,
+                viterbi_cost: scored.viterbi_cost,
+                rerank_delta: 0,
+                history_boost: 0,
+                final_cost: scored.viterbi_cost,
+            }
         })
         .collect();
 
-    reranker::rerank(&mut paths, conn);
-
-    let paths_after_rerank: Vec<ExplainPath> = paths
-        .iter()
-        .take(n)
-        .map(|p| ExplainPath {
-            segments: p
-                .segments
-                .iter()
-                .map(|s| ExplainSegment {
-                    reading: s.reading.clone(),
-                    surface: s.surface.clone(),
-                    word_cost: s.word_cost,
-                    left_id: s.left_id,
-                    right_id: s.right_id,
-                })
-                .collect(),
-            viterbi_cost: p.viterbi_cost,
-        })
-        .collect();
-
-    if let Some(h) = history {
-        reranker::history_rerank(&mut paths, h);
+    // Simulate reranker: compute structure cost
+    for path in &mut paths {
+        let mut structure_cost: i64 = 0;
+        for i in 1..path.segments.len() {
+            structure_cost += conn_cost(
+                conn,
+                path.segments[i - 1].right_id,
+                path.segments[i].left_id,
+            );
+        }
+        // Add script cost
+        let total_script: i64 = path.segments.iter().map(|s| s.script_cost).sum();
+        let rerank_delta = structure_cost / 4 + total_script;
+        path.rerank_delta = rerank_delta;
+        path.final_cost = path.viterbi_cost + rerank_delta;
     }
 
-    let paths_final: Vec<ExplainPath> = paths
-        .into_iter()
-        .take(n)
-        .map(|p| ExplainPath {
-            segments: p
-                .segments
-                .into_iter()
-                .map(|s| ExplainSegment {
-                    reading: s.reading,
-                    surface: s.surface,
-                    word_cost: s.word_cost,
-                    left_id: s.left_id,
-                    right_id: s.right_id,
-                })
-                .collect(),
-            viterbi_cost: p.viterbi_cost,
-        })
-        .collect();
+    // Apply history boost
+    if let Some(h) = history {
+        for path in &mut paths {
+            let mut boost: i64 = 0;
+            for seg in &path.segments {
+                boost += h.unigram_boost(&seg.reading, &seg.surface);
+            }
+            for i in 1..path.segments.len() {
+                let prev = &path.segments[i - 1];
+                let next = &path.segments[i];
+                boost += h.bigram_boost(&prev.surface, &next.reading, &next.surface);
+            }
+            path.history_boost = boost;
+            path.final_cost -= boost;
+        }
+    }
+
+    // Sort by final cost
+    paths.sort_by_key(|p| p.final_cost);
+    paths.truncate(n);
 
     ExplainResult {
         reading: kana.to_string(),
         lattice_char_count: lattice.char_count,
         lattice_nodes,
-        paths_before_rerank,
-        paths_after_rerank,
-        paths_final,
+        paths,
     }
 }
 
@@ -178,45 +201,138 @@ pub fn format_text(result: &ExplainResult) -> String {
         if nodes_at_pos.is_empty() {
             continue;
         }
-        out.push_str(&format!("Position {}:\n", pos));
-        for n in nodes_at_pos {
+        out.push_str(&format!("  Position {}:\n", pos));
+        for n in &nodes_at_pos {
+            let surface_display = if n.surface != n.reading {
+                format!(" -> {}", n.surface)
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "  [{}-{}] {} → {} (cost={}, L={}, R={})\n",
-                n.start, n.end, n.reading, n.surface, n.cost, n.left_id, n.right_id,
+                "    [{},{}] {}  cost={:<6} L={:<4} R={:<4}{}\n",
+                n.start, n.end, n.reading, n.cost, n.left_id, n.right_id, surface_display,
             ));
         }
     }
 
-    fn format_paths(out: &mut String, header: &str, paths: &[ExplainPath]) {
-        out.push_str(&format!("\n=== {} ===\n", header));
-        for (i, path) in paths.iter().enumerate() {
-            let surface: String = path.segments.iter().map(|s| s.surface.as_str()).collect();
+    if result.paths.is_empty() {
+        out.push_str("\nNo paths found.\n");
+        return out;
+    }
+
+    out.push_str(&format!("\n=== Paths ({}) ===\n", result.paths.len()));
+    for (i, path) in result.paths.iter().enumerate() {
+        let surface = path.surface();
+        out.push_str(&format!(
+            "\n  #{:<2} {}  (final_cost={})\n",
+            i + 1,
+            surface,
+            path.final_cost,
+        ));
+
+        for (j, seg) in path.segments.iter().enumerate() {
+            let seg_label = if seg.surface != seg.reading {
+                format!("{}({})", seg.surface, seg.reading)
+            } else {
+                seg.surface.clone()
+            };
+            let conn_label = if j == 0 { "BOS->" } else { "conn=" };
             out.push_str(&format!(
-                "#{} [cost={}] {}\n",
-                i + 1,
-                path.viterbi_cost,
-                surface
+                "    seg[{}]: {:<12} word={:<6} penalty={:<5} script={:<6} {}{}\n",
+                j,
+                seg_label,
+                seg.word_cost,
+                seg.segment_penalty,
+                seg.script_cost,
+                conn_label,
+                seg.connection_cost,
             ));
+        }
+
+        out.push_str(&format!(
+            "    viterbi={:<8} rerank={:<+8} history={:<+8} -> final={}\n",
+            path.viterbi_cost, path.rerank_delta, -path.history_boost, path.final_cost,
+        ));
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::converter::testutil::test_dict;
+    use crate::user_history::UserHistory;
+
+    #[test]
+    fn test_explain_basic() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "きょう", 5);
+
+        assert_eq!(result.reading, "きょう");
+        assert!(!result.lattice_nodes.is_empty());
+        assert!(!result.paths.is_empty());
+
+        // Best path should have segments
+        let best = &result.paths[0];
+        assert!(!best.segments.is_empty());
+    }
+
+    #[test]
+    fn test_explain_empty_reading() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "", 5);
+
+        assert!(result.lattice_nodes.is_empty());
+        assert!(result.paths.is_empty());
+    }
+
+    #[test]
+    fn test_explain_with_history() {
+        let dict = test_dict();
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let without = explain(&dict, None, None, "きょう", 5);
+        let with = explain(&dict, None, Some(&h), "きょう", 5);
+
+        let without_kyou = without.paths.iter().find(|p| p.surface() == "京");
+        let with_kyou = with.paths.iter().find(|p| p.surface() == "京");
+
+        if let (Some(w), Some(wh)) = (without_kyou, with_kyou) {
+            assert!(
+                wh.history_boost > 0,
+                "history boost should be positive for learned entry"
+            );
+            assert!(
+                wh.final_cost < w.final_cost,
+                "final cost should be lower with history boost"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_paths_sorted_by_final_cost() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "きょう", 10);
+
+        for window in result.paths.windows(2) {
+            assert!(
+                window[0].final_cost <= window[1].final_cost,
+                "paths should be sorted by final_cost"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_segment_costs_are_populated() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "きょう", 5);
+
+        for path in &result.paths {
             for seg in &path.segments {
-                out.push_str(&format!(
-                    "    {} → {} (word={}, L={}, R={})\n",
-                    seg.reading, seg.surface, seg.word_cost, seg.left_id, seg.right_id,
-                ));
+                assert_eq!(seg.segment_penalty, SEGMENT_PENALTY);
             }
         }
     }
-
-    format_paths(
-        &mut out,
-        "Viterbi N-best (before rerank)",
-        &result.paths_before_rerank,
-    );
-    format_paths(&mut out, "After rerank", &result.paths_after_rerank);
-    format_paths(
-        &mut out,
-        "Final (after history rerank)",
-        &result.paths_final,
-    );
-
-    out
 }
