@@ -87,7 +87,8 @@ class CandidatePanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func show(candidates: [String], selectedIndex: Int, cursorRect: NSRect?) {
+    func show(candidates: [String], selectedIndex: Int, globalIndex: Int, totalCount: Int,
+              cursorRect: NSRect?) {
         guard !candidates.isEmpty else {
             hide()
             return
@@ -130,9 +131,27 @@ class CandidatePanel: NSPanel {
 
         listView.needsDisplay = true
         orderFront(nil)
+
+        announceCandidate(candidates[selectedIndex], index: globalIndex, total: totalCount)
     }
 
     func hide() {
         orderOut(nil)
+    }
+
+    // MARK: - VoiceOver
+
+    private func announceCandidate(_ candidate: String, index: Int, total: Int) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let message = "\(candidate) \(index + 1)/\(total)"
+        let userInfo: [NSAccessibility.NotificationUserInfoKey: Any] = [
+            .announcement: message,
+            .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ]
+        NSAccessibility.post(
+            element: self,
+            notification: .announcementRequested,
+            userInfo: userInfo
+        )
     }
 }

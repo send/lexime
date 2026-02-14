@@ -96,10 +96,13 @@ class LeximeInputController: IMKInputController {
 
         let panel = AppContext.shared.candidatePanel
 
+        let totalCount = allCandidates.count
+
         // Mozc style: don't recalculate position while panel is visible (prevents jitter)
         // But if cursor moved (auto-commit), force reposition.
         if panel.isVisible && !panelNeedsReposition {
-            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: nil)
+            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: nil)
             return
         }
         // Reset early: if the async block below is cancelled (generation mismatch),
@@ -112,7 +115,8 @@ class LeximeInputController: IMKInputController {
         let generation = candidateGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self, self.candidateGeneration == generation else { return }
-            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
+            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: rect)
         }
     }
 
