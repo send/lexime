@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use tracing::{debug, debug_span};
+
 use crate::converter::{convert_nbest, convert_nbest_with_history, ConvertedSegment};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{DictEntry, Dictionary, TrieDictionary};
@@ -193,6 +195,7 @@ pub fn generate_candidates(
     reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
+    let _span = debug_span!("generate_candidates", reading, max_results).entered();
     if reading.is_empty() {
         return CandidateResponse {
             surfaces: Vec::new(),
@@ -200,11 +203,21 @@ pub fn generate_candidates(
         };
     }
 
-    if punctuation_alternatives(reading).is_some() {
+    let is_punct = punctuation_alternatives(reading).is_some();
+    let resp = if is_punct {
         generate_punctuation_candidates(dict, history, reading, max_results)
     } else {
         generate_normal_candidates(dict, conn, history, reading, max_results)
-    }
+    };
+
+    debug!(
+        candidates = resp.surfaces.len(),
+        paths = resp.paths.len(),
+        is_punct,
+        first = resp.surfaces.first().map(|s| s.as_str()).unwrap_or(""),
+        "candidates generated"
+    );
+    resp
 }
 
 #[cfg(test)]

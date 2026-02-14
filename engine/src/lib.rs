@@ -1,6 +1,8 @@
 // FFI functions perform null checks before dereferencing raw pointers.
 // Clippy cannot verify this statically, so we allow it at crate level.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+// When the "trace" feature is disabled, compile all tracing macros to no-ops.
+#![cfg_attr(not(feature = "trace"), allow(unused_imports))]
 
 pub mod candidates;
 pub mod converter;
@@ -188,6 +190,39 @@ macro_rules! ffi_close {
             unsafe { owned_drop(ptr) };
         }
     };
+}
+
+// --- Tracing initialization ---
+
+/// Initialize tracing subscriber for development builds.
+/// When the "trace" feature is enabled, this sets up a JSON or pretty-print
+/// subscriber controlled by the `LEXIME_LOG` environment variable.
+///
+/// Levels: `LEXIME_LOG=debug` (default when called), `info`, `trace`
+/// Format: `LEXIME_LOG_FORMAT=json` for JSONL output, otherwise pretty-print.
+///
+/// No-op when the "trace" feature is disabled.
+#[no_mangle]
+pub extern "C" fn lex_trace_init() {
+    #[cfg(feature = "trace")]
+    {
+        use tracing_subscriber::EnvFilter;
+        let filter =
+            EnvFilter::try_from_env("LEXIME_LOG").unwrap_or_else(|_| EnvFilter::new("debug"));
+        let format = std::env::var("LEXIME_LOG_FORMAT").unwrap_or_default();
+        if format == "json" {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .with_target(false)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .init();
+        }
+    }
 }
 
 #[no_mangle]

@@ -1,3 +1,5 @@
+use tracing::{debug, debug_span};
+
 use super::cost::CostFunction;
 use super::lattice::Lattice;
 
@@ -63,6 +65,7 @@ pub(crate) fn viterbi_nbest(
     cost_fn: &dyn CostFunction,
     n: usize,
 ) -> Vec<ScoredPath> {
+    let _span = debug_span!("viterbi_nbest", n, reading = %lattice.input).entered();
     let char_count = lattice.char_count;
     if char_count == 0 || n == 0 {
         return Vec::new();
@@ -143,6 +146,17 @@ pub(crate) fn viterbi_nbest(
         if seen_surfaces.insert(scored.surface_key()) {
             results.push(scored);
         }
+    }
+
+    if !results.is_empty() {
+        let best = &results[0];
+        let best_surface: String = best.segments.iter().map(|s| s.surface.as_str()).collect();
+        debug!(
+            paths = results.len(),
+            best_cost = best.viterbi_cost,
+            best_surface,
+            "viterbi done"
+        );
     }
 
     results

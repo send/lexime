@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process;
 
 use clap::{Parser, Subcommand};
 
+use lex_engine::converter::explain;
 use lex_engine::converter::{
     convert, convert_nbest, convert_nbest_with_history, convert_with_history,
 };
@@ -125,6 +127,58 @@ enum Command {
         #[arg(long)]
         history: Option<String>,
     },
+    /// Generate conversion snapshot for regression testing
+    Snapshot {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// Input file: one reading per line (hiragana)
+        input_file: String,
+        /// Output file (JSONL format)
+        output_file: String,
+        /// Number of candidates per reading
+        #[arg(short, long, default_value = "5")]
+        n: usize,
+        /// User history file (optional)
+        #[arg(long)]
+        history: Option<String>,
+    },
+    /// Compare conversion results against a snapshot
+    DiffSnapshot {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// Input file: one reading per line (hiragana)
+        input_file: String,
+        /// Expected snapshot (JSONL from `snapshot` command)
+        expected_file: String,
+        /// Number of candidates per reading
+        #[arg(short, long, default_value = "5")]
+        n: usize,
+        /// User history file (optional)
+        #[arg(long)]
+        history: Option<String>,
+    },
+    /// Explain conversion cost breakdown for a reading
+    Explain {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// Kana input (reading)
+        reading: String,
+        /// Filter to paths containing this surface (optional)
+        #[arg(long)]
+        surface: Option<String>,
+        /// Number of paths to show
+        #[arg(short, long, default_value = "5")]
+        n: usize,
+        /// User history file (optional)
+        #[arg(long)]
+        history: Option<String>,
+    },
 }
 
 fn main() {
@@ -190,6 +244,51 @@ fn main() {
             n,
             history,
         } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        Command::Snapshot {
+            dict_file,
+            conn_file,
+            input_file,
+            output_file,
+            n,
+            history,
+        } => snapshot_cmd(
+            &dict_file,
+            &conn_file,
+            &input_file,
+            &output_file,
+            n,
+            history.as_deref(),
+        ),
+        Command::DiffSnapshot {
+            dict_file,
+            conn_file,
+            input_file,
+            expected_file,
+            n,
+            history,
+        } => diff_snapshot_cmd(
+            &dict_file,
+            &conn_file,
+            &input_file,
+            &expected_file,
+            n,
+            history.as_deref(),
+        ),
+        Command::Explain {
+            dict_file,
+            conn_file,
+            reading,
+            surface,
+            n,
+            history,
+        } => explain_cmd(
+            &dict_file,
+            &conn_file,
+            &reading,
+            surface.as_deref(),
+            n,
+            history.as_deref(),
+        ),
     }
 }
 
@@ -524,6 +623,308 @@ fn prefix(dict_file: &str, query: &str) {
     for r in &results {
         println!("{} ({} entries):", r.reading, r.entries.len());
         print_entries(r.entries);
+    }
+}
+
+/// A single snapshot entry: reading → list of conversion results (surfaces).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotEntry {
+    reading: String,
+    surfaces: Vec<String>,
+}
+
+fn snapshot_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    input_file: &str,
+    output_file: &str,
+    n: usize,
+    history: Option<&str>,
+) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+    let user_history = history.map(|path| {
+        die!(
+            UserHistory::open(Path::new(path)),
+            "Error opening history: {}"
+        )
+    });
+
+    let readings = read_input_lines(input_file);
+    let mut out = die!(
+        fs::File::create(output_file).map(std::io::BufWriter::new),
+        "Error creating output: {}"
+    );
+
+    let mut count = 0;
+    for reading in &readings {
+        let nbest = if let Some(ref h) = user_history {
+            convert_nbest_with_history(&dict, Some(&conn), h, reading, n)
+        } else {
+            convert_nbest(&dict, Some(&conn), reading, n)
+        };
+
+        let surfaces: Vec<String> = nbest
+            .iter()
+            .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
+            .collect();
+
+        let entry = SnapshotEntry {
+            reading: reading.clone(),
+            surfaces,
+        };
+        die!(
+            serde_json::to_writer(&mut out, &entry),
+            "Error writing JSON: {}"
+        );
+        die!(writeln!(out), "Error writing newline: {}");
+        count += 1;
+    }
+
+    eprintln!("Wrote {count} entries to {output_file}");
+}
+
+fn diff_snapshot_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    input_file: &str,
+    expected_file: &str,
+    n: usize,
+    history: Option<&str>,
+) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+    let user_history = history.map(|path| {
+        die!(
+            UserHistory::open(Path::new(path)),
+            "Error opening history: {}"
+        )
+    });
+
+    // Load expected results
+    let expected: HashMap<String, Vec<String>> = {
+        let file = die!(
+            fs::File::open(expected_file),
+            "Error opening expected file: {}"
+        );
+        let reader = BufReader::new(file);
+        let mut map = HashMap::new();
+        for line in reader.lines() {
+            let line = die!(line, "Error reading line: {}");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let entry: SnapshotEntry = die!(serde_json::from_str(line), "Error parsing JSON: {}");
+            map.insert(entry.reading, entry.surfaces);
+        }
+        map
+    };
+
+    let readings = read_input_lines(input_file);
+
+    let mut changed = 0;
+    let mut same = 0;
+    let mut new = 0;
+    let total = readings.len();
+
+    for reading in &readings {
+        let nbest = if let Some(ref h) = user_history {
+            convert_nbest_with_history(&dict, Some(&conn), h, reading, n)
+        } else {
+            convert_nbest(&dict, Some(&conn), reading, n)
+        };
+
+        let current: Vec<String> = nbest
+            .iter()
+            .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
+            .collect();
+
+        match expected.get(reading) {
+            Some(exp) => {
+                if *exp != current {
+                    changed += 1;
+                    let exp_first = exp.first().map(|s| s.as_str()).unwrap_or("(empty)");
+                    let cur_first = current.first().map(|s| s.as_str()).unwrap_or("(empty)");
+                    if exp_first != cur_first {
+                        println!(
+                            "  CHANGED: {} → {} (was: {})",
+                            reading, cur_first, exp_first
+                        );
+                    } else {
+                        // First candidate same, but later ones differ
+                        println!(
+                            "  changed: {} → {} (same #1, later candidates differ)",
+                            reading, cur_first
+                        );
+                    }
+                } else {
+                    same += 1;
+                }
+            }
+            None => {
+                new += 1;
+                let cur_first = current.first().map(|s| s.as_str()).unwrap_or("(empty)");
+                println!("  NEW:     {} → {}", reading, cur_first);
+            }
+        }
+    }
+
+    println!();
+    println!("=== Summary ===");
+    println!("  Total:    {total}");
+    println!("  Same:     {same}");
+    println!("  Changed:  {changed}");
+    println!("  New:      {new}");
+
+    if changed > 0 {
+        process::exit(1);
+    }
+}
+
+fn read_input_lines(path: &str) -> Vec<String> {
+    let file = die!(fs::File::open(path), "Error opening input file: {}");
+    let reader = BufReader::new(file);
+    reader
+        .lines()
+        .map(|l| die!(l, "Error reading line: {}"))
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+fn explain_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    reading: &str,
+    surface_filter: Option<&str>,
+    n: usize,
+    history: Option<&str>,
+) {
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    let user_history = history.map(|path| {
+        die!(
+            UserHistory::open(Path::new(path)),
+            "Error opening history: {}"
+        )
+    });
+
+    let result = explain::explain(
+        &dict,
+        Some(&conn),
+        user_history.as_ref(),
+        reading,
+        n.max(20), // get more paths for filtering
+    );
+
+    // === Lattice ===
+    println!("Reading: {}", result.reading);
+    println!();
+
+    // Group nodes by start position
+    let char_count = reading.chars().count();
+    println!("=== Lattice ({} nodes) ===", result.lattice_nodes.len());
+    for pos in 0..char_count {
+        let nodes_at_pos: Vec<_> = result
+            .lattice_nodes
+            .iter()
+            .filter(|n| n.start == pos)
+            .collect();
+        if nodes_at_pos.is_empty() {
+            continue;
+        }
+        println!("  Position {}:", pos);
+        for node in &nodes_at_pos {
+            let surface_display = if node.surface != node.reading {
+                format!(" → {}", node.surface)
+            } else {
+                String::new()
+            };
+            println!(
+                "    [{},{}] {}  cost={:<6} L={:<4} R={:<4}{}",
+                node.start,
+                node.end,
+                node.reading,
+                node.cost,
+                node.left_id,
+                node.right_id,
+                surface_display,
+            );
+        }
+    }
+
+    // === Paths ===
+    println!();
+    let mut paths = result.paths;
+
+    // Filter by surface if requested
+    if let Some(filter) = surface_filter {
+        paths.retain(|p| p.surface().contains(filter));
+    }
+
+    paths.truncate(n);
+
+    if paths.is_empty() {
+        println!("No paths found.");
+        return;
+    }
+
+    println!("=== Paths ({}) ===", paths.len());
+    for (i, path) in paths.iter().enumerate() {
+        let surface = path.surface();
+        println!();
+        println!(
+            "  #{:<2} {}  (final_cost={})",
+            i + 1,
+            surface,
+            path.final_cost,
+        );
+
+        // Segment breakdown
+        for (j, seg) in path.segments.iter().enumerate() {
+            let seg_label = if seg.surface != seg.reading {
+                format!("{}({})", seg.surface, seg.reading)
+            } else {
+                seg.surface.clone()
+            };
+            let conn_label = if j == 0 { "BOS→" } else { "conn=" };
+            println!(
+                "    seg[{}]: {:<12} word={:<6} penalty={:<5} script={:<6} {}{}",
+                j,
+                seg_label,
+                seg.word_cost,
+                seg.segment_penalty,
+                seg.script_cost,
+                conn_label,
+                seg.connection_cost,
+            );
+        }
+
+        // Cost summary
+        println!(
+            "    viterbi={:<8} rerank={:<+8} history={:<+8} → final={}",
+            path.viterbi_cost, path.rerank_delta, -path.history_boost, path.final_cost,
+        );
     }
 }
 

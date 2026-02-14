@@ -20,3 +20,11 @@ ureq = "3"
 zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
 clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[features]
+default = []
+# Enable tracing output. Without this feature, all tracing macros compile to no-ops
+# via tracing's `max_level_off` (zero overhead in release builds).
+trace = []

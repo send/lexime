@@ -1,3 +1,5 @@
+use tracing::{debug, debug_span};
+
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::UserHistory;
 
@@ -27,6 +29,7 @@ const STRUCTURE_COST_FILTER: i64 = 4000;
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
 pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
+    let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
         return;
     }
@@ -96,6 +99,16 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
+
+    if let Some(best) = paths.first() {
+        let best_surface: String = best.segments.iter().map(|s| s.surface.as_str()).collect();
+        debug!(
+            paths_out = paths.len(),
+            best_cost = best.viterbi_cost,
+            best_surface,
+            "rerank done"
+        );
+    }
 }
 
 /// Apply user-history boosts to N-best paths, then re-sort.
@@ -105,20 +118,47 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
 /// paths (not individual lattice nodes), it cannot cause the fragmentation
 /// problems that in-Viterbi boosting could.
 pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
+    let _span = debug_span!("history_rerank", paths = paths.len()).entered();
     if paths.is_empty() {
         return;
     }
     for path in paths.iter_mut() {
         let mut boost: i64 = 0;
         for seg in &path.segments {
-            boost += history.unigram_boost(&seg.reading, &seg.surface);
+            let ub = history.unigram_boost(&seg.reading, &seg.surface);
+            if ub > 0 {
+                debug!(
+                    reading = seg.reading,
+                    surface = seg.surface,
+                    unigram_boost = ub,
+                    "history boost applied"
+                );
+            }
+            boost += ub;
         }
         for pair in path.segments.windows(2) {
-            boost += history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface);
+            let bb = history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface);
+            if bb > 0 {
+                debug!(
+                    prev = pair[0].surface,
+                    next = pair[1].surface,
+                    bigram_boost = bb,
+                    "bigram boost applied"
+                );
+            }
+            boost += bb;
         }
         path.viterbi_cost -= boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
+
+    if let Some(best) = paths.first() {
+        let best_surface: String = best.segments.iter().map(|s| s.surface.as_str()).collect();
+        debug!(
+            best_cost = best.viterbi_cost,
+            best_surface, "history rerank done"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -192,6 +192,14 @@ description = "Run lint + engine tests"
 depends = ["lint"]
 run = "cd engine && cargo test"
 
+[tasks.trace-build]
+description = "Build engine with tracing enabled (for development)"
+run = "cd engine && cargo build --features trace"
+
+[tasks.trace-test]
+description = "Run tests with tracing enabled"
+run = "cd engine && cargo test --features trace"
+
 [tasks.clean]
 description = "Remove build artifacts"
 run = """

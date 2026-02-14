@@ -1,3 +1,5 @@
+use tracing::{debug, debug_span};
+
 use crate::dict::Dictionary;
 
 /// A node in the conversion lattice.
@@ -42,6 +44,7 @@ const UNKNOWN_WORD_COST: i16 = 10000;
 /// lookups per position.
 /// Adds an unknown-word fallback node (1-char, high cost) to guarantee connectivity.
 pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
+    let _span = debug_span!("build_lattice", reading = kana).entered();
     // Pre-compute byte offsets for each char position so we can slice
     // the original &str directly instead of allocating a new String per position.
     let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
@@ -99,6 +102,14 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
             nodes_by_start[start].push(idx);
         }
     }
+
+    let unknown_count = nodes.iter().filter(|n| n.cost == UNKNOWN_WORD_COST).count();
+    debug!(
+        nodes = nodes.len(),
+        unknown_nodes = unknown_count,
+        char_count,
+        "lattice built"
+    );
 
     Lattice {
         input: kana.to_string(),

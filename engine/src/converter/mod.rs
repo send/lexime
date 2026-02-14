@@ -1,9 +1,12 @@
 pub(crate) mod cost;
+pub mod explain;
 mod lattice;
 pub(crate) mod reranker;
 pub(crate) mod rewriter;
 pub(crate) mod testutil;
 mod viterbi;
+
+use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
@@ -87,16 +90,20 @@ pub fn convert(
     conn: Option<&ConnectionMatrix>,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    let _span = debug_span!("convert", reading = kana, mode = "1-best").entered();
     if kana.is_empty() {
         return Vec::new();
     }
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 10);
-    postprocess(&mut paths, conn, None, kana, 1)
+    let result = postprocess(&mut paths, conn, None, kana, 1)
         .into_iter()
         .next()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let surface: String = result.iter().map(|s| s.surface.as_str()).collect();
+    debug!(surface, segments = result.len(), "convert done");
+    result
 }
 
 /// Convert a kana string to the N-best segmentations using Viterbi algorithm.
@@ -109,6 +116,7 @@ pub fn convert_nbest(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    let _span = debug_span!("convert", reading = kana, mode = "n-best", n).entered();
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
@@ -116,7 +124,9 @@ pub fn convert_nbest(
     let lattice = build_lattice(dict, kana);
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, conn, None, kana, n)
+    let result = postprocess(&mut paths, conn, None, kana, n);
+    debug!(result_count = result.len(), "convert_nbest done");
+    result
 }
 
 /// 1-best conversion with history-aware reranking.
@@ -131,16 +141,24 @@ pub fn convert_with_history(
     history: &UserHistory,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    let _span = debug_span!("convert", reading = kana, mode = "1-best+history").entered();
     if kana.is_empty() {
         return Vec::new();
     }
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 30);
-    postprocess(&mut paths, conn, Some(history), kana, 1)
+    let result = postprocess(&mut paths, conn, Some(history), kana, 1)
         .into_iter()
         .next()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let surface: String = result.iter().map(|s| s.surface.as_str()).collect();
+    debug!(
+        surface,
+        segments = result.len(),
+        "convert_with_history done"
+    );
+    result
 }
 
 /// N-best conversion with history-aware reranking.
@@ -156,6 +174,7 @@ pub fn convert_nbest_with_history(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    let _span = debug_span!("convert", reading = kana, mode = "n-best+history", n).entered();
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
@@ -163,7 +182,12 @@ pub fn convert_nbest_with_history(
     let lattice = build_lattice(dict, kana);
     let oversample = (n * 3).max(50);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, conn, Some(history), kana, n)
+    let result = postprocess(&mut paths, conn, Some(history), kana, n);
+    debug!(
+        result_count = result.len(),
+        "convert_nbest_with_history done"
+    );
+    result
 }
 
 #[cfg(test)]
