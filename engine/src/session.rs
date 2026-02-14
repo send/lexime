@@ -795,11 +795,9 @@ impl<'a> InputSession<'a> {
         c.candidates.selected = 0;
         c.stability.track(&c.candidates.paths);
 
-        // Try auto-commit with fresh candidates (only in Standard mode)
-        if self.conversion_mode.auto_commit_enabled() {
-            if let Some(auto_resp) = self.try_auto_commit() {
-                return Some(auto_resp);
-            }
+        // Try auto-commit with fresh candidates
+        if let Some(auto_resp) = self.try_auto_commit() {
+            return Some(auto_resp);
         }
 
         // No auto-commit: update marked text to Viterbi #1 and show candidates
@@ -811,6 +809,9 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn try_auto_commit(&mut self) -> Option<KeyResponse> {
+        if !self.conversion_mode.auto_commit_enabled() {
+            return None;
+        }
         // Extract data from comp() in a block so the borrow is dropped before
         // we access self.history_records.
         let (committed_reading, committed_surface, seg_pairs, commit_count) = {
