@@ -253,20 +253,30 @@ fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
         "Error reading {input_txt}: {}"
     );
 
-    let (fw_min, fw_max) = if let Some(id_def_path) = id_def {
+    let (fw_min, fw_max, roles) = if let Some(id_def_path) = id_def {
         let (min, max) = die!(
             pos_map::function_word_id_range(Path::new(id_def_path)),
             "Error extracting function-word range: {}"
         );
         eprintln!("Function-word ID range: {min}..={max}");
-        (min, max)
+        let roles = die!(
+            pos_map::morpheme_roles(Path::new(id_def_path)),
+            "Error extracting morpheme roles: {}"
+        );
+        let suffix_count = roles.iter().filter(|&&r| r == 2).count();
+        let prefix_count = roles.iter().filter(|&&r| r == 3).count();
+        eprintln!(
+            "Morpheme roles: {} suffixes, {} prefixes",
+            suffix_count, prefix_count
+        );
+        (min, max, roles)
     } else {
-        (0, 0)
+        (0, 0, Vec::new())
     };
 
     eprintln!("Parsing connection matrix from {input_txt}...");
     let matrix = die!(
-        ConnectionMatrix::from_text_with_metadata(&text, fw_min, fw_max),
+        ConnectionMatrix::from_text_with_roles(&text, fw_min, fw_max, roles),
         "Error parsing connection matrix: {}"
     );
 

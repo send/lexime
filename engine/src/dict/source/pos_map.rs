@@ -82,6 +82,64 @@ pub fn function_word_id_range(path: &Path) -> Result<(u16, u16), DictSourceError
     Ok((min, max))
 }
 
+/// Morpheme role constants for bunsetsu segmentation.
+pub const ROLE_CONTENT_WORD: u8 = 0;
+pub const ROLE_FUNCTION_WORD: u8 = 1;
+pub const ROLE_SUFFIX: u8 = 2;
+pub const ROLE_PREFIX: u8 = 3;
+
+/// Parse Mozc `id.def` and classify each POS ID into a morpheme role.
+///
+/// Returns a `Vec<u8>` indexed by POS ID, where each value is one of:
+/// - `0` (ContentWord): default — nouns, verbs, adjectives, adverbs, etc.
+/// - `1` (FunctionWord): 助詞 or 助動詞
+/// - `2` (Suffix): second POS field is 接尾 (e.g., 名詞,接尾 / 動詞,接尾 / 形容詞,接尾)
+/// - `3` (Prefix): first POS field is 接頭詞
+pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
+    let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
+    let mut max_id: u16 = 0;
+    let mut entries: Vec<(u16, u8)> = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (id_str, pos_tag) = line
+            .split_once(' ')
+            .ok_or_else(|| DictSourceError::Parse(format!("invalid id.def line: {line}")))?;
+        let id: u16 = id_str
+            .parse()
+            .map_err(|_| DictSourceError::Parse(format!("invalid id in id.def: {id_str}")))?;
+
+        let fields: Vec<&str> = pos_tag.split(',').collect();
+        let role = if fields.len() >= 2 {
+            if fields[0] == "助動詞" || fields[0] == "助詞" {
+                ROLE_FUNCTION_WORD
+            } else if fields[0] == "接頭詞" {
+                ROLE_PREFIX
+            } else if fields[1] == "接尾" {
+                ROLE_SUFFIX
+            } else {
+                ROLE_CONTENT_WORD
+            }
+        } else {
+            ROLE_CONTENT_WORD
+        };
+
+        if id > max_id {
+            max_id = id;
+        }
+        entries.push((id, role));
+    }
+
+    let mut roles = vec![ROLE_CONTENT_WORD; max_id as usize + 1];
+    for (id, role) in entries {
+        roles[id as usize] = role;
+    }
+    Ok(roles)
+}
+
 /// Scan Sudachi CSV files and determine the most frequent POS tag for each
 /// left_id, then build a sudachi_id → mozc_id remap table.
 ///
@@ -426,6 +484,45 @@ mod tests {
         let (min, max) = function_word_id_range(&path).unwrap();
         assert_eq!(min, 0);
         assert_eq!(max, 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_morpheme_roles() {
+        let dir = std::env::temp_dir().join("lexime_test_morpheme_roles");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("id.def");
+        fs::write(
+            &path,
+            make_id_def(&[
+                "0 BOS/EOS,*,*,*,*,*,*",
+                "29 助動詞,*,*,*,不変化型,基本形,*",
+                "268 助詞,格助詞,一般,*,*,*,*",
+                "433 助詞,終助詞,*,*,*,*,*",
+                "1852 名詞,一般,*,*,*,*,*",
+                "1860 名詞,接尾,一般,*,*,*,*",
+                "1870 動詞,接尾,*,*,一段,基本形,*",
+                "1880 形容詞,接尾,*,*,形容詞・アウオ段,基本形,*",
+                "2600 接頭詞,名詞接続,*,*,*,*,*",
+                "2641 接頭詞,数接続,*,*,*,*,*",
+                "680 動詞,自立,*,*,一段,基本形,*",
+            ]),
+        )
+        .unwrap();
+
+        let roles = morpheme_roles(&path).unwrap();
+        assert_eq!(roles[0], ROLE_CONTENT_WORD); // BOS/EOS
+        assert_eq!(roles[29], ROLE_FUNCTION_WORD); // 助動詞
+        assert_eq!(roles[268], ROLE_FUNCTION_WORD); // 助詞
+        assert_eq!(roles[433], ROLE_FUNCTION_WORD); // 助詞
+        assert_eq!(roles[1852], ROLE_CONTENT_WORD); // 名詞,一般
+        assert_eq!(roles[1860], ROLE_SUFFIX); // 名詞,接尾
+        assert_eq!(roles[1870], ROLE_SUFFIX); // 動詞,接尾
+        assert_eq!(roles[1880], ROLE_SUFFIX); // 形容詞,接尾
+        assert_eq!(roles[2600], ROLE_PREFIX); // 接頭詞
+        assert_eq!(roles[2641], ROLE_PREFIX); // 接頭詞
+        assert_eq!(roles[680], ROLE_CONTENT_WORD); // 動詞,自立
 
         fs::remove_dir_all(&dir).ok();
     }
