@@ -48,6 +48,9 @@ class LeximeInputController: IMKInputController {
         if UserDefaults.standard.bool(forKey: "programmerMode") {
             lex_session_set_programmer_mode(session, 1)
         }
+        if UserDefaults.standard.bool(forKey: "predictiveMode") {
+            lex_session_set_conversion_mode(session, 1)
+        }
     }
 
     deinit {
@@ -136,14 +139,33 @@ class LeximeInputController: IMKInputController {
             return isComposing
         }
 
+        let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+
+        // Option+Tab: toggle conversion mode
+        if dominated == [.option] && event.keyCode == 48 /* Tab */ {
+            if isComposing {
+                let commitResp = lex_session_commit(session)
+                defer { lex_key_response_free(commitResp) }
+                applyResponse(commitResp, client: client)
+            }
+            let current = UserDefaults.standard.bool(forKey: "predictiveMode")
+            UserDefaults.standard.set(!current, forKey: "predictiveMode")
+            lex_session_set_conversion_mode(session, !current ? 1 : 0)
+            NSLog("Lexime: conversion mode → %@", !current ? "predictive" : "standard")
+            return true
+        }
+
         // Sync programmerMode setting on each key event
         lex_session_set_programmer_mode(
             session,
             UserDefaults.standard.bool(forKey: "programmerMode") ? 1 : 0
         )
+        lex_session_set_conversion_mode(
+            session,
+            UserDefaults.standard.bool(forKey: "predictiveMode") ? 1 : 0
+        )
 
-        let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .subtracting([.capsLock, .numericPad, .function])
         let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
         let flags = shift | (hasModifier << 1)
@@ -195,13 +217,16 @@ class LeximeInputController: IMKInputController {
 
         // 5. Async candidate generation
         if resp.needs_candidates != 0, resp.candidate_reading != nil {
-            dispatchAsyncCandidates(reading: String(cString: resp.candidate_reading))
+            dispatchAsyncCandidates(
+                reading: String(cString: resp.candidate_reading),
+                dispatch: resp.candidate_dispatch
+            )
         }
     }
 
     // MARK: - Async Candidates
 
-    private func dispatchAsyncCandidates(reading: String) {
+    private func dispatchAsyncCandidates(reading: String, dispatch: UInt8 = 0) {
         let gen = candidateGeneration
         // These opaque pointers are long-lived singletons. The Rust types use
         // internal synchronization (RwLock), so concurrent access from
@@ -212,8 +237,12 @@ class LeximeInputController: IMKInputController {
         let sessionPtr = self.session
 
         candidateQueue.async { [weak self] in
-            var result = reading.withCString { readingCStr in
-                lex_generate_candidates(dict, conn, history, readingCStr, 20)
+            var result: LexCandidateResponse
+            switch dispatch {
+            case 1:  // prediction (Viterbi + bigram chaining)
+                result = reading.withCString { lex_generate_prediction_candidates(dict, conn, history, $0, 20) }
+            default: // standard
+                result = reading.withCString { lex_generate_candidates(dict, conn, history, $0, 20) }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self, let sessionPtr else {

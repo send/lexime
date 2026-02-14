@@ -1,6 +1,6 @@
 use tracing::debug_span;
 
-use crate::candidates::{generate_candidates, CandidateResponse};
+use crate::candidates::{generate_candidates, generate_prediction_candidates, CandidateResponse};
 use crate::converter::ConvertedSegment;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::TrieDictionary;
@@ -27,6 +27,59 @@ const FLAG_HAS_MODIFIER: u8 = 2;
 
 const MAX_COMPOSED_KANA_LENGTH: usize = 100;
 const MAX_CANDIDATES: usize = 20;
+
+/// Pluggable conversion mode: determines how candidates are generated,
+/// what Tab does, and whether auto-commit fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionMode {
+    /// Standard IME: Viterbi N-best + predictions + lookup, Tab toggles submode.
+    Standard,
+    /// Predictive: Viterbi base + bigram chaining for Copilot-like completions, Tab commits.
+    Predictive,
+}
+
+enum TabAction {
+    ToggleSubmode,
+    Commit,
+}
+
+impl ConversionMode {
+    fn generate_candidates(
+        &self,
+        dict: &TrieDictionary,
+        conn: Option<&ConnectionMatrix>,
+        history: Option<&UserHistory>,
+        reading: &str,
+        max_results: usize,
+    ) -> CandidateResponse {
+        match self {
+            Self::Standard => generate_candidates(dict, conn, history, reading, max_results),
+            Self::Predictive => {
+                generate_prediction_candidates(dict, conn, history, reading, max_results)
+            }
+        }
+    }
+
+    fn tab_action(&self) -> TabAction {
+        match self {
+            Self::Standard => TabAction::ToggleSubmode,
+            Self::Predictive => TabAction::Commit,
+        }
+    }
+
+    fn auto_commit_enabled(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+
+    /// FFI dispatch tag for async candidate generation.
+    /// Swift uses this to call the correct FFI generator.
+    pub fn candidate_dispatch(&self) -> u8 {
+        match self {
+            Self::Standard => 0,
+            Self::Predictive => 1,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Submode {
@@ -208,6 +261,8 @@ pub enum CandidateAction {
 /// a request without a reading is structurally impossible.
 pub struct AsyncCandidateRequest {
     pub reading: String,
+    /// 0 = standard, 1 = prediction_only
+    pub candidate_dispatch: u8,
 }
 
 /// Orthogonal side-effects that accompany a response.
@@ -271,6 +326,7 @@ pub struct InputSession<'a> {
     /// When true, handle_key skips synchronous candidate generation and
     /// sets `needs_candidates` in the response for async generation by the caller.
     defer_candidates: bool,
+    conversion_mode: ConversionMode,
 
     // History recording buffer
     history_records: Vec<Vec<(String, String)>>,
@@ -290,6 +346,7 @@ impl<'a> InputSession<'a> {
             idle_submode: Submode::Japanese,
             programmer_mode: false,
             defer_candidates: false,
+            conversion_mode: ConversionMode::Standard,
             history_records: Vec::new(),
         }
     }
@@ -300,6 +357,10 @@ impl<'a> InputSession<'a> {
 
     pub fn set_defer_candidates(&mut self, enabled: bool) {
         self.defer_candidates = enabled;
+    }
+
+    pub fn set_conversion_mode(&mut self, mode: ConversionMode) {
+        self.conversion_mode = mode;
     }
 
     /// Temporarily set the history reference. Used by FFI to pass a lock guard.
@@ -515,7 +576,16 @@ impl<'a> InputSession<'a> {
                 }
             }
 
-            key::TAB => self.toggle_submode(),
+            key::TAB => match self.conversion_mode.tab_action() {
+                TabAction::ToggleSubmode => self.toggle_submode(),
+                TabAction::Commit => {
+                    // Lazy generate: ensure candidates for commit
+                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
+                        self.update_candidates();
+                    }
+                    self.commit_current_state()
+                }
+            },
 
             key::BACKSPACE => self.handle_backspace(),
 
@@ -681,13 +751,10 @@ impl<'a> InputSession<'a> {
             return;
         }
 
-        let CandidateResponse { surfaces, paths } = generate_candidates(
-            self.dict,
-            self.conn,
-            self.history,
-            &self.comp().kana,
-            MAX_CANDIDATES,
-        );
+        let mode = self.conversion_mode;
+        let reading = self.comp().kana.clone();
+        let CandidateResponse { surfaces, paths } =
+            mode.generate_candidates(self.dict, self.conn, self.history, &reading, MAX_CANDIDATES);
         let c = self.comp();
         c.candidates.surfaces = surfaces;
         c.candidates.paths = paths;
@@ -702,6 +769,7 @@ impl<'a> InputSession<'a> {
         if !self.comp().kana.is_empty() {
             resp.async_request = Some(AsyncCandidateRequest {
                 reading: self.comp().kana.clone(),
+                candidate_dispatch: self.conversion_mode.candidate_dispatch(),
             });
         }
         resp
@@ -741,6 +809,9 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn try_auto_commit(&mut self) -> Option<KeyResponse> {
+        if !self.conversion_mode.auto_commit_enabled() {
+            return None;
+        }
         // Extract data from comp() in a block so the borrow is dropped before
         // we access self.history_records.
         let (committed_reading, committed_surface, seg_pairs, commit_count) = {
@@ -864,6 +935,7 @@ impl<'a> InputSession<'a> {
             });
             resp.async_request = Some(AsyncCandidateRequest {
                 reading: c.kana.clone(),
+                candidate_dispatch: self.conversion_mode.candidate_dispatch(),
             });
             resp.candidates = CandidateAction::Show {
                 surfaces: provisional,
@@ -1988,5 +2060,162 @@ mod tests {
             !session.comp().candidates.surfaces.is_empty(),
             "session should retain provisional candidates for navigation"
         );
+    }
+
+    // --- Predictive conversion mode ---
+
+    #[test]
+    fn test_predictive_mode_generates_candidates() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Predictive);
+
+        type_string(&mut session, "kyou");
+        // Predictive mode uses Viterbi base + bigram chaining
+        assert!(!session.comp().candidates.is_empty());
+        // Without history, behaves like standard (Viterbi-based)
+        assert!(!session.comp().candidates.paths.is_empty());
+        // Kana should be present as fallback
+        assert!(session
+            .comp()
+            .candidates
+            .surfaces
+            .contains(&"きょう".to_string()));
+    }
+
+    #[test]
+    fn test_predictive_mode_tab_commits() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Predictive);
+
+        type_string(&mut session, "kyou");
+        assert!(session.is_composing());
+
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert!(resp.consumed);
+        // Tab in Predictive mode commits (not toggles submode)
+        assert!(resp.commit.is_some());
+        assert!(!session.is_composing());
+    }
+
+    #[test]
+    fn test_predictive_mode_space_cycles() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Predictive);
+
+        type_string(&mut session, "kyou");
+        let count = session.comp().candidates.surfaces.len();
+        assert!(count > 1);
+        assert_eq!(session.comp().candidates.selected, 0);
+
+        // Space cycles candidates in Predictive mode too
+        session.handle_key(key::SPACE, "", 0);
+        assert_eq!(session.comp().candidates.selected, 1);
+    }
+
+    #[test]
+    fn test_predictive_mode_no_auto_commit() {
+        use crate::candidates::generate_candidates;
+
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Predictive);
+        session.set_defer_candidates(true);
+
+        fn complete_cycle(
+            session: &mut InputSession,
+            dict: &TrieDictionary,
+        ) -> Option<KeyResponse> {
+            let reading = session.comp().kana.clone();
+            if reading.is_empty() {
+                return None;
+            }
+            let cand = generate_candidates(dict, None, None, &reading, 20);
+            session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        }
+
+        // Build up enough input that would trigger auto-commit in Standard mode
+        type_string(&mut session, "kyou");
+        complete_cycle(&mut session, &dict);
+        type_string(&mut session, "ha");
+        complete_cycle(&mut session, &dict);
+        type_string(&mut session, "ii");
+        complete_cycle(&mut session, &dict);
+        type_string(&mut session, "tenki");
+        let r = complete_cycle(&mut session, &dict);
+
+        // In Predictive mode, auto-commit should NOT fire
+        if let Some(resp) = r {
+            assert!(
+                resp.commit.is_none(),
+                "predictive mode should not auto-commit"
+            );
+        }
+    }
+
+    #[test]
+    fn test_predictive_mode_deferred_dispatch() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Predictive);
+        session.set_defer_candidates(true);
+
+        // Type "ka" to trigger deferred candidate generation
+        session.handle_key(0, "k", 0);
+        let resp = session.handle_key(0, "a", 0);
+        // Predictive mode uses prediction-specific generation (dispatch=1)
+        if let Some(req) = resp.async_request {
+            assert_eq!(
+                req.candidate_dispatch, 1,
+                "predictive uses prediction_only generation"
+            );
+        }
+    }
+
+    #[test]
+    fn test_standard_mode_deferred_dispatch() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Standard);
+        session.set_defer_candidates(true);
+
+        // Type "ka" one char at a time to capture deferred response
+        session.handle_key(0, "k", 0);
+        let resp = session.handle_key(0, "a", 0);
+        if let Some(req) = resp.async_request {
+            assert_eq!(req.candidate_dispatch, 0, "standard dispatch should be 0");
+        }
+    }
+
+    #[test]
+    fn test_conversion_mode_switch() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+
+        // Default is Standard
+        assert_eq!(session.conversion_mode, ConversionMode::Standard);
+
+        // Switch to Predictive
+        session.set_conversion_mode(ConversionMode::Predictive);
+        assert_eq!(session.conversion_mode, ConversionMode::Predictive);
+
+        type_string(&mut session, "kyou");
+        // Tab should commit (Predictive behavior)
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert!(resp.commit.is_some());
+        assert!(!session.is_composing());
+
+        // Switch back to Standard
+        session.set_conversion_mode(ConversionMode::Standard);
+        assert_eq!(session.conversion_mode, ConversionMode::Standard);
+
+        type_string(&mut session, "kyou");
+        // Tab should toggle submode (Standard behavior)
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert!(resp.commit.is_none());
+        assert!(session.is_composing());
+        assert_eq!(session.comp().submode, Submode::English);
     }
 }

@@ -215,6 +215,138 @@ pub fn generate_candidates(
     resp
 }
 
+/// Chain bigram successors from a starting surface to build multi-word phrases.
+/// Returns the chained phrase (start_surface + successors) or None if no successors found.
+/// Detects cycles (repeated surfaces) and stops chaining to avoid garbage output.
+fn chain_bigram_phrase(
+    history: &UserHistory,
+    start_surface: &str,
+    max_chain: usize,
+) -> Option<String> {
+    let mut result = start_surface.to_string();
+    let mut current_surface = start_surface.to_string();
+    let mut visited = HashSet::new();
+    visited.insert(current_surface.clone());
+    let mut extended = false;
+
+    for _ in 0..max_chain {
+        let successors = history.bigram_successors(&current_surface);
+        if let Some((_, next_surface, _)) = successors.first() {
+            if !visited.insert(next_surface.clone()) {
+                break; // cycle detected
+            }
+            result.push_str(next_surface);
+            current_surface.clone_from(next_surface);
+            extended = true;
+        } else {
+            break;
+        }
+    }
+
+    if extended {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// Generate prediction candidates with bigram chaining (Copilot-like completions).
+/// Uses Viterbi N-best as the base, then chains bigram successors from history
+/// to produce progressively longer multi-word phrases.
+pub fn generate_prediction_candidates(
+    dict: &TrieDictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+) -> CandidateResponse {
+    let _span = debug_span!("generate_prediction_candidates", reading, max_results).entered();
+    if reading.is_empty() {
+        return CandidateResponse {
+            surfaces: Vec::new(),
+            paths: Vec::new(),
+        };
+    }
+
+    // Punctuation falls back to standard punctuation candidates
+    if punctuation_alternatives(reading).is_some() {
+        return generate_punctuation_candidates(dict, history, reading, max_results);
+    }
+
+    // Get base candidates (same Viterbi N-best + predictions as Standard)
+    let base = generate_normal_candidates(dict, conn, history, reading, max_results);
+
+    let Some(h) = history else {
+        // No history → can't chain, return standard candidates
+        debug!(surface_count = base.surfaces.len(), "no history, fallback");
+        return base;
+    };
+
+    let mut surfaces = Vec::new();
+    let mut seen = HashSet::new();
+    let max_chain = 5;
+
+    // Build chained phrases from N-best paths (use last segment surface for chaining)
+    let mut chained_phrases: Vec<(String, usize)> = Vec::new(); // (phrase, length)
+    let mut chained_starts: HashSet<String> = HashSet::new(); // track chain start surfaces
+
+    for path in &base.paths {
+        if path.is_empty() {
+            continue;
+        }
+        let last_surface = &path.last().unwrap().surface;
+        let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
+
+        chained_starts.insert(joined.clone());
+        if let Some(chained) = chain_bigram_phrase(h, last_surface, max_chain) {
+            let full = format!("{}{}", joined, &chained[last_surface.len()..]);
+            let chain_len = full.chars().count();
+            if full != joined {
+                chained_phrases.push((full, chain_len));
+            }
+        }
+    }
+
+    // Also try chaining from base candidate surfaces not already covered by paths
+    for surface in &base.surfaces {
+        if chained_starts.contains(surface) {
+            continue;
+        }
+        if let Some(chained) = chain_bigram_phrase(h, surface, max_chain) {
+            let chain_len = chained.chars().count();
+            chained_phrases.push((chained, chain_len));
+        }
+    }
+
+    // Sort chained phrases by length descending (longest first = most Copilot-like)
+    chained_phrases.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Add chained phrases first (longest completions)
+    for (phrase, _) in &chained_phrases {
+        if seen.insert(phrase.clone()) {
+            surfaces.push(phrase.clone());
+        }
+    }
+
+    // Then add base candidates
+    for s in &base.surfaces {
+        if seen.insert(s.clone()) {
+            surfaces.push(s.clone());
+        }
+    }
+
+    surfaces.truncate(max_results);
+
+    debug!(
+        surface_count = surfaces.len(),
+        chained_count = chained_phrases.len(),
+    );
+    CandidateResponse {
+        surfaces,
+        paths: base.paths,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +456,158 @@ mod tests {
             resp.surfaces[0], "きょう",
             "kana should be promoted to position 0 (inline preview)"
         );
+    }
+
+    #[test]
+    fn test_prediction_bigram_chaining() {
+        let dict = make_dict();
+        let mut h = UserHistory::new();
+        // Record a sentence: 今日は → bigrams: 今日→は
+        h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
+
+        let resp = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20);
+        // Should contain chained phrase "今日は"
+        assert!(
+            resp.surfaces.contains(&"今日は".to_string()),
+            "should contain chained phrase '今日は', got: {:?}",
+            resp.surfaces,
+        );
+        // Chained phrase should appear before unchained base candidates
+        let chained_pos = resp.surfaces.iter().position(|s| s == "今日は").unwrap();
+        let base_pos = resp.surfaces.iter().position(|s| s == "今日");
+        if let Some(bp) = base_pos {
+            assert!(
+                chained_pos < bp,
+                "chained phrase should appear before base candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn test_prediction_no_chaining_without_history() {
+        let dict = make_dict();
+        let resp = generate_prediction_candidates(&dict, None, None, "きょう", 20);
+        // Without history, should behave like standard candidates
+        assert!(resp.surfaces.contains(&"今日".to_string()));
+        assert!(resp.surfaces.contains(&"きょう".to_string()));
+    }
+
+    #[test]
+    fn test_prediction_multi_word_chain() {
+        let entries = vec![
+            (
+                "きょう".to_string(),
+                vec![DictEntry {
+                    surface: "今日".to_string(),
+                    cost: 3000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "は".to_string(),
+                vec![DictEntry {
+                    surface: "は".to_string(),
+                    cost: 2000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "いい".to_string(),
+                vec![DictEntry {
+                    surface: "良い".to_string(),
+                    cost: 3500,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+            (
+                "てんき".to_string(),
+                vec![DictEntry {
+                    surface: "天気".to_string(),
+                    cost: 4000,
+                    left_id: 0,
+                    right_id: 0,
+                }],
+            ),
+        ];
+        let dict = TrieDictionary::from_entries(entries);
+        let mut h = UserHistory::new();
+        // Record a full sentence: 今日は良い天気
+        h.record(&[
+            ("きょう".into(), "今日".into()),
+            ("は".into(), "は".into()),
+            ("いい".into(), "良い".into()),
+            ("てんき".into(), "天気".into()),
+        ]);
+
+        let resp = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20);
+        // Should contain the full chained phrase
+        assert!(
+            resp.surfaces.contains(&"今日は良い天気".to_string()),
+            "should contain multi-word chain '今日は良い天気', got: {:?}",
+            resp.surfaces,
+        );
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_basic() {
+        let mut h = UserHistory::new();
+        h.record(&[
+            ("きょう".into(), "今日".into()),
+            ("は".into(), "は".into()),
+            ("いい".into(), "良い".into()),
+        ]);
+        let result = chain_bigram_phrase(&h, "今日", 5);
+        assert_eq!(result.as_deref(), Some("今日は良い"));
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_no_successors() {
+        let h = UserHistory::new();
+        assert!(chain_bigram_phrase(&h, "今日", 5).is_none());
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_cycle_detection() {
+        let mut h = UserHistory::new();
+        // Create a cycle: A→B→A
+        h.record(&[("あ".into(), "A".into()), ("び".into(), "B".into())]);
+        h.record(&[("び".into(), "B".into()), ("あ".into(), "A".into())]);
+
+        let result = chain_bigram_phrase(&h, "A", 10);
+        // Should chain A→B then stop (A already visited)
+        assert_eq!(result.as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_self_loop() {
+        let mut h = UserHistory::new();
+        // Self-loop: は→は
+        h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
+
+        let result = chain_bigram_phrase(&h, "は", 10);
+        // Should not chain at all (first successor is "は" which is already visited)
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prediction_cycle_produces_no_garbage() {
+        let dict = make_dict();
+        let mut h = UserHistory::new();
+        // Create a cycle: は→は (self-loop)
+        h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
+
+        let resp = generate_prediction_candidates(&dict, None, Some(&h), "は", 20);
+        // No candidate should contain repeated "ははは..." garbage
+        for surface in &resp.surfaces {
+            assert!(
+                !surface.contains("はは"),
+                "should not contain repeated garbage: {}",
+                surface,
+            );
+        }
     }
 
     #[test]
