@@ -1,3 +1,5 @@
+use tracing::{debug, debug_span};
+
 use super::cost::CostFunction;
 use super::lattice::Lattice;
 
@@ -17,6 +19,7 @@ pub(crate) struct RichSegment {
     pub surface: String,
     pub left_id: u16,
     pub right_id: u16,
+    pub word_cost: i16,
 }
 
 /// A scored path from N-best Viterbi, carrying enough info for reranking.
@@ -64,6 +67,7 @@ pub(crate) fn viterbi_nbest(
     n: usize,
 ) -> Vec<ScoredPath> {
     let char_count = lattice.char_count;
+    let _span = debug_span!("viterbi_nbest", n, char_count).entered();
     if char_count == 0 || n == 0 {
         return Vec::new();
     }
@@ -145,6 +149,10 @@ pub(crate) fn viterbi_nbest(
         }
     }
 
+    debug!(
+        result_count = results.len(),
+        best_cost = results.first().map(|p| p.viterbi_cost)
+    );
     results
 }
 
@@ -194,6 +202,7 @@ fn backtrace_nbest(
                 surface: node.surface.clone(),
                 left_id: node.left_id,
                 right_id: node.right_id,
+                word_cost: node.cost,
             }
         })
         .collect()

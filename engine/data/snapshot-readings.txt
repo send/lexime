@@ -1,0 +1,25 @@
+# Lexime snapshot regression test readings
+# One kana reading per line. Lines starting with # are comments.
+
+# Basic words
+きょう
+てんき
+かんじ
+
+# Common phrases
+きょうはいいてんき
+わたしはがくせいです
+
+# Verb conjugations
+たべる
+はしった
+かいました
+
+# Mixed content
+とうきょう
+おおさか
+にほんご
+
+# Longer phrases
+にほんごのべんきょう
+がっこうにいく

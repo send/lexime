@@ -1,9 +1,12 @@
 pub(crate) mod cost;
+pub mod explain;
 mod lattice;
 pub(crate) mod reranker;
 pub(crate) mod rewriter;
 pub(crate) mod testutil;
 mod viterbi;
+
+use tracing::debug_span;
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
@@ -23,6 +26,7 @@ fn postprocess(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    let _span = debug_span!("postprocess", n, paths_in = paths.len()).entered();
     reranker::rerank(paths, conn);
     if let Some(h) = history {
         reranker::history_rerank(paths, h);
@@ -486,6 +490,7 @@ mod tests {
             surface: surface.into(),
             left_id: id,
             right_id: id,
+            word_cost: 0,
         }
     }
 

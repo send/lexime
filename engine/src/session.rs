@@ -1,3 +1,5 @@
+use tracing::debug_span;
+
 use crate::candidates::{generate_candidates, CandidateResponse};
 use crate::converter::ConvertedSegment;
 use crate::dict::connection::ConnectionMatrix;
@@ -321,6 +323,7 @@ impl<'a> InputSession<'a> {
     ///
     /// `flags`: bit 0 = shift, bit 1 = has_modifier (Cmd/Ctrl/Opt)
     pub fn handle_key(&mut self, key_code: u16, text: &str, flags: u8) -> KeyResponse {
+        let _span = debug_span!("handle_key", key_code, text, flags).entered();
         let has_modifier = flags & FLAG_HAS_MODIFIER != 0;
         let has_shift = flags & FLAG_SHIFT != 0;
 

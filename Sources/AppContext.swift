@@ -44,6 +44,13 @@ class AppContext {
         }
         self.historyPath = appSupport.appendingPathComponent("Lexime/user_history.lxud").path
 
+        // Initialize tracing (no-op unless built with --features trace)
+        let logDir = (NSSearchPathForDirectoriesInDomains(
+            .libraryDirectory, .userDomainMask, true).first ?? "/tmp") + "/Logs/Lexime"
+        try? FileManager.default.createDirectory(
+            atPath: logDir, withIntermediateDirectories: true)
+        lex_trace_init(logDir)
+
         if let h = lex_history_open(self.historyPath) {
             NSLog("Lexime: User history loaded from %@", self.historyPath)
             self.history = h

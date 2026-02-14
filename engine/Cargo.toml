@@ -10,7 +10,16 @@ crate-type = ["staticlib", "lib"]
 name = "dictool"
 path = "src/bin/dictool.rs"
 
+[[bin]]
+name = "lextool"
+path = "src/bin/lextool.rs"
+
+[features]
+default = []
+trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
+
 [dependencies]
+tracing = { version = "0.1", features = ["max_level_off"] }
 lexime-trie = "0.1"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
@@ -20,3 +29,12 @@ ureq = "3"
 zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
 clap = { version = "4", features = ["derive"] }
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+features = ["json", "env-filter"]
+optional = true
+
+[dependencies.tracing-appender]
+version = "0.2"
+optional = true

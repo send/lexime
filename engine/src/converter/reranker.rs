@@ -1,3 +1,5 @@
+use tracing::{debug, debug_span};
+
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::UserHistory;
 
@@ -27,6 +29,7 @@ const STRUCTURE_COST_FILTER: i64 = 4000;
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
 pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
+    let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
         return;
     }
@@ -96,6 +99,7 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
+    debug!(paths_out = paths.len());
 }
 
 /// Apply user-history boosts to N-best paths, then re-sort.
@@ -105,6 +109,7 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
 /// paths (not individual lattice nodes), it cannot cause the fragmentation
 /// problems that in-Viterbi boosting could.
 pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
+    let _span = debug_span!("history_rerank", paths_count = paths.len()).entered();
     if paths.is_empty() {
         return;
     }
@@ -119,6 +124,7 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
         path.viterbi_cost -= boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
+    debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
 }
 
 #[cfg(test)]
@@ -147,18 +153,21 @@ mod tests {
                         surface: "木".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "の".into(),
                         surface: "の".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "は".into(),
                         surface: "葉".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 1000,
@@ -170,6 +179,7 @@ mod tests {
                     surface: "木の葉".into(),
                     left_id: 1,
                     right_id: 1,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 1040,
             },
@@ -191,12 +201,14 @@ mod tests {
                         surface: "木".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "の".into(),
                         surface: "の".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 1000,
@@ -207,6 +219,7 @@ mod tests {
                     surface: "木の".into(),
                     left_id: 1,
                     right_id: 1,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 2000,
             },
@@ -227,6 +240,7 @@ mod tests {
                 surface: "亜".into(),
                 left_id: 0,
                 right_id: 0,
+                word_cost: 0,
             }],
             viterbi_cost: 1000,
         }];
@@ -257,12 +271,14 @@ mod tests {
                         surface: "で".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "きたり".into(),
                         surface: "来たり".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 5000,
@@ -275,12 +291,14 @@ mod tests {
                         surface: "出来".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "たり".into(),
                         surface: "たり".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 6500,
@@ -310,6 +328,7 @@ mod tests {
                     surface: "タラ".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 3000,
             },
@@ -320,6 +339,7 @@ mod tests {
                     surface: "たら".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 7000,
             },
@@ -351,6 +371,7 @@ mod tests {
                     surface: "今日".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 3000,
             },
@@ -360,6 +381,7 @@ mod tests {
                     surface: "京".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 5000,
             },
@@ -385,12 +407,14 @@ mod tests {
                         surface: "京".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "は".into(),
                         surface: "は".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 5000,
@@ -403,12 +427,14 @@ mod tests {
                         surface: "今日".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "は".into(),
                         surface: "は".into(),
                         left_id: 0,
                         right_id: 0,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 7000,
@@ -432,6 +458,7 @@ mod tests {
                     surface: "亜".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 1000,
             },
@@ -441,6 +468,7 @@ mod tests {
                     surface: "阿".into(),
                     left_id: 0,
                     right_id: 0,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 2000,
             },
@@ -489,6 +517,7 @@ mod tests {
                     surface: "合言葉".into(),
                     left_id: 1,
                     right_id: 1,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 5000,
             },
@@ -499,12 +528,14 @@ mod tests {
                         surface: "愛".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "うえお".into(),
                         surface: "上尾".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 4000,
@@ -516,30 +547,35 @@ mod tests {
                         surface: "亜".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "い".into(),
                         surface: "位".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "う".into(),
                         surface: "鵜".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "え".into(),
                         surface: "絵".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "お".into(),
                         surface: "尾".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 3000,
@@ -571,6 +607,7 @@ mod tests {
             surface: s.into(),
             left_id: 1,
             right_id: 1,
+            word_cost: 0,
         };
 
         let mut paths = vec![
@@ -615,24 +652,28 @@ mod tests {
                         surface: "亜".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "い".into(),
                         surface: "位".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "う".into(),
                         surface: "鵜".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                     RichSegment {
                         reading: "え".into(),
                         surface: "絵".into(),
                         left_id: 1,
                         right_id: 1,
+                        word_cost: 0,
                     },
                 ],
                 viterbi_cost: 1000,
@@ -643,6 +684,7 @@ mod tests {
                     surface: "合言葉".into(),
                     left_id: 1,
                     right_id: 1,
+                    word_cost: 0,
                 }],
                 viterbi_cost: 5000,
             },
