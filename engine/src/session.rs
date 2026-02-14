@@ -182,40 +182,60 @@ impl FrozenPrefix {
     }
 }
 
+/// Marked (composing) text with underline style.
+pub struct MarkedText {
+    pub text: String,
+    pub dashed: bool,
+}
+
+/// Candidate panel action — exactly one of three states.
+/// Replaces the old `show_candidates` / `hide_candidates` bool pair,
+/// making the invalid combination (both true) unrepresentable.
+pub enum CandidateAction {
+    /// Leave the panel as-is (e.g. deferred mode keeping stale candidates visible).
+    Keep,
+    /// Show or update the candidate panel with these surfaces.
+    Show {
+        surfaces: Vec<String>,
+        selected: u32,
+    },
+    /// Hide the candidate panel.
+    Hide,
+}
+
+/// Request for asynchronous candidate generation.
+/// Bundles `needs_candidates` and `candidate_reading` so that
+/// a request without a reading is structurally impossible.
+pub struct AsyncCandidateRequest {
+    pub reading: String,
+}
+
+/// Orthogonal side-effects that accompany a response.
+#[derive(Default)]
+pub struct SideEffects {
+    pub switch_to_abc: bool,
+    pub save_history: bool,
+}
+
 /// Response from handle_key / commit, returned to the caller (Swift via FFI).
 pub struct KeyResponse {
     pub consumed: bool,
-    pub commit_text: Option<String>,
-    pub marked_text: Option<String>,
-    pub is_dashed_underline: bool,
-    pub candidates: Vec<String>,
-    pub selected_index: u32,
-    pub show_candidates: bool,
-    pub hide_candidates: bool,
-    pub switch_to_abc: bool,
-    pub save_history: bool,
-    /// When true, the caller should generate candidates asynchronously
-    /// using `candidate_reading` and feed them back via `receive_candidates`.
-    pub needs_candidates: bool,
-    /// The reading (composed_kana) to use for async candidate generation.
-    pub candidate_reading: Option<String>,
+    pub commit: Option<String>,
+    pub marked: Option<MarkedText>,
+    pub candidates: CandidateAction,
+    pub async_request: Option<AsyncCandidateRequest>,
+    pub side_effects: SideEffects,
 }
 
 impl KeyResponse {
     fn not_consumed() -> Self {
         Self {
             consumed: false,
-            commit_text: None,
-            marked_text: None,
-            is_dashed_underline: false,
-            candidates: Vec::new(),
-            selected_index: 0,
-            show_candidates: false,
-            hide_candidates: false,
-            switch_to_abc: false,
-            save_history: false,
-            needs_candidates: false,
-            candidate_reading: None,
+            commit: None,
+            marked: None,
+            candidates: CandidateAction::Keep,
+            async_request: None,
+            side_effects: SideEffects::default(),
         }
     }
 
@@ -226,16 +246,11 @@ impl KeyResponse {
         }
     }
 
-    /// Merge: keep commit_text from self, take display-related fields from `other`.
+    /// Merge: keep commit/side_effects from self, take display-related fields from `other`.
     fn with_display_from(mut self, other: KeyResponse) -> KeyResponse {
-        self.marked_text = other.marked_text;
+        self.marked = other.marked;
         self.candidates = other.candidates;
-        self.selected_index = other.selected_index;
-        self.show_candidates = other.show_candidates;
-        self.hide_candidates = other.hide_candidates;
-        self.is_dashed_underline = other.is_dashed_underline;
-        self.needs_candidates = other.needs_candidates;
-        self.candidate_reading = other.candidate_reading;
+        self.async_request = other.async_request;
         self
     }
 }
@@ -334,7 +349,7 @@ impl<'a> InputSession<'a> {
             } else {
                 KeyResponse::consumed()
             };
-            resp.switch_to_abc = true;
+            resp.side_effects.switch_to_abc = true;
             return resp;
         }
 
@@ -360,10 +375,10 @@ impl<'a> InputSession<'a> {
             } else {
                 KeyResponse::consumed()
             };
-            // Append backslash to commit_text
-            match resp.commit_text {
+            // Append backslash to commit
+            match resp.commit {
                 Some(ref mut t) => t.push('\\'),
-                None => resp.commit_text = Some("\\".to_string()),
+                None => resp.commit = Some("\\".to_string()),
             }
             return resp;
         }
@@ -435,7 +450,7 @@ impl<'a> InputSession<'a> {
             key::ENTER => {
                 if self.comp().submode == Submode::English {
                     let mut resp = self.commit_composed();
-                    resp.hide_candidates = true;
+                    resp.candidates = CandidateAction::Hide;
                     resp
                 } else {
                     // Lazy generate: ensure candidates are available for commit
@@ -515,9 +530,9 @@ impl<'a> InputSession<'a> {
                 }
                 self.comp().candidates.clear();
                 let mut resp = KeyResponse::consumed();
-                resp.hide_candidates = true;
+                resp.candidates = CandidateAction::Hide;
                 if !self.history_records.is_empty() {
-                    resp.save_history = true;
+                    resp.side_effects.save_history = true;
                 }
                 // Escape: IMKit will call commitComposition after.
                 // composedString() uses display() which computes from current state.
@@ -577,9 +592,9 @@ impl<'a> InputSession<'a> {
                     // Convert punctuation
                     let result = convert_romaji("", text, true);
                     if !result.composed_kana.is_empty() {
-                        match resp.commit_text {
+                        match resp.commit {
                             Some(ref mut t) => t.push_str(&result.composed_kana),
-                            None => resp.commit_text = Some(result.composed_kana),
+                            None => resp.commit = Some(result.composed_kana),
                         }
                     }
                     return resp;
@@ -685,8 +700,9 @@ impl<'a> InputSession<'a> {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let mut resp = self.make_marked_text_response();
         if !self.comp().kana.is_empty() {
-            resp.needs_candidates = true;
-            resp.candidate_reading = Some(self.comp().kana.clone());
+            resp.async_request = Some(AsyncCandidateRequest {
+                reading: self.comp().kana.clone(),
+            });
         }
         resp
     }
@@ -727,7 +743,7 @@ impl<'a> InputSession<'a> {
     fn try_auto_commit(&mut self) -> Option<KeyResponse> {
         // Extract data from comp() in a block so the borrow is dropped before
         // we access self.history_records.
-        let (committed_reading, committed_surface, seg_pairs) = {
+        let (committed_reading, committed_surface, seg_pairs, commit_count) = {
             let c = self.comp();
             if c.stability.count < 3 {
                 return None;
@@ -772,7 +788,12 @@ impl<'a> InputSession<'a> {
                 None
             };
 
-            (committed_reading, committed_surface, seg_pairs)
+            (
+                committed_reading,
+                committed_surface,
+                seg_pairs,
+                commit_count,
+            )
         };
 
         // Record to history (comp() borrow is dropped)
@@ -793,36 +814,84 @@ impl<'a> InputSession<'a> {
         let prefix_text = std::mem::take(&mut c.prefix.text);
         c.prefix.has_boundary_space = false;
         let mut resp = KeyResponse::consumed();
-        resp.commit_text = Some(format!("{}{}", prefix_text, committed_surface));
-        resp.save_history = true;
+        resp.commit = Some(format!("{}{}", prefix_text, committed_surface));
+        resp.side_effects.save_history = true;
 
         if self.comp().kana.is_empty() {
             self.comp().candidates.clear();
-            resp.hide_candidates = true;
-            resp.marked_text = Some(String::new());
+            resp.candidates = CandidateAction::Hide;
+            resp.marked = Some(MarkedText {
+                text: String::new(),
+                dashed: false,
+            });
         } else if self.defer_candidates {
-            // Async mode: show kana, request async candidate generation
+            // Async mode: extract provisional candidates from remaining N-best
+            // segments so the candidate panel stays visible (no flicker).
             let c = self.comp();
+            let mut provisional: Vec<String> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for path in &c.candidates.paths {
+                if path.len() > commit_count {
+                    let remaining: String = path[commit_count..]
+                        .iter()
+                        .map(|s| s.surface.as_str())
+                        .collect();
+                    if !remaining.is_empty() && seen.insert(remaining.clone()) {
+                        provisional.push(remaining);
+                    }
+                }
+            }
+            // Always include kana as a fallback candidate
+            if seen.insert(c.kana.clone()) {
+                provisional.push(c.kana.clone());
+            }
+
+            // kana is guaranteed non-empty here (empty case handled above),
+            // so provisional always has at least the kana entry.
+            debug_assert!(!provisional.is_empty());
+
             c.candidates.clear();
-            let display = c.display_kana();
-            resp.marked_text = Some(display);
-            resp.hide_candidates = true;
-            resp.needs_candidates = true;
-            resp.candidate_reading = Some(c.kana.clone());
+
+            // Store provisional candidates in session state so that candidate
+            // navigation (Space / Arrow) works during the async phase.
+            c.candidates.surfaces.clone_from(&provisional);
+
+            // prefix.text was already consumed into commit via std::mem::take
+            // above, so it is empty here — no need to prepend it.
+            resp.marked = Some(MarkedText {
+                text: provisional[0].clone(),
+                dashed: false,
+            });
+            resp.async_request = Some(AsyncCandidateRequest {
+                reading: c.kana.clone(),
+            });
+            resp.candidates = CandidateAction::Show {
+                surfaces: provisional,
+                selected: 0,
+            };
         } else {
             // Sync mode: re-generate candidates for remaining input
             let c = self.comp();
+            let dashed = c.submode == Submode::English;
             let display = c.display_kana();
-            resp.marked_text = Some(display);
-            resp.is_dashed_underline = c.submode == Submode::English;
+            resp.marked = Some(MarkedText {
+                text: display,
+                dashed,
+            });
             self.update_candidates();
             let c = self.comp();
             if let Some(best) = c.candidates.surfaces.first() {
-                resp.marked_text = Some(format!("{}{}", c.prefix.text, best));
+                resp.marked = Some(MarkedText {
+                    text: format!("{}{}", c.prefix.text, best),
+                    dashed,
+                });
             }
-            resp.candidates.clone_from(&c.candidates.surfaces);
-            resp.selected_index = c.candidates.selected as u32;
-            resp.show_candidates = !c.candidates.is_empty();
+            if !c.candidates.is_empty() {
+                resp.candidates = CandidateAction::Show {
+                    surfaces: c.candidates.surfaces.clone(),
+                    selected: c.candidates.selected as u32,
+                };
+            }
         }
 
         Some(resp)
@@ -837,9 +906,12 @@ impl<'a> InputSession<'a> {
         let c = self.comp();
         let text = format!("{}{}", c.prefix.text, c.kana);
         if !text.is_empty() {
-            resp.commit_text = Some(text);
+            resp.commit = Some(text);
         } else {
-            resp.marked_text = Some(String::new());
+            resp.marked = Some(MarkedText {
+                text: String::new(),
+                dashed: false,
+            });
         }
         self.reset_state();
         resp
@@ -851,7 +923,7 @@ impl<'a> InputSession<'a> {
         }
 
         let mut resp = KeyResponse::consumed();
-        resp.hide_candidates = true;
+        resp.candidates = CandidateAction::Hide;
         self.flush();
 
         let c = self.comp();
@@ -862,14 +934,17 @@ impl<'a> InputSession<'a> {
             let surface = c.candidates.surfaces[c.candidates.selected].clone();
 
             self.record_history(reading, surface.clone());
-            resp.save_history = true;
-            resp.commit_text = Some(format!("{}{}", prefix_text, surface));
+            resp.side_effects.save_history = true;
+            resp.commit = Some(format!("{}{}", prefix_text, surface));
         } else {
             let c = self.comp();
             if !c.kana.is_empty() || !prefix_text.is_empty() {
-                resp.commit_text = Some(format!("{}{}", prefix_text, c.kana));
+                resp.commit = Some(format!("{}{}", prefix_text, c.kana));
             } else {
-                resp.marked_text = Some(String::new());
+                resp.marked = Some(MarkedText {
+                    text: String::new(),
+                    dashed: false,
+                });
             }
         }
 
@@ -929,8 +1004,11 @@ impl<'a> InputSession<'a> {
 
         if all_empty {
             let mut resp = KeyResponse::consumed();
-            resp.hide_candidates = true;
-            resp.marked_text = Some(String::new());
+            resp.candidates = CandidateAction::Hide;
+            resp.marked = Some(MarkedText {
+                text: String::new(),
+                dashed: false,
+            });
             self.reset_state();
             resp
         } else if self.comp().kana.is_empty() && self.comp().pending.is_empty() {
@@ -939,9 +1017,11 @@ impl<'a> InputSession<'a> {
             c.candidates.clear();
             let display = c.display();
             let mut resp = KeyResponse::consumed();
-            resp.marked_text = Some(display);
-            resp.hide_candidates = true;
-            resp.is_dashed_underline = c.submode == Submode::English;
+            resp.marked = Some(MarkedText {
+                text: display,
+                dashed: c.submode == Submode::English,
+            });
+            resp.candidates = CandidateAction::Hide;
             resp
         } else if self.defer_candidates && self.comp().submode == Submode::Japanese {
             self.make_deferred_candidates_response()
@@ -1023,20 +1103,20 @@ impl<'a> InputSession<'a> {
             let display = self.comp().display();
             let mut resp = KeyResponse::consumed();
             if !display.is_empty() {
-                resp.marked_text = Some(display);
+                resp.marked = Some(MarkedText {
+                    text: display,
+                    dashed: new_submode == Submode::English,
+                });
             }
-            resp.is_dashed_underline = new_submode == Submode::English;
-            resp.hide_candidates = true;
+            resp.candidates = CandidateAction::Hide;
             if !self.history_records.is_empty() {
-                resp.save_history = true;
+                resp.side_effects.save_history = true;
             }
             resp
         } else {
             // Idle: just toggle the idle_submode
             self.idle_submode = new_submode;
-            let mut resp = KeyResponse::consumed();
-            resp.is_dashed_underline = new_submode == Submode::English;
-            resp
+            KeyResponse::consumed()
         }
     }
 
@@ -1048,8 +1128,10 @@ impl<'a> InputSession<'a> {
         let c = self.comp();
         let display = c.display_kana();
         let mut resp = KeyResponse::consumed();
-        resp.marked_text = Some(display);
-        resp.is_dashed_underline = c.submode == Submode::English;
+        resp.marked = Some(MarkedText {
+            text: display,
+            dashed: c.submode == Submode::English,
+        });
         resp
     }
 
@@ -1058,13 +1140,18 @@ impl<'a> InputSession<'a> {
 
         let c = self.comp();
         let display = c.display();
-        resp.marked_text = Some(display);
-        resp.is_dashed_underline = c.submode == Submode::English;
+        resp.marked = Some(MarkedText {
+            text: display,
+            dashed: c.submode == Submode::English,
+        });
 
         // Candidates
-        resp.candidates.clone_from(&c.candidates.surfaces);
-        resp.selected_index = c.candidates.selected as u32;
-        resp.show_candidates = !c.candidates.is_empty();
+        if !c.candidates.is_empty() {
+            resp.candidates = CandidateAction::Show {
+                surfaces: c.candidates.surfaces.clone(),
+                selected: c.candidates.selected as u32,
+            };
+        }
 
         // Try auto-commit (only in sync mode; async mode handles it in receive_candidates)
         if !self.defer_candidates {
@@ -1080,10 +1167,14 @@ impl<'a> InputSession<'a> {
         let mut resp = KeyResponse::consumed();
 
         let c = self.comp();
-        resp.marked_text = Some(c.display());
-        resp.candidates.clone_from(&c.candidates.surfaces);
-        resp.selected_index = c.candidates.selected as u32;
-        resp.show_candidates = true;
+        resp.marked = Some(MarkedText {
+            text: c.display(),
+            dashed: false,
+        });
+        resp.candidates = CandidateAction::Show {
+            surfaces: c.candidates.surfaces.clone(),
+            selected: c.candidates.selected as u32,
+        };
         resp
     }
 }
@@ -1258,7 +1349,7 @@ mod tests {
         let resp = session.handle_key(0, "a", 0);
         assert!(resp.consumed);
         // After "ka" → "か", marked text should be set
-        assert!(resp.marked_text.is_some());
+        assert!(resp.marked.is_some());
     }
 
     #[test]
@@ -1335,7 +1426,7 @@ mod tests {
 
         let resp = session.handle_key(key::ESCAPE, "", 0);
         assert!(resp.consumed);
-        assert!(resp.hide_candidates);
+        assert!(matches!(resp.candidates, CandidateAction::Hide));
         // After escape, kana is flushed (n → ん)
         assert_eq!(session.comp().kana, "きょうん");
         assert!(session.comp().pending.is_empty());
@@ -1353,8 +1444,8 @@ mod tests {
 
         let resp = session.handle_key(key::ENTER, "", 0);
         assert!(resp.consumed);
-        assert!(resp.commit_text.is_some());
-        assert!(resp.hide_candidates);
+        assert!(resp.commit.is_some());
+        assert!(matches!(resp.candidates, CandidateAction::Hide));
         assert!(!session.is_composing());
     }
 
@@ -1374,7 +1465,7 @@ mod tests {
         let resp = session.handle_key(key::SPACE, "", 0);
         assert!(resp.consumed);
         assert_eq!(session.comp().candidates.selected, 1);
-        assert!(resp.show_candidates);
+        assert!(matches!(resp.candidates, CandidateAction::Show { .. }));
 
         // Second space goes to index 2
         let resp = session.handle_key(key::SPACE, "", 0);
@@ -1428,7 +1519,7 @@ mod tests {
         assert!(resp.consumed);
         assert!(session.is_composing());
         assert_eq!(session.comp().kana, "h");
-        assert!(resp.is_dashed_underline);
+        assert!(resp.marked.as_ref().is_some_and(|m| m.dashed));
 
         let resp = session.handle_key(0, "i", 0);
         assert!(resp.consumed);
@@ -1456,7 +1547,7 @@ mod tests {
 
         let resp = session.handle_key(0, "c", FLAG_HAS_MODIFIER);
         assert!(!resp.consumed);
-        assert!(resp.commit_text.is_some()); // commits before passing through
+        assert!(resp.commit.is_some()); // commits before passing through
         assert!(!session.is_composing());
     }
 
@@ -1469,7 +1560,7 @@ mod tests {
 
         let resp = session.handle_key(key::EISU, "", 0);
         assert!(resp.consumed);
-        assert!(resp.switch_to_abc);
+        assert!(resp.side_effects.switch_to_abc);
     }
 
     #[test]
@@ -1482,8 +1573,8 @@ mod tests {
 
         let resp = session.handle_key(key::EISU, "", 0);
         assert!(resp.consumed);
-        assert!(resp.switch_to_abc);
-        assert!(resp.commit_text.is_some());
+        assert!(resp.side_effects.switch_to_abc);
+        assert!(resp.commit.is_some());
         assert!(!session.is_composing());
     }
 
@@ -1508,7 +1599,7 @@ mod tests {
 
         let resp = session.handle_key(key::YEN, "¥", 0);
         assert!(resp.consumed);
-        assert_eq!(resp.commit_text.as_deref(), Some("\\"));
+        assert_eq!(resp.commit.as_deref(), Some("\\"));
     }
 
     #[test]
@@ -1521,8 +1612,8 @@ mod tests {
         let resp = session.handle_key(key::YEN, "¥", 0);
         assert!(resp.consumed);
         // Should commit current + add backslash
-        assert!(resp.commit_text.is_some());
-        let text = resp.commit_text.unwrap();
+        assert!(resp.commit.is_some());
+        let text = resp.commit.unwrap();
         assert!(text.ends_with('\\'));
     }
 
@@ -1550,7 +1641,7 @@ mod tests {
         let resp = session.handle_key(0, ".", 0);
         assert!(resp.consumed);
         // Should commit current state + append punctuation
-        let text = resp.commit_text.unwrap();
+        let text = resp.commit.unwrap();
         assert!(
             text.ends_with('。'),
             "commit should end with 。, got: {}",
@@ -1569,7 +1660,7 @@ mod tests {
         assert!(session.is_composing());
 
         let resp = session.commit();
-        assert!(resp.commit_text.is_some());
+        assert!(resp.commit.is_some());
         assert!(!session.is_composing());
     }
 
@@ -1688,14 +1779,14 @@ mod tests {
         // Toggle to English — display must preserve the conversion, not revert to kana
         let resp = session.handle_key(key::TAB, "", 0);
         assert!(resp.consumed);
-        assert!(resp.is_dashed_underline);
-        let marked = resp.marked_text.unwrap();
+        assert!(resp.marked.as_ref().is_some_and(|m| m.dashed));
+        let marked = resp.marked.unwrap().text;
         assert_eq!(
             marked, best,
             "toggle should preserve conversion, not revert to kana"
         );
         // Candidates are cleared after crystallization
-        assert!(resp.hide_candidates);
+        assert!(matches!(resp.candidates, CandidateAction::Hide));
         // Conversion should be crystallized into display_prefix
         assert_eq!(session.comp().prefix.text, best);
         assert!(session.comp().kana.is_empty());
@@ -1720,10 +1811,7 @@ mod tests {
 
         // Commit should produce "今日test"
         let resp = session.handle_key(key::ENTER, "", 0);
-        assert_eq!(
-            resp.commit_text.as_deref(),
-            Some(&format!("{}test", best)[..])
-        );
+        assert_eq!(resp.commit.as_deref(), Some(&format!("{}test", best)[..]));
         assert!(!session.is_composing());
     }
 
@@ -1824,5 +1912,81 @@ mod tests {
         // "z" is a prefix in the romaji trie, "zh" → "←"
         type_string(&mut session, "zh");
         assert_eq!(session.comp().kana, "←");
+    }
+
+    // --- Deferred auto-commit provisional candidates ---
+
+    #[test]
+    fn test_deferred_auto_commit_shows_provisional_candidates() {
+        use crate::candidates::generate_candidates;
+
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_defer_candidates(true);
+
+        // Helper: complete one async candidate cycle.
+        // Returns the response from receive_candidates (None if stale).
+        fn complete_cycle(
+            session: &mut InputSession,
+            dict: &TrieDictionary,
+        ) -> Option<KeyResponse> {
+            let reading = session.comp().kana.clone();
+            if reading.is_empty() {
+                return None;
+            }
+            let cand = generate_candidates(dict, None, None, &reading, 20);
+            session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        }
+
+        // Build up "きょうはいいてんき" with async cycles after each romaji group.
+        // Each cycle increments the stability counter (first segment = "きょう").
+        type_string(&mut session, "kyou"); // "きょう"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
+
+        type_string(&mut session, "ha"); // "きょうは"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
+
+        type_string(&mut session, "ii"); // "きょうはいい"
+        let r = complete_cycle(&mut session, &dict);
+        assert!(r.is_some());
+        assert!(
+            r.unwrap().commit.is_none(),
+            "no auto-commit yet (< 4 segments)"
+        );
+
+        type_string(&mut session, "tenki"); // "きょうはいいてんき"
+        let r = complete_cycle(&mut session, &dict);
+        let resp = r.expect("receive_candidates should return a response");
+
+        // Auto-commit should fire: first segment committed, remaining shown
+        assert!(
+            resp.commit.is_some(),
+            "auto-commit should produce commit_text"
+        );
+        assert!(
+            matches!(resp.candidates, CandidateAction::Show { .. }),
+            "deferred auto-commit should show provisional candidates (not hide)"
+        );
+        if let CandidateAction::Show { ref surfaces, .. } = resp.candidates {
+            assert!(
+                !surfaces.is_empty(),
+                "deferred auto-commit should provide provisional candidates"
+            );
+        }
+        // Async generation should still be requested for proper results
+        assert!(
+            resp.async_request.is_some(),
+            "deferred auto-commit should request async candidate generation"
+        );
+        // Session state should also hold provisional candidates
+        // so that candidate navigation works during the async phase.
+        assert!(
+            !session.comp().candidates.surfaces.is_empty(),
+            "session should retain provisional candidates for navigation"
+        );
     }
 }
