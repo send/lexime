@@ -193,7 +193,10 @@ pub enum CandidateAction {
     /// Leave the panel as-is (e.g. deferred mode keeping stale candidates visible).
     Keep,
     /// Show or update the candidate panel with these surfaces.
-    Show { surfaces: Vec<String>, selected: u32 },
+    Show {
+        surfaces: Vec<String>,
+        selected: u32,
+    },
     /// Hide the candidate panel.
     Hide,
 }
@@ -782,7 +785,12 @@ impl<'a> InputSession<'a> {
                 None
             };
 
-            (committed_reading, committed_surface, seg_pairs, commit_count)
+            (
+                committed_reading,
+                committed_surface,
+                seg_pairs,
+                commit_count,
+            )
         };
 
         // Record to history (comp() borrow is dropped)
@@ -821,8 +829,10 @@ impl<'a> InputSession<'a> {
             let mut seen = std::collections::HashSet::new();
             for path in &c.candidates.paths {
                 if path.len() > commit_count {
-                    let remaining: String =
-                        path[commit_count..].iter().map(|s| s.surface.as_str()).collect();
+                    let remaining: String = path[commit_count..]
+                        .iter()
+                        .map(|s| s.surface.as_str())
+                        .collect();
                     if !remaining.is_empty() && seen.insert(remaining.clone()) {
                         provisional.push(remaining);
                     }
@@ -1506,7 +1516,7 @@ mod tests {
         assert!(resp.consumed);
         assert!(session.is_composing());
         assert_eq!(session.comp().kana, "h");
-        assert!(resp.marked.as_ref().map_or(false, |m| m.dashed));
+        assert!(resp.marked.as_ref().is_some_and(|m| m.dashed));
 
         let resp = session.handle_key(0, "i", 0);
         assert!(resp.consumed);
@@ -1766,7 +1776,7 @@ mod tests {
         // Toggle to English — display must preserve the conversion, not revert to kana
         let resp = session.handle_key(key::TAB, "", 0);
         assert!(resp.consumed);
-        assert!(resp.marked.as_ref().map_or(false, |m| m.dashed));
+        assert!(resp.marked.as_ref().is_some_and(|m| m.dashed));
         let marked = resp.marked.unwrap().text;
         assert_eq!(
             marked, best,
@@ -1798,10 +1808,7 @@ mod tests {
 
         // Commit should produce "今日test"
         let resp = session.handle_key(key::ENTER, "", 0);
-        assert_eq!(
-            resp.commit.as_deref(),
-            Some(&format!("{}test", best)[..])
-        );
+        assert_eq!(resp.commit.as_deref(), Some(&format!("{}test", best)[..]));
         assert!(!session.is_composing());
     }
 
@@ -1943,14 +1950,20 @@ mod tests {
         type_string(&mut session, "ii"); // "きょうはいい"
         let r = complete_cycle(&mut session, &dict);
         assert!(r.is_some());
-        assert!(r.unwrap().commit.is_none(), "no auto-commit yet (< 4 segments)");
+        assert!(
+            r.unwrap().commit.is_none(),
+            "no auto-commit yet (< 4 segments)"
+        );
 
         type_string(&mut session, "tenki"); // "きょうはいいてんき"
         let r = complete_cycle(&mut session, &dict);
         let resp = r.expect("receive_candidates should return a response");
 
         // Auto-commit should fire: first segment committed, remaining shown
-        assert!(resp.commit.is_some(), "auto-commit should produce commit_text");
+        assert!(
+            resp.commit.is_some(),
+            "auto-commit should produce commit_text"
+        );
         assert!(
             matches!(resp.candidates, CandidateAction::Show { .. }),
             "deferred auto-commit should show provisional candidates (not hide)"

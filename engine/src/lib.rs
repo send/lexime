@@ -1025,7 +1025,7 @@ fn pack_key_response(
     use session::CandidateAction;
 
     let commit_cstr = resp.commit.and_then(|s| CString::new(s).ok());
-    let is_dashed = resp.marked.as_ref().map_or(false, |m| m.dashed);
+    let is_dashed = resp.marked.as_ref().is_some_and(|m| m.dashed);
     let marked_cstr = resp.marked.and_then(|m| CString::new(m.text).ok());
 
     let (show, hide) = match &resp.candidates {
