@@ -1,4 +1,4 @@
-# Lexime 仕様書 (v1.0)
+# Lexime 仕様書 (v1.1)
 
 ## 概要
 
@@ -49,9 +49,9 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 
 | モジュール | 内容 |
 |---|---|
-| `lib.rs` | FFI 関数 (26 関数)。C 互換構造体、メモリ管理（`OwnedVec` パターン） |
+| `lib.rs` | FFI 関数 (39 関数)。C 互換構造体、メモリ管理（`OwnedVec` パターン） |
 | `romaji/` | ローマ字→かな変換。Trie（HashMap ベース）、141+ マッピング、促音・撥音・コラプス |
-| `candidates.rs` | 統一候補生成。句読点代替、予測 + Viterbi N-best + 辞書 lookup の統合・重複排除 |
+| `candidates.rs` | 統一候補生成。句読点代替、予測 + Viterbi N-best + 辞書 lookup の統合・重複排除。予測モード（bigram chaining） |
 | `dict/` | `Dictionary` trait、`TrieDictionary`（bincode）、`ConnectionMatrix`（LXCX） |
 | `dict/source/` | `DictSource` trait、`MozcSource`、`SudachiSource`、`pos_map`（POS ID リマップ） |
 | `converter/` | `Lattice` 構築、`Viterbi` N-best 探索、`Reranker`、`CostFunction` trait |
@@ -63,22 +63,24 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 
 - **辞書**: Mozc TSV → `TrieDictionary`（bincode シリアライズ、マジック `LXDC`、約 49MB）
-- **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）
+- **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）。V3 フォーマットでは POS ロールメタデータ（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）を埋め込み、文節グルーピングに使用
 - POS ID ペアの遷移コストを O(1) で参照
 
 ### FFI (C ABI)
 
-`engine/include/engine.h` で公開する 26 関数:
+`engine/include/engine.h` で公開する 39 関数:
 
 | カテゴリ | 関数 |
 |---|---|
-| ユーティリティ | `lex_engine_version`, `lex_engine_echo` |
+| ユーティリティ | `lex_engine_version`, `lex_engine_echo`, `lex_trace_init` |
 | ローマ字 | `lex_romaji_lookup`, `lex_romaji_lookup_free`, `lex_romaji_convert`, `lex_romaji_convert_free` |
 | 辞書 | `lex_dict_open`, `lex_dict_close`, `lex_dict_lookup`, `lex_dict_predict`, `lex_dict_predict_ranked`, `lex_candidates_free` |
 | 接続行列 | `lex_conn_open`, `lex_conn_close` |
 | 変換 | `lex_convert`, `lex_conversion_free`, `lex_convert_nbest`, `lex_convert_nbest_with_history`, `lex_conversion_result_list_free` |
-| 候補生成 | `lex_generate_candidates`, `lex_candidate_response_free` |
-| 学習 | `lex_history_open`, `lex_history_close`, `lex_history_record`, `lex_history_save`, `lex_convert_with_history`, `lex_dict_lookup_with_history` |
+| 候補生成 | `lex_generate_candidates`, `lex_generate_prediction_candidates`, `lex_candidate_response_free` |
+| セッション | `lex_session_new`, `lex_session_free`, `lex_session_set_programmer_mode`, `lex_session_set_defer_candidates`, `lex_session_set_conversion_mode`, `lex_session_handle_key`, `lex_session_commit`, `lex_session_is_composing`, `lex_session_receive_candidates` |
+| 学習 | `lex_history_open`, `lex_history_close`, `lex_history_record`, `lex_history_save`, `lex_convert_with_history`, `lex_dict_lookup_with_history`, `lex_key_response_record_history` |
+| レスポンス | `lex_key_response_free` |
 
 メモリ管理: Rust 側が `OwnedVec` / `OwnedCandidateResponse` で文字列を所有し、呼び出し元が `*_free()` で解放する。
 
@@ -89,7 +91,8 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 ```
 idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape)──→ idle
                                     │
-                                    └──(Tab)──→ サブモード切替（japanese ↔ english）
+                                    ├──(Tab)──→ サブモード切替（japanese ↔ english）
+                                    └──(Option+Tab)──→ 変換モード切替（Standard ↔ Predictive）
 ```
 
 ### 各状態でのキー操作
@@ -112,7 +115,8 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Space / ↓ | 次の候補を選択（初回 Space は index 1 から開始） |
 | ↑ | 前の候補を選択 |
 | Enter | 表示中の候補を確定（変換結果 + 学習記録） |
-| Tab | english サブモードへ切替 |
+| Tab | Standard: english サブモードへ切替 / Predictive: 確定 |
+| Option+Tab | 変換モード切替（Standard ↔ Predictive） |
 | Backspace | 1 文字削除（空になれば idle へ） |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
@@ -155,6 +159,8 @@ Rust engine 内の Trie（HashMap ベース）で 141+ のマッピングをサ�
 
 ### 候補生成
 
+#### Standard モード
+
 composing 中、キーストロークごとに `lex_generate_candidates` を 1 回呼び出し、以下の候補を engine 内で統合する:
 
 1. **Viterbi #1** — N-best 変換の最良候補（先頭、リアルタイム表示用）
@@ -165,6 +171,31 @@ composing 中、キーストロークごとに `lex_generate_candidates` を 1 �
 
 重複は engine 内で排除する。句読点入力時は代替候補（`。`→`．`/`.` 等）を生成する。
 マークドテキストには Viterbi #1（変換結果）をリアルタイム表示し、Space / ↑↓ で他の候補に切り替える。
+
+#### Predictive モード
+
+`lex_generate_prediction_candidates` を使用。Viterbi N-best をベースに、学習バイグラムを連鎖させた予測候補を生成する:
+
+1. Viterbi N-best で変換候補を取得
+2. 各候補の末尾セグメントから `bigram_successors` でバイグラム後続を探索
+3. サイクル検出（`HashSet` で訪問済みサーフェスを追跡）付きで最大チェーン長まで連鎖
+4. 重複排除後に統合
+
+非同期候補生成（`defer_candidates`）と組み合わせて使用する（詳細は後述）。
+
+### 変換モード
+
+`ConversionMode` enum で Standard / Predictive を切り替える。
+
+| | Standard | Predictive |
+|---|---|---|
+| 候補生成 | `lex_generate_candidates` | `lex_generate_prediction_candidates` |
+| Tab の動作 | サブモード切替（japanese ↔ english） | 確定 |
+| 自動確定 | 有効 | 無効 |
+| `candidate_dispatch` | `0` | `1` |
+
+- Option+Tab で切替（composing 中は現在の変換を確定してから切替）
+- UserDefaults `predictiveMode` で永続化
 
 ## 変換パイプライン
 
@@ -192,7 +223,7 @@ composing 中、キーストロークごとに `lex_generate_candidates` を 1 �
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
 - **Reranker**: Viterbi で over-generate（1-best: 10 候補、N-best: 3x）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
-- **文節グルーピング**: 形態素列を `is_function_word(left_id)` で判定し、自立語 + 付属語のフレーズ単位にマージ
+- **文節グルーピング**: 接続行列 V3 に埋め込まれた POS ロール（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）に基づき、形態素列を自立語 + 付属語のフレーズ単位にマージ
 
 ### CostFunction trait
 
@@ -210,6 +241,46 @@ CostFunction
 
 学習ブーストは Viterbi のコスト関数ではなく、Reranker で適用する（コスト関数を汚染しない設計）。
 
+## 自動確定
+
+Standard モードでのみ有効（`try_auto_commit` 内で `auto_commit_enabled` をガード）。長い入力を途中で区切って確定することで、composedKana の肥大化を防ぐ。
+
+### 安定度トラッカー
+
+`StabilityTracker` が Viterbi 結果の先頭セグメントを監視し、同一リーディングが連続したカウントを記録する。
+
+- **安定度閾値**: `count ≥ 3`（3 回連続で先頭セグメントが同じ）
+- **セグメント閾値**: `segments ≥ 4`（パス全体のセグメント数が 4 以上）
+- 両条件を満たすと、安定したセグメントを自動確定
+
+### 連続 ASCII グルーピング
+
+english サブモードで入力された連続 ASCII セグメントは、1 文字ずつではなく単語単位でまとめて自動確定する。
+
+### Deferred モード
+
+`defer_candidates` 有効時は、候補生成を非同期に行い、メインスレッドのキー入力処理をブロックしない。provisional candidates（暫定候補）を表示し、非同期結果が到着次第更新する。
+
+## 非同期候補生成
+
+`defer_candidates` モードでは、候補生成をバックグラウンドで実行する。
+
+### アーキテクチャ
+
+1. キー入力 → セッションが `AsyncCandidateRequest { reading, candidate_dispatch }` を返す
+2. Swift 側の `candidateQueue`（DispatchQueue）でバックグラウンド生成を実行
+3. `candidateGeneration` カウンタ（UInt64）でリクエストの鮮度を管理
+4. 生成完了後、`candidateGeneration` が一致する場合のみ `lex_session_receive_candidates` でメインスレッドに配信
+
+### candidate_dispatch
+
+| 値 | モード | 使用する FFI |
+|---|---|---|
+| `0` | Standard | `lex_generate_candidates` |
+| `1` | Predictive | `lex_generate_prediction_candidates` |
+
+stale な候補（生成開始時と完了時で `candidateGeneration` が異なる）は破棄される。
+
 ## 学習機能
 
 ### データ構造
@@ -221,13 +292,17 @@ CostFunction
 ### ブースト計算
 
 ```
-boost = min(frequency × 1500, 10000) × decay(last_used)
+boost = min(frequency × 3000, 15000) × decay(last_used)
 decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 ```
 
 - 半減期: 1 週間（168 時間）
-- 最大ブースト: 10,000（frequency ≥ 7 で到達）
+- 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
+
+### バイグラム後続探索
+
+`bigram_successors(prev_surface)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順で返す。Predictive モードの bigram chaining で使用される。
 
 ### 保存
 
@@ -239,6 +314,16 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 ### 退避
 
 容量超過時、`frequency × decay(last_used)` のスコアが低いエントリから削除。
+
+## アクセシビリティ
+
+### VoiceOver 候補読み上げ
+
+`CandidatePanel` が候補選択時に VoiceOver アナウンスを発行する。
+
+- `NSWorkspace.shared.isVoiceOverEnabled` で VoiceOver の有効/無効を確認
+- 有効時、`NSAccessibility.post(notification: .announcementRequested)` で「候補テキスト index/total」形式を読み上げ
+- 優先度は `high` に設定し、他のアナウンスに割り込み
 
 ## 開発フェーズ
 
@@ -273,9 +358,9 @@ macOS で動作する最小限の IME を構築。
 
 思考の速度で日本語を書ける開発者向け IME を目指す。
 
-**1発目精度の向上**
+**1発目精度の向上** — **完了**
 
-- 学習収束の高速化（1-2 回の使用で十分なブースト）
+- 学習収束の高速化（`BOOST_PER_USE` を 3000 に引き上げ、frequency 5 で最大ブースト到達）
 - バイグラム活用の強化（直前の文脈を変換精度に反映）
 
 **リアルタイム変換表示 + 句読点自動確定** — **完了**
@@ -295,19 +380,23 @@ macOS で動作する最小限の IME を構築。
 - english モードはマークドテキストに点線下線（patternDash）で表示
 - 自動確定は連続 ASCII セグメントを単語単位でまとめて確定
 
-**候補パネルのカーソル追従**
+**候補パネルのカーソル追従** — **完了**
 
 - 候補パネルをマークドテキスト末尾（入力カーソル位置）に追従させる
 - composedKana を長く保持する方針と整合させ、視線移動を最小化
 
-**実験枠**
+**Predictive モード** — **完了**
 
-- ゴーストテキスト: 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）
+- Viterbi base + bigram chaining による予測変換
+- `ConversionMode` enum（Standard / Predictive）で切替可能
+- Option+Tab で変換モードをトグル（UserDefaults `predictiveMode` で永続化）
+- Tab キーで予測候補を確定（Standard モードのサブモード切替と差別化）
 
 ### Phase 5+ (今後)
 
 - ユーザー辞書
 - 設定 UI
+- ゴーストテキスト: GGUF ニューラルモデル（azooKey/Zenzai 方式）による AI 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）。長文（3 文節〜）で Viterbi N-best をニューラルリスコアする方向
 
 ## ビルド・CI
 
@@ -332,6 +421,10 @@ macOS で動作する最小限の IME を構築。
 | `lint` | `cargo fmt --check` + `cargo clippy` |
 | `test` | lint + `cargo test` |
 | `clean` | ビルド成果物の削除 |
+| `explain` | 変換パイプラインの説明出力（指定リーディングのラティス・Viterbi 過程を表示） |
+| `snapshot` | 変換スナップショット生成（テストリーディング一覧の変換結果を記録） |
+| `diff-snapshot` | 現在の変換結果とベースラインスナップショットの差分比較 |
+| `trace-log` | トレース JSONL 出力のストリーミング |
 
 ### CI
 
