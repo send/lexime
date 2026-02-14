@@ -1022,18 +1022,37 @@ fn pack_key_response(
     resp: KeyResponse,
     history_records: Vec<Vec<(String, String)>>,
 ) -> LexKeyResponse {
-    let commit_cstr = resp.commit_text.and_then(|s| CString::new(s).ok());
-    let marked_cstr = resp.marked_text.and_then(|s| CString::new(s).ok());
-    let reading_cstr = resp.candidate_reading.and_then(|s| CString::new(s).ok());
+    use session::CandidateAction;
+
+    let commit_cstr = resp.commit.and_then(|s| CString::new(s).ok());
+    let is_dashed = resp.marked.as_ref().map_or(false, |m| m.dashed);
+    let marked_cstr = resp.marked.and_then(|m| CString::new(m.text).ok());
+
+    let (show, hide) = match &resp.candidates {
+        CandidateAction::Keep => (false, false),
+        CandidateAction::Show { .. } => (true, false),
+        CandidateAction::Hide => (false, true),
+    };
 
     let mut candidate_strings: Vec<CString> = Vec::new();
     let mut candidate_ptrs: Vec<*const c_char> = Vec::new();
-    for s in &resp.candidates {
-        if let Ok(cs) = CString::new(s.as_str()) {
-            candidate_ptrs.push(cs.as_ptr());
-            candidate_strings.push(cs);
+    let selected_index = match &resp.candidates {
+        CandidateAction::Show { surfaces, selected } => {
+            for s in surfaces {
+                if let Ok(cs) = CString::new(s.as_str()) {
+                    candidate_ptrs.push(cs.as_ptr());
+                    candidate_strings.push(cs);
+                }
+            }
+            *selected
         }
-    }
+        _ => 0,
+    };
+
+    let (needs_candidates, reading_cstr) = match resp.async_request {
+        Some(req) => (true, CString::new(req.reading).ok()),
+        None => (false, None),
+    };
 
     let owned = Box::new(OwnedKeyResponse {
         _commit_text: commit_cstr,
@@ -1076,15 +1095,15 @@ fn pack_key_response(
         consumed: resp.consumed as u8,
         commit_text: commit_ptr,
         marked_text: marked_ptr,
-        is_dashed_underline: resp.is_dashed_underline as u8,
+        is_dashed_underline: is_dashed as u8,
         candidates: cand_ptr,
         candidates_len: cand_len,
-        selected_index: resp.selected_index,
-        show_candidates: resp.show_candidates as u8,
-        hide_candidates: resp.hide_candidates as u8,
-        switch_to_abc: resp.switch_to_abc as u8,
-        save_history: resp.save_history as u8,
-        needs_candidates: resp.needs_candidates as u8,
+        selected_index,
+        show_candidates: show as u8,
+        hide_candidates: hide as u8,
+        switch_to_abc: resp.side_effects.switch_to_abc as u8,
+        save_history: resp.side_effects.save_history as u8,
+        needs_candidates: needs_candidates as u8,
         candidate_reading: reading_ptr,
         _owned: owned_ptr,
     }
