@@ -6,8 +6,8 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --target x86_64-apple-darwin
-cargo build --release --target aarch64-apple-darwin
+cargo build --release --features trace --target x86_64-apple-darwin
+cargo build --release --features trace --target aarch64-apple-darwin
 cd ..
 mkdir -p build
 lipo -create \
@@ -114,6 +114,7 @@ outputs = ["build/Lexime.app/Contents/MacOS/Lexime"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+rm -f ~/Library/Logs/Lexime/lexime-trace.jsonl
 APP=build/Lexime.app
 MACOS=$APP/Contents/MacOS
 RES=$APP/Contents/Resources
@@ -180,25 +181,6 @@ swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
   -o build/test-runner && build/test-runner
 """
 
-[tasks.build-trace]
-description = "Build Lexime.app with tracing enabled"
-depends = ["dict", "conn"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-cd engine
-cargo build --release --features trace --target x86_64-apple-darwin
-cargo build --release --features trace --target aarch64-apple-darwin
-cd ..
-mkdir -p build
-lipo -create \
-  engine/target/x86_64-apple-darwin/release/liblex_engine.a \
-  engine/target/aarch64-apple-darwin/release/liblex_engine.a \
-  -output build/liblex_engine.a
-
-mise run build
-echo "Build complete (trace enabled): build/Lexime.app"
-"""
 
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"
