@@ -43,10 +43,13 @@ fn postprocess(
     top.into_iter().map(|p| p.into_segments()).collect()
 }
 
-/// Group morpheme-level segments into phrase-level segments (content word + trailing function words).
+/// Group morpheme-level segments into phrase-level segments (bunsetsu).
 ///
-/// A segment boundary is placed before each content word (non-function word),
-/// except at the very beginning. Leading function words are kept standalone.
+/// Rules:
+/// - **FunctionWord / Suffix**: merge into the preceding group (same as trailing particle).
+/// - **Prefix**: start a new group that absorbs the next content word.
+/// - **ContentWord**: if a pending prefix exists, merge into it; otherwise start a new group.
+/// - Leading function words / suffixes with no preceding group stay standalone.
 fn group_segments(segments: &mut Vec<viterbi::RichSegment>, conn: &ConnectionMatrix) {
     if segments.len() <= 1 {
         return;
@@ -54,22 +57,45 @@ fn group_segments(segments: &mut Vec<viterbi::RichSegment>, conn: &ConnectionMat
 
     let mut grouped: Vec<viterbi::RichSegment> = Vec::new();
     let mut current: Option<viterbi::RichSegment> = None;
+    let mut pending_prefix = false;
 
     for seg in segments.drain(..) {
+        let role = conn.role(seg.left_id);
         let is_fw = conn.is_function_word(seg.left_id);
+        let attach_to_prev = is_fw || role == 2; // FunctionWord or Suffix
 
-        match (&mut current, is_fw) {
-            (Some(cur), true) => {
+        if attach_to_prev {
+            // Merge into current group if one exists
+            if let Some(cur) = current.as_mut() {
                 cur.reading.push_str(&seg.reading);
                 cur.surface.push_str(&seg.surface);
                 cur.right_id = seg.right_id;
+            } else {
+                // No preceding group — standalone
+                grouped.push(seg);
             }
-            (Some(_), false) => {
-                grouped.push(current.take().unwrap());
-                current = Some(seg);
+        } else if role == 3 {
+            // Prefix: flush current group, start new one that will absorb next CW
+            if let Some(cur) = current.take() {
+                grouped.push(cur);
             }
-            (None, true) => grouped.push(seg),
-            (None, false) => {
+            current = Some(seg);
+            pending_prefix = true;
+        } else {
+            // ContentWord
+            if pending_prefix {
+                // Merge CW into the pending prefix group
+                if let Some(cur) = current.as_mut() {
+                    cur.reading.push_str(&seg.reading);
+                    cur.surface.push_str(&seg.surface);
+                    cur.right_id = seg.right_id;
+                }
+                pending_prefix = false;
+            } else {
+                // New group
+                if let Some(cur) = current.take() {
+                    grouped.push(cur);
+                }
                 current = Some(seg);
             }
         }
@@ -481,7 +507,7 @@ mod tests {
 
     // --- group_segments tests ---
 
-    use crate::converter::testutil::zero_conn_with_fw;
+    use crate::converter::testutil::{zero_conn_with_fw, zero_conn_with_roles};
     use crate::converter::viterbi::RichSegment;
 
     fn rich(reading: &str, surface: &str, id: u16) -> RichSegment {
@@ -561,6 +587,84 @@ mod tests {
         let mut empty: Vec<RichSegment> = vec![];
         group_segments(&mut empty, &conn);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_group_segments_suffix() {
+        // CW(0) + Suffix(1) → merged into one segment "田中さん"
+        // roles: 0=CW, 1=Suffix
+        let mut roles = vec![0u8; 5];
+        roles[1] = 2; // suffix
+        let conn = zero_conn_with_roles(5, roles);
+        let mut segs = vec![rich("たなか", "田中", 0), rich("さん", "さん", 1)];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].surface, "田中さん");
+        assert_eq!(segs[0].reading, "たなかさん");
+    }
+
+    #[test]
+    fn test_group_segments_prefix() {
+        // Prefix(2) + CW(0) → merged into one segment "お茶"
+        // roles: 0=CW, 2=Prefix
+        let mut roles = vec![0u8; 5];
+        roles[2] = 3; // prefix
+        let conn = zero_conn_with_roles(5, roles);
+        let mut segs = vec![rich("お", "お", 2), rich("ちゃ", "茶", 0)];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].surface, "お茶");
+        assert_eq!(segs[0].reading, "おちゃ");
+    }
+
+    #[test]
+    fn test_group_segments_prefix_cw_suffix() {
+        // Prefix(3) + CW(0) + Suffix(2) → all merged into one segment
+        let mut roles = vec![0u8; 5];
+        roles[2] = 2; // suffix
+        roles[3] = 3; // prefix
+        let conn = zero_conn_with_roles(5, roles);
+        let mut segs = vec![
+            rich("お", "お", 3),
+            rich("ちゃ", "茶", 0),
+            rich("さん", "さん", 2),
+        ];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].surface, "お茶さん");
+        assert_eq!(segs[0].reading, "おちゃさん");
+    }
+
+    #[test]
+    fn test_group_segments_cw_suffix_fw() {
+        // CW(0) + Suffix(2) + FW(1) → all merged
+        // Need both fw_range (for id=1) and roles (for suffix id=2)
+        let text = "5 5\n".to_owned() + &"0\n".repeat(25);
+        let mut roles = vec![0u8; 5];
+        roles[2] = 2; // suffix
+        let conn = ConnectionMatrix::from_text_with_roles(&text, 1, 1, roles).unwrap();
+        let mut segs = vec![
+            rich("たなか", "田中", 0),
+            rich("さん", "さん", 2),
+            rich("は", "は", 1),
+        ];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].surface, "田中さんは");
+        assert_eq!(segs[0].reading, "たなかさんは");
+    }
+
+    #[test]
+    fn test_group_segments_leading_suffix() {
+        // Leading suffix with no preceding CW stays standalone
+        let mut roles = vec![0u8; 5];
+        roles[1] = 2; // suffix
+        let conn = zero_conn_with_roles(5, roles);
+        let mut segs = vec![rich("さん", "さん", 1), rich("たなか", "田中", 0)];
+        group_segments(&mut segs, &conn);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].surface, "さん");
+        assert_eq!(segs[1].surface, "田中");
     }
 
     #[test]

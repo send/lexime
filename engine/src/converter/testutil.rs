@@ -126,3 +126,10 @@ pub fn zero_conn_with_fw(num_ids: u16, fw_min: u16, fw_max: u16) -> ConnectionMa
     let text = format!("{num_ids} {num_ids}\n{}", "0\n".repeat(n * n));
     ConnectionMatrix::from_text_with_metadata(&text, fw_min, fw_max).unwrap()
 }
+
+/// Create a zero-cost connection matrix with roles.
+pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
+    let n = num_ids as usize;
+    let text = format!("{num_ids} {num_ids}\n{}", "0\n".repeat(n * n));
+    ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
+}
