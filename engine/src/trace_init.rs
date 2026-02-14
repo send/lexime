@@ -11,7 +11,7 @@ pub fn init_tracing(log_dir: &Path) {
     INIT.call_once(|| {
         let file_appender = tracing_appender::rolling::never(log_dir, "lexime-trace.jsonl");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        std::mem::forget(guard); // IME is a long-lived process
+        let _ = std::mem::ManuallyDrop::new(guard); // IME is a long-lived process
 
         tracing_subscriber::fmt()
             .json()

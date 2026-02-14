@@ -196,35 +196,15 @@ lipo -create \
   engine/target/aarch64-apple-darwin/release/liblex_engine.a \
   -output build/liblex_engine.a
 
-APP=build/Lexime.app
-MACOS=$APP/Contents/MacOS
-RES=$APP/Contents/Resources
-MACOS_MIN=13.0
-SWIFTC_FLAGS="-O -import-objc-header Sources/Bridging-Header.h -Xcc -I."
-LINK_FLAGS="-Lbuild -llex_engine"
-
-mkdir -p "$MACOS" "$RES"
-swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
-  Sources/*.swift -o "$MACOS/Lexime-x86_64"
-swiftc $SWIFTC_FLAGS $LINK_FLAGS -target arm64-apple-macosx$MACOS_MIN \
-  Sources/*.swift -o "$MACOS/Lexime-arm64"
-lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime"
-rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
-cp Info.plist "$APP/Contents/Info.plist"
-cp Resources/icon.tiff "$RES/icon.tiff"
-cp -R Resources/en.lproj "$RES/en.lproj"
-cp -R Resources/ja.lproj "$RES/ja.lproj"
-cp engine/data/lexime.dict "$RES/"
-cp engine/data/lexime.conn "$RES/"
-codesign -f -s - "$APP"
-echo "Build complete (trace enabled): $APP"
+mise run build
+echo "Build complete (trace enabled): build/Lexime.app"
 """
 
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"
 run = """
 cd engine && cargo run --release --bin lextool -- explain \
-  data/lexime.dict data/lexime.conn "$@"
+  data/lexime.dict "$@" --conn data/lexime.conn
 """
 
 [tasks.snapshot]

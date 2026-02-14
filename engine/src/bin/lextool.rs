@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -6,7 +7,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use lex_engine::converter::explain;
+use lex_engine::converter::{convert_nbest, convert_nbest_with_history};
 use lex_engine::dict::connection::ConnectionMatrix;
 use lex_engine::dict::TrieDictionary;
 use lex_engine::user_history::UserHistory;
@@ -24,10 +25,11 @@ enum Command {
     Explain {
         /// Path to the compiled dictionary file
         dict_file: String,
-        /// Path to the compiled connection matrix file
-        conn_file: String,
         /// Kana reading to explain
         reading: String,
+        /// Path to the compiled connection matrix file (optional)
+        #[arg(long)]
+        conn: Option<String>,
         /// Filter to paths containing this surface (optional)
         #[arg(long)]
         surface: Option<String>,
@@ -40,6 +42,9 @@ enum Command {
         /// Output as JSON instead of text
         #[arg(long)]
         json: bool,
+        /// Omit lattice_nodes from JSON output
+        #[arg(long)]
+        no_lattice: bool,
     },
 
     /// Run readings from a file and record top-N results to JSONL
@@ -88,17 +93,23 @@ struct SnapshotEntry {
 
 fn open_resources(
     dict_file: &str,
-    conn_file: &str,
+    conn_file: Option<&str>,
     history: &Option<String>,
-) -> (TrieDictionary, ConnectionMatrix, Option<UserHistory>) {
+) -> (
+    TrieDictionary,
+    Option<ConnectionMatrix>,
+    Option<UserHistory>,
+) {
     let dict = TrieDictionary::open(Path::new(dict_file)).unwrap_or_else(|e| {
         eprintln!("Failed to open dictionary at {}: {}", dict_file, e);
         process::exit(1);
     });
 
-    let conn = ConnectionMatrix::open(Path::new(conn_file)).unwrap_or_else(|e| {
-        eprintln!("Failed to open connection matrix at {}: {}", conn_file, e);
-        process::exit(1);
+    let conn = conn_file.map(|cf| {
+        ConnectionMatrix::open(Path::new(cf)).unwrap_or_else(|e| {
+            eprintln!("Failed to open connection matrix at {}: {}", cf, e);
+            process::exit(1);
+        })
     });
 
     let hist = history.as_ref().map(|path| {
@@ -136,8 +147,14 @@ fn run_snapshot(
     reading: &str,
     n: usize,
 ) -> SnapshotEntry {
-    let result = explain::explain(dict, Some(conn), hist, reading, n);
-    let surfaces: Vec<String> = result.paths.iter().map(|p| p.surface()).collect();
+    let paths = match hist {
+        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
+        None => convert_nbest(dict, Some(conn), reading, n),
+    };
+    let surfaces: Vec<String> = paths
+        .iter()
+        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+        .collect();
     SnapshotEntry {
         reading: reading.to_string(),
         surfaces,
@@ -150,21 +167,29 @@ fn main() {
     match cli.command {
         Command::Explain {
             dict_file,
-            conn_file,
             reading,
+            conn,
             surface,
             history,
             n,
             json,
+            no_lattice,
         } => {
-            let (dict, conn, hist) = open_resources(&dict_file, &conn_file, &history);
+            use lex_engine::converter::explain;
+
+            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history);
             // Over-fetch when filtering by surface
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
-            let mut result = explain::explain(&dict, Some(&conn), hist.as_ref(), &reading, fetch_n);
+            let mut result =
+                explain::explain(&dict, conn.as_ref(), hist.as_ref(), &reading, fetch_n);
 
             if let Some(ref filter) = surface {
                 result.paths.retain(|p| p.surface().contains(filter));
                 result.paths.truncate(n);
+            }
+
+            if no_lattice {
+                result.lattice_nodes.clear();
             }
 
             if json {
@@ -185,7 +210,8 @@ fn main() {
             n,
             history,
         } => {
-            let (dict, conn, hist) = open_resources(&dict_file, &conn_file, &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
             let file = fs::File::create(&output_file).unwrap_or_else(|e| {
@@ -218,7 +244,8 @@ fn main() {
             n,
             history,
         } => {
-            let (dict, conn, hist) = open_resources(&dict_file, &conn_file, &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
 
             // Load baseline
@@ -226,8 +253,7 @@ fn main() {
                 eprintln!("Failed to read baseline file {}: {}", baseline_file, e);
                 process::exit(1);
             });
-            let mut baseline: std::collections::HashMap<String, SnapshotEntry> =
-                std::collections::HashMap::new();
+            let mut baseline: HashMap<String, SnapshotEntry> = HashMap::new();
             for line in baseline_content.lines() {
                 if line.trim().is_empty() {
                     continue;
@@ -288,14 +314,25 @@ fn main() {
                 }
             }
 
+            // Detect removed readings (in baseline but not in input)
+            let input_set: HashSet<&str> = readings.iter().map(|s| s.as_str()).collect();
+            let mut removed = 0usize;
+            for key in baseline.keys() {
+                if !input_set.contains(key.as_str()) {
+                    removed += 1;
+                    println!("  REMOVED: {}", key);
+                }
+            }
+
             println!();
             println!("=== Summary ===");
             println!("  Total:    {total}");
             println!("  Same:     {same}");
             println!("  Changed:  {changed}");
             println!("  New:      {new_count}");
+            println!("  Removed:  {removed}");
 
-            if changed > 0 {
+            if changed > 0 || removed > 0 {
                 process::exit(1);
             }
         }

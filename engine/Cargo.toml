@@ -29,6 +29,7 @@ ureq = "3"
 zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
 clap = { version = "4", features = ["derive"] }
+unicode-width = "0.2"
 
 [dependencies.tracing-subscriber]
 version = "0.3"
