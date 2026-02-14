@@ -176,6 +176,22 @@ impl UserHistory {
             .map_or(0, |entry| entry.boost(now))
     }
 
+    /// Return successor words for a given previous surface, sorted by boost descending.
+    /// Used by predictive mode to chain bigram phrases (Copilot-like completions).
+    pub fn bigram_successors(&self, prev_surface: &str) -> Vec<(String, String, i64)> {
+        let now = now_epoch();
+        let Some(inner) = self.bigrams.get(prev_surface) else {
+            return Vec::new();
+        };
+        let mut results: Vec<(String, String, i64)> = inner
+            .iter()
+            .map(|((reading, surface), entry)| (reading.clone(), surface.clone(), entry.boost(now)))
+            .filter(|(_, _, boost)| *boost > 0)
+            .collect();
+        results.sort_by(|a, b| b.2.cmp(&a.2));
+        results
+    }
+
     /// Reorder dictionary candidates so learned entries appear first.
     pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
         let mut with_boost: Vec<(i64, usize, &DictEntry)> = entries
@@ -523,6 +539,36 @@ mod tests {
         assert_eq!(reordered[0].surface, "今日");
         assert_eq!(reordered[1].surface, "京");
         assert_eq!(reordered[2].surface, "教");
+    }
+
+    #[test]
+    fn test_bigram_successors() {
+        let mut h = UserHistory::new();
+        h.record(&[
+            ("きょう".into(), "今日".into()),
+            ("は".into(), "は".into()),
+            ("いい".into(), "良い".into()),
+        ]);
+        let succs = h.bigram_successors("今日");
+        assert_eq!(succs.len(), 1);
+        assert_eq!(succs[0].0, "は"); // reading
+        assert_eq!(succs[0].1, "は"); // surface
+        assert!(succs[0].2 > 0); // boost
+
+        let succs2 = h.bigram_successors("は");
+        assert_eq!(succs2.len(), 1);
+        assert_eq!(succs2[0].0, "いい");
+        assert_eq!(succs2[0].1, "良い");
+
+        // No successors for "良い" (end of chain)
+        let succs3 = h.bigram_successors("良い");
+        assert!(succs3.is_empty());
+    }
+
+    #[test]
+    fn test_bigram_successors_empty_history() {
+        let h = UserHistory::new();
+        assert!(h.bigram_successors("今日").is_empty());
     }
 
     #[test]

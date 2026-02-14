@@ -155,6 +155,13 @@ LexCandidateResponse lex_generate_candidates(
     const char *reading,
     uint32_t max_results
 );
+LexCandidateResponse lex_generate_prediction_candidates(
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history,
+    const char *reading,
+    uint32_t max_results
+);
 void lex_candidate_response_free(LexCandidateResponse response);
 
 /* InputSession API */
@@ -175,6 +182,7 @@ typedef struct {
     uint8_t save_history;          /* 1 = trigger async history save */
     uint8_t needs_candidates;      /* 1 = caller should generate candidates async */
     const char *candidate_reading; /* reading for async generation (valid when needs_candidates=1) */
+    uint8_t candidate_dispatch;    /* 0=standard, 1=prediction_only */
     void *_owned;
 } LexKeyResponse;
 
@@ -186,6 +194,7 @@ LexSession *lex_session_new(
 void lex_session_free(LexSession *session);
 void lex_session_set_programmer_mode(LexSession *session, uint8_t enabled);
 void lex_session_set_defer_candidates(LexSession *session, uint8_t enabled);
+void lex_session_set_conversion_mode(LexSession *session, uint8_t mode);
 
 LexKeyResponse lex_session_handle_key(
     LexSession *session,

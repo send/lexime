@@ -16,7 +16,7 @@ use std::path::Path;
 use std::ptr;
 use std::sync::RwLock;
 
-use candidates::{generate_candidates, CandidateResponse};
+use candidates::{generate_candidates, generate_prediction_candidates, CandidateResponse};
 use converter::{convert, convert_nbest, convert_nbest_with_history, convert_with_history};
 use dict::connection::ConnectionMatrix;
 use dict::{Dictionary, TrieDictionary};
@@ -954,6 +954,32 @@ pub extern "C" fn lex_generate_candidates(
 }
 
 #[no_mangle]
+pub extern "C" fn lex_generate_prediction_candidates(
+    dict: *const TrieDictionary,
+    conn: *const ConnectionMatrix,
+    history: *const LexUserHistoryWrapper,
+    reading: *const c_char,
+    max_results: u32,
+) -> LexCandidateResponse {
+    ffi_guard!(LexCandidateResponse::empty();
+        ref: dict        = dict,
+        str: reading_str = reading,
+    );
+    let conn = unsafe { conn_ref(conn) };
+    let hist: Option<std::sync::RwLockReadGuard<'_, UserHistory>> = if history.is_null() {
+        None
+    } else {
+        let wrapper = unsafe { &*history };
+        wrapper.inner.read().ok()
+    };
+    let hist_ref = hist.as_deref();
+
+    let resp =
+        generate_prediction_candidates(dict, conn, hist_ref, reading_str, max_results as usize);
+    pack_candidate_response(resp)
+}
+
+#[no_mangle]
 pub extern "C" fn lex_candidate_response_free(response: LexCandidateResponse) {
     if !response._owned.is_null() {
         unsafe {
@@ -994,6 +1020,7 @@ pub struct LexKeyResponse {
     pub save_history: u8,
     pub needs_candidates: u8,
     pub candidate_reading: *const c_char,
+    pub candidate_dispatch: u8,
     _owned: *mut OwnedKeyResponse,
 }
 
@@ -1023,6 +1050,7 @@ impl LexKeyResponse {
             save_history: 0,
             needs_candidates: 0,
             candidate_reading: ptr::null(),
+            candidate_dispatch: 0,
             _owned: ptr::null_mut(),
         }
     }
@@ -1059,9 +1087,9 @@ fn pack_key_response(
         _ => 0,
     };
 
-    let (needs_candidates, reading_cstr) = match resp.async_request {
-        Some(req) => (true, CString::new(req.reading).ok()),
-        None => (false, None),
+    let (needs_candidates, reading_cstr, candidate_dispatch) = match resp.async_request {
+        Some(req) => (true, CString::new(req.reading).ok(), req.candidate_dispatch),
+        None => (false, None, 0),
     };
 
     let owned = Box::new(OwnedKeyResponse {
@@ -1115,6 +1143,7 @@ fn pack_key_response(
         save_history: resp.side_effects.save_history as u8,
         needs_candidates: needs_candidates as u8,
         candidate_reading: reading_ptr,
+        candidate_dispatch,
         _owned: owned_ptr,
     }
 }
@@ -1162,6 +1191,20 @@ pub extern "C" fn lex_session_set_defer_candidates(session: *mut LexSession, ena
     }
     let session = unsafe { &mut *session };
     session.inner.set_defer_candidates(enabled != 0);
+}
+
+/// Set the conversion mode. mode: 0=Standard, 1=Predictive.
+#[no_mangle]
+pub extern "C" fn lex_session_set_conversion_mode(session: *mut LexSession, mode: u8) {
+    if session.is_null() {
+        return;
+    }
+    let session = unsafe { &mut *session };
+    let conversion_mode = match mode {
+        1 => session::ConversionMode::Predictive,
+        _ => session::ConversionMode::Standard,
+    };
+    session.inner.set_conversion_mode(conversion_mode);
 }
 
 /// Receive asynchronously generated candidates and update session state.
