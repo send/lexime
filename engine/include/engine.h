@@ -6,6 +6,9 @@
 const char *lex_engine_version(void);
 int32_t lex_engine_echo(int32_t x);
 
+/* Tracing API (no-op unless built with --features trace) */
+void lex_trace_init(const char *log_dir);
+
 /* Dictionary API */
 
 typedef struct LexDict LexDict;

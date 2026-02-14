@@ -180,6 +180,55 @@ swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
   -o build/test-runner && build/test-runner
 """
 
+[tasks.build-trace]
+description = "Build Lexime.app with tracing enabled"
+depends = ["dict", "conn"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --features trace --target x86_64-apple-darwin
+cargo build --release --features trace --target aarch64-apple-darwin
+cd ..
+mkdir -p build
+lipo -create \
+  engine/target/x86_64-apple-darwin/release/liblex_engine.a \
+  engine/target/aarch64-apple-darwin/release/liblex_engine.a \
+  -output build/liblex_engine.a
+
+mise run build
+echo "Build complete (trace enabled): build/Lexime.app"
+"""
+
+[tasks.explain]
+description = "Explain conversion pipeline for a reading"
+run = """
+cd engine && cargo run --release --bin lextool -- explain \
+  data/lexime.dict "$@" --conn data/lexime.conn
+"""
+
+[tasks.snapshot]
+description = "Generate conversion snapshot"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release --bin lextool -- snapshot \
+  data/lexime.dict data/lexime.conn \
+  data/snapshot-readings.txt data/snapshot.jsonl -n 5
+"""
+
+[tasks.diff-snapshot]
+description = "Compare current output against baseline snapshot"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release --bin lextool -- diff-snapshot \
+  data/lexime.dict data/lexime.conn \
+  data/snapshot-readings.txt data/snapshot.jsonl -n 5
+"""
+
+[tasks.trace-log]
+description = "Stream trace JSONL output"
+run = "tail -f ~/Library/Logs/Lexime/lexime-trace.jsonl | python3 -m json.tool --no-ensure-ascii"
+
 [tasks.lint]
 description = "Run cargo fmt --check and clippy"
 run = [

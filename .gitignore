@@ -16,7 +16,8 @@ target/
 engine/target/
 
 # Dictionary data (downloaded / compiled)
-engine/data/
+engine/data/*
+!engine/data/snapshot-readings.txt
 
 # macOS
 .DS_Store

@@ -7,6 +7,7 @@ pub mod converter;
 pub mod dict;
 pub mod romaji;
 pub mod session;
+pub mod trace_init;
 pub mod unicode;
 pub mod user_history;
 
@@ -198,6 +199,15 @@ pub extern "C" fn lex_engine_version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn lex_engine_echo(x: i32) -> i32 {
     x
+}
+
+#[no_mangle]
+#[allow(clippy::unused_unit)]
+pub extern "C" fn lex_trace_init(log_dir: *const c_char) {
+    ffi_guard!(();
+        str: dir_str = log_dir,
+    );
+    trace_init::init_tracing(Path::new(dir_str));
 }
 
 // --- Dictionary FFI ---

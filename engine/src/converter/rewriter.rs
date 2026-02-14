@@ -42,6 +42,7 @@ impl Rewriter for KatakanaRewriter {
                 surface: katakana,
                 left_id: 0,
                 right_id: 0,
+                word_cost: 0,
             }],
             viterbi_cost: worst_cost.saturating_add(10000),
         });
@@ -61,6 +62,7 @@ mod tests {
                 surface: "今日".into(),
                 left_id: 10,
                 right_id: 10,
+                word_cost: 0,
             }],
             viterbi_cost: 3000,
         }];
@@ -81,6 +83,7 @@ mod tests {
                 surface: "キョウ".into(),
                 left_id: 0,
                 right_id: 0,
+                word_cost: 0,
             }],
             viterbi_cost: 5000,
         }];
@@ -116,6 +119,7 @@ mod tests {
                 surface: "亜".into(),
                 left_id: 0,
                 right_id: 0,
+                word_cost: 0,
             }],
             viterbi_cost: 1000,
         }];
