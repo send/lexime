@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16" height="16" viewBox="96 96 832 832" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Menu bar icon — lilac on transparent for macOS menu bar -->
+  <g fill="#B8B8D0">
+    <!-- Left vertical block -->
+    <rect x="136" y="136" width="272" height="440" rx="64"/>
+
+    <!-- Bottom-left block (bottom-left R=64) -->
+    <path d="M 136 616 H 616 V 888 H 200 A 64 64 0 0 1 136 824 V 616 Z"/>
+
+    <!-- Bottom-right block (bottom-right R=64) -->
+    <path d="M 656 616 H 888 V 824 A 64 64 0 0 1 824 888 H 656 V 616 Z"/>
+
+    <!-- Top-right bar (top-right R=64) -->
+    <path d="M 616 408 H 824 A 64 64 0 0 1 888 472 V 576 H 616 Z"/>
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="512" cy="512" r="64" fill="#B8B8D0"/>
+</svg>

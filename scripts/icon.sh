@@ -30,7 +30,10 @@ cp "$LIGHT/icon_1024x1024.png" "$ICONSET_DIR/icon_512x512@2x.png"
 # --- icns ---
 iconutil -c icns "$ICONSET_DIR" -o assets/icon/macos/lexime.icns
 
-# --- IME menu bar icon (tiff) ---
-sips -s format tiff "$LIGHT/icon_16x16.png" --out Resources/icon.tiff >/dev/null
+# --- IME menu bar icon (template, tiff) ---
+MENUBAR_PNG=$(mktemp /tmp/lexime-menubar-XXXXXX.png)
+rsvg-convert -w 16 -h 16 "assets/icon/master/lexime-menubar.svg" -o "$MENUBAR_PNG"
+sips -s format tiff "$MENUBAR_PNG" --out Resources/icon.tiff >/dev/null
+rm -f "$MENUBAR_PNG"
 
 echo "Icon generation complete."
