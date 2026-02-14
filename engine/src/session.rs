@@ -34,7 +34,7 @@ const MAX_CANDIDATES: usize = 20;
 pub enum ConversionMode {
     /// Standard IME: Viterbi N-best + predictions + lookup, Tab toggles submode.
     Standard,
-    /// Predictive: prefix-match predictions only, Tab commits.
+    /// Predictive: Viterbi base + bigram chaining for Copilot-like completions, Tab commits.
     Predictive,
 }
 

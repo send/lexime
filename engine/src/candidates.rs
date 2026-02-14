@@ -217,6 +217,7 @@ pub fn generate_candidates(
 
 /// Chain bigram successors from a starting surface to build multi-word phrases.
 /// Returns the chained phrase (start_surface + successors) or None if no successors found.
+/// Detects cycles (repeated surfaces) and stops chaining to avoid garbage output.
 fn chain_bigram_phrase(
     history: &UserHistory,
     start_surface: &str,
@@ -224,11 +225,16 @@ fn chain_bigram_phrase(
 ) -> Option<String> {
     let mut result = start_surface.to_string();
     let mut current_surface = start_surface.to_string();
+    let mut visited = HashSet::new();
+    visited.insert(current_surface.clone());
     let mut extended = false;
 
     for _ in 0..max_chain {
         let successors = history.bigram_successors(&current_surface);
         if let Some((_, next_surface, _)) = successors.first() {
+            if !visited.insert(next_surface.clone()) {
+                break; // cycle detected
+            }
             result.push_str(next_surface);
             current_surface.clone_from(next_surface);
             extended = true;
@@ -282,6 +288,7 @@ pub fn generate_prediction_candidates(
 
     // Build chained phrases from N-best paths (use last segment surface for chaining)
     let mut chained_phrases: Vec<(String, usize)> = Vec::new(); // (phrase, length)
+    let mut chained_starts: HashSet<String> = HashSet::new(); // track chain start surfaces
 
     for path in &base.paths {
         if path.is_empty() {
@@ -290,6 +297,7 @@ pub fn generate_prediction_candidates(
         let last_surface = &path.last().unwrap().surface;
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
 
+        chained_starts.insert(joined.clone());
         if let Some(chained) = chain_bigram_phrase(h, last_surface, max_chain) {
             let full = format!("{}{}", joined, &chained[last_surface.len()..]);
             let chain_len = full.chars().count();
@@ -299,8 +307,11 @@ pub fn generate_prediction_candidates(
         }
     }
 
-    // Also try chaining from base candidate surfaces directly (for dict lookup results)
+    // Also try chaining from base candidate surfaces not already covered by paths
     for surface in &base.surfaces {
+        if chained_starts.contains(surface) {
+            continue;
+        }
         if let Some(chained) = chain_bigram_phrase(h, surface, max_chain) {
             let chain_len = chained.chars().count();
             chained_phrases.push((chained, chain_len));
@@ -538,6 +549,65 @@ mod tests {
             "should contain multi-word chain '今日は良い天気', got: {:?}",
             resp.surfaces,
         );
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_basic() {
+        let mut h = UserHistory::new();
+        h.record(&[
+            ("きょう".into(), "今日".into()),
+            ("は".into(), "は".into()),
+            ("いい".into(), "良い".into()),
+        ]);
+        let result = chain_bigram_phrase(&h, "今日", 5);
+        assert_eq!(result.as_deref(), Some("今日は良い"));
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_no_successors() {
+        let h = UserHistory::new();
+        assert!(chain_bigram_phrase(&h, "今日", 5).is_none());
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_cycle_detection() {
+        let mut h = UserHistory::new();
+        // Create a cycle: A→B→A
+        h.record(&[("あ".into(), "A".into()), ("び".into(), "B".into())]);
+        h.record(&[("び".into(), "B".into()), ("あ".into(), "A".into())]);
+
+        let result = chain_bigram_phrase(&h, "A", 10);
+        // Should chain A→B then stop (A already visited)
+        assert_eq!(result.as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn test_chain_bigram_phrase_self_loop() {
+        let mut h = UserHistory::new();
+        // Self-loop: は→は
+        h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
+
+        let result = chain_bigram_phrase(&h, "は", 10);
+        // Should not chain at all (first successor is "は" which is already visited)
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prediction_cycle_produces_no_garbage() {
+        let dict = make_dict();
+        let mut h = UserHistory::new();
+        // Create a cycle: は→は (self-loop)
+        h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
+
+        let resp = generate_prediction_candidates(&dict, None, Some(&h), "は", 20);
+        // No candidate should contain repeated "ははは..." garbage
+        for surface in &resp.surfaces {
+            assert!(
+                !surface.contains("はは"),
+                "should not contain repeated garbage: {}",
+                surface,
+            );
+        }
     }
 
     #[test]
