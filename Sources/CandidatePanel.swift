@@ -12,6 +12,7 @@ class CandidateListView: NSView {
     private let font = NSFont.systemFont(ofSize: 14)
     private let rowHeight: CGFloat = 24
     private let horizontalPadding: CGFloat = 8
+    private let verticalTextInset: CGFloat = 3
 
     var desiredSize: NSSize {
         guard !candidates.isEmpty else { return .zero }
@@ -49,7 +50,7 @@ class CandidateListView: NSView {
                 .foregroundColor: textColor,
             ]
 
-            let textRect = NSRect(x: horizontalPadding, y: y + 3,
+            let textRect = NSRect(x: horizontalPadding, y: y + verticalTextInset,
                                   width: bounds.width - horizontalPadding * 2, height: rowHeight)
             (candidate as NSString).draw(in: textRect, withAttributes: textAttrs)
         }
@@ -86,7 +87,7 @@ class CandidatePanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func show(candidates: [String], selectedIndex: Int, cursorRect: NSRect) {
+    func show(candidates: [String], selectedIndex: Int, cursorRect: NSRect?) {
         guard !candidates.isEmpty else {
             hide()
             return
@@ -99,28 +100,34 @@ class CandidatePanel: NSPanel {
         listView.frame = NSRect(origin: .zero, size: size)
 
         let panelSize = size
-        var origin = NSPoint(x: cursorRect.origin.x, y: cursorRect.origin.y - panelSize.height)
 
-        // Clamp to screen
-        if let screen = NSScreen.main ?? NSScreen.screens.first {
-            let screenFrame = screen.visibleFrame
+        if let cursorRect {
+            var origin = NSPoint(x: cursorRect.origin.x, y: cursorRect.origin.y - panelSize.height)
 
-            // If below screen bottom, flip above cursor
-            if origin.y < screenFrame.minY {
-                origin.y = cursorRect.maxY
+            // Clamp to screen
+            if let screen = NSScreen.main ?? NSScreen.screens.first {
+                let screenFrame = screen.visibleFrame
+
+                // If below screen bottom, flip above cursor
+                if origin.y < screenFrame.minY {
+                    origin.y = cursorRect.maxY
+                }
+                // Clamp right edge
+                if origin.x + panelSize.width > screenFrame.maxX {
+                    origin.x = screenFrame.maxX - panelSize.width
+                }
+                // Clamp left edge
+                if origin.x < screenFrame.minX {
+                    origin.x = screenFrame.minX
+                }
             }
-            // Clamp right edge
-            if origin.x + panelSize.width > screenFrame.maxX {
-                origin.x = screenFrame.maxX - panelSize.width
-            }
-            // Clamp left edge
-            if origin.x < screenFrame.minX {
-                origin.x = screenFrame.minX
-            }
+
+            setFrame(NSRect(origin: origin, size: panelSize), display: false)
+        } else {
+            // Position freeze: anchor top edge (cursor position), grow downward
+            setContentSize(panelSize)
         }
 
-        setContentSize(panelSize)
-        setFrameOrigin(origin)
         listView.needsDisplay = true
         orderFront(nil)
     }

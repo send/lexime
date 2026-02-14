@@ -18,12 +18,14 @@ class LeximeInputController: IMKInputController {
     }
 
     // Candidate panel state (for pagination)
-    var predictionCandidates: [String] = []
-    var selectedPredictionIndex: Int = 0
+    private var predictionCandidates: [String] = []
+    private var selectedPredictionIndex: Int = 0
 
     // Async candidate generation
     private let candidateQueue = DispatchQueue(label: "sh.send.lexime.candidates", qos: .userInitiated)
     private var candidateGeneration: UInt64 = 0
+    /// Set when commit_text moves the cursor; forces panel to recalculate position on next show.
+    private var panelNeedsReposition = false
 
     private static var hasShownDictWarning = false
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
@@ -63,13 +65,22 @@ class LeximeInputController: IMKInputController {
 
     static let maxCandidateDisplay = 9
 
-    func cursorRect(client: IMKTextInput) -> NSRect {
+    private func cursorRect(client: IMKTextInput) -> NSRect {
         var rect = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+        // Use end-of-text position for horizontal follow
+        let index = currentDisplay?.utf16.count ?? 0
+        if index > 0 {
+            var endRect = NSRect.zero
+            client.attributes(forCharacterIndex: index, lineHeightRectangle: &endRect)
+            if endRect != .zero {
+                rect.origin.x = endRect.origin.x
+            }
+        }
         return rect
     }
 
-    func showCandidatePanel(client: IMKTextInput) {
+    private func showCandidatePanel(client: IMKTextInput) {
         let allCandidates = predictionCandidates
         let selectedIndex = selectedPredictionIndex
 
@@ -83,11 +94,29 @@ class LeximeInputController: IMKInputController {
         let pageCandidates = Array(allCandidates[pageStart..<pageEnd])
         let pageSelectedIndex = clampedIndex - pageStart
 
+        let panel = AppContext.shared.candidatePanel
+
+        // Mozc style: don't recalculate position while panel is visible (prevents jitter)
+        // But if cursor moved (auto-commit), force reposition.
+        if panel.isVisible && !panelNeedsReposition {
+            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: nil)
+            return
+        }
+        // Reset early: if the async block below is cancelled (generation mismatch),
+        // the panel stays hidden, so the next showCandidatePanel takes the full show path anyway.
+        panelNeedsReposition = false
+
+        // Capture rect synchronously (client state is correct here),
+        // then defer panel show to next run loop (workaround for Chrome etc.)
         let rect = cursorRect(client: client)
-        AppContext.shared.candidatePanel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
+        let generation = candidateGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.candidateGeneration == generation else { return }
+            panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex, cursorRect: rect)
+        }
     }
 
-    func hideCandidatePanel() {
+    private func hideCandidatePanel() {
         AppContext.shared.candidatePanel.hide()
     }
 
@@ -132,6 +161,7 @@ class LeximeInputController: IMKInputController {
         if resp.commit_text != nil {
             let text = String(cString: resp.commit_text)
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            panelNeedsReposition = true
         }
 
         // 2. Marked text
@@ -169,8 +199,9 @@ class LeximeInputController: IMKInputController {
 
     private func dispatchAsyncCandidates(reading: String) {
         let gen = candidateGeneration
-        // These opaque pointers are long-lived (outlive the session) and read-only
-        // on the background thread, so cross-thread capture is safe.
+        // These opaque pointers are long-lived singletons. The Rust types use
+        // internal synchronization (RwLock), so concurrent access from
+        // candidateQueue, historySaveQueue, and the main thread is safe.
         nonisolated(unsafe) let dict = AppContext.shared.dict
         nonisolated(unsafe) let conn = AppContext.shared.conn
         nonisolated(unsafe) let history = AppContext.shared.history
@@ -257,6 +288,12 @@ class LeximeInputController: IMKInputController {
         let resp = lex_session_commit(session)
         defer { lex_key_response_free(resp) }
         applyResponse(resp, client: client)
+    }
+
+    override func deactivateServer(_ sender: Any!) {
+        candidateGeneration += 1
+        hideCandidatePanel()
+        super.deactivateServer(sender)
     }
 
     // Block IMKit's built-in mode switching (e.g. Shift -> katakana)

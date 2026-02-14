@@ -18,6 +18,6 @@ guard let server = IMKServer(name: kConnectionName, bundleIdentifier: bundleId) 
 
 NSLog("Lexime: IMKServer started (connection: %@)", kConnectionName)
 
-_ = server  // keep the server alive
-
-NSApplication.shared.run()
+withExtendedLifetime(server) {
+    NSApplication.shared.run()
+}
