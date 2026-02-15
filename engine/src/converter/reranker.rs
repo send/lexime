@@ -307,14 +307,14 @@ mod tests {
 
         rerank(&mut paths, None);
 
-        // script_cost: "来たり" is mixed (kanji+kana) → -3000; "出来" is pure kanji → 0
+        // script_cost: "来たり" is mixed (kanji+kana) → -3000; "出来" is pure kanji → -1000
         // Uneven: 5000 + variance(2000) + script("で"=0 + "来たり"=-3000) = 4000
-        // Even:   6500 + variance(0)    + script("出来"=0 + "たり"=0)     = 6500
+        // Even:   6500 + variance(0)    + script("出来"=-1000 + "たり"=0) = 5500
         // Uneven path wins due to mixed-script bonus on "来たり"
         assert_eq!(paths[0].segments[0].surface, "で");
         assert_eq!(paths[0].viterbi_cost, 4000);
         assert_eq!(paths[1].segments[0].surface, "出来");
-        assert_eq!(paths[1].viterbi_cost, 6500);
+        assert_eq!(paths[1].viterbi_cost, 5500);
     }
 
     #[test]
