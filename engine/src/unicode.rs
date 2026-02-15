@@ -1,9 +1,15 @@
 //! Character-level Unicode classification for Japanese text.
 
+/// Check the full Hiragana block (U+3040..U+309F). This includes a few unassigned
+/// codepoints (U+3040, U+3097-3098) but these never appear in IME input or
+/// dictionary readings, so the simpler block-level check is preferred over an
+/// exact range (U+3041..U+3096 + U+3099..U+309F) for clarity.
 pub fn is_hiragana(c: char) -> bool {
     ('\u{3040}'..='\u{309F}').contains(&c)
 }
 
+/// Check the full Katakana block (U+30A0..U+30FF). Includes rarely-used symbols
+/// (゠ U+30A0, ヿ U+30FF) but no unassigned codepoints.
 pub fn is_katakana(c: char) -> bool {
     ('\u{30A0}'..='\u{30FF}').contains(&c)
 }
