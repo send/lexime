@@ -55,7 +55,7 @@ class LeximeInputController: IMKInputController {
             lex_session_set_programmer_mode(session, 1)
         }
         let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
-        if convMode > 0 {
+        if convMode > 0, convMode <= UInt8.max {
             lex_session_set_conversion_mode(session, UInt8(convMode))
         }
     }
@@ -173,10 +173,8 @@ class LeximeInputController: IMKInputController {
             session,
             UserDefaults.standard.bool(forKey: "programmerMode") ? 1 : 0
         )
-        lex_session_set_conversion_mode(
-            session,
-            UInt8(UserDefaults.standard.integer(forKey: "conversionMode"))
-        )
+        let convMode = min(max(UserDefaults.standard.integer(forKey: "conversionMode"), 0), Int(UInt8.max))
+        lex_session_set_conversion_mode(session, UInt8(convMode))
 
         let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
@@ -188,7 +186,7 @@ class LeximeInputController: IMKInputController {
         }
 
         // Invalidate any pending async candidate results
-        candidateGeneration += 1
+        candidateGeneration &+= 1
 
         let text = event.characters ?? ""
         let resp = lex_session_handle_key(session, event.keyCode, text, flags)
@@ -461,7 +459,7 @@ class LeximeInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
-        candidateGeneration += 1
+        candidateGeneration &+= 1
         ghostDebounceItem?.cancel()
         ghostText = nil
         currentDisplay = nil
@@ -469,7 +467,11 @@ class LeximeInputController: IMKInputController {
         super.deactivateServer(sender)
     }
 
-    // Block IMKit's built-in mode switching (e.g. Shift -> katakana)
+    // Block IMKit's built-in mode switching during composition.
+    // IMKit calls setValue when Caps Lock or other mode keys are pressed.
+    // Passing these through during composition can trigger unwanted transformations
+    // (e.g. Shift-triggered katakana). We intentionally drop all mode changes
+    // while composing and let the engine handle mode via its own key handlers.
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         if isComposing { return }
         super.setValue(value, forTag: tag, client: sender)

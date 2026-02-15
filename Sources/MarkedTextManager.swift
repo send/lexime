@@ -22,6 +22,7 @@ extension LeximeInputController {
     func showGhostText(_ text: String, client: IMKTextInput) {
         let attrs: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.placeholderTextColor,
+            .markedClauseSegment: 0,
         ]
         let attrStr = NSAttributedString(string: text, attributes: attrs)
         client.setMarkedText(attrStr,
