@@ -89,6 +89,14 @@ class LeximeInputController: IMKInputController {
         return rect
     }
 
+    private static let modeNames = ["standard", "predictive", "ghost"]
+
+    private var currentModeName: String? {
+        let mode = UserDefaults.standard.integer(forKey: "conversionMode")
+        guard mode > 0, mode < Self.modeNames.count else { return nil }
+        return Self.modeNames[mode]
+    }
+
     private func showCandidatePanel(client: IMKTextInput) {
         let allCandidates = predictionCandidates
         let selectedIndex = selectedPredictionIndex
@@ -106,12 +114,14 @@ class LeximeInputController: IMKInputController {
         let panel = AppContext.shared.candidatePanel
 
         let totalCount = allCandidates.count
+        let modeName = currentModeName
 
         // Mozc style: don't recalculate position while panel is visible (prevents jitter)
         // But if cursor moved (auto-commit), force reposition.
         if panel.isVisible && !panelNeedsReposition {
             panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
-                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: nil)
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: nil,
+                       modeName: modeName)
             return
         }
         // Reset early: if the async block below is cancelled (generation mismatch),
@@ -125,7 +135,8 @@ class LeximeInputController: IMKInputController {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.candidateGeneration == generation else { return }
             panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
-                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: rect)
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: rect,
+                       modeName: modeName)
         }
     }
 
@@ -148,24 +159,11 @@ class LeximeInputController: IMKInputController {
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
-        // Option+Tab: cycle conversion mode (standard → predictive → ghost → ...)
-        if dominated == [.option] && event.keyCode == 48 /* Tab */ {
-            if isComposing {
-                let commitResp = lex_session_commit(session)
-                defer { lex_key_response_free(commitResp) }
-                applyResponse(commitResp, client: client)
-            }
-            // Clear any ghost text when switching modes
-            if ghostText != nil {
-                clearGhostDisplay(client: client)
-            }
-            let maxModes = AppContext.shared.neural != nil ? 3 : 2
-            let current = UserDefaults.standard.integer(forKey: "conversionMode")
-            let next = (current + 1) % maxModes
-            UserDefaults.standard.set(next, forKey: "conversionMode")
-            lex_session_set_conversion_mode(session, UInt8(next))
-            let names = ["standard", "predictive", "ghost"]
-            NSLog("Lexime: conversion mode → %@", names[next])
+        // Cycle conversion mode: Option+Tab or Shift+Tab
+        let isCycleMode = event.keyCode == 48 /* Tab */
+            && (dominated == [.option] || dominated == [.shift])
+        if isCycleMode {
+            cycleConversionMode(session: session, client: client)
             return true
         }
 
@@ -245,7 +243,14 @@ class LeximeInputController: IMKInputController {
         if resp.ghost_text != nil {
             let text = String(cString: resp.ghost_text)
             if text.isEmpty {
-                clearGhostDisplay(client: client)
+                // Clear ghost state. Only clear the display if no marked text was set
+                // in this same response (step 2 already replaced the screen content).
+                ghostText = nil
+                ghostDebounceItem?.cancel()
+                ghostDebounceItem = nil
+                if resp.marked_text == nil {
+                    clearGhostText(client: client)
+                }
             } else {
                 ghostText = text
                 showGhostText(text, client: client)
@@ -379,6 +384,26 @@ class LeximeInputController: IMKInputController {
             }
         }
         return result
+    }
+
+    private func cycleConversionMode(session: OpaquePointer, client: IMKTextInput) {
+        if isComposing {
+            let commitResp = lex_session_commit(session)
+            defer { lex_key_response_free(commitResp) }
+            applyResponse(commitResp, client: client)
+        }
+        if ghostText != nil {
+            clearGhostDisplay(client: client)
+        }
+        let maxModes = AppContext.shared.neural != nil ? 3 : 2
+        let current = UserDefaults.standard.integer(forKey: "conversionMode")
+        let next = (current + 1) % maxModes
+        UserDefaults.standard.set(next, forKey: "conversionMode")
+        lex_session_set_conversion_mode(session, UInt8(next))
+        let names = ["standard", "predictive", "ghost"]
+        NSLog("Lexime: conversion mode → %@", names[next])
+        let rect = cursorRect(client: client)
+        AppContext.shared.candidatePanel.showNotification(text: names[next], cursorRect: rect)
     }
 
     private func selectABCInputSource() {
