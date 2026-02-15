@@ -213,8 +213,9 @@ uint8_t lex_session_is_composing(const LexSession * _Nonnull session);
 const char * _Nonnull lex_session_composed_string(const LexSession * _Nonnull session);
 
 /* Get the committed context string for neural candidate generation.
+ * Returns NULL if the context is empty.
  * Caller must free with lex_committed_context_free. */
-const char * _Nonnull lex_session_committed_context(const LexSession * _Nonnull session);
+char * _Nullable lex_session_committed_context(const LexSession * _Nonnull session);
 void lex_committed_context_free(char * _Nullable ptr);
 
 void lex_key_response_free(LexKeyResponse response);
