@@ -49,6 +49,7 @@ class LeximeInputController: IMKInputController {
         }
 
         session = lex_session_new(dict, AppContext.shared.conn, AppContext.shared.history)
+        guard let session else { return }
         lex_session_set_defer_candidates(session, 1)
         if UserDefaults.standard.bool(forKey: "programmerMode") {
             lex_session_set_programmer_mode(session, 1)
@@ -200,15 +201,15 @@ class LeximeInputController: IMKInputController {
 
     private func applyResponse(_ resp: LexKeyResponse, client: IMKTextInput) {
         // 1. Commit text
-        if resp.commit_text != nil {
-            let text = String(cString: resp.commit_text)
+        if let commitText = resp.commit_text {
+            let text = String(cString: commitText)
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
             panelNeedsReposition = true
         }
 
         // 2. Marked text
-        if resp.marked_text != nil {
-            let text = String(cString: resp.marked_text)
+        if let markedText = resp.marked_text {
+            let text = String(cString: markedText)
             currentDisplay = text
             updateMarkedText(text, dashed: resp.is_dashed_underline != 0, client: client)
         }
@@ -232,16 +233,16 @@ class LeximeInputController: IMKInputController {
         }
 
         // 5. Async candidate generation
-        if resp.needs_candidates != 0, resp.candidate_reading != nil {
+        if resp.needs_candidates != 0, let candidateReading = resp.candidate_reading {
             dispatchAsyncCandidates(
-                reading: String(cString: resp.candidate_reading),
+                reading: String(cString: candidateReading),
                 dispatch: resp.candidate_dispatch
             )
         }
 
         // 6. Ghost text
-        if resp.ghost_text != nil {
-            let text = String(cString: resp.ghost_text)
+        if let ghostTextPtr = resp.ghost_text {
+            let text = String(cString: ghostTextPtr)
             if text.isEmpty {
                 // Clear ghost state. Only clear the display if no marked text was set
                 // in this same response (step 2 already replaced the screen content).
@@ -258,8 +259,8 @@ class LeximeInputController: IMKInputController {
         }
 
         // 7. Ghost generation request (debounced)
-        if resp.needs_ghost_text != 0, resp.ghost_context != nil {
-            let context = String(cString: resp.ghost_context)
+        if resp.needs_ghost_text != 0, let ghostContext = resp.ghost_context {
+            let context = String(cString: ghostContext)
             let generation = resp.ghost_generation
             requestGhostText(context: context, generation: generation)
         }
@@ -276,7 +277,7 @@ class LeximeInputController: IMKInputController {
         nonisolated(unsafe) let conn = AppContext.shared.conn
         nonisolated(unsafe) let history = AppContext.shared.history
         nonisolated(unsafe) let neural = AppContext.shared.neural
-        let sessionPtr = self.session
+        guard let dict, let sessionPtr = self.session else { return }
 
         candidateQueue.async { [weak self] in
             var result: LexCandidateResponse
@@ -301,7 +302,7 @@ class LeximeInputController: IMKInputController {
                 result = reading.withCString { lex_generate_candidates(dict, conn, history, $0, 20) }
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self, let sessionPtr else {
+                guard let self else {
                     lex_candidate_response_free(result)
                     return
                 }
