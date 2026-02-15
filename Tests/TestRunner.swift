@@ -31,6 +31,8 @@ func assertTrue(_ condition: Bool,
 struct TestMain {
     static func main() {
         testRomajiFFI()
+        testDictFFI()
+        testSessionFFI()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")
         exit(testsFailed > 0 ? 1 : 0)

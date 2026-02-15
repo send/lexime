@@ -21,6 +21,7 @@ jobs:
             swift:
               - 'Sources/**'
               - 'Tests/**'
+              - 'Info.plist'
 
   engine:
     needs: changes

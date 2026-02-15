@@ -1,6 +1,6 @@
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
-sources = ["engine/src/**/*.rs", "engine/Cargo.toml"]
+sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/include/engine.h"]
 outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash
@@ -102,6 +102,7 @@ description = "Build Lexime.app (universal binary)"
 depends = ["engine-lib", "dict", "conn"]
 sources = [
   "Sources/*.swift",
+  "Sources/Bridging-Header.h",
   "build/liblex_engine.a",
   "engine/data/lexime.dict",
   "engine/data/lexime.conn",
@@ -180,7 +181,7 @@ set -euo pipefail
 mkdir -p build
 swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
   -Lbuild -llex_engine \
-  Tests/TestRunner.swift Tests/TestRomajiFFI.swift \
+  Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift \
   -o build/test-runner && build/test-runner
 """
 
