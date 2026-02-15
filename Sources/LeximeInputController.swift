@@ -277,16 +277,23 @@ class LeximeInputController: IMKInputController {
         nonisolated(unsafe) let conn = AppContext.shared.conn
         nonisolated(unsafe) let history = AppContext.shared.history
         nonisolated(unsafe) let neural = AppContext.shared.neural
-        guard let dict, let sessionPtr = self.session else { return }
+        guard let dict else { return }
+
+        // Capture committed context on main thread (LexSession is not thread-safe).
+        let context: String
+        if dispatch == 2, let session {
+            let ctxPtr = lex_session_committed_context(session)
+            context = ctxPtr.map { String(cString: $0) } ?? ""
+            lex_committed_context_free(ctxPtr)
+        } else {
+            context = ""
+        }
 
         candidateQueue.async { [weak self] in
             var result: LexCandidateResponse
             switch dispatch {
             case 2:  // neural (speculative decode)
                 if let neural {
-                    let ctxPtr = lex_session_committed_context(sessionPtr)
-                    let context = ctxPtr.map { String(cString: $0) } ?? ""
-                    lex_committed_context_free(ctxPtr)
                     result = reading.withCString { readingCStr in
                         context.withCString { ctxCStr in
                             lex_generate_neural_candidates(neural, dict, conn, history, ctxCStr, readingCStr, 20)
@@ -314,8 +321,14 @@ class LeximeInputController: IMKInputController {
                     lex_candidate_response_free(result)
                     return
                 }
+                // Access session through self (protected by weak self guard above)
+                // instead of capturing the raw pointer directly.
+                guard let session = self.session else {
+                    lex_candidate_response_free(result)
+                    return
+                }
                 let resp = reading.withCString { readingCStr in
-                    lex_session_receive_candidates(sessionPtr, readingCStr, &result)
+                    lex_session_receive_candidates(session, readingCStr, &result)
                 }
                 lex_candidate_response_free(result)
                 defer { lex_key_response_free(resp) }
