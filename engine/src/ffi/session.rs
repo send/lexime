@@ -428,36 +428,29 @@ pub extern "C" fn lex_session_composed_string(_session: *const LexSession) -> *c
 
 /// Get the committed context string for neural candidate generation.
 /// Returns the concatenated surfaces of recently committed segments.
+/// Returns null if the context is empty.
 /// The caller must free the returned string with `lex_committed_context_free`.
 #[no_mangle]
-pub extern "C" fn lex_session_committed_context(session: *const LexSession) -> *const c_char {
+pub extern "C" fn lex_session_committed_context(session: *const LexSession) -> *mut c_char {
     if session.is_null() {
-        return c"".as_ptr();
+        return ptr::null_mut();
     }
     let session = unsafe { &*session };
     let context = session.inner.committed_context();
     if context.is_empty() {
-        return c"".as_ptr();
+        return ptr::null_mut();
     }
     match CString::new(context) {
-        Ok(cs) => {
-            let ptr = cs.as_ptr();
-            std::mem::forget(cs);
-            ptr
-        }
-        Err(_) => c"".as_ptr(),
+        Ok(cs) => cs.into_raw(),
+        Err(_) => ptr::null_mut(),
     }
 }
 
 /// Free a string returned by `lex_session_committed_context`.
-/// No-op if ptr is null or points to a static empty string.
+/// No-op if ptr is null.
 #[no_mangle]
 pub extern "C" fn lex_committed_context_free(ptr: *mut c_char) {
     if ptr.is_null() {
-        return;
-    }
-    // Don't free static empty strings
-    if std::ptr::eq(ptr, c"".as_ptr()) {
         return;
     }
     unsafe {
