@@ -34,8 +34,14 @@ impl TrieDictionary {
         let trie_data = self.trie.as_bytes();
         let values_data = bincode::serialize(&self.values).map_err(DictError::Serialize)?;
 
-        let trie_len = trie_data.len() as u32;
-        let values_len = values_data.len() as u32;
+        let trie_len: u32 = trie_data
+            .len()
+            .try_into()
+            .map_err(|_| DictError::Parse("trie data exceeds u32::MAX".to_string()))?;
+        let values_len: u32 = values_data
+            .len()
+            .try_into()
+            .map_err(|_| DictError::Parse("values data exceeds u32::MAX".to_string()))?;
 
         let mut buf = Vec::with_capacity(HEADER_SIZE + trie_data.len() + values_data.len());
         buf.extend_from_slice(MAGIC);

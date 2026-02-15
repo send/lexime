@@ -164,9 +164,10 @@ pub extern "C" fn lex_convert_nbest_with_history(
 pub extern "C" fn lex_conversion_result_list_free(list: LexConversionResultList) {
     if !list._owned.is_null() {
         unsafe {
-            let owned = Box::from_raw(list._owned);
-            for result in &owned.items {
+            let mut owned = Box::from_raw(list._owned);
+            for result in &mut owned.items {
                 owned_drop(result._owned);
+                result._owned = std::ptr::null_mut();
             }
         }
     }

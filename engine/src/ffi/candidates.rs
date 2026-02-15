@@ -143,9 +143,10 @@ pub extern "C" fn lex_generate_prediction_candidates(
 pub extern "C" fn lex_candidate_response_free(response: LexCandidateResponse) {
     if !response._owned.is_null() {
         unsafe {
-            let owned = Box::from_raw(response._owned);
-            for path in &owned._paths {
+            let mut owned = Box::from_raw(response._owned);
+            for path in &mut owned._paths {
                 owned_drop(path._owned);
+                path._owned = std::ptr::null_mut();
             }
         }
     }
