@@ -283,8 +283,9 @@ class LeximeInputController: IMKInputController {
             switch dispatch {
             case 2:  // neural (speculative decode)
                 if let neural {
-                    // Use committed text as context for speculative decode
-                    let context = ""  // TODO: pass actual context from session
+                    let ctxPtr = lex_session_committed_context(sessionPtr)
+                    let context = String(cString: ctxPtr)
+                    lex_committed_context_free(UnsafeMutablePointer(mutating: ctxPtr))
                     result = reading.withCString { readingCStr in
                         context.withCString { ctxCStr in
                             lex_generate_neural_candidates(neural, dict, conn, history, ctxCStr, readingCStr, 20)

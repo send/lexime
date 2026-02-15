@@ -357,6 +357,9 @@ pub struct InputSession<'a> {
     // Ghost text state (GhostText mode)
     ghost_text: Option<String>,
     ghost_generation: u64,
+
+    // Accumulated committed text for neural context
+    committed_context: String,
 }
 
 impl<'a> InputSession<'a> {
@@ -377,6 +380,7 @@ impl<'a> InputSession<'a> {
             history_records: Vec::new(),
             ghost_text: None,
             ghost_generation: 0,
+            committed_context: String::new(),
         }
     }
 
@@ -495,6 +499,11 @@ impl<'a> InputSession<'a> {
     /// The caller should feed these to `UserHistory::record()`.
     pub fn take_history_records(&mut self) -> Vec<Vec<(String, String)>> {
         std::mem::take(&mut self.history_records)
+    }
+
+    /// Get the accumulated committed text for use as neural context.
+    pub fn committed_context(&self) -> String {
+        self.committed_context.clone()
     }
 
     // -----------------------------------------------------------------------
@@ -1076,6 +1085,11 @@ impl<'a> InputSession<'a> {
                     dashed: false,
                 });
             }
+        }
+
+        // Accumulate committed text for neural context
+        if let Some(ref committed) = resp.commit {
+            self.committed_context.push_str(committed);
         }
 
         // GhostText mode: request ghost text generation after commit
