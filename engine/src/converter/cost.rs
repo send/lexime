@@ -81,7 +81,12 @@ impl<'a> DefaultCostFunction<'a> {
 
 impl CostFunction for DefaultCostFunction<'_> {
     fn word_cost(&self, node: &LatticeNode) -> i64 {
-        node.cost as i64 + SEGMENT_PENALTY
+        let is_fw = self
+            .conn
+            .map(|c| c.is_function_word(node.left_id))
+            .unwrap_or(false);
+        let penalty = if is_fw { 0 } else { SEGMENT_PENALTY };
+        node.cost as i64 + penalty
     }
 
     fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64 {

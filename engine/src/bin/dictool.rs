@@ -128,6 +128,15 @@ enum Command {
         #[arg(long)]
         history: Option<String>,
     },
+    /// Look up connection cost between POS IDs
+    ConnCost {
+        /// Connection matrix file
+        conn_file: String,
+        /// Left POS ID (right_id of previous morpheme)
+        left: u16,
+        /// Right POS ID (left_id of next morpheme)
+        right: u16,
+    },
     /// Score N-best candidates with neural model (requires --features neural)
     #[cfg(feature = "neural")]
     NeuralScore {
@@ -240,6 +249,11 @@ fn main() {
             n,
             history,
         } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        Command::ConnCost {
+            conn_file,
+            left,
+            right,
+        } => conn_cost_cmd(&conn_file, left, right),
         #[cfg(feature = "neural")]
         Command::NeuralScore {
             dict_file,
@@ -463,6 +477,36 @@ fn info_conn(conn_file: &str) {
     println!(
         "Roles:      CW={}, FW={}, Suffix={}, Prefix={}",
         role_counts[0], role_counts[1], role_counts[2], role_counts[3]
+    );
+}
+
+fn conn_cost_cmd(conn_file: &str, left: u16, right: u16) {
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+    let cost = conn.cost(left, right);
+    let left_role = conn.role(left);
+    let right_role = conn.role(right);
+    let left_fw = conn.is_function_word(left);
+    let right_fw = conn.is_function_word(right);
+
+    let role_name = |r: u8| match r {
+        0 => "CW",
+        1 => "FW",
+        2 => "Suffix",
+        3 => "Prefix",
+        _ => "?",
+    };
+
+    println!(
+        "conn({left}, {right}) = {cost}  [{} {}{}→ {} {}{}]",
+        left,
+        role_name(left_role),
+        if left_fw { "(fw)" } else { "" },
+        right,
+        role_name(right_role),
+        if right_fw { "(fw)" } else { "" },
     );
 }
 
