@@ -4,8 +4,6 @@ use std::ptr;
 use super::{ffi_close, ffi_guard, ffi_open, owned_drop, OwnedVec};
 use crate::dict::{self, Dictionary, TrieDictionary};
 
-use super::history::LexUserHistoryWrapper;
-
 // --- Dictionary FFI ---
 
 #[repr(C)]
@@ -57,56 +55,6 @@ impl LexCandidateList {
         Self::pack(candidates, strings)
     }
 
-    pub(crate) fn from_flat_entries(pairs: &[(String, dict::DictEntry)]) -> Self {
-        let mut strings = Vec::new();
-        let mut candidates = Vec::new();
-
-        for (reading, entry) in pairs {
-            let Ok(reading_cstr) = CString::new(reading.as_str()) else {
-                continue;
-            };
-            let Ok(surface) = CString::new(entry.surface.as_str()) else {
-                continue;
-            };
-            candidates.push(LexCandidate {
-                reading: reading_cstr.as_ptr(),
-                surface: surface.as_ptr(),
-                cost: entry.cost,
-            });
-            strings.push(reading_cstr);
-            strings.push(surface);
-        }
-
-        Self::pack(candidates, strings)
-    }
-
-    pub(crate) fn from_search_results(results: Vec<dict::SearchResult<'_>>) -> Self {
-        let mut strings = Vec::new();
-        let mut candidates = Vec::new();
-
-        for result in &results {
-            let Ok(reading_cstr) = CString::new(result.reading.as_str()) else {
-                continue;
-            };
-            let reading_ptr = reading_cstr.as_ptr();
-            strings.push(reading_cstr);
-
-            for entry in result.entries {
-                let Ok(surface) = CString::new(entry.surface.as_str()) else {
-                    continue;
-                };
-                candidates.push(LexCandidate {
-                    reading: reading_ptr,
-                    surface: surface.as_ptr(),
-                    cost: entry.cost,
-                });
-                strings.push(surface);
-            }
-        }
-
-        Self::pack(candidates, strings)
-    }
-
     fn pack(candidates: Vec<LexCandidate>, strings: Vec<CString>) -> Self {
         let (ptr, len, owned) = OwnedVec::pack(candidates, strings);
         if owned.is_null() {
@@ -140,80 +88,6 @@ pub extern "C" fn lex_dict_lookup(
 }
 
 #[no_mangle]
-pub extern "C" fn lex_dict_predict(
-    dict: *const TrieDictionary,
-    prefix: *const c_char,
-    max_results: u32,
-) -> LexCandidateList {
-    ffi_guard!(LexCandidateList::empty();
-        ref: dict       = dict,
-        str: prefix_str = prefix,
-    );
-
-    let results = dict.predict(prefix_str, max_results as usize);
-    LexCandidateList::from_search_results(results)
-}
-
-#[no_mangle]
-pub extern "C" fn lex_dict_predict_ranked(
-    dict: *const TrieDictionary,
-    history: *const LexUserHistoryWrapper,
-    prefix: *const c_char,
-    max_results: u32,
-) -> LexCandidateList {
-    ffi_guard!(LexCandidateList::empty();
-        ref: dict       = dict,
-        str: prefix_str = prefix,
-    );
-
-    let fetch_limit = if history.is_null() {
-        max_results as usize
-    } else {
-        (max_results as usize).max(200)
-    };
-    let mut ranked = dict.predict_ranked(prefix_str, fetch_limit, 1000);
-
-    if !history.is_null() {
-        let wrapper = unsafe { &*history };
-        if let Ok(h) = wrapper.inner.read() {
-            let now = crate::user_history::now_epoch();
-            ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
-                let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
-                let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
-                boost_b.cmp(&boost_a).then(e_a.cost.cmp(&e_b.cost))
-            });
-        }
-        ranked.truncate(max_results as usize);
-    }
-
-    LexCandidateList::from_flat_entries(&ranked)
-}
-
-#[no_mangle]
 pub extern "C" fn lex_candidates_free(list: LexCandidateList) {
     unsafe { owned_drop(list._owned) };
-}
-
-#[no_mangle]
-pub extern "C" fn lex_dict_lookup_with_history(
-    dict: *const TrieDictionary,
-    history: *const LexUserHistoryWrapper,
-    reading: *const c_char,
-) -> LexCandidateList {
-    ffi_guard!(LexCandidateList::empty();
-        ref: dict        = dict,
-        ref: wrapper     = history,
-        str: reading_str = reading,
-    );
-    let Ok(h) = wrapper.inner.read() else {
-        return LexCandidateList::empty();
-    };
-
-    match dict.lookup(reading_str) {
-        Some(entries) => {
-            let reordered = h.reorder_candidates(reading_str, entries);
-            LexCandidateList::from_entries(reading_str, &reordered)
-        }
-        None => LexCandidateList::empty(),
-    }
 }

@@ -943,9 +943,12 @@ impl<'a> InputSession<'a> {
             self.history_records.push(seg_pairs);
         }
 
-        // Remove committed reading from kana
+        // Remove committed reading from kana.
+        // Safety: starts_with check above guarantees the byte offset is a valid
+        // UTF-8 boundary, but we use char-based slicing for extra safety.
         let c = self.comp();
-        c.kana = c.kana[committed_reading.len()..].to_string();
+        let skip_chars = committed_reading.chars().count();
+        c.kana = c.kana.chars().skip(skip_chars).collect();
         c.stability.reset();
 
         // Include prefix in the committed text, then clear it
@@ -1092,15 +1095,15 @@ impl<'a> InputSession<'a> {
             self.committed_context.push_str(committed);
         }
 
-        // GhostText mode: request ghost text generation after commit
-        if self.conversion_mode == ConversionMode::GhostText {
-            if let Some(ref committed) = resp.commit {
-                self.ghost_generation += 1;
-                resp.ghost_request = Some(AsyncGhostRequest {
-                    context: committed.clone(),
-                    generation: self.ghost_generation,
-                });
-            }
+        // GhostText mode: request ghost text generation after commit.
+        // Use full committed_context (not just the latest commit) so the
+        // neural model sees the complete preceding text.
+        if self.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
+            self.ghost_generation += 1;
+            resp.ghost_request = Some(AsyncGhostRequest {
+                context: self.committed_context.clone(),
+                generation: self.ghost_generation,
+            });
         }
 
         self.reset_state();
@@ -1145,17 +1148,17 @@ impl<'a> InputSession<'a> {
     /// Accept the current ghost text (Tab in idle with ghost visible).
     fn accept_ghost_text(&mut self) -> KeyResponse {
         let text = self.ghost_text.take().unwrap();
+        // Accumulate accepted ghost text into committed_context
+        self.committed_context.push_str(&text);
         let mut resp = KeyResponse::consumed();
         resp.commit = Some(text);
-        // After accepting ghost, request another generation
+        // After accepting ghost, request another generation with full context
         if self.conversion_mode == ConversionMode::GhostText {
-            if let Some(ref committed) = resp.commit {
-                self.ghost_generation += 1;
-                resp.ghost_request = Some(AsyncGhostRequest {
-                    context: committed.clone(),
-                    generation: self.ghost_generation,
-                });
-            }
+            self.ghost_generation += 1;
+            resp.ghost_request = Some(AsyncGhostRequest {
+                context: self.committed_context.clone(),
+                generation: self.ghost_generation,
+            });
         }
         resp
     }

@@ -3,6 +3,11 @@ use tracing::{debug, debug_span};
 use crate::dict::Dictionary;
 
 /// A node in the conversion lattice.
+///
+/// `reading` and `surface` are owned `String`s, cloned from dictionary results.
+/// Alternatives (Cow, Rc<str>) were considered but rejected:
+/// - `group_segments()` mutates readings via `push_str`, requiring owned Strings
+/// - Readings are short (2-4 kana, ~6-12 bytes), so clone cost is negligible
 #[derive(Debug, Clone)]
 pub struct LatticeNode {
     /// Start position (char index, inclusive)

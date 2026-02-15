@@ -77,26 +77,6 @@ fn test_ffi_lookup_not_found() {
 }
 
 #[test]
-fn test_ffi_predict_with_reading() {
-    let dict = make_test_dict();
-    let prefix = CString::new("かん").unwrap();
-
-    let list = lex_dict_predict(dict, prefix.as_ptr(), 100);
-    assert!(list.len >= 3);
-
-    unsafe {
-        let candidates = std::slice::from_raw_parts(list.candidates, list.len as usize);
-        for c in candidates {
-            let r = CStr::from_ptr(c.reading).to_str().unwrap();
-            assert!(r.starts_with("かん"));
-        }
-    }
-
-    lex_candidates_free(list);
-    lex_dict_close(dict);
-}
-
-#[test]
 fn test_ffi_null_safety() {
     let reading = CString::new("かんじ").unwrap();
     let list = lex_dict_lookup(ptr::null(), reading.as_ptr());
@@ -105,10 +85,6 @@ fn test_ffi_null_safety() {
 
     let dict = make_test_dict();
     let list = lex_dict_lookup(dict, ptr::null());
-    assert_eq!(list.len, 0);
-    lex_candidates_free(list);
-
-    let list = lex_dict_predict(dict, ptr::null(), 10);
     assert_eq!(list.len, 0);
     lex_candidates_free(list);
 
@@ -159,127 +135,6 @@ fn test_ffi_open_nonexistent() {
 }
 
 #[test]
-fn test_ffi_predict_ranked_roundtrip() {
-    let dict = make_test_dict();
-    let prefix = CString::new("かん").unwrap();
-
-    let list = lex_dict_predict_ranked(dict, ptr::null(), prefix.as_ptr(), 10);
-    assert!(list.len >= 3);
-
-    unsafe {
-        let candidates = std::slice::from_raw_parts(list.candidates, list.len as usize);
-        for w in candidates.windows(2) {
-            assert!(
-                w[0].cost <= w[1].cost,
-                "predict_ranked FFI should be cost-ordered"
-            );
-        }
-    }
-
-    lex_candidates_free(list);
-    lex_dict_close(dict);
-}
-
-#[test]
-fn test_ffi_predict_ranked_null_safety() {
-    let prefix = CString::new("かん").unwrap();
-
-    let list = lex_dict_predict_ranked(ptr::null(), ptr::null(), prefix.as_ptr(), 10);
-    assert_eq!(list.len, 0);
-    lex_candidates_free(list);
-
-    let dict = make_test_dict();
-    let list = lex_dict_predict_ranked(dict, ptr::null(), ptr::null(), 10);
-    assert_eq!(list.len, 0);
-    lex_candidates_free(list);
-
-    let list = lex_dict_predict_ranked(dict, ptr::null(), prefix.as_ptr(), 10);
-    assert!(list.len >= 1);
-    lex_candidates_free(list);
-
-    lex_dict_close(dict);
-}
-
-fn make_convert_test_dict() -> *mut TrieDictionary {
-    let entries = vec![
-        (
-            "きょう".to_string(),
-            vec![dict::DictEntry {
-                surface: "今日".to_string(),
-                cost: 3000,
-                left_id: 0,
-                right_id: 0,
-            }],
-        ),
-        (
-            "は".to_string(),
-            vec![dict::DictEntry {
-                surface: "は".to_string(),
-                cost: 2000,
-                left_id: 0,
-                right_id: 0,
-            }],
-        ),
-        (
-            "いい".to_string(),
-            vec![dict::DictEntry {
-                surface: "良い".to_string(),
-                cost: 3500,
-                left_id: 0,
-                right_id: 0,
-            }],
-        ),
-    ];
-    let dict = TrieDictionary::from_entries(entries);
-    owned_new(dict)
-}
-
-#[test]
-fn test_ffi_convert_roundtrip() {
-    let dict = make_convert_test_dict();
-    let kana = CString::new("きょうはいい").unwrap();
-
-    let result = lex_convert(dict, ptr::null(), kana.as_ptr());
-    assert!(result.len >= 3);
-
-    unsafe {
-        let segments = std::slice::from_raw_parts(result.segments, result.len as usize);
-        let s0 = CStr::from_ptr(segments[0].surface).to_str().unwrap();
-        assert_eq!(s0, "今日");
-    }
-
-    lex_conversion_free(result);
-    lex_dict_close(dict);
-}
-
-#[test]
-fn test_ffi_convert_null_safety() {
-    let kana = CString::new("きょう").unwrap();
-
-    let result = lex_convert(ptr::null(), ptr::null(), kana.as_ptr());
-    assert_eq!(result.len, 0);
-    lex_conversion_free(result);
-
-    let dict = make_convert_test_dict();
-    let result = lex_convert(dict, ptr::null(), ptr::null());
-    assert_eq!(result.len, 0);
-    lex_conversion_free(result);
-    lex_dict_close(dict);
-}
-
-#[test]
-fn test_ffi_convert_empty_input() {
-    let dict = make_convert_test_dict();
-    let kana = CString::new("").unwrap();
-
-    let result = lex_convert(dict, ptr::null(), kana.as_ptr());
-    assert_eq!(result.len, 0);
-
-    lex_conversion_free(result);
-    lex_dict_close(dict);
-}
-
-#[test]
 fn test_ffi_conn_null_safety() {
     let conn = lex_conn_open(ptr::null());
     assert!(conn.is_null());
@@ -289,41 +144,6 @@ fn test_ffi_conn_null_safety() {
     assert!(conn.is_null());
 
     lex_conn_close(ptr::null_mut());
-}
-
-#[test]
-fn test_ffi_history_roundtrip() {
-    let dir = std::env::temp_dir().join("lexime_test_ffi_history");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("test.lxud");
-    let path_cstr = CString::new(path.to_str().unwrap()).unwrap();
-
-    let history = lex_history_open(path_cstr.as_ptr());
-    assert!(!history.is_null());
-
-    let reading = CString::new("きょう").unwrap();
-    let surface = CString::new("京").unwrap();
-    let seg = convert::LexSegment {
-        reading: reading.as_ptr(),
-        surface: surface.as_ptr(),
-    };
-    lex_history_record(history, &seg, 1);
-
-    assert_eq!(lex_history_save(history, path_cstr.as_ptr()), 0);
-    lex_history_close(history);
-
-    let history2 = lex_history_open(path_cstr.as_ptr());
-    assert!(!history2.is_null());
-
-    let dict = make_test_dict();
-    let reading_lookup = CString::new("かんじ").unwrap();
-    let list = lex_dict_lookup_with_history(dict, history2, reading_lookup.as_ptr());
-    assert!(list.len >= 1);
-    lex_candidates_free(list);
-
-    lex_history_close(history2);
-    lex_dict_close(dict);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -341,46 +161,6 @@ fn test_ffi_history_save_invalid_path() {
 
     lex_history_close(history);
     std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn test_ffi_convert_nbest_roundtrip() {
-    let dict = make_convert_test_dict();
-    let kana = CString::new("きょうはいい").unwrap();
-
-    let list = lex_convert_nbest(dict, ptr::null(), kana.as_ptr(), 5);
-    assert!(list.len >= 1, "should return at least 1 result");
-
-    unsafe {
-        let results = std::slice::from_raw_parts(list.results, list.len as usize);
-        assert!(results[0].len >= 3);
-        let segments = std::slice::from_raw_parts(results[0].segments, results[0].len as usize);
-        let s0 = CStr::from_ptr(segments[0].surface).to_str().unwrap();
-        assert_eq!(s0, "今日");
-    }
-
-    lex_conversion_result_list_free(list);
-    lex_dict_close(dict);
-}
-
-#[test]
-fn test_ffi_convert_nbest_null_safety() {
-    let kana = CString::new("きょう").unwrap();
-
-    let list = lex_convert_nbest(ptr::null(), ptr::null(), kana.as_ptr(), 5);
-    assert_eq!(list.len, 0);
-    lex_conversion_result_list_free(list);
-
-    let dict = make_convert_test_dict();
-    let list = lex_convert_nbest(dict, ptr::null(), ptr::null(), 5);
-    assert_eq!(list.len, 0);
-    lex_conversion_result_list_free(list);
-
-    let list = lex_convert_nbest(dict, ptr::null(), kana.as_ptr(), 0);
-    assert_eq!(list.len, 0);
-    lex_conversion_result_list_free(list);
-
-    lex_dict_close(dict);
 }
 
 // --- Romaji Lookup FFI tests ---

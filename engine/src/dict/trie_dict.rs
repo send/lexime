@@ -123,18 +123,20 @@ impl TrieDictionary {
         max_results: usize,
         scan_limit: usize,
     ) -> Vec<(String, DictEntry)> {
-        let mut flat: Vec<(String, DictEntry)> = self
+        let mut flat: Vec<(String, DictEntry)> = Vec::new();
+        for m in self
             .trie
             .predictive_search(prefix.as_bytes())
             .take(scan_limit)
-            .flat_map(|m| {
-                let reading = String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                self.values[m.value_id as usize]
-                    .iter()
-                    .map(move |e| (reading.clone(), e.clone()))
-            })
-            .collect();
+        {
+            let reading = String::from_utf8(m.key)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+            let entries = &self.values[m.value_id as usize];
+            flat.reserve(entries.len());
+            for e in entries {
+                flat.push((reading.clone(), e.clone()));
+            }
+        }
 
         flat.sort_by_key(|(_, e)| e.cost);
 
