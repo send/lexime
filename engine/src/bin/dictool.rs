@@ -72,10 +72,10 @@ enum Command {
         #[arg(long)]
         id_def: Option<String>,
     },
-    /// Show dictionary info
+    /// Show dictionary or connection matrix info (auto-detected by magic bytes)
     Info {
-        /// Dictionary file
-        dict_file: String,
+        /// Dictionary (.dict) or connection matrix (.conn) file
+        file: String,
     },
     /// Merge two dictionaries
     Merge {
@@ -216,7 +216,7 @@ fn main() {
             output_file,
             id_def,
         } => compile_conn(&input_txt, &output_file, id_def.as_deref()),
-        Command::Info { dict_file } => info(&dict_file),
+        Command::Info { file } => info(&file),
         Command::Merge {
             max_cost,
             max_reading_len,
@@ -375,7 +375,30 @@ fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
     );
 }
 
-fn info(dict_file: &str) {
+fn info(file: &str) {
+    // Auto-detect file type from magic bytes
+    let magic = fs::read(file)
+        .ok()
+        .and_then(|b| b.get(..4).map(|s| s.to_vec()));
+
+    match magic.as_deref() {
+        Some(b"LXCX") => info_conn(file),
+        Some(b"LXDX") => info_dict(file),
+        Some(other) => {
+            eprintln!(
+                "Unknown file format (magic: {:?})",
+                String::from_utf8_lossy(other)
+            );
+            process::exit(1);
+        }
+        None => {
+            eprintln!("Error reading file: {file}");
+            process::exit(1);
+        }
+    }
+}
+
+fn info_dict(dict_file: &str) {
     let dict = die!(
         TrieDictionary::open(Path::new(dict_file)),
         "Error opening dictionary: {}"
@@ -401,6 +424,46 @@ fn info(dict_file: &str) {
             println!("  {key} → (not found)");
         }
     }
+}
+
+fn info_conn(conn_file: &str) {
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    let file_size = fs::metadata(conn_file).map(|m| m.len()).unwrap_or(0);
+    let num_ids = conn.num_ids();
+
+    println!("Connection matrix: {conn_file}");
+    println!("File size:  {:.1} MB", file_size as f64 / 1_048_576.0);
+    println!("POS IDs:    {num_ids}");
+    println!(
+        "Matrix:     {num_ids}x{num_ids} = {} entries",
+        num_ids as u64 * num_ids as u64
+    );
+
+    let fw_min = conn.fw_min();
+    let fw_max = conn.fw_max();
+    if fw_min != 0 {
+        let fw_count = fw_max - fw_min + 1;
+        println!("FW range:   {fw_min}..={fw_max} ({fw_count} IDs)");
+    } else {
+        println!("FW range:   (none)");
+    }
+
+    // Count roles
+    let mut role_counts = [0u32; 4]; // 0=CW, 1=FW, 2=Suffix, 3=Prefix
+    for id in 0..num_ids {
+        let r = conn.role(id) as usize;
+        if r < role_counts.len() {
+            role_counts[r] += 1;
+        }
+    }
+    println!(
+        "Roles:      CW={}, FW={}, Suffix={}, Prefix={}",
+        role_counts[0], role_counts[1], role_counts[2], role_counts[3]
+    );
 }
 
 struct MergeOptions {
