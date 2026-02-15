@@ -24,6 +24,19 @@ jobs:
               - 'Tests/**'
               - 'Info.plist'
 
+  audit:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: jdx/mise-action@v2
+
+      - run: mise run audit
+
   engine:
     needs: changes
     if: needs.changes.outputs.engine == 'true'

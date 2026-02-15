@@ -1,3 +1,10 @@
+[tools]
+"cargo:cargo-audit" = "latest"
+"cargo:cargo-machete" = "latest"
+"cargo:cargo-geiger" = "latest"
+"cargo:cargo-bloat" = "latest"
+"cargo:cargo-deny" = "latest"
+
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
 sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock", "engine/include/engine.h"]
@@ -248,6 +255,13 @@ description = "Run cargo fmt --check and clippy (all features)"
 run = [
   "cd engine && cargo fmt --check",
   "cd engine && cargo clippy --all-features -- -D warnings",
+]
+
+[tasks.audit]
+description = "Run cargo-audit (vulnerabilities) and cargo-machete (unused deps)"
+run = [
+  "cd engine && cargo audit",
+  "cd engine && cargo machete",
 ]
 
 [tasks.test]
