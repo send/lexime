@@ -36,6 +36,8 @@ pub enum ConversionMode {
     Standard,
     /// Predictive: Viterbi base + bigram chaining for Copilot-like completions, Tab commits.
     Predictive,
+    /// GhostText: Speculative decode (composing) + GPT-2 ghost text (idle after commit).
+    GhostText,
 }
 
 enum TabAction {
@@ -53,7 +55,9 @@ impl ConversionMode {
         max_results: usize,
     ) -> CandidateResponse {
         match self {
-            Self::Standard => generate_candidates(dict, conn, history, reading, max_results),
+            Self::Standard | Self::GhostText => {
+                generate_candidates(dict, conn, history, reading, max_results)
+            }
             Self::Predictive => {
                 generate_prediction_candidates(dict, conn, history, reading, max_results)
             }
@@ -63,7 +67,7 @@ impl ConversionMode {
     fn tab_action(&self) -> TabAction {
         match self {
             Self::Standard => TabAction::ToggleSubmode,
-            Self::Predictive => TabAction::Commit,
+            Self::Predictive | Self::GhostText => TabAction::Commit,
         }
     }
 
@@ -77,6 +81,7 @@ impl ConversionMode {
         match self {
             Self::Standard => 0,
             Self::Predictive => 1,
+            Self::GhostText => 2,
         }
     }
 }
@@ -278,6 +283,12 @@ pub struct SideEffects {
     pub save_history: bool,
 }
 
+/// Request for asynchronous ghost text generation (GhostText mode).
+pub struct AsyncGhostRequest {
+    pub context: String,
+    pub generation: u64,
+}
+
 /// Response from handle_key / commit, returned to the caller (Swift via FFI).
 pub struct KeyResponse {
     pub consumed: bool,
@@ -286,6 +297,10 @@ pub struct KeyResponse {
     pub candidates: CandidateAction,
     pub async_request: Option<AsyncCandidateRequest>,
     pub side_effects: SideEffects,
+    /// Ghost text: `Some("")` = clear, `Some(text)` = show, `None` = no change.
+    pub ghost_text: Option<String>,
+    /// Request for async ghost text generation.
+    pub ghost_request: Option<AsyncGhostRequest>,
 }
 
 impl KeyResponse {
@@ -297,6 +312,8 @@ impl KeyResponse {
             candidates: CandidateAction::Keep,
             async_request: None,
             side_effects: SideEffects::default(),
+            ghost_text: None,
+            ghost_request: None,
         }
     }
 
@@ -336,6 +353,10 @@ pub struct InputSession<'a> {
 
     // History recording buffer
     history_records: Vec<Vec<(String, String)>>,
+
+    // Ghost text state (GhostText mode)
+    ghost_text: Option<String>,
+    ghost_generation: u64,
 }
 
 impl<'a> InputSession<'a> {
@@ -354,6 +375,8 @@ impl<'a> InputSession<'a> {
             defer_candidates: false,
             conversion_mode: ConversionMode::Standard,
             history_records: Vec::new(),
+            ghost_text: None,
+            ghost_generation: 0,
         }
     }
 
@@ -409,51 +432,58 @@ impl<'a> InputSession<'a> {
         let has_modifier = flags & FLAG_HAS_MODIFIER != 0;
         let has_shift = flags & FLAG_SHIFT != 0;
 
+        // Clear ghost text on any key except Tab (ghost accept is handled in handle_idle)
+        let had_ghost = self.ghost_text.is_some();
+        if had_ghost && key_code != key::TAB {
+            self.ghost_text = None;
+        }
+
         // Eisu key → commit if composing, switch to ABC
-        if key_code == key::EISU {
-            let mut resp = if self.is_composing() {
+        let mut resp = if key_code == key::EISU {
+            let mut r = if self.is_composing() {
                 self.commit_current_state()
             } else {
                 KeyResponse::consumed()
             };
-            resp.side_effects.switch_to_abc = true;
-            return resp;
-        }
-
-        // Kana key → already in Japanese mode, consume
-        if key_code == key::KANA {
-            return KeyResponse::consumed();
-        }
-
-        // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
-        if has_modifier {
+            r.side_effects.switch_to_abc = true;
+            r
+        } else if key_code == key::KANA {
+            // Kana key → already in Japanese mode, consume
+            KeyResponse::consumed()
+        } else if has_modifier {
+            // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
             if self.is_composing() {
-                let mut resp = self.commit_current_state();
-                resp.consumed = false;
-                return resp;
+                let mut r = self.commit_current_state();
+                r.consumed = false;
+                r
+            } else {
+                KeyResponse::not_consumed()
             }
-            return KeyResponse::not_consumed();
-        }
-
-        // Programmer mode: ¥ key → insert backslash
-        if key_code == key::YEN && self.programmer_mode && !has_shift {
-            let mut resp = if self.is_composing() {
+        } else if key_code == key::YEN && self.programmer_mode && !has_shift {
+            // Programmer mode: ¥ key → insert backslash
+            let mut r = if self.is_composing() {
                 self.commit_current_state()
             } else {
                 KeyResponse::consumed()
             };
-            // Append backslash to commit
-            match resp.commit {
+            match r.commit {
                 Some(ref mut t) => t.push('\\'),
-                None => resp.commit = Some("\\".to_string()),
+                None => r.commit = Some("\\".to_string()),
             }
-            return resp;
+            r
+        } else {
+            match &self.state {
+                SessionState::Idle => self.handle_idle(key_code, text),
+                SessionState::Composing(_) => self.handle_composing(key_code, text),
+            }
+        };
+
+        // Signal ghost clear if ghost was present and key wasn't Tab
+        if had_ghost && key_code != key::TAB {
+            resp.ghost_text = Some(String::new());
         }
 
-        match &self.state {
-            SessionState::Idle => self.handle_idle(key_code, text),
-            SessionState::Composing(_) => self.handle_composing(key_code, text),
-        }
+        resp
     }
 
     /// Commit the current composition (called by commitComposition).
@@ -472,6 +502,14 @@ impl<'a> InputSession<'a> {
     // -----------------------------------------------------------------------
 
     fn handle_idle(&mut self, key_code: u16, text: &str) -> KeyResponse {
+        // Ghost text: Tab accepts ghost (GhostText mode only)
+        if key_code == key::TAB
+            && self.ghost_text.is_some()
+            && self.conversion_mode == ConversionMode::GhostText
+        {
+            return self.accept_ghost_text();
+        }
+
         // Tab — toggle submode
         if key_code == key::TAB {
             return self.toggle_submode();
@@ -1040,6 +1078,17 @@ impl<'a> InputSession<'a> {
             }
         }
 
+        // GhostText mode: request ghost text generation after commit
+        if self.conversion_mode == ConversionMode::GhostText {
+            if let Some(ref committed) = resp.commit {
+                self.ghost_generation += 1;
+                resp.ghost_request = Some(AsyncGhostRequest {
+                    context: committed.clone(),
+                    generation: self.ghost_generation,
+                });
+            }
+        }
+
         self.reset_state();
         resp
     }
@@ -1073,6 +1122,51 @@ impl<'a> InputSession<'a> {
     fn reset_state(&mut self) {
         self.state = SessionState::Idle;
         self.idle_submode = Submode::Japanese;
+    }
+
+    // -----------------------------------------------------------------------
+    // Ghost text (GhostText mode)
+    // -----------------------------------------------------------------------
+
+    /// Accept the current ghost text (Tab in idle with ghost visible).
+    fn accept_ghost_text(&mut self) -> KeyResponse {
+        let text = self.ghost_text.take().unwrap();
+        let mut resp = KeyResponse::consumed();
+        resp.commit = Some(text);
+        // After accepting ghost, request another generation
+        if self.conversion_mode == ConversionMode::GhostText {
+            if let Some(ref committed) = resp.commit {
+                self.ghost_generation += 1;
+                resp.ghost_request = Some(AsyncGhostRequest {
+                    context: committed.clone(),
+                    generation: self.ghost_generation,
+                });
+            }
+        }
+        resp
+    }
+
+    /// Receive ghost text from async generation. Returns a response if valid.
+    /// Returns `None` if the generation is stale or session is in wrong state.
+    pub fn receive_ghost_text(&mut self, generation: u64, text: String) -> Option<KeyResponse> {
+        if generation != self.ghost_generation {
+            return None;
+        }
+        if self.is_composing() {
+            return None;
+        }
+        if self.conversion_mode != ConversionMode::GhostText {
+            return None;
+        }
+        self.ghost_text = Some(text.clone());
+        let mut resp = KeyResponse::consumed();
+        resp.ghost_text = Some(text);
+        Some(resp)
+    }
+
+    /// Get current ghost generation counter (for staleness checks).
+    pub fn ghost_generation(&self) -> u64 {
+        self.ghost_generation
     }
 
     // -----------------------------------------------------------------------
@@ -2237,5 +2331,146 @@ mod tests {
         assert!(resp.commit.is_none());
         assert!(session.is_composing());
         assert_eq!(session.comp().submode, Submode::English);
+    }
+
+    // --- GhostText mode ---
+
+    #[test]
+    fn test_ghosttext_tab_accepts_ghost() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+
+        // Simulate ghost text being received
+        session.ghost_text = Some("ですね".to_string());
+        session.ghost_generation = 1;
+
+        // Tab should accept ghost text
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert!(resp.consumed);
+        assert_eq!(resp.commit.as_deref(), Some("ですね"));
+        assert!(session.ghost_text.is_none());
+    }
+
+    #[test]
+    fn test_ghosttext_tab_no_ghost_composing_commits() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+
+        // Type something (no ghost text)
+        type_string(&mut session, "kyou");
+        assert!(session.is_composing());
+
+        // Tab commits in GhostText mode (like Predictive)
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert!(resp.commit.is_some());
+        assert!(!session.is_composing());
+    }
+
+    #[test]
+    fn test_ghosttext_input_clears_ghost() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+
+        // Simulate ghost text
+        session.ghost_text = Some("ですね".to_string());
+
+        // Type a character → should clear ghost
+        let resp = session.handle_key(0, "k", 0);
+        assert!(resp.consumed);
+        assert!(session.ghost_text.is_none());
+        // Ghost clear signaled in response
+        assert_eq!(resp.ghost_text.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_ghosttext_stale_generation_rejected() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+        session.ghost_generation = 5;
+
+        // Stale generation
+        let result = session.receive_ghost_text(3, "stale text".to_string());
+        assert!(result.is_none());
+        assert!(session.ghost_text.is_none());
+
+        // Correct generation
+        let result = session.receive_ghost_text(5, "correct text".to_string());
+        assert!(result.is_some());
+        assert_eq!(session.ghost_text.as_deref(), Some("correct text"));
+    }
+
+    #[test]
+    fn test_ghosttext_rejected_while_composing() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+        session.ghost_generation = 1;
+
+        type_string(&mut session, "kyou");
+        assert!(session.is_composing());
+
+        // Should reject ghost text while composing
+        let result = session.receive_ghost_text(1, "text".to_string());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_standard_mode_no_ghost() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::Standard);
+        session.ghost_generation = 1;
+
+        // Standard mode rejects ghost text
+        let result = session.receive_ghost_text(1, "text".to_string());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_ghosttext_commit_requests_ghost() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+
+        type_string(&mut session, "kyou");
+        let resp = session.handle_key(key::ENTER, "", 0);
+        assert!(resp.commit.is_some());
+        // Should request ghost generation
+        assert!(resp.ghost_request.is_some());
+        let req = resp.ghost_request.unwrap();
+        assert!(!req.context.is_empty());
+        assert_eq!(req.generation, 1);
+    }
+
+    #[test]
+    fn test_set_conversion_mode_ghosttext() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+
+        session.set_conversion_mode(ConversionMode::GhostText);
+        assert_eq!(session.conversion_mode, ConversionMode::GhostText);
+        assert_eq!(session.conversion_mode.candidate_dispatch(), 2);
+    }
+
+    #[test]
+    fn test_ghosttext_accept_then_requests_more() {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(&dict, None, None);
+        session.set_conversion_mode(ConversionMode::GhostText);
+
+        // Simulate ghost text
+        session.ghost_text = Some("ですね".to_string());
+        session.ghost_generation = 1;
+
+        // Accept ghost
+        let resp = session.handle_key(key::TAB, "", 0);
+        assert_eq!(resp.commit.as_deref(), Some("ですね"));
+        // Should request another ghost generation
+        assert!(resp.ghost_request.is_some());
+        assert_eq!(resp.ghost_request.unwrap().generation, 2);
     }
 }

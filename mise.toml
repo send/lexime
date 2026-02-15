@@ -6,8 +6,8 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --features trace --target x86_64-apple-darwin
-cargo build --release --features trace --target aarch64-apple-darwin
+cargo build --release --features trace,neural --target x86_64-apple-darwin
+cargo build --release --features trace,neural --target aarch64-apple-darwin
 cd ..
 mkdir -p build
 lipo -create \
@@ -135,6 +135,9 @@ cp -R Resources/en.lproj "$RES/en.lproj"
 cp -R Resources/ja.lproj "$RES/ja.lproj"
 cp engine/data/lexime.dict "$RES/"
 cp engine/data/lexime.conn "$RES/"
+if [ -f data/zenz-v3.1-Q5_K_M.gguf ]; then
+  cp data/zenz-v3.1-Q5_K_M.gguf "$RES/"
+fi
 codesign -f -s - "$APP"
 echo "Build complete: $APP"
 """

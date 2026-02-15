@@ -6,6 +6,7 @@ class AppContext {
     let dict: OpaquePointer?
     let conn: OpaquePointer?
     let history: OpaquePointer?
+    let neural: OpaquePointer?  // LexNeuralScorer*
     let historyPath: String
     let candidatePanel = CandidatePanel()
 
@@ -57,6 +58,21 @@ class AppContext {
         } else {
             NSLog("Lexime: Failed to open user history at %@", self.historyPath)
             self.history = nil
+        }
+
+        // Load neural model (optional — GhostText mode requires this)
+        let modelPath = resourcePath + "/zenz-v3.1-Q5_K_M.gguf"
+        if FileManager.default.fileExists(atPath: modelPath) {
+            if let n = lex_neural_open(modelPath) {
+                NSLog("Lexime: Neural model loaded from %@", modelPath)
+                self.neural = n
+            } else {
+                NSLog("Lexime: Failed to load neural model at %@", modelPath)
+                self.neural = nil
+            }
+        } else {
+            NSLog("Lexime: Neural model not found at %@ (GhostText mode unavailable)", modelPath)
+            self.neural = nil
         }
     }
 }

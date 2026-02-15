@@ -182,7 +182,11 @@ typedef struct {
     uint8_t save_history;          /* 1 = trigger async history save */
     uint8_t needs_candidates;      /* 1 = caller should generate candidates async */
     const char *candidate_reading; /* reading for async generation (valid when needs_candidates=1) */
-    uint8_t candidate_dispatch;    /* 0=standard, 1=prediction_only */
+    uint8_t candidate_dispatch;    /* 0=standard, 1=prediction, 2=neural */
+    const char *ghost_text;        /* NULL=no change, ""=clear, string=show */
+    uint8_t needs_ghost_text;      /* 1 = caller should generate ghost text async */
+    const char *ghost_context;     /* context for ghost generation (valid when needs_ghost_text=1) */
+    uint64_t ghost_generation;     /* staleness counter */
     void *_owned;
 } LexKeyResponse;
 
@@ -222,6 +226,43 @@ LexKeyResponse lex_session_receive_candidates(
 void lex_key_response_record_history(
     const LexKeyResponse *response,
     const LexUserHistory *history
+);
+
+/* Ghost text session API */
+LexKeyResponse lex_session_receive_ghost_text(
+    LexSession *session,
+    uint64_t generation,
+    const char *text
+);
+uint64_t lex_session_ghost_generation(const LexSession *session);
+
+/* Neural scorer API */
+
+typedef struct LexNeuralScorer LexNeuralScorer;
+
+LexNeuralScorer *lex_neural_open(const char *model_path);
+void lex_neural_close(LexNeuralScorer *scorer);
+
+typedef struct {
+    const char *text;
+    void *_owned;
+} LexGhostTextResult;
+
+LexGhostTextResult lex_neural_generate_ghost(
+    LexNeuralScorer *scorer,
+    const char *context,
+    uint32_t max_tokens
+);
+void lex_ghost_text_free(LexGhostTextResult result);
+
+LexCandidateResponse lex_generate_neural_candidates(
+    LexNeuralScorer *scorer,
+    const LexDict *dict,
+    const LexConnectionMatrix *conn,
+    const LexUserHistory *history,
+    const char *context,
+    const char *reading,
+    uint32_t max_results
 );
 
 #endif

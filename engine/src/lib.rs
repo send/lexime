@@ -1023,6 +1023,14 @@ pub struct LexKeyResponse {
     pub needs_candidates: u8,
     pub candidate_reading: *const c_char,
     pub candidate_dispatch: u8,
+    /// Ghost text: NULL=no change, ""=clear, string=show
+    pub ghost_text: *const c_char,
+    /// 1 = caller should generate ghost text async
+    pub needs_ghost_text: u8,
+    /// Context for ghost text generation (valid when needs_ghost_text=1)
+    pub ghost_context: *const c_char,
+    /// Generation counter for staleness check
+    pub ghost_generation: u64,
     _owned: *mut OwnedKeyResponse,
 }
 
@@ -1032,6 +1040,8 @@ struct OwnedKeyResponse {
     _candidate_ptrs: Vec<*const c_char>,
     _candidate_strings: Vec<CString>,
     _candidate_reading: Option<CString>,
+    _ghost_text: Option<CString>,
+    _ghost_context: Option<CString>,
     /// History records to be fed to UserHistory::record().
     history_records: Vec<Vec<(String, String)>>,
 }
@@ -1053,6 +1063,10 @@ impl LexKeyResponse {
             needs_candidates: 0,
             candidate_reading: ptr::null(),
             candidate_dispatch: 0,
+            ghost_text: ptr::null(),
+            needs_ghost_text: 0,
+            ghost_context: ptr::null(),
+            ghost_generation: 0,
             _owned: ptr::null_mut(),
         }
     }
@@ -1094,12 +1108,20 @@ fn pack_key_response(
         None => (false, None, 0),
     };
 
+    let ghost_text_cstr = resp.ghost_text.and_then(|s| CString::new(s).ok());
+    let (needs_ghost, ghost_ctx_cstr, ghost_gen) = match resp.ghost_request {
+        Some(req) => (true, CString::new(req.context).ok(), req.generation),
+        None => (false, None, 0),
+    };
+
     let owned = Box::new(OwnedKeyResponse {
         _commit_text: commit_cstr,
         _marked_text: marked_cstr,
         _candidate_ptrs: candidate_ptrs,
         _candidate_strings: candidate_strings,
         _candidate_reading: reading_cstr,
+        _ghost_text: ghost_text_cstr,
+        _ghost_context: ghost_ctx_cstr,
         history_records,
     });
     let owned_ptr = Box::into_raw(owned);
@@ -1130,6 +1152,18 @@ fn pack_key_response(
             (ptrs.as_ptr(), ptrs.len() as u32)
         }
     };
+    let ghost_text_ptr = unsafe {
+        (*owned_ptr)
+            ._ghost_text
+            .as_ref()
+            .map_or(ptr::null(), |cs| cs.as_ptr())
+    };
+    let ghost_ctx_ptr = unsafe {
+        (*owned_ptr)
+            ._ghost_context
+            .as_ref()
+            .map_or(ptr::null(), |cs| cs.as_ptr())
+    };
 
     LexKeyResponse {
         consumed: resp.consumed as u8,
@@ -1146,6 +1180,10 @@ fn pack_key_response(
         needs_candidates: needs_candidates as u8,
         candidate_reading: reading_ptr,
         candidate_dispatch,
+        ghost_text: ghost_text_ptr,
+        needs_ghost_text: needs_ghost as u8,
+        ghost_context: ghost_ctx_ptr,
+        ghost_generation: ghost_gen,
         _owned: owned_ptr,
     }
 }
@@ -1195,7 +1233,7 @@ pub extern "C" fn lex_session_set_defer_candidates(session: *mut LexSession, ena
     session.inner.set_defer_candidates(enabled != 0);
 }
 
-/// Set the conversion mode. mode: 0=Standard, 1=Predictive.
+/// Set the conversion mode. mode: 0=Standard, 1=Predictive, 2=GhostText.
 #[no_mangle]
 pub extern "C" fn lex_session_set_conversion_mode(session: *mut LexSession, mode: u8) {
     if session.is_null() {
@@ -1204,6 +1242,7 @@ pub extern "C" fn lex_session_set_conversion_mode(session: *mut LexSession, mode
     let session = unsafe { &mut *session };
     let conversion_mode = match mode {
         1 => session::ConversionMode::Predictive,
+        2 => session::ConversionMode::GhostText,
         _ => session::ConversionMode::Standard,
     };
     session.inner.set_conversion_mode(conversion_mode);
@@ -1404,6 +1443,224 @@ pub extern "C" fn lex_key_response_history_count(response: *const LexKeyResponse
     }
     let owned = unsafe { &*resp._owned };
     owned.history_records.len() as u32
+}
+
+// --- Ghost text session FFI ---
+
+/// Receive async ghost text and update session state.
+/// Returns a LexKeyResponse with ghost_text set, or empty if stale.
+#[no_mangle]
+pub extern "C" fn lex_session_receive_ghost_text(
+    session: *mut LexSession,
+    generation: u64,
+    text: *const c_char,
+) -> LexKeyResponse {
+    if session.is_null() {
+        return LexKeyResponse::empty();
+    }
+    let text_str = unsafe { cptr_to_str(text) }.unwrap_or("");
+    let session = unsafe { &mut *session };
+    match session
+        .inner
+        .receive_ghost_text(generation, text_str.to_string())
+    {
+        Some(resp) => pack_key_response(resp, Vec::new()),
+        None => LexKeyResponse::empty(),
+    }
+}
+
+/// Get the current ghost generation counter (for staleness checks).
+#[no_mangle]
+pub extern "C" fn lex_session_ghost_generation(session: *const LexSession) -> u64 {
+    if session.is_null() {
+        return 0;
+    }
+    let session = unsafe { &*session };
+    session.inner.ghost_generation()
+}
+
+// --- Neural scorer FFI ---
+
+#[cfg(feature = "neural")]
+mod neural_ffi {
+    use super::*;
+    use std::sync::Mutex;
+
+    pub struct LexNeuralScorer {
+        inner: Mutex<crate::neural::NeuralScorer>,
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_neural_open(model_path: *const c_char) -> *mut LexNeuralScorer {
+        ffi_guard!(ptr::null_mut() ; str: path_str = model_path ,);
+        match crate::neural::NeuralScorer::open(std::path::Path::new(path_str)) {
+            Ok(scorer) => owned_new(LexNeuralScorer {
+                inner: Mutex::new(scorer),
+            }),
+            Err(_) => ptr::null_mut(),
+        }
+    }
+
+    ffi_close!(lex_neural_close, LexNeuralScorer);
+
+    /// Ghost text result. Caller must free with lex_ghost_text_free.
+    #[repr(C)]
+    pub struct LexGhostTextResult {
+        pub text: *const c_char,
+        _owned: *mut CString,
+    }
+
+    impl LexGhostTextResult {
+        fn empty() -> Self {
+            Self {
+                text: ptr::null(),
+                _owned: ptr::null_mut(),
+            }
+        }
+    }
+
+    /// Generate ghost text (called from background thread).
+    #[no_mangle]
+    pub extern "C" fn lex_neural_generate_ghost(
+        scorer: *mut LexNeuralScorer,
+        context: *const c_char,
+        max_tokens: u32,
+    ) -> LexGhostTextResult {
+        if scorer.is_null() {
+            return LexGhostTextResult::empty();
+        }
+        let context_str = unsafe { cptr_to_str(context) }.unwrap_or("");
+        let scorer_wrapper = unsafe { &*scorer };
+        let Ok(mut guard) = scorer_wrapper.inner.lock() else {
+            return LexGhostTextResult::empty();
+        };
+        let config = crate::neural::GenerateConfig {
+            max_tokens: max_tokens as usize,
+            ..crate::neural::GenerateConfig::default()
+        };
+        match guard.generate_text(context_str, &config) {
+            Ok(text) => {
+                let Ok(cs) = CString::new(text) else {
+                    return LexGhostTextResult::empty();
+                };
+                let ptr = cs.as_ptr();
+                let owned = Box::into_raw(Box::new(cs));
+                LexGhostTextResult {
+                    text: ptr,
+                    _owned: owned,
+                }
+            }
+            Err(_) => LexGhostTextResult::empty(),
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_ghost_text_free(result: LexGhostTextResult) {
+        if !result._owned.is_null() {
+            unsafe {
+                drop(Box::from_raw(result._owned));
+            }
+        }
+    }
+
+    /// Generate neural candidates (called from background thread, dispatch=2).
+    #[no_mangle]
+    pub extern "C" fn lex_generate_neural_candidates(
+        scorer: *mut LexNeuralScorer,
+        dict: *const TrieDictionary,
+        conn: *const ConnectionMatrix,
+        history: *const LexUserHistoryWrapper,
+        context: *const c_char,
+        reading: *const c_char,
+        max_results: u32,
+    ) -> LexCandidateResponse {
+        if scorer.is_null() || dict.is_null() {
+            return LexCandidateResponse::empty();
+        }
+        let reading_str = unsafe { cptr_to_str(reading) }.unwrap_or("");
+        let context_str = unsafe { cptr_to_str(context) }.unwrap_or("");
+        let dict_ref = unsafe { &*dict };
+        let conn_opt = unsafe { conn_ref(conn) };
+        let scorer_wrapper = unsafe { &*scorer };
+        let Ok(mut guard) = scorer_wrapper.inner.lock() else {
+            return LexCandidateResponse::empty();
+        };
+        let hist: Option<std::sync::RwLockReadGuard<'_, UserHistory>> = if history.is_null() {
+            None
+        } else {
+            let wrapper = unsafe { &*history };
+            wrapper.inner.read().ok()
+        };
+        let hist_ref = hist.as_deref();
+
+        let resp = crate::candidates::generate_neural_candidates(
+            &mut guard,
+            dict_ref,
+            conn_opt,
+            hist_ref,
+            context_str,
+            reading_str,
+            max_results as usize,
+        );
+        pack_candidate_response(resp)
+    }
+}
+
+// Non-neural stubs: when the `neural` feature is not enabled,
+// provide no-op implementations so the header stays consistent.
+#[cfg(not(feature = "neural"))]
+mod neural_ffi {
+    use super::*;
+
+    pub struct LexNeuralScorer;
+
+    #[no_mangle]
+    pub extern "C" fn lex_neural_open(_model_path: *const c_char) -> *mut LexNeuralScorer {
+        ptr::null_mut()
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_neural_close(_scorer: *mut LexNeuralScorer) {}
+
+    #[repr(C)]
+    pub struct LexGhostTextResult {
+        pub text: *const c_char,
+        _owned: *mut CString,
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_neural_generate_ghost(
+        _scorer: *mut LexNeuralScorer,
+        _context: *const c_char,
+        _max_tokens: u32,
+    ) -> LexGhostTextResult {
+        LexGhostTextResult {
+            text: ptr::null(),
+            _owned: ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_ghost_text_free(result: LexGhostTextResult) {
+        if !result._owned.is_null() {
+            unsafe {
+                drop(Box::from_raw(result._owned));
+            }
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn lex_generate_neural_candidates(
+        _scorer: *mut LexNeuralScorer,
+        _dict: *const TrieDictionary,
+        _conn: *const ConnectionMatrix,
+        _history: *const LexUserHistoryWrapper,
+        _context: *const c_char,
+        _reading: *const c_char,
+        _max_results: u32,
+    ) -> LexCandidateResponse {
+        LexCandidateResponse::empty()
+    }
 }
 
 /// Record history entries from a key response into the user history.
