@@ -48,11 +48,12 @@ fn generate_punctuation_candidates(
 
     // Learned predictions first
     if let Some(h) = history {
+        let now = crate::user_history::now_epoch();
         let fetch_limit = max_results.max(200);
         let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
-            let boost_a = h.unigram_boost(r_a, &e_a.surface);
-            let boost_b = h.unigram_boost(r_b, &e_b.surface);
+            let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
+            let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
             boost_b.cmp(&boost_a).then(e_a.cost.cmp(&e_b.cost))
         });
         ranked.truncate(max_results);
@@ -114,7 +115,8 @@ fn generate_normal_candidates(
     //    If the user previously selected the hiragana form, promote it to
     //    position 0 (inline preview) so it becomes the default candidate.
     //    The kana may already exist in N-best (via fallback nodes); if so, move it.
-    let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading));
+    let now = crate::user_history::now_epoch();
+    let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
     let kana_existing_pos = surfaces.iter().position(|s| s == reading);
     if kana_boost > 0 {
         match kana_existing_pos {
@@ -142,8 +144,8 @@ fn generate_normal_candidates(
     let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
     if let Some(h) = history {
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
-            let boost_a = h.unigram_boost(r_a, &e_a.surface);
-            let boost_b = h.unigram_boost(r_b, &e_b.surface);
+            let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
+            let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
             boost_b.cmp(&boost_a).then(e_a.cost.cmp(&e_b.cost))
         });
         ranked.truncate(max_results);

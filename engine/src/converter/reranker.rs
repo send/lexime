@@ -113,13 +113,15 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
     if paths.is_empty() {
         return;
     }
+    let now = crate::user_history::now_epoch();
     for path in paths.iter_mut() {
         let mut boost: i64 = 0;
         for seg in &path.segments {
-            boost += history.unigram_boost(&seg.reading, &seg.surface);
+            boost += history.unigram_boost(&seg.reading, &seg.surface, now);
         }
         for pair in path.segments.windows(2) {
-            boost += history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface);
+            boost +=
+                history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface, now);
         }
         path.viterbi_cost -= boost;
     }

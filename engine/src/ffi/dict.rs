@@ -176,9 +176,10 @@ pub extern "C" fn lex_dict_predict_ranked(
     if !history.is_null() {
         let wrapper = unsafe { &*history };
         if let Ok(h) = wrapper.inner.read() {
+            let now = crate::user_history::now_epoch();
             ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
-                let boost_a = h.unigram_boost(r_a, &e_a.surface);
-                let boost_b = h.unigram_boost(r_b, &e_b.surface);
+                let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
+                let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
                 boost_b.cmp(&boost_a).then(e_a.cost.cmp(&e_b.cost))
             });
         }

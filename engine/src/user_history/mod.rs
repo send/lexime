@@ -62,7 +62,7 @@ struct BigramRecord {
     last_used: u64,
 }
 
-fn now_epoch() -> u64 {
+pub fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -158,8 +158,8 @@ impl UserHistory {
     }
 
     /// Compute unigram boost for a (reading, surface) pair.
-    pub fn unigram_boost(&self, reading: &str, surface: &str) -> i64 {
-        let now = now_epoch();
+    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    pub fn unigram_boost(&self, reading: &str, surface: &str, now: u64) -> i64 {
         self.unigrams
             .get(reading)
             .and_then(|inner| inner.get(surface))
@@ -167,8 +167,14 @@ impl UserHistory {
     }
 
     /// Compute bigram boost for (prev_surface → next_reading, next_surface).
-    pub fn bigram_boost(&self, prev_surface: &str, next_reading: &str, next_surface: &str) -> i64 {
-        let now = now_epoch();
+    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    pub fn bigram_boost(
+        &self,
+        prev_surface: &str,
+        next_reading: &str,
+        next_surface: &str,
+        now: u64,
+    ) -> i64 {
         let key = (next_reading.to_string(), next_surface.to_string());
         self.bigrams
             .get(prev_surface)
@@ -194,10 +200,11 @@ impl UserHistory {
 
     /// Reorder dictionary candidates so learned entries appear first.
     pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
+        let now = now_epoch();
         let mut with_boost: Vec<(i64, usize, &DictEntry)> = entries
             .iter()
             .enumerate()
-            .map(|(i, e)| (self.unigram_boost(reading, &e.surface), i, e))
+            .map(|(i, e)| (self.unigram_boost(reading, &e.surface, now), i, e))
             .collect();
 
         // Boosted entries first (descending boost), then original order (ascending cost via index)
@@ -333,14 +340,14 @@ mod tests {
     fn test_record_unigram() {
         let mut h = UserHistory::new();
         h.record(&[("きょう".into(), "今日".into())]);
-        assert!(h.unigram_boost("きょう", "今日") > 0);
+        assert!(h.unigram_boost("きょう", "今日", now_epoch()) > 0);
     }
 
     #[test]
     fn test_record_bigram() {
         let mut h = UserHistory::new();
         h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
-        assert!(h.bigram_boost("今日", "は", "は") > 0);
+        assert!(h.bigram_boost("今日", "は", "は", now_epoch()) > 0);
     }
 
     #[test]
@@ -358,8 +365,9 @@ mod tests {
         h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
         let bytes = h.to_bytes().unwrap();
         let h2 = UserHistory::from_bytes(&bytes).unwrap();
-        assert!(h2.unigram_boost("きょう", "今日") > 0);
-        assert!(h2.bigram_boost("今日", "は", "は") > 0);
+        let now = now_epoch();
+        assert!(h2.unigram_boost("きょう", "今日", now) > 0);
+        assert!(h2.bigram_boost("今日", "は", "は", now) > 0);
     }
 
     #[test]
@@ -373,7 +381,7 @@ mod tests {
         h.save(&path).unwrap();
 
         let h2 = UserHistory::open(&path).unwrap();
-        assert!(h2.unigram_boost("きょう", "今日") > 0);
+        assert!(h2.unigram_boost("きょう", "今日", now_epoch()) > 0);
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -381,7 +389,7 @@ mod tests {
     #[test]
     fn test_open_nonexistent() {
         let h = UserHistory::open(Path::new("/nonexistent/path/history.lxud")).unwrap();
-        assert_eq!(h.unigram_boost("きょう", "今日"), 0);
+        assert_eq!(h.unigram_boost("きょう", "今日", now_epoch()), 0);
     }
 
     #[test]
@@ -421,8 +429,9 @@ mod tests {
     #[test]
     fn test_no_boost_for_unrecorded() {
         let h = UserHistory::new();
-        assert_eq!(h.unigram_boost("きょう", "今日"), 0);
-        assert_eq!(h.bigram_boost("今日", "は", "は"), 0);
+        let now = now_epoch();
+        assert_eq!(h.unigram_boost("きょう", "今日", now), 0);
+        assert_eq!(h.bigram_boost("今日", "は", "は", now), 0);
     }
 
     #[test]
