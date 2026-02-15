@@ -27,6 +27,11 @@ class LeximeInputController: IMKInputController {
     /// Set when commit_text moves the cursor; forces panel to recalculate position on next show.
     private var panelNeedsReposition = false
 
+    // Ghost text state (GhostText mode)
+    private var ghostText: String?
+    private let ghostQueue = DispatchQueue(label: "sh.send.lexime.ghost", qos: .utility)
+    private var ghostDebounceItem: DispatchWorkItem?
+
     private static var hasShownDictWarning = false
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
@@ -48,8 +53,9 @@ class LeximeInputController: IMKInputController {
         if UserDefaults.standard.bool(forKey: "programmerMode") {
             lex_session_set_programmer_mode(session, 1)
         }
-        if UserDefaults.standard.bool(forKey: "predictiveMode") {
-            lex_session_set_conversion_mode(session, 1)
+        let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
+        if convMode > 0 {
+            lex_session_set_conversion_mode(session, UInt8(convMode))
         }
     }
 
@@ -142,17 +148,24 @@ class LeximeInputController: IMKInputController {
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
-        // Option+Tab: toggle conversion mode
+        // Option+Tab: cycle conversion mode (standard → predictive → ghost → ...)
         if dominated == [.option] && event.keyCode == 48 /* Tab */ {
             if isComposing {
                 let commitResp = lex_session_commit(session)
                 defer { lex_key_response_free(commitResp) }
                 applyResponse(commitResp, client: client)
             }
-            let current = UserDefaults.standard.bool(forKey: "predictiveMode")
-            UserDefaults.standard.set(!current, forKey: "predictiveMode")
-            lex_session_set_conversion_mode(session, !current ? 1 : 0)
-            NSLog("Lexime: conversion mode → %@", !current ? "predictive" : "standard")
+            // Clear any ghost text when switching modes
+            if ghostText != nil {
+                clearGhostDisplay(client: client)
+            }
+            let maxModes = AppContext.shared.neural != nil ? 3 : 2
+            let current = UserDefaults.standard.integer(forKey: "conversionMode")
+            let next = (current + 1) % maxModes
+            UserDefaults.standard.set(next, forKey: "conversionMode")
+            lex_session_set_conversion_mode(session, UInt8(next))
+            let names = ["standard", "predictive", "ghost"]
+            NSLog("Lexime: conversion mode → %@", names[next])
             return true
         }
 
@@ -163,12 +176,17 @@ class LeximeInputController: IMKInputController {
         )
         lex_session_set_conversion_mode(
             session,
-            UserDefaults.standard.bool(forKey: "predictiveMode") ? 1 : 0
+            UInt8(UserDefaults.standard.integer(forKey: "conversionMode"))
         )
 
         let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
         let flags = shift | (hasModifier << 1)
+
+        // Clear ghost text on any key except Tab (ghost accept is handled by the engine)
+        if ghostText != nil && event.keyCode != 48 /* Tab */ {
+            clearGhostDisplay(client: client)
+        }
 
         // Invalidate any pending async candidate results
         candidateGeneration += 1
@@ -222,6 +240,24 @@ class LeximeInputController: IMKInputController {
                 dispatch: resp.candidate_dispatch
             )
         }
+
+        // 6. Ghost text
+        if resp.ghost_text != nil {
+            let text = String(cString: resp.ghost_text)
+            if text.isEmpty {
+                clearGhostDisplay(client: client)
+            } else {
+                ghostText = text
+                showGhostText(text, client: client)
+            }
+        }
+
+        // 7. Ghost generation request (debounced)
+        if resp.needs_ghost_text != 0, resp.ghost_context != nil {
+            let context = String(cString: resp.ghost_context)
+            let generation = resp.ghost_generation
+            requestGhostText(context: context, generation: generation)
+        }
     }
 
     // MARK: - Async Candidates
@@ -234,11 +270,25 @@ class LeximeInputController: IMKInputController {
         nonisolated(unsafe) let dict = AppContext.shared.dict
         nonisolated(unsafe) let conn = AppContext.shared.conn
         nonisolated(unsafe) let history = AppContext.shared.history
+        nonisolated(unsafe) let neural = AppContext.shared.neural
         let sessionPtr = self.session
 
         candidateQueue.async { [weak self] in
             var result: LexCandidateResponse
             switch dispatch {
+            case 2:  // neural (speculative decode)
+                if let neural {
+                    // Use committed text as context for speculative decode
+                    let context = ""  // TODO: pass actual context from session
+                    result = reading.withCString { readingCStr in
+                        context.withCString { ctxCStr in
+                            lex_generate_neural_candidates(neural, dict, conn, history, ctxCStr, readingCStr, 20)
+                        }
+                    }
+                } else {
+                    // Fallback to standard if neural model not loaded
+                    result = reading.withCString { lex_generate_candidates(dict, conn, history, $0, 20) }
+                }
             case 1:  // prediction (Viterbi + bigram chaining)
                 result = reading.withCString { lex_generate_prediction_candidates(dict, conn, history, $0, 20) }
             default: // standard
@@ -283,6 +333,41 @@ class LeximeInputController: IMKInputController {
         }
     }
 
+    // MARK: - Ghost Text
+
+    private func clearGhostDisplay(client: IMKTextInput) {
+        ghostText = nil
+        ghostDebounceItem?.cancel()
+        ghostDebounceItem = nil
+        clearGhostText(client: client)
+    }
+
+    private func requestGhostText(context: String, generation: UInt64) {
+        ghostDebounceItem?.cancel()
+        nonisolated(unsafe) let neural = AppContext.shared.neural
+        guard let neural else { return }
+        let item = DispatchWorkItem { [weak self] in
+            let result = context.withCString { ctxCStr in
+                lex_neural_generate_ghost(neural, ctxCStr, 30)
+            }
+            defer { lex_ghost_text_free(result) }
+            guard let textPtr = result.text else { return }
+            let text = String(cString: textPtr)
+            guard !text.isEmpty else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let session = self.session else { return }
+                let resp = text.withCString { textCStr in
+                    lex_session_receive_ghost_text(session, generation, textCStr)
+                }
+                defer { lex_key_response_free(resp) }
+                guard let client = self.client() else { return }
+                self.applyResponse(resp, client: client)
+            }
+        }
+        ghostDebounceItem = item
+        ghostQueue.asyncAfter(deadline: .now() + 0.15, execute: item)
+    }
+
     // MARK: - Helpers
 
     private func extractCandidates(_ resp: LexKeyResponse) -> [String] {
@@ -325,6 +410,8 @@ class LeximeInputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         candidateGeneration += 1
+        ghostDebounceItem?.cancel()
+        ghostText = nil
         hideCandidatePanel()
         super.deactivateServer(sender)
     }

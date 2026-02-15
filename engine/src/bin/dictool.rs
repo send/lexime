@@ -159,6 +159,19 @@ enum Command {
         #[arg(long, default_value = "")]
         context: String,
     },
+    /// Generate text continuation with neural model (requires --features neural)
+    #[cfg(feature = "neural")]
+    Generate {
+        /// GGUF model file path
+        #[arg(long)]
+        model: String,
+        /// Left context for generation
+        #[arg(long, default_value = "")]
+        context: String,
+        /// Maximum tokens to generate
+        #[arg(long, default_value = "30")]
+        max_tokens: usize,
+    },
     /// Speculative decoding: Viterbi draft + GPT-2 verify (requires --features neural)
     #[cfg(feature = "neural")]
     SpeculativeDecode {
@@ -272,6 +285,12 @@ fn main() {
             history.as_deref(),
             &context,
         ),
+        #[cfg(feature = "neural")]
+        Command::Generate {
+            model,
+            context,
+            max_tokens,
+        } => generate_cmd(&model, &context, max_tokens),
         #[cfg(feature = "neural")]
         Command::SpeculativeDecode {
             dict_file,
@@ -861,6 +880,50 @@ fn neural_score_cmd(
         (viterbi_elapsed + neural_elapsed).as_millis(),
         viterbi_elapsed.as_secs_f64() * 1000.0,
         neural_elapsed.as_millis(),
+        model_elapsed.as_millis(),
+    );
+}
+
+#[cfg(feature = "neural")]
+fn generate_cmd(model_file: &str, context: &str, max_tokens: usize) {
+    use lex_engine::neural::GenerateConfig;
+    use std::time::Instant;
+
+    println!(
+        "Context: {}",
+        if context.is_empty() {
+            "(none)"
+        } else {
+            context
+        }
+    );
+
+    eprintln!("Loading neural model from {model_file}...");
+    let model_start = Instant::now();
+    let mut scorer = die!(
+        NeuralScorer::open(Path::new(model_file)),
+        "Error loading neural model: {}"
+    );
+    let model_elapsed = model_start.elapsed();
+    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
+    eprintln!("  {}", scorer.config_summary());
+
+    let config = GenerateConfig {
+        max_tokens,
+        ..GenerateConfig::default()
+    };
+
+    let gen_start = Instant::now();
+    let text = die!(
+        scorer.generate_text(context, &config),
+        "Error generating text: {}"
+    );
+    let gen_elapsed = gen_start.elapsed();
+
+    println!("Generated: {text}");
+    println!(
+        "Latency: {:.0}ms (model_load: {:.0}ms)",
+        gen_elapsed.as_millis(),
         model_elapsed.as_millis(),
     );
 }
