@@ -9,13 +9,16 @@ crate-type = ["staticlib", "lib"]
 [[bin]]
 name = "dictool"
 path = "src/bin/dictool.rs"
+required-features = ["cli"]
 
 [[bin]]
 name = "lextool"
 path = "src/bin/lextool.rs"
+required-features = ["cli"]
 
 [features]
 default = []
+cli = ["dep:clap"]
 trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
 neural = ["candle-core", "candle-nn", "dep:anyhow"]
 
@@ -29,7 +32,7 @@ thiserror = "2"
 ureq = "3"
 zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 unicode-width = "0.2"
 anyhow = { version = "1", optional = true }
 

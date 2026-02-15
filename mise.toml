@@ -20,13 +20,13 @@ lipo -create \
 description = "Download SudachiDict dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
 outputs = ["engine/data/sudachi-raw/.stamp"]
-run = "cd engine && cargo run --bin dictool -- fetch --source sudachi data/sudachi-raw"
+run = "cd engine && cargo run --features cli --bin dictool -- fetch --source sudachi data/sudachi-raw"
 
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
 outputs = ["engine/data/mozc-raw/.stamp"]
-run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw"
+run = "cd engine && cargo run --features cli --bin dictool -- fetch --source mozc data/mozc-raw"
 
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
@@ -37,7 +37,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --bin dictool
+cargo build --release --features cli --bin dictool
 target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
 """
 
@@ -50,7 +50,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --bin dictool
+cargo build --release --features cli --bin dictool
 target/release/dictool compile-conn \
   --id-def data/mozc-raw/id.def \
   data/mozc-raw/connection_single_column.txt data/lexime.conn
@@ -61,7 +61,7 @@ description = "Download SudachiDict full dictionary data (core + notcore)"
 depends = ["fetch-dict-sudachi"]
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
 outputs = ["engine/data/sudachi-full-raw/.stamp"]
-run = "cd engine && cargo run --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
+run = "cd engine && cargo run --features cli --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
 
 [tasks.dict-sudachi-full]
 description = "Compile binary dictionary from SudachiDict full (remapped to Mozc POS IDs)"
@@ -72,7 +72,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --bin dictool
+cargo build --release --features cli --bin dictool
 target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def \
   data/sudachi-full-raw data/lexime-sudachi-full.dict
 """
@@ -191,7 +191,7 @@ swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"
 run = """
-cd engine && cargo run --release --bin lextool -- explain \
+cd engine && cargo run --release --features cli --bin lextool -- explain \
   data/lexime.dict "$@" --conn data/lexime.conn
 """
 
@@ -199,7 +199,7 @@ cd engine && cargo run --release --bin lextool -- explain \
 description = "Generate conversion snapshot"
 depends = ["dict", "conn"]
 run = """
-cd engine && cargo run --release --bin lextool -- snapshot \
+cd engine && cargo run --release --features cli --bin lextool -- snapshot \
   data/lexime.dict data/lexime.conn \
   data/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
@@ -208,7 +208,7 @@ cd engine && cargo run --release --bin lextool -- snapshot \
 description = "Compare current output against baseline snapshot"
 depends = ["dict", "conn"]
 run = """
-cd engine && cargo run --release --bin lextool -- diff-snapshot \
+cd engine && cargo run --release --features cli --bin lextool -- diff-snapshot \
   data/lexime.dict data/lexime.conn \
   data/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
@@ -237,7 +237,7 @@ echo "Downloaded to data/zenz-v3.1-Q5_K_M.gguf"
 description = "Run neural scoring benchmark"
 depends = ["fetch-model", "dict", "conn"]
 run = """
-cd engine && cargo run --features neural --bin dictool -- neural-score \
+cd engine && cargo run --features cli,neural --bin dictool -- neural-score \
   data/lexime.dict data/lexime.conn \
   --model ../data/zenz-v3.1-Q5_K_M.gguf \
   "$@"
