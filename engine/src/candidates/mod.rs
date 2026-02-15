@@ -1,3 +1,8 @@
+//! Candidate generation for IME input.
+//!
+//! Provides pluggable strategies (standard, predictive, neural) for
+//! generating conversion candidates from a kana reading.
+
 use std::collections::HashSet;
 
 use crate::converter::ConvertedSegment;

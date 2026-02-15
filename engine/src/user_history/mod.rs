@@ -1,3 +1,8 @@
+//! User conversion history with time-decayed unigram/bigram boosting.
+//!
+//! Records confirmed conversions and uses frequency × recency scoring to
+//! promote learned candidates in subsequent sessions.
+
 #[cfg(test)]
 mod tests;
 

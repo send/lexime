@@ -1,3 +1,8 @@
+//! Dictionary and connection-matrix storage.
+//!
+//! `TrieDictionary` stores reading → entries mappings in a serialized trie.
+//! `ConnectionMatrix` stores POS bigram transition costs for Viterbi scoring.
+
 pub mod connection;
 mod connection_io;
 mod entry;

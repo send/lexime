@@ -1,3 +1,9 @@
+//! Kana-to-kanji conversion via lattice construction and Viterbi search.
+//!
+//! Builds a character-level lattice from dictionary lookups, then runs
+//! N-best Viterbi with connection costs and post-processing (reranking,
+//! segment grouping, history boosting).
+
 #[cfg(feature = "neural")]
 pub(crate) mod constrained;
 pub(crate) mod cost;
