@@ -156,7 +156,7 @@ fn generate_normal_candidates(
         }
     }
 
-    // 5. Dictionary lookup
+    // 4. Dictionary lookup
     let lookup_entries: Vec<&DictEntry> = if let Some(h) = history {
         if let Some(entries) = dict.lookup(reading) {
             let reordered = h.reorder_candidates(reading, entries);

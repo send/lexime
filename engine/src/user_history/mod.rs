@@ -91,9 +91,13 @@ fn evict_map<K: Clone + Eq + std::hash::Hash>(
             all.push((outer_key.clone(), inner_key.clone(), score));
         }
     }
-    all.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
     let to_remove = count - max;
-    for (outer_key, inner_key, _) in all.iter().take(to_remove) {
+    // Partial sort: partition so the lowest-score `to_remove` entries are in all[..to_remove].
+    // O(n) average vs O(n log n) for a full sort.
+    all.select_nth_unstable_by(to_remove - 1, |a, b| {
+        a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (outer_key, inner_key, _) in all[..to_remove].iter() {
         if let Some(inner) = map.get_mut(outer_key) {
             inner.remove(inner_key);
             if inner.is_empty() {

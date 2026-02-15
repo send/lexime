@@ -11,7 +11,7 @@ void lex_trace_init(const char * _Nonnull log_dir);
 
 /* Dictionary API */
 
-typedef struct LexDict LexDict;
+typedef struct LexDict LexDict;              /* Rust: TrieDictionary */
 
 typedef struct {
     const char * _Nonnull reading;
@@ -32,7 +32,7 @@ void lex_candidates_free(LexCandidateList list);
 
 /* Connection matrix API */
 
-typedef struct LexConnectionMatrix LexConnectionMatrix;
+typedef struct LexConnectionMatrix LexConnectionMatrix;  /* Rust: ConnectionMatrix */
 
 LexConnectionMatrix * _Nullable lex_conn_open(const char * _Nonnull path);
 void lex_conn_close(LexConnectionMatrix * _Nullable conn);
@@ -52,7 +52,7 @@ typedef struct {
 
 /* User History API */
 
-typedef struct LexUserHistory LexUserHistory;
+typedef struct LexUserHistory LexUserHistory;  /* Rust: LexUserHistoryWrapper (RwLock<UserHistory>) */
 
 LexUserHistory * _Nullable lex_history_open(const char * _Nonnull path);
 void lex_history_close(LexUserHistory * _Nullable history);
@@ -112,7 +112,7 @@ void lex_candidate_response_free(LexCandidateResponse response);
 
 /* InputSession API */
 
-typedef struct LexSession LexSession;
+typedef struct LexSession LexSession;  /* Rust: LexSession (wraps InputSession) */
 
 typedef struct {
     uint8_t consumed;
@@ -149,14 +149,12 @@ void lex_session_set_conversion_mode(LexSession * _Nonnull session, uint8_t mode
 LexKeyResponse lex_session_handle_key(
     LexSession * _Nonnull session,
     uint16_t key_code,
-    const char * _Nonnull text,
+    const char * _Nullable text,
     uint8_t flags  /* bit0=shift, bit1=has_modifier(Cmd/Ctrl/Opt) */
 );
 
 LexKeyResponse lex_session_commit(LexSession * _Nonnull session);
 uint8_t lex_session_is_composing(const LexSession * _Nonnull session);
-
-const char * _Nonnull lex_session_composed_string(const LexSession * _Nonnull session);
 
 /* Get the committed context string for neural candidate generation.
  * Returns NULL if the context is empty.
@@ -172,7 +170,7 @@ uint32_t lex_key_response_history_count(const LexKeyResponse * _Nonnull response
  * Returns a LexKeyResponse with updated marked text and candidates. */
 LexKeyResponse lex_session_receive_candidates(
     LexSession * _Nonnull session,
-    const char * _Nonnull reading,
+    const char * _Nullable reading,
     const LexCandidateResponse * _Nonnull candidates
 );
 
@@ -193,7 +191,7 @@ uint64_t lex_session_ghost_generation(const LexSession * _Nonnull session);
 
 /* Neural scorer API */
 
-typedef struct LexNeuralScorer LexNeuralScorer;
+typedef struct LexNeuralScorer LexNeuralScorer;  /* Rust: LexNeuralScorer (Mutex<NeuralScorer>) */
 
 LexNeuralScorer * _Nullable lex_neural_open(const char * _Nonnull model_path);
 void lex_neural_close(LexNeuralScorer * _Nullable scorer);
@@ -205,7 +203,7 @@ typedef struct {
 
 LexGhostTextResult lex_neural_generate_ghost(
     LexNeuralScorer * _Nonnull scorer,
-    const char * _Nonnull context,
+    const char * _Nullable context,
     uint32_t max_tokens
 );
 void lex_ghost_text_free(LexGhostTextResult result);
@@ -215,8 +213,8 @@ LexCandidateResponse lex_generate_neural_candidates(
     const LexDict * _Nonnull dict,
     const LexConnectionMatrix * _Nullable conn,
     const LexUserHistory * _Nullable history,
-    const char * _Nonnull context,
-    const char * _Nonnull reading,
+    const char * _Nullable context,
+    const char * _Nullable reading,
     uint32_t max_results
 );
 

@@ -123,6 +123,7 @@ macro_rules! ffi_guard {
 macro_rules! ffi_open {
     ($fn_name:ident, $T:ty, $open_expr:expr) => {
         #[no_mangle]
+        #[must_use]
         pub extern "C" fn $fn_name(path: *const ::std::ffi::c_char) -> *mut $T {
             $crate::ffi::ffi_guard!(::std::ptr::null_mut() ; str: path_str = path ,);
             let opener: fn(&::std::path::Path) -> _ = $open_expr;
@@ -169,9 +170,12 @@ impl<T> OwnedVec<T> {
             items,
             _strings: strings,
         });
+        // Capture pointer and length before consuming the Box.
+        // This is safe because Box::into_raw does not move or reallocate
+        // the Vec's heap buffer — it only converts the Box into a raw pointer.
+        let data_ptr = owned.items.as_ptr();
+        let len = owned.items.len() as u32;
         let owned_ptr = Box::into_raw(owned);
-        let data_ptr = unsafe { (*owned_ptr).items.as_ptr() };
-        let len = unsafe { (*owned_ptr).items.len() as u32 };
         (data_ptr, len, owned_ptr)
     }
 }

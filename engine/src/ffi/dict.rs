@@ -33,6 +33,9 @@ impl LexCandidateList {
         let Ok(reading_cstr) = CString::new(reading) else {
             return Self::empty();
         };
+        // SAFETY: CString stores its data on the heap. Taking a pointer here and
+        // then moving the CString into `strings` is safe because Vec::push does
+        // not invalidate the CString's internal heap buffer.
         let reading_ptr = reading_cstr.as_ptr();
 
         let mut strings = Vec::with_capacity(entries.len() + 1);

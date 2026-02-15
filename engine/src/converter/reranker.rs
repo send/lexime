@@ -35,7 +35,7 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
     }
 
     // Step 1: Compute structure_cost for each path
-    let structure_costs: Vec<i64> = paths
+    let mut structure_costs: Vec<i64> = paths
         .iter()
         .map(|p| {
             let mut sc: i64 = 0;
@@ -51,23 +51,22 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
     let threshold = min_sc + STRUCTURE_COST_FILTER;
     if structure_costs.iter().any(|&sc| sc <= threshold) {
         let mut i = 0;
+        let mut kept_costs = Vec::new();
         paths.retain(|_| {
             let keep = structure_costs[i] <= threshold;
+            if keep {
+                kept_costs.push(structure_costs[i]);
+            }
             i += 1;
             keep
         });
+        structure_costs = kept_costs;
     }
     // else: all paths exceed threshold → keep all (don't drop everything)
 
     // Step 3: Soft penalty + length variance + script cost
-    for path in paths.iter_mut() {
-        // Recompute structure_cost for remaining paths (indices shifted after filter)
-        let mut structure_cost: i64 = 0;
-        for i in 1..path.segments.len() {
-            let prev = &path.segments[i - 1];
-            let next = &path.segments[i];
-            structure_cost += conn_cost(conn, prev.right_id, next.left_id);
-        }
+    // Reuse pre-computed structure costs (aligned with paths after filter).
+    for (path, &structure_cost) in paths.iter_mut().zip(structure_costs.iter()) {
         // Add 25% of structure cost as penalty — enough to differentiate
         // fragmented paths without dominating the Viterbi cost.
         path.viterbi_cost += structure_cost / 4;

@@ -1,4 +1,4 @@
-#[allow(dead_code)]
+#[cfg(feature = "neural")]
 pub(crate) mod constrained;
 pub(crate) mod cost;
 pub mod explain;
@@ -38,6 +38,9 @@ fn postprocess(
     let katakana_rw = rewriter::KatakanaRewriter;
     let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&katakana_rw];
     rewriter::run_rewriters(&rewriters, &mut top, kana);
+    // Rewriters may append extra candidates (e.g. katakana fallback);
+    // truncate back to the requested n to honour the caller's limit.
+    top.truncate(n);
     if let Some(c) = conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);
@@ -115,7 +118,7 @@ fn group_segments(segments: &mut Vec<viterbi::RichSegment>, conn: &ConnectionMat
 ///
 /// Fixed segments in the prefix are enforced via a prohibitive cost for
 /// non-matching nodes. The suffix is explored freely.
-#[allow(dead_code)]
+#[cfg(feature = "neural")]
 pub(crate) fn convert_nbest_constrained(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,

@@ -21,6 +21,7 @@ mod inner {
     }
 
     #[no_mangle]
+    #[must_use]
     pub extern "C" fn lex_neural_open(model_path: *const c_char) -> *mut LexNeuralScorer {
         ffi_guard!(ptr::null_mut() ; str: path_str = model_path ,);
         match crate::neural::NeuralScorer::open(std::path::Path::new(path_str)) {

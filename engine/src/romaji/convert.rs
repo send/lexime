@@ -23,6 +23,14 @@ fn is_vowel(ch: char) -> bool {
 
 /// Collapse sequences of latin consonant(s) + kana vowel into a single kana.
 /// e.g. "kあ" → "か", "shあ" → "しゃ"
+///
+/// This handles the case where a romaji consonant cluster was committed to
+/// `composedKana` followed by a kana vowel (e.g. from a partial match).
+/// The loop scans for runs of ASCII lowercase chars (the consonant cluster),
+/// checks if they are immediately followed by a kana vowel (あ/い/う/え/お),
+/// and if so, combines them into the romaji form (e.g. "k"+"あ" → "ka") and
+/// looks it up in the trie. On a match, the entire sequence is replaced with
+/// the resulting kana. Non-matching chars pass through unchanged.
 fn collapse_latin_kana(input: &str, trie: &RomajiTrie) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut result = String::new();
@@ -32,22 +40,23 @@ fn collapse_latin_kana(input: &str, trie: &RomajiTrie) -> String {
         let ch = chars[i];
 
         if ch.is_ascii_lowercase() {
-            // Collect consecutive ASCII lowercase chars
+            // Collect consecutive ASCII lowercase chars (consonant cluster)
             let mut j = i + 1;
             while j < chars.len() && chars[j].is_ascii_lowercase() {
                 j += 1;
             }
 
-            // Check if followed by a kana vowel
+            // Check if the cluster is followed by a kana vowel
             if j < chars.len() {
                 if let Some(vowel) = kana_vowel_to_romaji(chars[j]) {
+                    // Build the full romaji string and look it up
                     let latin: String = chars[i..j].iter().collect();
                     let candidate = format!("{latin}{vowel}");
                     match trie.lookup(&candidate) {
                         TrieLookupResult::Exact(ref kana)
                         | TrieLookupResult::ExactAndPrefix(ref kana) => {
                             result.push_str(kana);
-                            i = j + 1;
+                            i = j + 1; // skip past the kana vowel
                             continue;
                         }
                         _ => {}
@@ -55,6 +64,7 @@ fn collapse_latin_kana(input: &str, trie: &RomajiTrie) -> String {
                 }
             }
 
+            // No match — emit the first char and advance by one
             result.push(ch);
             i += 1;
         } else {
