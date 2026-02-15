@@ -18,6 +18,7 @@ jobs:
           filters: |
             engine:
               - 'engine/**'
+              - 'mise.toml'
             swift:
               - 'Sources/**'
               - 'Tests/**'

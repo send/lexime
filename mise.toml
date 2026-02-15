@@ -1,6 +1,6 @@
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
-sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/include/engine.h"]
+sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock", "engine/include/engine.h"]
 outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash
@@ -31,7 +31,7 @@ run = "cd engine && cargo run --bin dictool -- fetch --source mozc data/mozc-raw
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/.stamp"]
+sources = ["engine/data/mozc-raw/.stamp", "engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
@@ -175,6 +175,8 @@ run = "bash scripts/icon.sh"
 [tasks.test-swift]
 description = "Run Swift unit tests (FFI round-trip)"
 depends = ["engine-lib"]
+# NOTE: Test files are listed explicitly because swiftc compiles all sources
+# into one binary. If you add a new test file under Tests/, add it here too.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
