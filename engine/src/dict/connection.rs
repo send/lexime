@@ -52,6 +52,16 @@ impl ConnectionMatrix {
         self.num_ids
     }
 
+    /// Function-word POS ID range (lower bound, inclusive).
+    pub fn fw_min(&self) -> u16 {
+        self.fw_min
+    }
+
+    /// Function-word POS ID range (upper bound, inclusive).
+    pub fn fw_max(&self) -> u16 {
+        self.fw_max
+    }
+
     /// Check whether a POS ID falls in the function-word range (助詞/助動詞).
     /// Returns `false` when no range is set (both 0).
     pub fn is_function_word(&self, id: u16) -> bool {

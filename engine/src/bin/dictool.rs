@@ -72,10 +72,10 @@ enum Command {
         #[arg(long)]
         id_def: Option<String>,
     },
-    /// Show dictionary info
+    /// Show dictionary or connection matrix info (auto-detected by magic bytes)
     Info {
-        /// Dictionary file
-        dict_file: String,
+        /// Dictionary (.dict) or connection matrix (.conn) file
+        file: String,
     },
     /// Merge two dictionaries
     Merge {
@@ -128,6 +128,15 @@ enum Command {
         #[arg(long)]
         history: Option<String>,
     },
+    /// Look up connection cost between POS IDs
+    ConnCost {
+        /// Connection matrix file
+        conn_file: String,
+        /// Left POS ID (right_id of previous morpheme)
+        left: u16,
+        /// Right POS ID (left_id of next morpheme)
+        right: u16,
+    },
     /// Score N-best candidates with neural model (requires --features neural)
     #[cfg(feature = "neural")]
     NeuralScore {
@@ -149,6 +158,31 @@ enum Command {
         /// Left context for scoring
         #[arg(long, default_value = "")]
         context: String,
+    },
+    /// Speculative decoding: Viterbi draft + GPT-2 verify (requires --features neural)
+    #[cfg(feature = "neural")]
+    SpeculativeDecode {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// GGUF model file path
+        #[arg(long)]
+        model: String,
+        /// Kana input
+        kana: String,
+        /// Left context for scoring
+        #[arg(long, default_value = "")]
+        context: String,
+        /// Per-char log-prob confidence threshold
+        #[arg(long, default_value = "-2.0")]
+        threshold: f64,
+        /// Maximum verify-refine iterations
+        #[arg(long, default_value = "3")]
+        max_iter: usize,
+        /// Compare Viterbi / N-best reranking / speculative results
+        #[arg(long)]
+        compare: bool,
     },
 }
 
@@ -191,7 +225,7 @@ fn main() {
             output_file,
             id_def,
         } => compile_conn(&input_txt, &output_file, id_def.as_deref()),
-        Command::Info { dict_file } => info(&dict_file),
+        Command::Info { file } => info(&file),
         Command::Merge {
             max_cost,
             max_reading_len,
@@ -215,6 +249,11 @@ fn main() {
             n,
             history,
         } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        Command::ConnCost {
+            conn_file,
+            left,
+            right,
+        } => conn_cost_cmd(&conn_file, left, right),
         #[cfg(feature = "neural")]
         Command::NeuralScore {
             dict_file,
@@ -232,6 +271,19 @@ fn main() {
             n,
             history.as_deref(),
             &context,
+        ),
+        #[cfg(feature = "neural")]
+        Command::SpeculativeDecode {
+            dict_file,
+            conn_file,
+            model,
+            kana,
+            context,
+            threshold,
+            max_iter,
+            compare,
+        } => speculative_decode_cmd(
+            &dict_file, &conn_file, &model, &kana, &context, threshold, max_iter, compare,
         ),
     }
 }
@@ -337,7 +389,30 @@ fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
     );
 }
 
-fn info(dict_file: &str) {
+fn info(file: &str) {
+    // Auto-detect file type from magic bytes
+    let magic = fs::read(file)
+        .ok()
+        .and_then(|b| b.get(..4).map(|s| s.to_vec()));
+
+    match magic.as_deref() {
+        Some(b"LXCX") => info_conn(file),
+        Some(b"LXDX") => info_dict(file),
+        Some(other) => {
+            eprintln!(
+                "Unknown file format (magic: {:?})",
+                String::from_utf8_lossy(other)
+            );
+            process::exit(1);
+        }
+        None => {
+            eprintln!("Error reading file: {file}");
+            process::exit(1);
+        }
+    }
+}
+
+fn info_dict(dict_file: &str) {
     let dict = die!(
         TrieDictionary::open(Path::new(dict_file)),
         "Error opening dictionary: {}"
@@ -363,6 +438,76 @@ fn info(dict_file: &str) {
             println!("  {key} → (not found)");
         }
     }
+}
+
+fn info_conn(conn_file: &str) {
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    let file_size = fs::metadata(conn_file).map(|m| m.len()).unwrap_or(0);
+    let num_ids = conn.num_ids();
+
+    println!("Connection matrix: {conn_file}");
+    println!("File size:  {:.1} MB", file_size as f64 / 1_048_576.0);
+    println!("POS IDs:    {num_ids}");
+    println!(
+        "Matrix:     {num_ids}x{num_ids} = {} entries",
+        num_ids as u64 * num_ids as u64
+    );
+
+    let fw_min = conn.fw_min();
+    let fw_max = conn.fw_max();
+    if fw_min != 0 {
+        let fw_count = fw_max - fw_min + 1;
+        println!("FW range:   {fw_min}..={fw_max} ({fw_count} IDs)");
+    } else {
+        println!("FW range:   (none)");
+    }
+
+    // Count roles
+    let mut role_counts = [0u32; 4]; // 0=CW, 1=FW, 2=Suffix, 3=Prefix
+    for id in 0..num_ids {
+        let r = conn.role(id) as usize;
+        if r < role_counts.len() {
+            role_counts[r] += 1;
+        }
+    }
+    println!(
+        "Roles:      CW={}, FW={}, Suffix={}, Prefix={}",
+        role_counts[0], role_counts[1], role_counts[2], role_counts[3]
+    );
+}
+
+fn conn_cost_cmd(conn_file: &str, left: u16, right: u16) {
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+    let cost = conn.cost(left, right);
+    let left_role = conn.role(left);
+    let right_role = conn.role(right);
+    let left_fw = conn.is_function_word(left);
+    let right_fw = conn.is_function_word(right);
+
+    let role_name = |r: u8| match r {
+        0 => "CW",
+        1 => "FW",
+        2 => "Suffix",
+        3 => "Prefix",
+        _ => "?",
+    };
+
+    println!(
+        "conn({left}, {right}) = {cost}  [{} {}{}→ {} {}{}]",
+        left,
+        role_name(left_role),
+        if left_fw { "(fw)" } else { "" },
+        right,
+        role_name(right_role),
+        if right_fw { "(fw)" } else { "" },
+    );
 }
 
 struct MergeOptions {
@@ -716,6 +861,124 @@ fn neural_score_cmd(
         (viterbi_elapsed + neural_elapsed).as_millis(),
         viterbi_elapsed.as_secs_f64() * 1000.0,
         neural_elapsed.as_millis(),
+        model_elapsed.as_millis(),
+    );
+}
+
+#[cfg(feature = "neural")]
+#[allow(clippy::too_many_arguments)]
+fn speculative_decode_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    model_file: &str,
+    kana: &str,
+    context: &str,
+    threshold: f64,
+    max_iter: usize,
+    compare: bool,
+) {
+    use lex_engine::neural::speculative::{speculative_decode, SpeculativeConfig};
+    use std::time::Instant;
+
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    println!("Input: {kana}");
+    if !context.is_empty() {
+        println!("Context: {context}");
+    } else {
+        println!("Context: (none)");
+    }
+    println!();
+
+    // Load neural model
+    eprintln!("Loading neural model from {model_file}...");
+    let model_start = Instant::now();
+    let mut scorer = die!(
+        NeuralScorer::open(Path::new(model_file)),
+        "Error loading neural model: {}"
+    );
+    let model_elapsed = model_start.elapsed();
+    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
+    eprintln!("  {}", scorer.config_summary());
+
+    // Compare mode: show Viterbi 1-best and N-best reranking
+    if compare {
+        let viterbi_start = Instant::now();
+        let viterbi_1best = convert(&dict, Some(&conn), kana);
+        let viterbi_elapsed = viterbi_start.elapsed();
+        let viterbi_surface: String = viterbi_1best.iter().map(|s| s.surface.as_str()).collect();
+        println!(
+            "Viterbi 1-best:  {viterbi_surface}  ({:.1}ms)",
+            viterbi_elapsed.as_secs_f64() * 1000.0
+        );
+
+        let nbest = convert_nbest(&dict, Some(&conn), kana, 10);
+        let neural_start = Instant::now();
+        let scores = die!(
+            scorer.score_paths(context, kana, &nbest),
+            "Error scoring paths: {}"
+        );
+        let neural_elapsed = neural_start.elapsed();
+
+        if let Some(&(best_idx, _)) = scores.first() {
+            let rerank_surface: String =
+                nbest[best_idx].iter().map(|s| s.surface.as_str()).collect();
+            println!(
+                "N-best rerank:   {rerank_surface}  ({:.0}ms neural)",
+                neural_elapsed.as_millis()
+            );
+        }
+        println!();
+    }
+
+    // Speculative decoding
+    let config = SpeculativeConfig {
+        threshold,
+        max_iterations: max_iter,
+        ..SpeculativeConfig::default()
+    };
+    let result = die!(
+        speculative_decode(&mut scorer, &dict, Some(&conn), context, kana, &config),
+        "Error in speculative decoding: {}"
+    );
+
+    let surface: String = result.segments.iter().map(|s| s.surface.as_str()).collect();
+    println!("Speculative:     {surface}");
+    println!("Segments:");
+    for (i, (seg, &score)) in result
+        .segments
+        .iter()
+        .zip(result.segment_scores.iter())
+        .enumerate()
+    {
+        let status = if score >= threshold { "OK" } else { "LOW" };
+        println!(
+            "  [{i}] {}({})      score={:.2}/char  {status}",
+            seg.surface, seg.reading, score
+        );
+    }
+    println!();
+    println!("Iterations: {}", result.metadata.iterations);
+    println!("Confirmed: {:?}", result.metadata.confirmed_counts);
+    println!("Converged: {}", result.metadata.converged);
+    if result.metadata.fell_back {
+        println!(
+            "Fell back to N-best reranking (< {} segments)",
+            config.min_segments
+        );
+    }
+    println!(
+        "Latency: {:.0}ms (viterbi: {:.1}ms, neural: {:.0}ms, model_load: {:.0}ms)",
+        result.metadata.total_latency.as_millis(),
+        result.metadata.viterbi_latency.as_secs_f64() * 1000.0,
+        result.metadata.neural_latency.as_millis(),
         model_elapsed.as_millis(),
     );
 }

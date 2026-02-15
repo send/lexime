@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+pub(crate) mod constrained;
 pub(crate) mod cost;
 pub mod explain;
 mod lattice;
@@ -13,10 +15,11 @@ use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 use cost::DefaultCostFunction;
-use viterbi::{viterbi_nbest, ScoredPath};
 
 pub use lattice::{build_lattice, Lattice, LatticeNode};
 pub use viterbi::ConvertedSegment;
+#[allow(unused_imports)]
+pub(crate) use viterbi::{viterbi_nbest, RichSegment, ScoredPath};
 
 /// Shared post-processing pipeline: rerank → history_rerank → take(n) → rewrite → group.
 fn postprocess(
@@ -106,6 +109,31 @@ fn group_segments(segments: &mut Vec<viterbi::RichSegment>, conn: &ConnectionMat
     }
 
     *segments = grouped;
+}
+
+/// N-best Viterbi with a prefix constraint (for speculative decoding).
+///
+/// Fixed segments in the prefix are enforced via a prohibitive cost for
+/// non-matching nodes. The suffix is explored freely.
+#[allow(dead_code)]
+pub(crate) fn convert_nbest_constrained(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    kana: &str,
+    constraint: &constrained::PrefixConstraint,
+    n: usize,
+) -> Vec<ScoredPath> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    let cost_fn = constrained::PrefixConstrainedCost::new(conn, constraint);
+    let lattice = build_lattice(dict, kana);
+    let oversample = n * 3;
+    let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
+    // Apply reranking but not grouping (speculative decode needs raw segments)
+    reranker::rerank(&mut paths, conn);
+    paths.truncate(n);
+    paths
 }
 
 /// Convert a kana string to the best segmentation using Viterbi algorithm.
@@ -408,7 +436,7 @@ mod tests {
         let nbest = convert_nbest(&dict, None, "きょうはいいてんき", 1);
 
         // n=1 Viterbi candidate + 1 katakana rewriter candidate
-        assert!(nbest.len() >= 1);
+        assert!(!nbest.is_empty());
         let best_surfaces: Vec<&str> = best.iter().map(|s| s.surface.as_str()).collect();
         let nbest_surfaces: Vec<&str> = nbest[0].iter().map(|s| s.surface.as_str()).collect();
         assert_eq!(best_surfaces, nbest_surfaces);
