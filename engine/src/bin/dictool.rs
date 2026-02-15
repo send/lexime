@@ -16,6 +16,9 @@ use lex_engine::user_history::UserHistory;
 
 use lex_engine::dict::source::pos_map;
 
+#[cfg(feature = "neural")]
+use lex_engine::neural::NeuralScorer;
+
 /// Unwrap a Result or print the error and exit.
 macro_rules! die {
     ($result:expr, $($arg:tt)*) => {
@@ -125,6 +128,28 @@ enum Command {
         #[arg(long)]
         history: Option<String>,
     },
+    /// Score N-best candidates with neural model (requires --features neural)
+    #[cfg(feature = "neural")]
+    NeuralScore {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// GGUF model file path
+        #[arg(long)]
+        model: String,
+        /// Kana input
+        kana: String,
+        /// Number of N-best candidates
+        #[arg(short, long, default_value = "10")]
+        n: usize,
+        /// User history file (optional)
+        #[arg(long)]
+        history: Option<String>,
+        /// Left context for scoring
+        #[arg(long, default_value = "")]
+        context: String,
+    },
 }
 
 fn main() {
@@ -190,6 +215,24 @@ fn main() {
             n,
             history,
         } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        #[cfg(feature = "neural")]
+        Command::NeuralScore {
+            dict_file,
+            conn_file,
+            model,
+            kana,
+            n,
+            history,
+            context,
+        } => neural_score_cmd(
+            &dict_file,
+            &conn_file,
+            &model,
+            &kana,
+            n,
+            history.as_deref(),
+            &context,
+        ),
     }
 }
 
@@ -579,4 +622,100 @@ fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: 
             println!("#{:>2}: {}", i + 1, segs.join(" | "));
         }
     }
+}
+
+#[cfg(feature = "neural")]
+fn neural_score_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    model_file: &str,
+    kana: &str,
+    n: usize,
+    history: Option<&str>,
+    context: &str,
+) {
+    use std::time::Instant;
+
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    let user_history = history.map(|path| {
+        die!(
+            UserHistory::open(Path::new(path)),
+            "Error opening history: {}"
+        )
+    });
+
+    // 1) Viterbi N-best
+    let viterbi_start = Instant::now();
+    let nbest = if let Some(ref h) = user_history {
+        convert_nbest_with_history(&dict, Some(&conn), h, kana, n)
+    } else {
+        convert_nbest(&dict, Some(&conn), kana, n)
+    };
+    let viterbi_elapsed = viterbi_start.elapsed();
+
+    println!("Input: {kana}");
+    if !context.is_empty() {
+        println!("Context: {context}");
+    } else {
+        println!("Context: (none)");
+    }
+    println!();
+
+    println!("Viterbi N-best (before neural):");
+    for (i, path) in nbest.iter().enumerate() {
+        let surface: String = path.iter().map(|s| s.surface.as_str()).collect();
+        println!("#{:>2}: {surface}", i + 1);
+    }
+    println!();
+
+    if nbest.is_empty() {
+        eprintln!("No Viterbi candidates to score.");
+        return;
+    }
+
+    // 2) Load neural model
+    eprintln!("Loading neural model from {model_file}...");
+    let model_start = Instant::now();
+    let mut scorer = die!(
+        NeuralScorer::open(Path::new(model_file)),
+        "Error loading neural model: {}"
+    );
+    let model_elapsed = model_start.elapsed();
+    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
+    eprintln!("  {}", scorer.config_summary());
+
+    // 3) Neural scoring
+    let neural_start = Instant::now();
+    let scores = die!(
+        scorer.score_paths(context, kana, &nbest),
+        "Error scoring paths: {}"
+    );
+    let neural_elapsed = neural_start.elapsed();
+
+    println!("Neural re-scored:");
+    for (rank, (path_idx, log_prob)) in scores.iter().enumerate() {
+        let path = &nbest[*path_idx];
+        let surface: String = path.iter().map(|s| s.surface.as_str()).collect();
+        println!(
+            "#{:>2}: {surface}  (log_prob: {log_prob:.2}, viterbi_rank: {})",
+            rank + 1,
+            path_idx + 1
+        );
+    }
+    println!();
+    println!(
+        "Latency: {:.0}ms (viterbi: {:.1}ms, neural: {:.0}ms, model_load: {:.0}ms)",
+        (viterbi_elapsed + neural_elapsed).as_millis(),
+        viterbi_elapsed.as_secs_f64() * 1000.0,
+        neural_elapsed.as_millis(),
+        model_elapsed.as_millis(),
+    );
 }

@@ -211,6 +211,32 @@ cd engine && cargo run --release --bin lextool -- diff-snapshot \
 description = "Stream trace JSONL output"
 run = "tail -f ~/Library/Logs/Lexime/lexime-trace.jsonl | python3 -m json.tool --no-ensure-ascii"
 
+[tasks.fetch-model]
+description = "Download Zenzai GGUF model"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p data
+if [ -f data/zenz-v3.1-Q5_K_M.gguf ]; then
+  echo "Model already exists at data/zenz-v3.1-Q5_K_M.gguf"
+  exit 0
+fi
+echo "Downloading zenz-v3.1-small-gguf (Q5_K_M, ~74MB)..."
+curl -L -o data/zenz-v3.1-Q5_K_M.gguf \
+  "https://huggingface.co/Miwa-Keita/zenz-v3.1-small-gguf/resolve/main/ggml-model-Q5_K_M.gguf"
+echo "Downloaded to data/zenz-v3.1-Q5_K_M.gguf"
+"""
+
+[tasks.neural-score]
+description = "Run neural scoring benchmark"
+depends = ["fetch-model", "dict", "conn"]
+run = """
+cd engine && cargo run --features neural --bin dictool -- neural-score \
+  data/lexime.dict data/lexime.conn \
+  --model ../data/zenz-v3.1-Q5_K_M.gguf \
+  "$@"
+"""
+
 [tasks.lint]
 description = "Run cargo fmt --check and clippy"
 run = [

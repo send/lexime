@@ -17,6 +17,7 @@ path = "src/bin/lextool.rs"
 [features]
 default = []
 trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
+neural = ["candle-core", "candle-nn", "dep:anyhow"]
 
 [dependencies]
 tracing = { version = "0.1", features = ["max_level_off"] }
@@ -30,6 +31,15 @@ zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
 clap = { version = "4", features = ["derive"] }
 unicode-width = "0.2"
+anyhow = { version = "1", optional = true }
+
+[dependencies.candle-core]
+version = "0.9"
+optional = true
+
+[dependencies.candle-nn]
+version = "0.9"
+optional = true
 
 [dependencies.tracing-subscriber]
 version = "0.3"
