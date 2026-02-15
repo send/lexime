@@ -37,9 +37,21 @@ impl ConnectionMatrix {
             .saturating_mul(self.num_ids as usize)
             .saturating_add(right_id as usize);
         match &self.storage {
-            CostStorage::Owned(costs) => costs.get(idx).copied().unwrap_or(0),
+            CostStorage::Owned(costs) => {
+                debug_assert!(
+                    idx < costs.len(),
+                    "connection matrix OOB: left_id={left_id}, right_id={right_id}, num_ids={}",
+                    self.num_ids
+                );
+                costs.get(idx).copied().unwrap_or(0)
+            }
             CostStorage::Mapped(mmap) => {
                 let byte_offset = self.header_size + idx * 2;
+                debug_assert!(
+                    byte_offset + 2 <= mmap.len(),
+                    "connection matrix mmap OOB: left_id={left_id}, right_id={right_id}, num_ids={}",
+                    self.num_ids
+                );
                 mmap.get(byte_offset..byte_offset + 2)
                     .map(|b| i16::from_le_bytes([b[0], b[1]]))
                     .unwrap_or(0)
