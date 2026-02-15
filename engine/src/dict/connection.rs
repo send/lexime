@@ -223,6 +223,9 @@ impl ConnectionMatrix {
     }
 
     /// Build from a text file with function-word range and morpheme roles.
+    ///
+    /// `roles` must have length ≤ `num_ids`. IDs beyond the roles vector
+    /// length are treated as content words (role 0) by `role()`.
     pub fn from_text_with_roles(
         text: &str,
         fw_min: u16,
@@ -230,6 +233,9 @@ impl ConnectionMatrix {
         roles: Vec<u8>,
     ) -> Result<Self, DictError> {
         let mut m = Self::from_text(text)?;
+        if roles.len() > m.num_ids as usize {
+            return Err(DictError::InvalidHeader);
+        }
         m.fw_min = fw_min;
         m.fw_max = fw_max;
         m.roles = roles;

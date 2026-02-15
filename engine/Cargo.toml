@@ -2,6 +2,7 @@
 name = "lex_engine"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.77"
 
 [lib]
 crate-type = ["staticlib", "lib"]

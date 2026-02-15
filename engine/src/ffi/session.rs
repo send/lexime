@@ -209,6 +209,7 @@ pub(crate) fn pack_key_response(
 /// The `history` pointer is only borrowed temporarily via `with_history()`;
 /// it does not need to outlive the session.
 #[no_mangle]
+#[must_use]
 pub extern "C" fn lex_session_new(
     dict: *const TrieDictionary,
     conn: *const ConnectionMatrix,
@@ -435,12 +436,6 @@ pub extern "C" fn lex_session_is_composing(session: *const LexSession) -> u8 {
     }
     let session = unsafe { &*session };
     session.inner.is_composing() as u8
-}
-
-/// Get the composed string for IMKit's composedString callback.
-#[no_mangle]
-pub extern "C" fn lex_session_composed_string(_session: *const LexSession) -> *const c_char {
-    c"".as_ptr()
 }
 
 /// Get the committed context string for neural candidate generation.
