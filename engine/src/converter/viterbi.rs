@@ -157,6 +157,11 @@ pub(crate) fn viterbi_nbest(
 }
 
 /// Insert a KEntry into a top-K list, maintaining ascending sort by cost and max size `k`.
+///
+/// `Vec::insert` is O(k) due to memmove, but k is small (30-50) and KEntry is 32 bytes,
+/// so the shift fits in L1 cache. A BinaryHeap would give O(log k) insert but breaks
+/// the stable-index invariant that `backtrace_nbest` relies on (`prev_rank` indexes
+/// into the finalized Vec of a predecessor node).
 fn insert_top_k(list: &mut Vec<KEntry>, k: usize, entry: KEntry) {
     // Find insertion point (binary search for ascending order)
     let pos = list.partition_point(|e| e.cost <= entry.cost);
