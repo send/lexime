@@ -3,58 +3,58 @@
 
 #include <stdint.h>
 
-const char *lex_engine_version(void);
+const char * _Nonnull lex_engine_version(void);
 int32_t lex_engine_echo(int32_t x);
 
 /* Tracing API (no-op unless built with --features trace) */
-void lex_trace_init(const char *log_dir);
+void lex_trace_init(const char * _Nonnull log_dir);
 
 /* Dictionary API */
 
 typedef struct LexDict LexDict;
 
 typedef struct {
-    const char *reading;
-    const char *surface;
+    const char * _Nonnull reading;
+    const char * _Nonnull surface;
     int16_t cost;
 } LexCandidate;
 
 typedef struct {
-    const LexCandidate *candidates;
+    const LexCandidate * _Nullable candidates;
     uint32_t len;
-    void *_owned;
+    void * _Nullable _owned;
 } LexCandidateList;
 
-LexDict *lex_dict_open(const char *path);
-void lex_dict_close(LexDict *dict);
-LexCandidateList lex_dict_lookup(const LexDict *dict, const char *reading);
-LexCandidateList lex_dict_predict(const LexDict *dict, const char *prefix, uint32_t max_results);
+LexDict * _Nullable lex_dict_open(const char * _Nonnull path);
+void lex_dict_close(LexDict * _Nullable dict);
+LexCandidateList lex_dict_lookup(const LexDict * _Nonnull dict, const char * _Nonnull reading);
+LexCandidateList lex_dict_predict(const LexDict * _Nonnull dict, const char * _Nonnull prefix, uint32_t max_results);
 void lex_candidates_free(LexCandidateList list);
 
 /* Connection matrix API */
 
 typedef struct LexConnectionMatrix LexConnectionMatrix;
 
-LexConnectionMatrix *lex_conn_open(const char *path);
-void lex_conn_close(LexConnectionMatrix *conn);
+LexConnectionMatrix * _Nullable lex_conn_open(const char * _Nonnull path);
+void lex_conn_close(LexConnectionMatrix * _Nullable conn);
 
 /* Conversion API (lattice + Viterbi) */
 
 typedef struct {
-    const char *reading;
-    const char *surface;
+    const char * _Nonnull reading;
+    const char * _Nonnull surface;
 } LexSegment;
 
 typedef struct {
-    const LexSegment *segments;
+    const LexSegment * _Nullable segments;
     uint32_t len;
-    void *_owned;
+    void * _Nullable _owned;
 } LexConversionResult;
 
 LexConversionResult lex_convert(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const char *kana
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const char * _Nonnull kana
 );
 void lex_conversion_free(LexConversionResult result);
 
@@ -62,51 +62,51 @@ void lex_conversion_free(LexConversionResult result);
 
 typedef struct LexUserHistory LexUserHistory;
 
-LexUserHistory *lex_history_open(const char *path);
-void lex_history_close(LexUserHistory *history);
-void lex_history_record(const LexUserHistory *history, const LexSegment *segments, uint32_t len);
-int32_t lex_history_save(const LexUserHistory *history, const char *path);
+LexUserHistory * _Nullable lex_history_open(const char * _Nonnull path);
+void lex_history_close(LexUserHistory * _Nullable history);
+void lex_history_record(const LexUserHistory * _Nonnull history, const LexSegment * _Nonnull segments, uint32_t len);
+int32_t lex_history_save(const LexUserHistory * _Nonnull history, const char * _Nonnull path);
 
 LexConversionResult lex_convert_with_history(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history,
-    const char *kana
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nonnull history,
+    const char * _Nonnull kana
 );
 
 LexCandidateList lex_dict_lookup_with_history(
-    const LexDict *dict,
-    const LexUserHistory *history,
-    const char *reading
+    const LexDict * _Nonnull dict,
+    const LexUserHistory * _Nonnull history,
+    const char * _Nonnull reading
 );
 
 LexCandidateList lex_dict_predict_ranked(
-    const LexDict *dict,
-    const LexUserHistory *history,
-    const char *prefix,
+    const LexDict * _Nonnull dict,
+    const LexUserHistory * _Nullable history,
+    const char * _Nonnull prefix,
     uint32_t max_results
 );
 
 /* N-best Conversion API */
 
 typedef struct {
-    const LexConversionResult *results;
+    const LexConversionResult * _Nullable results;
     uint32_t len;
-    void *_owned;
+    void * _Nullable _owned;
 } LexConversionResultList;
 
 LexConversionResultList lex_convert_nbest(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const char *kana,
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const char * _Nonnull kana,
     uint32_t n
 );
 
 LexConversionResultList lex_convert_nbest_with_history(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history,
-    const char *kana,
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nonnull history,
+    const char * _Nonnull kana,
     uint32_t n
 );
 
@@ -116,24 +116,24 @@ void lex_conversion_result_list_free(LexConversionResultList list);
 
 typedef struct {
     uint8_t tag;           /* 0=none, 1=prefix, 2=exact, 3=exactAndPrefix */
-    const char *kana;      /* valid when tag=2 or tag=3; NULL otherwise */
-    void *_owned;
+    const char * _Nullable kana;      /* valid when tag=2 or tag=3; NULL otherwise */
+    void * _Nullable _owned;
 } LexRomajiLookupResult;
 
-LexRomajiLookupResult lex_romaji_lookup(const char *romaji);
+LexRomajiLookupResult lex_romaji_lookup(const char * _Nonnull romaji);
 void lex_romaji_lookup_free(LexRomajiLookupResult result);
 
 /* Romaji Convert API */
 
 typedef struct {
-    const char *composed_kana;
-    const char *pending_romaji;
-    void *_owned;
+    const char * _Nullable composed_kana;
+    const char * _Nullable pending_romaji;
+    void * _Nullable _owned;
 } LexRomajiConvertResult;
 
 LexRomajiConvertResult lex_romaji_convert(
-    const char *composed_kana,
-    const char *pending_romaji,
+    const char * _Nonnull composed_kana,
+    const char * _Nonnull pending_romaji,
     uint8_t force
 );
 void lex_romaji_convert_free(LexRomajiConvertResult result);
@@ -141,25 +141,25 @@ void lex_romaji_convert_free(LexRomajiConvertResult result);
 /* Unified Candidate Generation API */
 
 typedef struct {
-    const char *const *surfaces;
+    const char * _Nullable const * _Nullable surfaces;
     uint32_t surfaces_len;
-    const LexConversionResult *paths;
+    const LexConversionResult * _Nullable paths;
     uint32_t paths_len;
-    void *_owned;
+    void * _Nullable _owned;
 } LexCandidateResponse;
 
 LexCandidateResponse lex_generate_candidates(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history,
-    const char *reading,
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nullable history,
+    const char * _Nonnull reading,
     uint32_t max_results
 );
 LexCandidateResponse lex_generate_prediction_candidates(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history,
-    const char *reading,
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nullable history,
+    const char * _Nonnull reading,
     uint32_t max_results
 );
 void lex_candidate_response_free(LexCandidateResponse response);
@@ -170,10 +170,10 @@ typedef struct LexSession LexSession;
 
 typedef struct {
     uint8_t consumed;
-    const char *commit_text;       /* NULL = no commit */
-    const char *marked_text;       /* NULL = no change, "" = clear */
+    const char * _Nullable commit_text;       /* NULL = no commit */
+    const char * _Nullable marked_text;       /* NULL = no change, "" = clear */
     uint8_t is_dashed_underline;   /* 1 = English submode underline */
-    const char *const *candidates;
+    const char * _Nullable const * _Nullable candidates;
     uint32_t candidates_len;
     uint32_t selected_index;
     uint8_t show_candidates;       /* 1 = show/update candidate panel */
@@ -181,87 +181,90 @@ typedef struct {
     uint8_t switch_to_abc;         /* 1 = switch to ABC input source */
     uint8_t save_history;          /* 1 = trigger async history save */
     uint8_t needs_candidates;      /* 1 = caller should generate candidates async */
-    const char *candidate_reading; /* reading for async generation (valid when needs_candidates=1) */
+    const char * _Nullable candidate_reading; /* reading for async generation (valid when needs_candidates=1) */
     uint8_t candidate_dispatch;    /* 0=standard, 1=prediction, 2=neural */
-    const char *ghost_text;        /* NULL=no change, ""=clear, string=show */
+    const char * _Nullable ghost_text;        /* NULL=no change, ""=clear, string=show */
     uint8_t needs_ghost_text;      /* 1 = caller should generate ghost text async */
-    const char *ghost_context;     /* context for ghost generation (valid when needs_ghost_text=1) */
+    const char * _Nullable ghost_context;     /* context for ghost generation (valid when needs_ghost_text=1) */
     uint64_t ghost_generation;     /* staleness counter */
-    void *_owned;
+    void * _Nullable _owned;
 } LexKeyResponse;
 
-LexSession *lex_session_new(
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history
+LexSession * _Nullable lex_session_new(
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nullable history
 );
-void lex_session_free(LexSession *session);
-void lex_session_set_programmer_mode(LexSession *session, uint8_t enabled);
-void lex_session_set_defer_candidates(LexSession *session, uint8_t enabled);
-void lex_session_set_conversion_mode(LexSession *session, uint8_t mode);
+void lex_session_free(LexSession * _Nullable session);
+void lex_session_set_programmer_mode(LexSession * _Nonnull session, uint8_t enabled);
+void lex_session_set_defer_candidates(LexSession * _Nonnull session, uint8_t enabled);
+void lex_session_set_conversion_mode(LexSession * _Nonnull session, uint8_t mode);
 
 LexKeyResponse lex_session_handle_key(
-    LexSession *session,
+    LexSession * _Nonnull session,
     uint16_t key_code,
-    const char *text,
+    const char * _Nonnull text,
     uint8_t flags  /* bit0=shift, bit1=has_modifier(Cmd/Ctrl/Opt) */
 );
 
-LexKeyResponse lex_session_commit(LexSession *session);
-uint8_t lex_session_is_composing(const LexSession *session);
+LexKeyResponse lex_session_commit(LexSession * _Nonnull session);
+uint8_t lex_session_is_composing(const LexSession * _Nonnull session);
+
+const char * _Nonnull lex_session_composed_string(const LexSession * _Nonnull session);
 
 void lex_key_response_free(LexKeyResponse response);
+uint32_t lex_key_response_history_count(const LexKeyResponse * _Nonnull response);
 
 /* Receive async candidate results and update session state.
  * reading: the kana used for generation (staleness check).
  * Returns a LexKeyResponse with updated marked text and candidates. */
 LexKeyResponse lex_session_receive_candidates(
-    LexSession *session,
-    const char *reading,
-    const LexCandidateResponse *candidates
+    LexSession * _Nonnull session,
+    const char * _Nonnull reading,
+    const LexCandidateResponse * _Nonnull candidates
 );
 
 /* Record history entries from a key response into the user history.
  * Call this before lex_key_response_free when save_history is set. */
 void lex_key_response_record_history(
-    const LexKeyResponse *response,
-    const LexUserHistory *history
+    const LexKeyResponse * _Nonnull response,
+    const LexUserHistory * _Nonnull history
 );
 
 /* Ghost text session API */
 LexKeyResponse lex_session_receive_ghost_text(
-    LexSession *session,
+    LexSession * _Nonnull session,
     uint64_t generation,
-    const char *text
+    const char * _Nonnull text
 );
-uint64_t lex_session_ghost_generation(const LexSession *session);
+uint64_t lex_session_ghost_generation(const LexSession * _Nonnull session);
 
 /* Neural scorer API */
 
 typedef struct LexNeuralScorer LexNeuralScorer;
 
-LexNeuralScorer *lex_neural_open(const char *model_path);
-void lex_neural_close(LexNeuralScorer *scorer);
+LexNeuralScorer * _Nullable lex_neural_open(const char * _Nonnull model_path);
+void lex_neural_close(LexNeuralScorer * _Nullable scorer);
 
 typedef struct {
-    const char *text;
-    void *_owned;
+    const char * _Nullable text;
+    void * _Nullable _owned;
 } LexGhostTextResult;
 
 LexGhostTextResult lex_neural_generate_ghost(
-    LexNeuralScorer *scorer,
-    const char *context,
+    LexNeuralScorer * _Nonnull scorer,
+    const char * _Nonnull context,
     uint32_t max_tokens
 );
 void lex_ghost_text_free(LexGhostTextResult result);
 
 LexCandidateResponse lex_generate_neural_candidates(
-    LexNeuralScorer *scorer,
-    const LexDict *dict,
-    const LexConnectionMatrix *conn,
-    const LexUserHistory *history,
-    const char *context,
-    const char *reading,
+    LexNeuralScorer * _Nonnull scorer,
+    const LexDict * _Nonnull dict,
+    const LexConnectionMatrix * _Nullable conn,
+    const LexUserHistory * _Nullable history,
+    const char * _Nonnull context,
+    const char * _Nonnull reading,
     uint32_t max_results
 );
 
