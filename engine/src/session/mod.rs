@@ -1,3 +1,8 @@
+//! Stateful IME session managing composition, candidate selection, and key handling.
+//!
+//! `InputSession` owns the current editing state and processes each keystroke,
+//! returning responses that the Swift frontend translates into IMKit calls.
+
 pub(crate) mod types;
 
 mod auto_commit;

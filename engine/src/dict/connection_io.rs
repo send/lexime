@@ -3,7 +3,7 @@ use std::path::Path;
 
 use memmap2::Mmap;
 
-use super::connection::{ConnectionMatrix, CostStorage, MAGIC, V1_HEADER_SIZE, V2_HEADER_SIZE};
+use super::connection::{ConnectionMatrix, CostStorage, FIXED_HEADER_SIZE, MAGIC, VERSION};
 use super::DictError;
 
 impl ConnectionMatrix {
@@ -128,8 +128,8 @@ impl ConnectionMatrix {
 
     /// Build from a text file with function-word range and morpheme roles.
     ///
-    /// `roles` must have length ≤ `num_ids`. IDs beyond the roles vector
-    /// length are treated as content words (role 0) by `role()`.
+    /// `roles` must have length ≤ `num_ids`. Short vectors are padded with
+    /// zeros (content word) by `new_owned`.
     pub fn from_text_with_roles(
         text: &str,
         fw_min: u16,
@@ -143,64 +143,43 @@ impl ConnectionMatrix {
         m.fw_min = fw_min;
         m.fw_max = fw_max;
         m.roles = roles;
+        m.roles.resize(m.num_ids as usize, 0);
         Ok(m)
     }
 
+    /// Validate a V3 binary header and return parsed fields.
     pub(super) fn validate_header(
         data: &[u8],
     ) -> Result<(u16, u16, u16, Vec<u8>, usize), DictError> {
-        if data.len() < V1_HEADER_SIZE {
+        if data.len() < FIXED_HEADER_SIZE {
             return Err(DictError::InvalidHeader);
         }
         if &data[..4] != MAGIC {
             return Err(DictError::InvalidMagic);
         }
         let version = data[4];
-        let (num_ids, fw_min, fw_max, roles, hdr_size) = match version {
-            1 => {
-                let num_ids = u16::from_le_bytes([data[5], data[6]]);
-                (num_ids, 0u16, 0u16, Vec::new(), V1_HEADER_SIZE)
-            }
-            2 => {
-                if data.len() < V2_HEADER_SIZE {
-                    return Err(DictError::InvalidHeader);
-                }
-                let num_ids = u16::from_le_bytes([data[5], data[6]]);
-                let fw_min = u16::from_le_bytes([data[7], data[8]]);
-                let fw_max = u16::from_le_bytes([data[9], data[10]]);
-                (num_ids, fw_min, fw_max, Vec::new(), V2_HEADER_SIZE)
-            }
-            3 => {
-                if data.len() < V2_HEADER_SIZE {
-                    return Err(DictError::InvalidHeader);
-                }
-                let num_ids = u16::from_le_bytes([data[5], data[6]]);
-                let fw_min = u16::from_le_bytes([data[7], data[8]]);
-                let fw_max = u16::from_le_bytes([data[9], data[10]]);
-                let roles_end = V2_HEADER_SIZE + num_ids as usize;
-                if data.len() < roles_end {
-                    return Err(DictError::InvalidHeader);
-                }
-                let roles = data[V2_HEADER_SIZE..roles_end].to_vec();
-                (num_ids, fw_min, fw_max, roles, roles_end)
-            }
-            _ => return Err(DictError::UnsupportedVersion(version)),
-        };
+        if version != VERSION {
+            return Err(DictError::UnsupportedVersion(version));
+        }
+        let num_ids = u16::from_le_bytes([data[5], data[6]]);
+        let fw_min = u16::from_le_bytes([data[7], data[8]]);
+        let fw_max = u16::from_le_bytes([data[9], data[10]]);
+        let roles_end = FIXED_HEADER_SIZE + num_ids as usize;
+        if data.len() < roles_end {
+            return Err(DictError::InvalidHeader);
+        }
+        let roles = data[FIXED_HEADER_SIZE..roles_end].to_vec();
         let expected_bytes = num_ids as usize * num_ids as usize * 2;
-        let actual_bytes = data.len() - hdr_size;
+        let actual_bytes = data.len() - roles_end;
         if actual_bytes != expected_bytes {
             return Err(DictError::Parse(format!(
                 "expected {expected_bytes} bytes of cost data, got {actual_bytes}",
             )));
         }
-        Ok((num_ids, fw_min, fw_max, roles, hdr_size))
+        Ok((num_ids, fw_min, fw_max, roles, roles_end))
     }
 
-    /// Load from compiled binary format using memory-mapped I/O.
-    ///
-    /// The cost data is accessed directly from the mapped file, avoiding
-    /// a heap allocation for the entire matrix. The OS pages in data on
-    /// demand and can reclaim pages under memory pressure.
+    /// Load from compiled V3 binary format using memory-mapped I/O.
     pub fn open(path: &Path) -> Result<Self, DictError> {
         let file = File::open(path)?;
         // SAFETY: The file is opened read-only and the mapping is immutable.
@@ -218,7 +197,7 @@ impl ConnectionMatrix {
         })
     }
 
-    /// Parse from compiled binary format into an owned representation.
+    /// Parse from compiled V3 binary format into an owned representation.
     pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
         let (num_ids, fw_min, fw_max, roles, hdr_size) = Self::validate_header(data)?;
         let costs: Vec<i16> = data[hdr_size..]
@@ -228,7 +207,7 @@ impl ConnectionMatrix {
         Ok(Self::new_owned(num_ids, fw_min, fw_max, roles, costs))
     }
 
-    /// Serialize to compiled binary format (writes V3 if roles present, V2 otherwise).
+    /// Serialize to compiled V3 binary format.
     pub fn to_bytes(&self) -> Vec<u8> {
         let costs = match &self.storage {
             CostStorage::Owned(c) => c.as_slice(),
@@ -236,18 +215,13 @@ impl ConnectionMatrix {
                 return self.to_bytes_from_mapped();
             }
         };
-        let has_roles = !self.roles.is_empty();
-        let version = if has_roles { 3u8 } else { 2u8 };
-        let roles_size = if has_roles { self.roles.len() } else { 0 };
-        let mut buf = Vec::with_capacity(V2_HEADER_SIZE + roles_size + costs.len() * 2);
+        let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + costs.len() * 2);
         buf.extend_from_slice(MAGIC);
-        buf.push(version);
+        buf.push(VERSION);
         buf.extend_from_slice(&self.num_ids.to_le_bytes());
         buf.extend_from_slice(&self.fw_min.to_le_bytes());
         buf.extend_from_slice(&self.fw_max.to_le_bytes());
-        if has_roles {
-            buf.extend_from_slice(&self.roles);
-        }
+        buf.extend_from_slice(&self.roles);
         for &cost in costs {
             buf.extend_from_slice(&cost.to_le_bytes());
         }
@@ -257,18 +231,13 @@ impl ConnectionMatrix {
     /// Helper: re-serialize a Mapped matrix.
     fn to_bytes_from_mapped(&self) -> Vec<u8> {
         let n = self.num_ids as usize * self.num_ids as usize;
-        let has_roles = !self.roles.is_empty();
-        let version = if has_roles { 3u8 } else { 2u8 };
-        let roles_size = if has_roles { self.roles.len() } else { 0 };
-        let mut buf = Vec::with_capacity(V2_HEADER_SIZE + roles_size + n * 2);
+        let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + n * 2);
         buf.extend_from_slice(MAGIC);
-        buf.push(version);
+        buf.push(VERSION);
         buf.extend_from_slice(&self.num_ids.to_le_bytes());
         buf.extend_from_slice(&self.fw_min.to_le_bytes());
         buf.extend_from_slice(&self.fw_max.to_le_bytes());
-        if has_roles {
-            buf.extend_from_slice(&self.roles);
-        }
+        buf.extend_from_slice(&self.roles);
         for i in 0..n {
             let left = (i / self.num_ids as usize) as u16;
             let right = (i % self.num_ids as usize) as u16;
