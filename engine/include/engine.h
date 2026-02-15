@@ -28,7 +28,6 @@ typedef struct {
 LexDict * _Nullable lex_dict_open(const char * _Nonnull path);
 void lex_dict_close(LexDict * _Nullable dict);
 LexCandidateList lex_dict_lookup(const LexDict * _Nonnull dict, const char * _Nonnull reading);
-LexCandidateList lex_dict_predict(const LexDict * _Nonnull dict, const char * _Nonnull prefix, uint32_t max_results);
 void lex_candidates_free(LexCandidateList list);
 
 /* Connection matrix API */
@@ -38,7 +37,7 @@ typedef struct LexConnectionMatrix LexConnectionMatrix;
 LexConnectionMatrix * _Nullable lex_conn_open(const char * _Nonnull path);
 void lex_conn_close(LexConnectionMatrix * _Nullable conn);
 
-/* Conversion API (lattice + Viterbi) */
+/* Conversion types (used by Candidate Response) */
 
 typedef struct {
     const char * _Nonnull reading;
@@ -51,66 +50,13 @@ typedef struct {
     void * _Nullable _owned;
 } LexConversionResult;
 
-LexConversionResult lex_convert(
-    const LexDict * _Nonnull dict,
-    const LexConnectionMatrix * _Nullable conn,
-    const char * _Nonnull kana
-);
-void lex_conversion_free(LexConversionResult result);
-
 /* User History API */
 
 typedef struct LexUserHistory LexUserHistory;
 
 LexUserHistory * _Nullable lex_history_open(const char * _Nonnull path);
 void lex_history_close(LexUserHistory * _Nullable history);
-void lex_history_record(const LexUserHistory * _Nonnull history, const LexSegment * _Nonnull segments, uint32_t len);
 int32_t lex_history_save(const LexUserHistory * _Nonnull history, const char * _Nonnull path);
-
-LexConversionResult lex_convert_with_history(
-    const LexDict * _Nonnull dict,
-    const LexConnectionMatrix * _Nullable conn,
-    const LexUserHistory * _Nonnull history,
-    const char * _Nonnull kana
-);
-
-LexCandidateList lex_dict_lookup_with_history(
-    const LexDict * _Nonnull dict,
-    const LexUserHistory * _Nonnull history,
-    const char * _Nonnull reading
-);
-
-LexCandidateList lex_dict_predict_ranked(
-    const LexDict * _Nonnull dict,
-    const LexUserHistory * _Nullable history,
-    const char * _Nonnull prefix,
-    uint32_t max_results
-);
-
-/* N-best Conversion API */
-
-typedef struct {
-    const LexConversionResult * _Nullable results;
-    uint32_t len;
-    void * _Nullable _owned;
-} LexConversionResultList;
-
-LexConversionResultList lex_convert_nbest(
-    const LexDict * _Nonnull dict,
-    const LexConnectionMatrix * _Nullable conn,
-    const char * _Nonnull kana,
-    uint32_t n
-);
-
-LexConversionResultList lex_convert_nbest_with_history(
-    const LexDict * _Nonnull dict,
-    const LexConnectionMatrix * _Nullable conn,
-    const LexUserHistory * _Nonnull history,
-    const char * _Nonnull kana,
-    uint32_t n
-);
-
-void lex_conversion_result_list_free(LexConversionResultList list);
 
 /* Romaji Lookup API */
 
