@@ -19,6 +19,9 @@ engine/target/
 engine/data/*
 !engine/data/snapshot-readings.txt
 
+# Neural model files
+data/
+
 # macOS
 .DS_Store
 *.swp
