@@ -204,6 +204,7 @@ class LeximeInputController: IMKInputController {
         if let commitText = resp.commit_text {
             let text = String(cString: commitText)
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            currentDisplay = nil
             panelNeedsReposition = true
         }
 
@@ -339,6 +340,10 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - History
 
+    /// Record history entries and persist to disk asynchronously.
+    /// Thread safety: `LexUserHistoryWrapper` uses `RwLock` internally, so
+    /// `record_history` (write lock, main thread) and `history_save`
+    /// (read lock + clone, historySaveQueue) are safely synchronized.
     private func recordAndSaveHistory(_ resp: LexKeyResponse) {
         guard let history = AppContext.shared.history else { return }
         withUnsafePointer(to: resp) { respPtr in
@@ -448,10 +453,18 @@ class LeximeInputController: IMKInputController {
         applyResponse(resp, client: client)
     }
 
+    override func activateServer(_ sender: Any!) {
+        currentDisplay = nil
+        predictionCandidates = []
+        selectedPredictionIndex = 0
+        super.activateServer(sender)
+    }
+
     override func deactivateServer(_ sender: Any!) {
         candidateGeneration += 1
         ghostDebounceItem?.cancel()
         ghostText = nil
+        currentDisplay = nil
         hideCandidatePanel()
         super.deactivateServer(sender)
     }
