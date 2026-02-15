@@ -150,6 +150,31 @@ enum Command {
         #[arg(long, default_value = "")]
         context: String,
     },
+    /// Speculative decoding: Viterbi draft + GPT-2 verify (requires --features neural)
+    #[cfg(feature = "neural")]
+    SpeculativeDecode {
+        /// Dictionary file
+        dict_file: String,
+        /// Connection matrix file
+        conn_file: String,
+        /// GGUF model file path
+        #[arg(long)]
+        model: String,
+        /// Kana input
+        kana: String,
+        /// Left context for scoring
+        #[arg(long, default_value = "")]
+        context: String,
+        /// Per-char log-prob confidence threshold
+        #[arg(long, default_value = "-2.0")]
+        threshold: f64,
+        /// Maximum verify-refine iterations
+        #[arg(long, default_value = "3")]
+        max_iter: usize,
+        /// Compare Viterbi / N-best reranking / speculative results
+        #[arg(long)]
+        compare: bool,
+    },
 }
 
 fn main() {
@@ -232,6 +257,19 @@ fn main() {
             n,
             history.as_deref(),
             &context,
+        ),
+        #[cfg(feature = "neural")]
+        Command::SpeculativeDecode {
+            dict_file,
+            conn_file,
+            model,
+            kana,
+            context,
+            threshold,
+            max_iter,
+            compare,
+        } => speculative_decode_cmd(
+            &dict_file, &conn_file, &model, &kana, &context, threshold, max_iter, compare,
         ),
     }
 }
@@ -716,6 +754,124 @@ fn neural_score_cmd(
         (viterbi_elapsed + neural_elapsed).as_millis(),
         viterbi_elapsed.as_secs_f64() * 1000.0,
         neural_elapsed.as_millis(),
+        model_elapsed.as_millis(),
+    );
+}
+
+#[cfg(feature = "neural")]
+#[allow(clippy::too_many_arguments)]
+fn speculative_decode_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    model_file: &str,
+    kana: &str,
+    context: &str,
+    threshold: f64,
+    max_iter: usize,
+    compare: bool,
+) {
+    use lex_engine::neural::speculative::{speculative_decode, SpeculativeConfig};
+    use std::time::Instant;
+
+    let dict = die!(
+        TrieDictionary::open(Path::new(dict_file)),
+        "Error opening dictionary: {}"
+    );
+    let conn = die!(
+        ConnectionMatrix::open(Path::new(conn_file)),
+        "Error opening connection matrix: {}"
+    );
+
+    println!("Input: {kana}");
+    if !context.is_empty() {
+        println!("Context: {context}");
+    } else {
+        println!("Context: (none)");
+    }
+    println!();
+
+    // Load neural model
+    eprintln!("Loading neural model from {model_file}...");
+    let model_start = Instant::now();
+    let mut scorer = die!(
+        NeuralScorer::open(Path::new(model_file)),
+        "Error loading neural model: {}"
+    );
+    let model_elapsed = model_start.elapsed();
+    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
+    eprintln!("  {}", scorer.config_summary());
+
+    // Compare mode: show Viterbi 1-best and N-best reranking
+    if compare {
+        let viterbi_start = Instant::now();
+        let viterbi_1best = convert(&dict, Some(&conn), kana);
+        let viterbi_elapsed = viterbi_start.elapsed();
+        let viterbi_surface: String = viterbi_1best.iter().map(|s| s.surface.as_str()).collect();
+        println!(
+            "Viterbi 1-best:  {viterbi_surface}  ({:.1}ms)",
+            viterbi_elapsed.as_secs_f64() * 1000.0
+        );
+
+        let nbest = convert_nbest(&dict, Some(&conn), kana, 10);
+        let neural_start = Instant::now();
+        let scores = die!(
+            scorer.score_paths(context, kana, &nbest),
+            "Error scoring paths: {}"
+        );
+        let neural_elapsed = neural_start.elapsed();
+
+        if let Some(&(best_idx, _)) = scores.first() {
+            let rerank_surface: String =
+                nbest[best_idx].iter().map(|s| s.surface.as_str()).collect();
+            println!(
+                "N-best rerank:   {rerank_surface}  ({:.0}ms neural)",
+                neural_elapsed.as_millis()
+            );
+        }
+        println!();
+    }
+
+    // Speculative decoding
+    let config = SpeculativeConfig {
+        threshold,
+        max_iterations: max_iter,
+        ..SpeculativeConfig::default()
+    };
+    let result = die!(
+        speculative_decode(&mut scorer, &dict, Some(&conn), context, kana, &config),
+        "Error in speculative decoding: {}"
+    );
+
+    let surface: String = result.segments.iter().map(|s| s.surface.as_str()).collect();
+    println!("Speculative:     {surface}");
+    println!("Segments:");
+    for (i, (seg, &score)) in result
+        .segments
+        .iter()
+        .zip(result.segment_scores.iter())
+        .enumerate()
+    {
+        let status = if score >= threshold { "OK" } else { "LOW" };
+        println!(
+            "  [{i}] {}({})      score={:.2}/char  {status}",
+            seg.surface, seg.reading, score
+        );
+    }
+    println!();
+    println!("Iterations: {}", result.metadata.iterations);
+    println!("Confirmed: {:?}", result.metadata.confirmed_counts);
+    println!("Converged: {}", result.metadata.converged);
+    if result.metadata.fell_back {
+        println!(
+            "Fell back to N-best reranking (< {} segments)",
+            config.min_segments
+        );
+    }
+    println!(
+        "Latency: {:.0}ms (viterbi: {:.1}ms, neural: {:.0}ms, model_load: {:.0}ms)",
+        result.metadata.total_latency.as_millis(),
+        result.metadata.viterbi_latency.as_secs_f64() * 1000.0,
+        result.metadata.neural_latency.as_millis(),
         model_elapsed.as_millis(),
     );
 }
