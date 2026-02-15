@@ -318,7 +318,7 @@ impl ConnectionMatrix {
             fw_min,
             fw_max,
             roles,
-            header_size: V2_HEADER_SIZE,
+            header_size: hdr_size,
             storage: CostStorage::Owned(costs),
         })
     }

@@ -200,6 +200,14 @@ pub(crate) fn pack_key_response(
     }
 }
 
+/// Create a new input session.
+///
+/// # Safety
+/// The caller must guarantee that `dict` and `conn` pointers remain valid
+/// (not freed) for the entire lifetime of the returned `LexSession`.
+/// In practice this is ensured by `AppContext` holding them as singletons.
+/// The `history` pointer is only borrowed temporarily via `with_history()`;
+/// it does not need to outlive the session.
 #[no_mangle]
 pub extern "C" fn lex_session_new(
     dict: *const TrieDictionary,
@@ -209,6 +217,7 @@ pub extern "C" fn lex_session_new(
     if dict.is_null() {
         return ptr::null_mut();
     }
+    // SAFETY: Caller guarantees dict/conn outlive this session (see doc comment).
     let dict_ref: &'static TrieDictionary = unsafe { &*dict };
     let conn_ref: Option<&'static ConnectionMatrix> = if conn.is_null() {
         None
@@ -336,6 +345,14 @@ fn unpack_candidate_paths(resp: &LexCandidateResponse) -> Vec<Vec<converter::Con
 }
 
 /// Run a closure with the user-history reference temporarily set on the session.
+///
+/// This uses `transmute` to extend the `RwLockReadGuard` lifetime to `'static`
+/// so it can satisfy `InputSession<'static>`. The reference is cleared immediately
+/// after `f` returns via `set_history(None)`, and the guard is dropped right after.
+///
+/// **Invariant**: `f` must NOT stash the history reference in any field that
+/// outlives this call. Currently `InputSession::handle_key` and friends only
+/// read from history during the call and do not store references.
 ///
 /// # Safety
 /// `history_ptr` must be null or point to a valid `LexUserHistoryWrapper` that outlives
