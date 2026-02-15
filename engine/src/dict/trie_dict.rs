@@ -100,7 +100,8 @@ impl TrieDictionary {
     /// Iterate over all `(reading, entries)` pairs in the trie.
     pub fn iter(&self) -> impl Iterator<Item = (String, &Vec<DictEntry>)> {
         self.trie.predictive_search(b"").map(move |m| {
-            let reading = String::from_utf8(m.key).expect("invalid UTF-8 in trie key");
+            let reading = String::from_utf8(m.key)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
             (reading, &self.values[m.value_id as usize])
         })
     }
@@ -121,7 +122,8 @@ impl TrieDictionary {
             .predictive_search(prefix.as_bytes())
             .take(scan_limit)
             .flat_map(|m| {
-                let reading = String::from_utf8(m.key).expect("invalid UTF-8 in trie key");
+                let reading = String::from_utf8(m.key)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
                 self.values[m.value_id as usize]
                     .iter()
                     .map(move |e| (reading.clone(), e.clone()))
@@ -157,7 +159,8 @@ impl Dictionary for TrieDictionary {
             .predictive_search(prefix.as_bytes())
             .take(max_results)
             .map(|m| SearchResult {
-                reading: String::from_utf8(m.key).expect("invalid UTF-8 in trie key"),
+                reading: String::from_utf8(m.key)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
                 entries: self.values[m.value_id as usize].as_slice(),
             })
             .collect()
@@ -167,11 +170,12 @@ impl Dictionary for TrieDictionary {
         let query_bytes = query.as_bytes();
         self.trie
             .common_prefix_search(query_bytes)
-            .map(|m| SearchResult {
-                reading: std::str::from_utf8(&query_bytes[..m.len])
-                    .expect("invalid UTF-8 boundary in common prefix")
-                    .to_string(),
-                entries: self.values[m.value_id as usize].as_slice(),
+            .filter_map(|m| {
+                let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
+                Some(SearchResult {
+                    reading: reading.to_string(),
+                    entries: self.values[m.value_id as usize].as_slice(),
+                })
             })
             .collect()
     }

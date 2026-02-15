@@ -1270,24 +1270,18 @@ pub extern "C" fn lex_session_receive_candidates(
     let surfaces = unpack_candidate_surfaces(cand_resp);
     let paths = unpack_candidate_paths(cand_resp);
 
-    // Acquire history lock for potential history recording during auto-commit
-    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
-
-    let resp = match session
-        .inner
-        .receive_candidates(reading_str, surfaces, paths)
-    {
-        Some(resp) => resp,
-        None => {
-            session.inner.set_history(None);
-            return LexKeyResponse::empty();
-        }
+    let resp = unsafe {
+        with_history(session.history_ptr, &mut session.inner, |inner| {
+            inner.receive_candidates(reading_str, surfaces, paths)
+        })
     };
-
-    session.inner.set_history(None);
-    drop(_guard);
-    let records = session.inner.take_history_records();
-    pack_key_response(resp, records)
+    match resp {
+        Some(resp) => {
+            let records = session.inner.take_history_records();
+            pack_key_response(resp, records)
+        }
+        None => LexKeyResponse::empty(),
+    }
 }
 
 fn unpack_candidate_surfaces(resp: &LexCandidateResponse) -> Vec<String> {
@@ -1335,38 +1329,49 @@ fn unpack_candidate_paths(resp: &LexCandidateResponse) -> Vec<Vec<converter::Con
     result
 }
 
-/// Acquire a read lock on the history and set it on the session's inner.
-/// Returns the guard so it stays alive during use.
+/// Run a closure with the user-history reference temporarily set on the session.
+///
+/// Acquires a read lock, transmutes it to `'static` (required by `InputSession<'static>`),
+/// executes `f`, then clears the history reference and drops the guard – all within
+/// this function so the caller cannot forget the cleanup.
 ///
 /// # Safety
-/// The returned guard must be kept alive while the session's history reference is used.
-/// Call `session.inner.set_history(None)` before dropping the guard.
-unsafe fn acquire_history_lock(
+/// `history_ptr` must be null or point to a valid `LexUserHistoryWrapper` that outlives
+/// this call.  The `'static` transmute is sound because the guard is held for the
+/// entire duration of `f` and the reference is cleared before the guard is dropped.
+unsafe fn with_history<F, R>(
     history_ptr: *const LexUserHistoryWrapper,
     inner: &mut InputSession<'static>,
-) -> Option<std::sync::RwLockReadGuard<'static, UserHistory>> {
-    if history_ptr.is_null() {
+    f: F,
+) -> R
+where
+    F: FnOnce(&mut InputSession<'static>) -> R,
+{
+    let _guard: Option<std::sync::RwLockReadGuard<'static, UserHistory>> = if history_ptr.is_null()
+    {
         inner.set_history(None);
-        return None;
-    }
-    let wrapper = &*history_ptr;
-    match wrapper.inner.read() {
-        Ok(guard) => {
-            // SAFETY: The guard is kept alive by the caller. The transmute extends
-            // the lifetime to 'static which is safe as long as the guard outlives
-            // the session's use of the reference.
-            let hist_ref: &UserHistory = &guard;
-            let hist_static: &'static UserHistory = std::mem::transmute(hist_ref);
-            inner.set_history(Some(hist_static));
-            let guard: std::sync::RwLockReadGuard<'static, UserHistory> =
-                std::mem::transmute(guard);
-            Some(guard)
+        None
+    } else {
+        let wrapper = &*history_ptr;
+        match wrapper.inner.read() {
+            Ok(guard) => {
+                let hist_ref: &UserHistory = &guard;
+                let hist_static: &'static UserHistory = std::mem::transmute(hist_ref);
+                inner.set_history(Some(hist_static));
+                let guard: std::sync::RwLockReadGuard<'static, UserHistory> =
+                    std::mem::transmute(guard);
+                Some(guard)
+            }
+            Err(_) => {
+                inner.set_history(None);
+                None
+            }
         }
-        Err(_) => {
-            inner.set_history(None);
-            None
-        }
-    }
+    };
+
+    let result = f(inner);
+    inner.set_history(None);
+    result
 }
 
 #[no_mangle]
@@ -1380,11 +1385,12 @@ pub extern "C" fn lex_session_handle_key(
         return LexKeyResponse::empty();
     }
     let session = unsafe { &mut *session };
-    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
     let text_str = unsafe { cptr_to_str(text) }.unwrap_or("");
-    let resp = session.inner.handle_key(key_code, text_str, flags);
-    session.inner.set_history(None);
-    drop(_guard);
+    let resp = unsafe {
+        with_history(session.history_ptr, &mut session.inner, |inner| {
+            inner.handle_key(key_code, text_str, flags)
+        })
+    };
     let records = session.inner.take_history_records();
     pack_key_response(resp, records)
 }
@@ -1395,10 +1401,11 @@ pub extern "C" fn lex_session_commit(session: *mut LexSession) -> LexKeyResponse
         return LexKeyResponse::empty();
     }
     let session = unsafe { &mut *session };
-    let _guard = unsafe { acquire_history_lock(session.history_ptr, &mut session.inner) };
-    let resp = session.inner.commit();
-    session.inner.set_history(None);
-    drop(_guard);
+    let resp = unsafe {
+        with_history(session.history_ptr, &mut session.inner, |inner| {
+            inner.commit()
+        })
+    };
     let records = session.inner.take_history_records();
     pack_key_response(resp, records)
 }
