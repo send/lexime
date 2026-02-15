@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::{convert_nbest, convert_nbest_with_history, ConvertedSegment};
+use crate::converter::{convert_nbest, ConvertedSegment};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{DictEntry, Dictionary, TrieDictionary};
 use crate::user_history::UserHistory;
@@ -94,13 +94,12 @@ fn generate_normal_candidates(
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
-    // 1. N-best Viterbi conversion (best candidate first for real-time display)
+    // 1. N-best Viterbi conversion (pure statistical, no history bias).
+    //    History influence is applied at the candidate level (kana promotion,
+    //    predictions, lookup reordering) rather than distorting Viterbi paths,
+    //    which avoids stale history overriding the statistically best results.
     let nbest = 5usize;
-    let paths = if let Some(h) = history {
-        convert_nbest_with_history(dict, conn, h, reading, nbest)
-    } else {
-        convert_nbest(dict, conn, reading, nbest)
-    };
+    let paths = convert_nbest(dict, conn, reading, nbest);
 
     let mut nbest_paths = Vec::new();
     for path in &paths {

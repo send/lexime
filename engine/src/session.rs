@@ -1,7 +1,7 @@
 use tracing::debug_span;
 
 use crate::candidates::{generate_candidates, generate_prediction_candidates, CandidateResponse};
-use crate::converter::ConvertedSegment;
+use crate::converter::{convert, ConvertedSegment};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::TrieDictionary;
 use crate::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
@@ -115,10 +115,16 @@ impl Composition {
 
     /// Compute the display string (replaces `current_display` field).
     /// Uses the selected candidate surface in Japanese mode, falls back to kana + pending.
+    /// When pending romaji is present, appends it to the candidate surface so the user
+    /// sees e.g. "違和感なk" rather than reverting to raw kana "いわかんなk".
     fn display(&self) -> String {
         let segment = if self.submode == Submode::Japanese {
             if let Some(surface) = self.candidates.surfaces.get(self.candidates.selected) {
-                surface.clone()
+                if self.pending.is_empty() {
+                    surface.clone()
+                } else {
+                    format!("{}{}", surface, self.pending)
+                }
             } else {
                 format!("{}{}", self.kana, self.pending)
             }
@@ -762,13 +768,27 @@ impl<'a> InputSession<'a> {
     }
 
     /// Build a response that defers candidate generation to the caller.
+    /// Computes a synchronous 1-best conversion for interim display so the
+    /// marked text shows a converted result immediately (e.g. "違和感無く")
+    /// rather than raw kana while the full N-best candidates are generated async.
     fn make_deferred_candidates_response(&mut self) -> KeyResponse {
-        self.comp().candidates.clear();
         // Do NOT reset stability here. It accumulates across keystrokes.
+        let reading = self.comp().kana.clone();
+        if !reading.is_empty() {
+            // Quick sync 1-best for interim display (~1-2ms)
+            let segments = convert(self.dict, self.conn, &reading);
+            let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+            let c = self.comp();
+            c.candidates.surfaces = vec![surface];
+            c.candidates.paths = vec![segments];
+            c.candidates.selected = 0;
+        } else {
+            self.comp().candidates.clear();
+        }
         let mut resp = self.make_marked_text_response();
-        if !self.comp().kana.is_empty() {
+        if !reading.is_empty() {
             resp.async_request = Some(AsyncCandidateRequest {
-                reading: self.comp().kana.clone(),
+                reading,
                 candidate_dispatch: self.conversion_mode.candidate_dispatch(),
             });
         }
@@ -1198,7 +1218,7 @@ impl<'a> InputSession<'a> {
 
     fn make_marked_text_response(&mut self) -> KeyResponse {
         let c = self.comp();
-        let display = c.display_kana();
+        let display = c.display();
         let mut resp = KeyResponse::consumed();
         resp.marked = Some(MarkedText {
             text: display,

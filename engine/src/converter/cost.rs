@@ -18,6 +18,11 @@ const MIXED_SCRIPT_BONUS: i64 = 3000;
 /// the intended conversion for grammatical words (e.g. たら as 助動詞).
 const KATAKANA_PENALTY: i64 = 5000;
 
+/// Bonus subtracted from word cost for pure-kanji surfaces (方, 気, 人, etc.).
+/// Single-kanji content words often have higher dictionary costs than their
+/// hiragana forms (e.g. 方=733 vs ほう=0), but are the expected IME output.
+const PURE_KANJI_BONUS: i64 = 1000;
+
 /// Penalty for surfaces containing ASCII/Latin characters.
 /// SudachiDict includes English surface forms (e.g. death for です, tie for たい)
 /// with low costs intended for morphological analysis, not IME conversion.
@@ -25,9 +30,10 @@ const LATIN_PENALTY: i64 = 20000;
 
 /// Cost adjustment based on the surface script.
 /// - Mixed-script (kanji+kana, e.g. 通っ, 食べる): bonus (negative)
+/// - Pure kanji (e.g. 方, 気, 人): small bonus (negative)
 /// - Contains Latin/ASCII (e.g. death, tie, thai): heavy penalty
 /// - All-katakana (e.g. タラ, オッ): penalty (positive)
-/// - Otherwise (pure kanji, hiragana, etc.): no adjustment
+/// - Otherwise (pure hiragana, etc.): no adjustment
 pub fn script_cost(surface: &str) -> i64 {
     let mut has_kanji = false;
     let mut has_kana = false;
@@ -48,6 +54,8 @@ pub fn script_cost(surface: &str) -> i64 {
     }
     if has_kanji && has_kana {
         -MIXED_SCRIPT_BONUS
+    } else if has_kanji {
+        -PURE_KANJI_BONUS
     } else if all_katakana {
         KATAKANA_PENALTY
     } else {
@@ -85,7 +93,11 @@ impl CostFunction for DefaultCostFunction<'_> {
             .conn
             .map(|c| c.is_function_word(node.left_id))
             .unwrap_or(false);
-        let penalty = if is_fw { 0 } else { SEGMENT_PENALTY };
+        let penalty = if is_fw {
+            SEGMENT_PENALTY / 2
+        } else {
+            SEGMENT_PENALTY
+        };
         node.cost as i64 + penalty
     }
 
