@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::types::{CandidateAction, Submode};
+use crate::types::{CandidateAction, Submode};
 
 #[test]
 fn test_tab_toggles_submode() {

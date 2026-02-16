@@ -1,4 +1,4 @@
-use crate::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
+use lex_core::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
 
 use super::types::{
     is_romaji_input, Composition, KeyResponse, SessionState, Submode, MAX_COMPOSED_KANA_LENGTH,

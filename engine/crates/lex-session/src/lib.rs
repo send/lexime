@@ -19,9 +19,9 @@ mod tests;
 
 use std::sync::{Arc, RwLock};
 
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
-use crate::user_history::UserHistory;
+use lex_core::dict::connection::ConnectionMatrix;
+use lex_core::dict::TrieDictionary;
+use lex_core::user_history::UserHistory;
 
 pub use types::{
     AsyncCandidateRequest, AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse,

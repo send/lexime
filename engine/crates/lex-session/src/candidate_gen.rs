@@ -1,5 +1,5 @@
-use crate::candidates::CandidateResponse;
-use crate::converter::{convert, convert_with_history, ConvertedSegment};
+use lex_core::candidates::CandidateResponse;
+use lex_core::converter::{convert, convert_with_history, ConvertedSegment};
 
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, Submode, MAX_CANDIDATES};
 use super::InputSession;

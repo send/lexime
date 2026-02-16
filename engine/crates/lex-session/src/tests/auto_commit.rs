@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::ConversionMode;
+use crate::ConversionMode;
 
 #[test]
 fn test_set_conversion_mode_ghosttext() {

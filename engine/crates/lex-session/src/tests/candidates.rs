@@ -1,6 +1,6 @@
 use super::*;
-use crate::session::types::CandidateAction;
-use crate::session::ConversionMode;
+use crate::types::CandidateAction;
+use crate::ConversionMode;
 
 #[test]
 fn test_candidates_generated() {
@@ -126,15 +126,12 @@ fn test_conversion_mode_switch() {
     let resp = session.handle_key(key::TAB, "", 0);
     assert!(resp.commit.is_none());
     assert!(session.is_composing());
-    assert_eq!(
-        session.comp().submode,
-        crate::session::types::Submode::English
-    );
+    assert_eq!(session.comp().submode, crate::types::Submode::English);
 }
 
 #[test]
 fn test_deferred_auto_commit_shows_provisional_candidates() {
-    use crate::candidates::generate_candidates;
+    use lex_core::candidates::generate_candidates;
 
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
@@ -205,7 +202,7 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
 
 #[test]
 fn test_predictive_mode_no_auto_commit() {
-    use crate::candidates::generate_candidates;
+    use lex_core::candidates::generate_candidates;
 
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);

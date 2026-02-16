@@ -11,7 +11,9 @@ jobs:
     permissions:
       pull-requests: read
     outputs:
-      engine: ${{ steps.filter.outputs.engine }}
+      core: ${{ steps.filter.outputs.core }}
+      session: ${{ steps.filter.outputs.session }}
+      ffi: ${{ steps.filter.outputs.ffi }}
       cli: ${{ steps.filter.outputs.cli }}
       swift: ${{ steps.filter.outputs.swift }}
     steps:
@@ -19,10 +21,14 @@ jobs:
         id: filter
         with:
           filters: |
-            engine:
-              - 'engine/src/**'
+            core:
+              - 'engine/crates/lex-core/**'
               - 'engine/Cargo.toml'
               - 'engine/Cargo.lock'
+            session:
+              - 'engine/crates/lex-session/**'
+            ffi:
+              - 'engine/src/**'
             cli:
               - 'engine/crates/lex-cli/**'
             swift:
@@ -30,9 +36,13 @@ jobs:
               - 'Tests/**'
               - 'Info.plist'
 
-  engine:
+  lint:
     needs: changes
-    if: needs.changes.outputs.engine == 'true' || needs.changes.outputs.cli == 'true'
+    if: >-
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.session == 'true' ||
+      needs.changes.outputs.ffi == 'true' ||
+      needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,22 +56,106 @@ jobs:
           workspaces: engine -> target
           shared-key: engine
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      - run: cd engine && cargo fmt --all --check
+      - run: cd engine && cargo clippy --workspace --all-features -- -D warnings
 
-      - run: mise run test
+  test-core:
+    needs: [changes, lint]
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
+
+      - run: cd engine && cargo test -p lex-core --features trace,neural
+
+  test-session:
+    needs: [changes, lint]
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.session == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
+
+      - run: cd engine && cargo test -p lex-session --features trace
+
+  test-engine:
+    needs: [changes, lint]
+    if: >-
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.session == 'true' ||
+      needs.changes.outputs.ffi == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
+
+      - run: cd engine && cargo test -p lex_engine --features trace,neural
+
+  test-cli:
+    needs: [changes, lint]
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
+
+      - run: cd engine && cargo test -p lex-cli
+
+  audit:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
 
       - name: Install audit tools
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit,cargo-machete
 
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+
       - run: mise run audit
 
   swift:
     needs: changes
-    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.swift == 'true'
+    if: >-
+      (needs.changes.outputs.core == 'true' || needs.changes.outputs.session == 'true' || needs.changes.outputs.ffi == 'true') &&
+      needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

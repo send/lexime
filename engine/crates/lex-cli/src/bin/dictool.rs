@@ -8,15 +8,15 @@ use clap::{Parser, Subcommand};
 use lex_cli::dict_source;
 use lex_cli::dict_source::pos_map;
 use lex_cli::dict_source::SudachiSource;
-use lex_engine::converter::{
+use lex_core::converter::{
     convert, convert_nbest, convert_nbest_with_history, convert_with_history,
 };
-use lex_engine::dict::connection::ConnectionMatrix;
-use lex_engine::dict::{DictEntry, Dictionary, TrieDictionary};
-use lex_engine::user_history::UserHistory;
+use lex_core::dict::connection::ConnectionMatrix;
+use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
+use lex_core::user_history::UserHistory;
 
 #[cfg(feature = "neural")]
-use lex_engine::neural::NeuralScorer;
+use lex_core::neural::NeuralScorer;
 
 /// Unwrap a Result or print the error and exit.
 macro_rules! die {
@@ -885,7 +885,7 @@ fn neural_score_cmd(
 
 #[cfg(feature = "neural")]
 fn generate_cmd(model_file: &str, context: &str, max_tokens: usize) {
-    use lex_engine::neural::GenerateConfig;
+    use lex_core::neural::GenerateConfig;
     use std::time::Instant;
 
     println!(
@@ -939,7 +939,7 @@ fn speculative_decode_cmd(
     max_iter: usize,
     compare: bool,
 ) {
-    use lex_engine::neural::speculative::{speculative_decode, SpeculativeConfig};
+    use lex_core::neural::speculative::{speculative_decode, SpeculativeConfig};
     use std::time::Instant;
 
     let dict = die!(

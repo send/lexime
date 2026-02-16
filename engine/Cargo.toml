@@ -2,6 +2,13 @@
 members = ["crates/*"]
 resolver = "2"
 
+[workspace.dependencies]
+tracing = { version = "0.1", features = ["max_level_off"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
 [package]
 name = "lex_engine"
 version = "0.1.0"
@@ -19,28 +26,15 @@ required-features = ["uniffi-cli"]
 [features]
 default = []
 uniffi-cli = ["uniffi/cli"]
-trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
-neural = ["candle-core", "candle-nn", "dep:anyhow"]
+trace = ["lex-core/trace", "lex-session/trace", "tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
+neural = ["lex-core/neural"]
 
 [dependencies]
+lex-core = { path = "crates/lex-core" }
+lex-session = { path = "crates/lex-session" }
 uniffi = "0.29"
-tracing = { version = "0.1", features = ["max_level_off"] }
-lexime-trie = "0.1"
-serde = { version = "1", features = ["derive"] }
-bincode = "1"
-serde_json = "1"
-thiserror = "2"
-memmap2 = "0.9"
-unicode-width = "0.2"
-anyhow = { version = "1", optional = true }
-
-[dependencies.candle-core]
-version = "0.9"
-optional = true
-
-[dependencies.candle-nn]
-version = "0.9"
-optional = true
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dependencies.tracing-subscriber]
 version = "0.3"
