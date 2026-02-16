@@ -16,7 +16,6 @@ tracing = { workspace = true }
 lexime-trie = "0.1"
 serde = { workspace = true }
 bincode = "1"
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 memmap2 = "0.9"
 unicode-width = "0.2"

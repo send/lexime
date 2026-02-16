@@ -738,7 +738,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "unicode-width",
  "ureq",
  "zip",
 ]
@@ -754,7 +753,6 @@ dependencies = [
  "lexime-trie",
  "memmap2",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
  "tracing",
  "unicode-width",
