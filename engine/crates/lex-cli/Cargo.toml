@@ -1,0 +1,28 @@
+[package]
+name = "lex-cli"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lex_cli"
+
+[[bin]]
+name = "dictool"
+path = "src/bin/dictool.rs"
+
+[[bin]]
+name = "lextool"
+path = "src/bin/lextool.rs"
+
+[features]
+default = []
+neural = ["lex_engine/neural"]
+
+[dependencies]
+lex_engine = { path = "../.." }
+clap = { version = "4", features = ["derive"] }
+ureq = "3"
+zip = { version = "7", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

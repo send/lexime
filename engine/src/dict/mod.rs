@@ -6,7 +6,6 @@
 pub mod connection;
 mod connection_io;
 mod entry;
-pub mod source;
 #[cfg(test)]
 mod tests;
 mod trie_dict;

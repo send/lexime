@@ -730,6 +730,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "lex-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lex_engine",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "unicode-width",
+ "ureq",
+ "zip",
+]
+
+[[package]]
 name = "lex_engine"
 version = "0.1.0"
 dependencies = [
@@ -737,7 +751,6 @@ dependencies = [
  "bincode",
  "candle-core",
  "candle-nn",
- "clap",
  "lexime-trie",
  "memmap2",
  "serde",
@@ -748,8 +761,6 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "uniffi",
- "ureq",
- "zip",
 ]
 
 [[package]]

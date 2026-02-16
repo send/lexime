@@ -1,10 +1,3 @@
-[tools]
-"cargo:cargo-audit" = "latest"
-"cargo:cargo-machete" = "latest"
-"cargo:cargo-geiger" = "latest"
-"cargo:cargo-bloat" = "latest"
-"cargo:cargo-deny" = "latest"
-
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
 sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock"]
@@ -44,26 +37,26 @@ ls -la generated/
 
 [tasks.fetch-dict-sudachi]
 description = "Download SudachiDict dictionary data"
-sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
+sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/sudachi.rs"]
 outputs = ["engine/data/sudachi-raw/.stamp"]
-run = "cd engine && cargo run --features cli --bin dictool -- fetch --source sudachi data/sudachi-raw"
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source sudachi data/sudachi-raw"
 
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data"
-sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
+sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
 outputs = ["engine/data/mozc-raw/.stamp"]
-run = "cd engine && cargo run --features cli --bin dictool -- fetch --source mozc data/mozc-raw"
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc data/mozc-raw"
 
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/.stamp", "engine/src/bin/dictool.rs", "engine/src/dict/source/mozc.rs"]
+sources = ["engine/data/mozc-raw/.stamp", "engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --features cli --bin dictool
+cargo build --release -p lex-cli --bin dictool
 target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
 """
 
@@ -76,7 +69,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --features cli --bin dictool
+cargo build --release -p lex-cli --bin dictool
 target/release/dictool compile-conn \
   --id-def data/mozc-raw/id.def \
   data/mozc-raw/connection_single_column.txt data/lexime.conn
@@ -85,9 +78,9 @@ target/release/dictool compile-conn \
 [tasks.fetch-dict-sudachi-full]
 description = "Download SudachiDict full dictionary data (core + notcore)"
 depends = ["fetch-dict-sudachi"]
-sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
+sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/sudachi.rs"]
 outputs = ["engine/data/sudachi-full-raw/.stamp"]
-run = "cd engine && cargo run --features cli --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
 
 [tasks.dict-sudachi-full]
 description = "Compile binary dictionary from SudachiDict full (remapped to Mozc POS IDs)"
@@ -98,7 +91,7 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
-cargo build --release --features cli --bin dictool
+cargo build --release -p lex-cli --bin dictool
 target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def \
   data/sudachi-full-raw data/lexime-sudachi-full.dict
 """
@@ -220,7 +213,7 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"
 run = """
-cd engine && cargo run --release --features cli --bin lextool -- explain \
+cd engine && cargo run --release -p lex-cli --bin lextool -- explain \
   data/lexime.dict "$@" --conn data/lexime.conn
 """
 
@@ -228,7 +221,7 @@ cd engine && cargo run --release --features cli --bin lextool -- explain \
 description = "Generate conversion snapshot"
 depends = ["dict", "conn"]
 run = """
-cd engine && cargo run --release --features cli --bin lextool -- snapshot \
+cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
   data/lexime.dict data/lexime.conn \
   data/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
@@ -237,7 +230,7 @@ cd engine && cargo run --release --features cli --bin lextool -- snapshot \
 description = "Compare current output against baseline snapshot"
 depends = ["dict", "conn"]
 run = """
-cd engine && cargo run --release --features cli --bin lextool -- diff-snapshot \
+cd engine && cargo run --release -p lex-cli --bin lextool -- diff-snapshot \
   data/lexime.dict data/lexime.conn \
   data/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
@@ -266,7 +259,7 @@ echo "Downloaded to data/zenz-v3.1-Q5_K_M.gguf"
 description = "Run neural scoring benchmark"
 depends = ["fetch-model", "dict", "conn"]
 run = """
-cd engine && cargo run --features cli,neural --bin dictool -- neural-score \
+cd engine && cargo run -p lex-cli --features neural --bin dictool -- neural-score \
   data/lexime.dict data/lexime.conn \
   --model ../data/zenz-v3.1-Q5_K_M.gguf \
   "$@"
@@ -275,8 +268,9 @@ cd engine && cargo run --features cli,neural --bin dictool -- neural-score \
 [tasks.lint]
 description = "Run cargo fmt --check and clippy"
 run = [
-  "cd engine && cargo fmt --check",
-  "cd engine && cargo clippy --features trace,neural -- -D warnings",
+  "cd engine && cargo fmt --all --check",
+  "cd engine && cargo clippy -p lex_engine --features trace,neural -- -D warnings",
+  "cd engine && cargo clippy -p lex-cli -- -D warnings",
 ]
 
 [tasks.audit]
@@ -289,7 +283,10 @@ run = [
 [tasks.test]
 description = "Run lint + engine tests"
 depends = ["lint"]
-run = "cd engine && cargo test --features trace,neural"
+run = [
+  "cd engine && cargo test -p lex_engine --features trace,neural",
+  "cd engine && cargo test -p lex-cli",
+]
 
 [tasks.clean]
 description = "Remove build artifacts"

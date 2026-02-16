@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use super::DictSourceError;
-use crate::dict::DictEntry;
+use lex_engine::dict::DictEntry;
 
 /// Parse Mozc `id.def` and return a map from POS tag string to Mozc ID.
 ///
