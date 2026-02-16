@@ -1,24 +1,21 @@
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
+use std::sync::Arc;
 
 use super::{cptr_to_str, ffi_close, owned_new};
 use crate::converter;
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
 use crate::session::{self, CandidateAction, InputSession, KeyResponse};
-use crate::user_history::UserHistory;
 
 use super::candidates::LexCandidateResponse;
+use super::connection::LexConnWrapper;
+use super::dict::LexDictWrapper;
 use super::history::LexUserHistoryWrapper;
 
 // --- InputSession FFI ---
 
-/// Opaque wrapper to hold InputSession with raw pointers for FFI lifetime.
-///
-/// The caller guarantees dict/conn/history outlive the session.
+/// Opaque wrapper to hold InputSession for FFI.
 pub struct LexSession {
-    inner: InputSession<'static>,
-    history_ptr: *const LexUserHistoryWrapper,
+    inner: InputSession,
 }
 
 #[repr(C)]
@@ -203,35 +200,37 @@ pub(crate) fn pack_key_response(
 /// Create a new input session.
 ///
 /// # Safety
-/// The caller must guarantee that `dict` and `conn` pointers remain valid
+/// The caller must guarantee that `dict`, `conn`, and `history` pointers remain valid
 /// (not freed) for the entire lifetime of the returned `LexSession`.
 /// In practice this is ensured by `AppContext` holding them as singletons.
-/// The `history` pointer is only borrowed temporarily via `with_history()`;
-/// it does not need to outlive the session.
 #[no_mangle]
 #[must_use]
 pub extern "C" fn lex_session_new(
-    dict: *const TrieDictionary,
-    conn: *const ConnectionMatrix,
+    dict: *const LexDictWrapper,
+    conn: *const LexConnWrapper,
     history: *const LexUserHistoryWrapper,
 ) -> *mut LexSession {
     if dict.is_null() {
         return ptr::null_mut();
     }
-    // SAFETY: Caller guarantees dict/conn outlive this session (see doc comment).
-    let dict_ref: &'static TrieDictionary = unsafe { &*dict };
-    let conn_ref: Option<&'static ConnectionMatrix> = if conn.is_null() {
+    let dict_wrapper = unsafe { &*dict };
+    let dict_arc = Arc::clone(&dict_wrapper.inner);
+    let conn_arc = if conn.is_null() {
         None
     } else {
-        Some(unsafe { &*conn })
+        let conn_wrapper = unsafe { &*conn };
+        Some(Arc::clone(&conn_wrapper.inner))
+    };
+    let history_arc = if history.is_null() {
+        None
+    } else {
+        let hist_wrapper = unsafe { &*history };
+        Some(Arc::clone(&hist_wrapper.inner))
     };
 
-    let inner = InputSession::new(dict_ref, conn_ref, None);
+    let inner = InputSession::new(dict_arc, conn_arc, history_arc);
 
-    owned_new(LexSession {
-        inner,
-        history_ptr: history,
-    })
+    owned_new(LexSession { inner })
 }
 
 ffi_close!(lex_session_free, LexSession);
@@ -286,12 +285,10 @@ pub extern "C" fn lex_session_receive_candidates(
     let surfaces = unpack_candidate_surfaces(cand_resp);
     let paths = unpack_candidate_paths(cand_resp);
 
-    let resp = unsafe {
-        with_history(session.history_ptr, &mut session.inner, |inner| {
-            inner.receive_candidates(reading_str, surfaces, paths)
-        })
-    };
-    match resp {
+    match session
+        .inner
+        .receive_candidates(reading_str, surfaces, paths)
+    {
         Some(resp) => {
             let records = session.inner.take_history_records();
             pack_key_response(resp, records)
@@ -345,54 +342,6 @@ fn unpack_candidate_paths(resp: &LexCandidateResponse) -> Vec<Vec<converter::Con
     result
 }
 
-/// Run a closure with the user-history reference temporarily set on the session.
-///
-/// This uses `transmute` to extend the `RwLockReadGuard` lifetime to `'static`
-/// so it can satisfy `InputSession<'static>`. The reference is cleared immediately
-/// after `f` returns via `set_history(None)`, and the guard is dropped right after.
-///
-/// **Invariant**: `f` must NOT stash the history reference in any field that
-/// outlives this call. Currently `InputSession::handle_key` and friends only
-/// read from history during the call and do not store references.
-///
-/// # Safety
-/// `history_ptr` must be null or point to a valid `LexUserHistoryWrapper` that outlives
-/// this call.
-unsafe fn with_history<F, R>(
-    history_ptr: *const LexUserHistoryWrapper,
-    inner: &mut InputSession<'static>,
-    f: F,
-) -> R
-where
-    F: FnOnce(&mut InputSession<'static>) -> R,
-{
-    let _guard: Option<std::sync::RwLockReadGuard<'static, UserHistory>> = if history_ptr.is_null()
-    {
-        inner.set_history(None);
-        None
-    } else {
-        let wrapper = &*history_ptr;
-        match wrapper.inner.read() {
-            Ok(guard) => {
-                let hist_ref: &UserHistory = &guard;
-                let hist_static: &'static UserHistory = std::mem::transmute(hist_ref);
-                inner.set_history(Some(hist_static));
-                let guard: std::sync::RwLockReadGuard<'static, UserHistory> =
-                    std::mem::transmute(guard);
-                Some(guard)
-            }
-            Err(_) => {
-                inner.set_history(None);
-                None
-            }
-        }
-    };
-
-    let result = f(inner);
-    inner.set_history(None);
-    result
-}
-
 #[no_mangle]
 pub extern "C" fn lex_session_handle_key(
     session: *mut LexSession,
@@ -405,11 +354,7 @@ pub extern "C" fn lex_session_handle_key(
     }
     let session = unsafe { &mut *session };
     let text_str = unsafe { cptr_to_str(text) }.unwrap_or("");
-    let resp = unsafe {
-        with_history(session.history_ptr, &mut session.inner, |inner| {
-            inner.handle_key(key_code, text_str, flags)
-        })
-    };
+    let resp = session.inner.handle_key(key_code, text_str, flags);
     let records = session.inner.take_history_records();
     pack_key_response(resp, records)
 }
@@ -420,11 +365,7 @@ pub extern "C" fn lex_session_commit(session: *mut LexSession) -> LexKeyResponse
         return LexKeyResponse::empty();
     }
     let session = unsafe { &mut *session };
-    let resp = unsafe {
-        with_history(session.history_ptr, &mut session.inner, |inner| {
-            inner.commit()
-        })
-    };
+    let resp = session.inner.commit();
     let records = session.inner.take_history_records();
     pack_key_response(resp, records)
 }

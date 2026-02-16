@@ -5,7 +5,7 @@ use super::types::{
 };
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn handle_composing_text(&mut self, text: &str) -> KeyResponse {
         // English submode: add characters directly
         if self.comp().submode == Submode::English {

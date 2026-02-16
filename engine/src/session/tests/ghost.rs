@@ -4,7 +4,7 @@ use crate::session::ConversionMode;
 #[test]
 fn test_ghosttext_tab_accepts_ghost() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
 
     // Simulate ghost text being received
@@ -21,7 +21,7 @@ fn test_ghosttext_tab_accepts_ghost() {
 #[test]
 fn test_ghosttext_tab_no_ghost_composing_commits() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
 
     // Type something (no ghost text)
@@ -37,7 +37,7 @@ fn test_ghosttext_tab_no_ghost_composing_commits() {
 #[test]
 fn test_ghosttext_input_clears_ghost() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
 
     // Simulate ghost text
@@ -54,7 +54,7 @@ fn test_ghosttext_input_clears_ghost() {
 #[test]
 fn test_ghosttext_stale_generation_rejected() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
     session.ghost_generation = 5;
 
@@ -72,7 +72,7 @@ fn test_ghosttext_stale_generation_rejected() {
 #[test]
 fn test_ghosttext_rejected_while_composing() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
     session.ghost_generation = 1;
 
@@ -87,7 +87,7 @@ fn test_ghosttext_rejected_while_composing() {
 #[test]
 fn test_standard_mode_no_ghost() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Standard);
     session.ghost_generation = 1;
 
@@ -99,7 +99,7 @@ fn test_standard_mode_no_ghost() {
 #[test]
 fn test_ghosttext_commit_requests_ghost() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
 
     type_string(&mut session, "kyou");
@@ -115,7 +115,7 @@ fn test_ghosttext_commit_requests_ghost() {
 #[test]
 fn test_ghosttext_accept_then_requests_more() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::GhostText);
 
     // Simulate ghost text

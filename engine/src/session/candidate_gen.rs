@@ -4,7 +4,7 @@ use crate::converter::{convert, ConvertedSegment};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, Submode, MAX_CANDIDATES};
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn update_candidates(&mut self) {
         self.comp().candidates.selected = 0;
 
@@ -17,8 +17,17 @@ impl InputSession<'_> {
 
         let mode = self.conversion_mode;
         let reading = self.comp().kana.clone();
-        let CandidateResponse { surfaces, paths } =
-            mode.generate_candidates(self.dict, self.conn, self.history, &reading, MAX_CANDIDATES);
+        let CandidateResponse { surfaces, paths } = {
+            let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
+            let history_ref = h_guard.as_deref();
+            mode.generate_candidates(
+                &self.dict,
+                self.conn.as_deref(),
+                history_ref,
+                &reading,
+                MAX_CANDIDATES,
+            )
+        };
         let c = self.comp();
         c.candidates.surfaces = surfaces;
         c.candidates.paths = paths;
@@ -34,7 +43,7 @@ impl InputSession<'_> {
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
             // Quick sync 1-best for interim display (~1-2ms)
-            let segments = convert(self.dict, self.conn, &reading);
+            let segments = convert(&*self.dict, self.conn.as_deref(), &reading);
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();
             c.candidates.surfaces = vec![surface];

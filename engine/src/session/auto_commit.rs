@@ -3,7 +3,7 @@ use crate::converter::ConvertedSegment;
 use super::types::{AsyncCandidateRequest, CandidateAction, KeyResponse, MarkedText, Submode};
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn try_auto_commit(&mut self) -> Option<KeyResponse> {
         if !self.conversion_mode.auto_commit_enabled() {
             return None;

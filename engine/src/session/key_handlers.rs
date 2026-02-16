@@ -8,7 +8,7 @@ use super::types::{
 };
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     ///
     /// `flags`: bit 0 = shift, bit 1 = has_modifier (Cmd/Ctrl/Opt)

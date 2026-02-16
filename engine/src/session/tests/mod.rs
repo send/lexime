@@ -4,13 +4,15 @@ mod candidates;
 mod ghost;
 mod submode;
 
+use std::sync::Arc;
+
 use crate::dict::{DictEntry, TrieDictionary};
 
 use super::types::key;
 use super::InputSession;
 use super::KeyResponse;
 
-pub(super) fn make_test_dict() -> TrieDictionary {
+pub(super) fn make_test_dict() -> Arc<TrieDictionary> {
     let entries = vec![
         (
             "きょう".to_string(),
@@ -128,7 +130,7 @@ pub(super) fn make_test_dict() -> TrieDictionary {
             }],
         ),
     ];
-    TrieDictionary::from_entries(entries)
+    Arc::new(TrieDictionary::from_entries(entries))
 }
 
 // Helper: simulate typing a string one character at a time

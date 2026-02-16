@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use super::*;
 use crate::session::types::{cyclic_index, is_romaji_input, CandidateAction, FLAG_HAS_MODIFIER};
 use crate::user_history::UserHistory;
@@ -7,7 +9,7 @@ use crate::user_history::UserHistory;
 #[test]
 fn test_romaji_input_ka() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     let resp = session.handle_key(0, "k", 0);
     assert!(resp.consumed);
@@ -22,7 +24,7 @@ fn test_romaji_input_ka() {
 #[test]
 fn test_romaji_kyou() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
@@ -33,7 +35,7 @@ fn test_romaji_kyou() {
 #[test]
 fn test_romaji_sokuon() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kka");
     assert_eq!(session.comp().kana, "っか");
@@ -44,7 +46,7 @@ fn test_romaji_sokuon() {
 #[test]
 fn test_backspace_removes_pending() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "k"); // pending_romaji = "k"
     assert_eq!(session.comp().pending, "k");
@@ -57,7 +59,7 @@ fn test_backspace_removes_pending() {
 #[test]
 fn test_backspace_removes_kana() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "ka"); // composedKana = "か"
     assert_eq!(session.comp().kana, "か");
@@ -70,7 +72,7 @@ fn test_backspace_removes_kana() {
 #[test]
 fn test_backspace_partial() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kak"); // "か" + pending "k"
     assert_eq!(session.comp().kana, "か");
@@ -87,7 +89,7 @@ fn test_backspace_partial() {
 #[test]
 fn test_escape_flushes() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyoun"); // "きょう" + pending "n"
 
@@ -104,7 +106,7 @@ fn test_escape_flushes() {
 #[test]
 fn test_enter_commits_selected() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
@@ -121,7 +123,7 @@ fn test_enter_commits_selected() {
 #[test]
 fn test_space_cycles_candidates() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     let initial_count = session.comp().candidates.surfaces.len();
@@ -145,7 +147,7 @@ fn test_space_cycles_candidates() {
 #[test]
 fn test_arrow_keys_cycle() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     let count = session.comp().candidates.surfaces.len();
@@ -167,7 +169,7 @@ fn test_arrow_keys_cycle() {
 #[test]
 fn test_modifier_passthrough_idle() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     let resp = session.handle_key(0, "c", FLAG_HAS_MODIFIER);
     assert!(!resp.consumed);
@@ -176,7 +178,7 @@ fn test_modifier_passthrough_idle() {
 #[test]
 fn test_modifier_passthrough_composing() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
@@ -192,7 +194,7 @@ fn test_modifier_passthrough_composing() {
 #[test]
 fn test_eisu_switches_to_abc() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     let resp = session.handle_key(key::EISU, "", 0);
     assert!(resp.consumed);
@@ -202,7 +204,7 @@ fn test_eisu_switches_to_abc() {
 #[test]
 fn test_eisu_commits_and_switches() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
@@ -219,7 +221,7 @@ fn test_eisu_commits_and_switches() {
 #[test]
 fn test_kana_consumed() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     let resp = session.handle_key(key::KANA, "", 0);
     assert!(resp.consumed);
@@ -230,7 +232,7 @@ fn test_kana_consumed() {
 #[test]
 fn test_yen_programmer_mode() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_programmer_mode(true);
 
     let resp = session.handle_key(key::YEN, "¥", 0);
@@ -241,7 +243,7 @@ fn test_yen_programmer_mode() {
 #[test]
 fn test_yen_programmer_mode_composing() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_programmer_mode(true);
 
     type_string(&mut session, "kyou");
@@ -256,7 +258,7 @@ fn test_yen_programmer_mode_composing() {
 #[test]
 fn test_yen_non_programmer_mode_passthrough() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Without programmer mode, ¥ in idle state should not be consumed (romaji check)
     let resp = session.handle_key(key::YEN, "¥", 0);
@@ -268,7 +270,7 @@ fn test_yen_non_programmer_mode_passthrough() {
 #[test]
 fn test_punctuation_auto_commit() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
@@ -290,7 +292,7 @@ fn test_punctuation_auto_commit() {
 #[test]
 fn test_commit_method() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
@@ -305,14 +307,14 @@ fn test_commit_method() {
 #[test]
 fn test_composed_string_idle() {
     let dict = make_test_dict();
-    let session = InputSession::new(&dict, None, None);
+    let session = InputSession::new(dict.clone(), None, None);
     assert_eq!(session.composed_string(), "");
 }
 
 #[test]
 fn test_composed_string_composing() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     // composed_string should return the current display (best candidate)
@@ -326,7 +328,7 @@ fn test_composed_string_composing() {
 fn test_history_recorded_on_commit() {
     let dict = make_test_dict();
     let history = UserHistory::new();
-    let mut session = InputSession::new(&dict, None, Some(&history));
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
     session.handle_key(key::ENTER, "", 0);
@@ -339,7 +341,7 @@ fn test_history_recorded_on_commit() {
 fn test_history_recorded_on_escape() {
     let dict = make_test_dict();
     let history = UserHistory::new();
-    let mut session = InputSession::new(&dict, None, Some(&history));
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
     session.handle_key(key::ESCAPE, "", 0);
@@ -378,7 +380,7 @@ fn test_is_romaji_input() {
 #[test]
 fn test_unrecognized_char_added_to_kana() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "ka"); // "か"
     session.handle_key(0, "1", 0); // unrecognized
@@ -390,7 +392,7 @@ fn test_unrecognized_char_added_to_kana() {
 #[test]
 fn test_z_sequence() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // "z" is a prefix in the romaji trie, "zh" → "←"
     type_string(&mut session, "zh");

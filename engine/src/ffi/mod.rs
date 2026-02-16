@@ -59,17 +59,6 @@ pub(crate) unsafe fn cptr_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
     CStr::from_ptr(ptr).to_str().ok()
 }
 
-/// Convert a nullable ConnectionMatrix pointer to an `Option<&ConnectionMatrix>`.
-pub(crate) unsafe fn conn_ref<'a>(
-    conn: *const crate::dict::connection::ConnectionMatrix,
-) -> Option<&'a crate::dict::connection::ConnectionMatrix> {
-    if conn.is_null() {
-        None
-    } else {
-        Some(&*conn)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // FFI boilerplate-reduction macros (crate-internal)
 // ---------------------------------------------------------------------------
@@ -119,22 +108,6 @@ macro_rules! ffi_guard {
     };
 }
 
-/// Define an `extern "C"` function that opens a resource from a file path.
-macro_rules! ffi_open {
-    ($fn_name:ident, $T:ty, $open_expr:expr) => {
-        #[no_mangle]
-        #[must_use]
-        pub extern "C" fn $fn_name(path: *const ::std::ffi::c_char) -> *mut $T {
-            $crate::ffi::ffi_guard!(::std::ptr::null_mut() ; str: path_str = path ,);
-            let opener: fn(&::std::path::Path) -> _ = $open_expr;
-            match opener(::std::path::Path::new(path_str)) {
-                Ok(val) => $crate::ffi::owned_new(val),
-                Err(_) => ::std::ptr::null_mut(),
-            }
-        }
-    };
-}
-
 /// Define an `extern "C"` function that closes (frees) a heap-allocated resource.
 macro_rules! ffi_close {
     ($fn_name:ident, $T:ty) => {
@@ -148,7 +121,6 @@ macro_rules! ffi_close {
 // Make macros available to sub-modules.
 pub(crate) use ffi_close;
 pub(crate) use ffi_guard;
-pub(crate) use ffi_open;
 
 // --- Shared FFI types ---
 
