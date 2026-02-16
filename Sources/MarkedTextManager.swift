@@ -17,23 +17,4 @@ extension LeximeInputController {
                              selectionRange: NSRange(location: len, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }
-
-    /// Display ghost text (grayed-out, no underline) as marked text.
-    func showGhostText(_ text: String, client: IMKTextInput) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.placeholderTextColor,
-            .markedClauseSegment: 0,
-        ]
-        let attrStr = NSAttributedString(string: text, attributes: attrs)
-        client.setMarkedText(attrStr,
-                             selectionRange: NSRange(location: 0, length: 0),
-                             replacementRange: NSRange(location: NSNotFound, length: 0))
-    }
-
-    /// Clear ghost text by removing marked text.
-    func clearGhostText(client: IMKTextInput) {
-        client.setMarkedText("",
-                             selectionRange: NSRange(location: 0, length: 0),
-                             replacementRange: NSRange(location: NSNotFound, length: 0))
-    }
 }
