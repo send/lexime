@@ -3,15 +3,12 @@ import Foundation
 func testDictFFI() {
     print("--- Dict FFI Tests ---")
 
-    // Open / close round-trip (nonexistent path returns nil)
+    // Open nonexistent path throws
     do {
-        let dict = lex_dict_open("/nonexistent/path/dict.bin")
-        assertTrue(dict == nil, "open nonexistent returns nil")
-    }
-
-    // Close null is safe (_Nullable parameter)
-    do {
-        lex_dict_close(nil)
+        let _ = try LexDictionary.open(path: "/nonexistent/path/dict.bin")
+        testsFailed += 1
+        print("FAIL (open nonexistent): expected throw, got success")
+    } catch {
         testsPassed += 1
     }
 }

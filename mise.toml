@@ -7,7 +7,7 @@
 
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
-sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock", "engine/include/engine.h"]
+sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock"]
 outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash
@@ -125,10 +125,12 @@ echo "Removed compiled dictionaries"
 
 [tasks.build]
 description = "Build Lexime.app (universal binary)"
-depends = ["engine-lib", "dict", "conn"]
+depends = ["uniffi-gen", "dict", "conn"]
 sources = [
   "Sources/*.swift",
-  "Sources/Bridging-Header.h",
+  "generated/lex_engine.swift",
+  "generated/lex_engineFFI.h",
+  "generated/lex_engineFFI.modulemap",
   "build/liblex_engine.a",
   "engine/data/lexime.dict",
   "engine/data/lexime.conn",
@@ -146,14 +148,14 @@ APP=build/Lexime.app
 MACOS=$APP/Contents/MacOS
 RES=$APP/Contents/Resources
 MACOS_MIN=13.0
-SWIFTC_FLAGS="-O -import-objc-header Sources/Bridging-Header.h -Xcc -I."
+SWIFTC_FLAGS="-O -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap"
 LINK_FLAGS="-Lbuild -llex_engine"
 
 mkdir -p "$MACOS" "$RES"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
-  Sources/*.swift -o "$MACOS/Lexime-x86_64"
+  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-x86_64"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target arm64-apple-macosx$MACOS_MIN \
-  Sources/*.swift -o "$MACOS/Lexime-arm64"
+  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-arm64"
 lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime"
 rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"
@@ -199,16 +201,17 @@ description = "Generate icon assets"
 run = "bash scripts/icon.sh"
 
 [tasks.test-swift]
-description = "Run Swift unit tests (FFI round-trip)"
-depends = ["engine-lib"]
+description = "Run Swift unit tests (UniFFI round-trip)"
+depends = ["uniffi-gen"]
 # NOTE: Test files are listed explicitly because swiftc compiles all sources
 # into one binary. If you add a new test file under Tests/, add it here too.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p build
-swiftc -import-objc-header Sources/Bridging-Header.h -Xcc -I. \
+swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -Lbuild -llex_engine \
+  generated/lex_engine.swift \
   Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift \
   -o build/test-runner && build/test-runner
 """

@@ -5,81 +5,76 @@ func testRomajiFFI() {
 
     // Lookup: exact
     do {
-        let r = lex_romaji_lookup("ka")
-        defer { lex_romaji_lookup_free(r) }
-        assertEqual(r.tag, 2, "ka tag=exact")
-        if let ptr = r.kana {
-            assertEqual(String(cString: ptr), "か", "ka → か")
-        } else {
+        let r = romajiLookup(romaji: "ka")
+        switch r {
+        case .exact(let kana):
+            assertEqual(kana, "か", "ka → か")
+        case .exactAndPrefix(let kana):
+            assertEqual(kana, "か", "ka → か (exactAndPrefix)")
+        default:
             testsFailed += 1
-            print("FAIL (ka kana): expected non-null")
+            print("FAIL (ka): expected exact, got \(r)")
         }
     }
 
     // Lookup: prefix
     do {
-        let r = lex_romaji_lookup("k")
-        defer { lex_romaji_lookup_free(r) }
-        assertEqual(r.tag, 1, "k tag=prefix")
+        let r = romajiLookup(romaji: "k")
+        switch r {
+        case .prefix:
+            testsPassed += 1
+        default:
+            testsFailed += 1
+            print("FAIL (k): expected prefix, got \(r)")
+        }
     }
 
     // Lookup: none
     do {
-        let r = lex_romaji_lookup("xyz")
-        defer { lex_romaji_lookup_free(r) }
-        assertEqual(r.tag, 0, "xyz tag=none")
+        let r = romajiLookup(romaji: "xyz")
+        switch r {
+        case .none:
+            testsPassed += 1
+        default:
+            testsFailed += 1
+            print("FAIL (xyz): expected none, got \(r)")
+        }
     }
 
     // Lookup: exactAndPrefix
     do {
-        let r = lex_romaji_lookup("chi")
-        defer { lex_romaji_lookup_free(r) }
-        // chi → ち, and is prefix for cha, chu, etc.
-        assertTrue(r.tag == 2 || r.tag == 3, "chi tag=exact or exactAndPrefix")
-        if let ptr = r.kana {
-            assertEqual(String(cString: ptr), "ち", "chi → ち")
-        } else {
+        let r = romajiLookup(romaji: "chi")
+        switch r {
+        case .exact(let kana), .exactAndPrefix(let kana):
+            assertEqual(kana, "ち", "chi → ち")
+        default:
             testsFailed += 1
-            print("FAIL (chi kana): expected non-null")
+            print("FAIL (chi): expected exact or exactAndPrefix, got \(r)")
         }
     }
 
     // Convert: basic
     do {
-        let r = lex_romaji_convert("", "ka", 0)
-        defer { lex_romaji_convert_free(r) }
-        if let ptr = r.composed_kana {
-            assertEqual(String(cString: ptr), "か", "convert ka → か")
-        }
-        if let ptr = r.pending_romaji {
-            assertEqual(String(cString: ptr), "", "convert ka pending empty")
-        }
+        let r = romajiConvert(kana: "", pending: "ka", force: false)
+        assertEqual(r.composedKana, "か", "convert ka → か")
+        assertEqual(r.pendingRomaji, "", "convert ka pending empty")
     }
 
     // Convert: sokuon
     do {
-        let r = lex_romaji_convert("", "kka", 0)
-        defer { lex_romaji_convert_free(r) }
-        if let ptr = r.composed_kana {
-            assertEqual(String(cString: ptr), "っか", "convert kka → っか")
-        }
+        let r = romajiConvert(kana: "", pending: "kka", force: false)
+        assertEqual(r.composedKana, "っか", "convert kka → っか")
     }
 
     // Convert: force n → ん
     do {
-        let r = lex_romaji_convert("", "n", 1)
-        defer { lex_romaji_convert_free(r) }
-        if let ptr = r.composed_kana {
-            assertEqual(String(cString: ptr), "ん", "convert n force → ん")
-        }
+        let r = romajiConvert(kana: "", pending: "n", force: true)
+        assertEqual(r.composedKana, "ん", "convert n force → ん")
     }
 
     // Convert: collapse latin+kana
     do {
-        let r = lex_romaji_convert("kあ", "", 0)
-        defer { lex_romaji_convert_free(r) }
-        if let ptr = r.composed_kana {
-            assertEqual(String(cString: ptr), "か", "convert kあ → か (collapse)")
-        }
+        let r = romajiConvert(kana: "kあ", pending: "", force: false)
+        assertEqual(r.composedKana, "か", "convert kあ → か (collapse)")
     }
 }
