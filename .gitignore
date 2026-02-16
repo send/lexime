@@ -15,6 +15,9 @@ xcuserdata/
 target/
 engine/target/
 
+# UniFFI generated bindings
+generated/
+
 # Dictionary data (downloaded / compiled)
 engine/data/*
 !engine/data/snapshot-readings.txt

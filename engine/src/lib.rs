@@ -1,3 +1,4 @@
+pub mod api;
 pub mod candidates;
 pub mod converter;
 pub mod dict;
@@ -14,3 +15,5 @@ pub mod unicode;
 pub mod user_history;
 
 pub use ffi::*;
+
+uniffi::setup_scaffolding!();

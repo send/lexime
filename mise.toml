@@ -23,6 +23,25 @@ lipo -create \
   -output build/liblex_engine.a
 """
 
+[tasks.uniffi-gen]
+description = "Generate UniFFI Swift bindings from cdylib"
+depends = ["engine-lib"]
+sources = ["engine/src/api/**/*.rs", "engine/Cargo.toml"]
+outputs = ["generated/lex_engine.swift", "generated/lex_engineFFI.h", "generated/lex_engineFFI.modulemap"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --features trace,neural,uniffi-cli
+cargo run --release --features uniffi-cli --bin uniffi-bindgen -- generate \
+  --library target/release/liblex_engine.dylib \
+  --language swift \
+  --out-dir ../generated
+cd ..
+echo "Generated Swift bindings in generated/"
+ls -la generated/
+"""
+
 [tasks.fetch-dict-sudachi]
 description = "Download SudachiDict dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
