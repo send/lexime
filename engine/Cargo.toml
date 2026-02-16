@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [lib]
-crate-type = ["staticlib", "lib"]
+crate-type = ["lib", "staticlib", "cdylib"]
 
 [[bin]]
 name = "dictool"
@@ -17,13 +17,20 @@ name = "lextool"
 path = "src/bin/lextool.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["uniffi-cli"]
+
 [features]
 default = []
 cli = ["dep:clap"]
+uniffi-cli = ["uniffi/cli"]
 trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
 neural = ["candle-core", "candle-nn", "dep:anyhow"]
 
 [dependencies]
+uniffi = "0.29"
 tracing = { version = "0.1", features = ["max_level_off"] }
 lexime-trie = "0.1"
 serde = { version = "1", features = ["derive"] }

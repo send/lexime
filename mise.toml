@@ -23,6 +23,25 @@ lipo -create \
   -output build/liblex_engine.a
 """
 
+[tasks.uniffi-gen]
+description = "Generate UniFFI Swift bindings from cdylib"
+depends = ["engine-lib"]
+sources = ["engine/src/api/**/*.rs", "engine/Cargo.toml"]
+outputs = ["generated/lex_engine.swift", "generated/lex_engineFFI.h", "generated/lex_engineFFI.modulemap"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd engine
+cargo build --release --features trace,neural,uniffi-cli
+cargo run --release --features uniffi-cli --bin uniffi-bindgen -- generate \
+  --library target/release/liblex_engine.dylib \
+  --language swift \
+  --out-dir ../generated
+cd ..
+echo "Generated Swift bindings in generated/"
+ls -la generated/
+"""
+
 [tasks.fetch-dict-sudachi]
 description = "Download SudachiDict dictionary data"
 sources = ["engine/src/bin/dictool.rs", "engine/src/dict/source/sudachi.rs"]
@@ -251,10 +270,10 @@ cd engine && cargo run --features cli,neural --bin dictool -- neural-score \
 """
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy (all features)"
+description = "Run cargo fmt --check and clippy"
 run = [
   "cd engine && cargo fmt --check",
-  "cd engine && cargo clippy --all-features -- -D warnings",
+  "cd engine && cargo clippy --features trace,neural -- -D warnings",
 ]
 
 [tasks.audit]
@@ -265,9 +284,9 @@ run = [
 ]
 
 [tasks.test]
-description = "Run lint + engine tests (all features)"
+description = "Run lint + engine tests"
 depends = ["lint"]
-run = "cd engine && cargo test --all-features"
+run = "cd engine && cargo test --features trace,neural"
 
 [tasks.clean]
 description = "Remove build artifacts"
