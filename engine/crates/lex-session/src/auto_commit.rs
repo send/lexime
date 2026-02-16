@@ -1,4 +1,4 @@
-use crate::converter::ConvertedSegment;
+use lex_core::converter::ConvertedSegment;
 
 use super::types::{AsyncCandidateRequest, CandidateAction, KeyResponse, MarkedText, Submode};
 use super::InputSession;

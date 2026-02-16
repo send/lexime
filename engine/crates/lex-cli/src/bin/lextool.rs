@@ -7,10 +7,10 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use lex_engine::converter::{convert_nbest, convert_nbest_with_history};
-use lex_engine::dict::connection::ConnectionMatrix;
-use lex_engine::dict::TrieDictionary;
-use lex_engine::user_history::UserHistory;
+use lex_core::converter::{convert_nbest, convert_nbest_with_history};
+use lex_core::dict::connection::ConnectionMatrix;
+use lex_core::dict::TrieDictionary;
+use lex_core::user_history::UserHistory;
 
 #[derive(Parser)]
 #[command(name = "lextool", about = "Lexime conversion diagnostics")]
@@ -175,7 +175,7 @@ fn main() {
             json,
             no_lattice,
         } => {
-            use lex_engine::converter::explain;
+            use lex_core::converter::explain;
 
             let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history);
             // Over-fetch when filtering by surface

@@ -1,8 +1,8 @@
 use std::sync::{Arc, RwLock};
 
 use super::*;
-use crate::session::types::{cyclic_index, is_romaji_input, CandidateAction, FLAG_HAS_MODIFIER};
-use crate::user_history::UserHistory;
+use crate::types::{cyclic_index, is_romaji_input, CandidateAction, FLAG_HAS_MODIFIER};
+use lex_core::user_history::UserHistory;
 
 // --- Basic romaji input ---
 

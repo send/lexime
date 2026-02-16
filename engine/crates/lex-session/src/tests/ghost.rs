@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::ConversionMode;
+use crate::ConversionMode;
 
 #[test]
 fn test_ghosttext_tab_accepts_ghost() {

@@ -1,8 +1,10 @@
-use crate::candidates::{generate_candidates, generate_prediction_candidates, CandidateResponse};
-use crate::converter::ConvertedSegment;
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
-use crate::user_history::UserHistory;
+use lex_core::candidates::{
+    generate_candidates, generate_prediction_candidates, CandidateResponse,
+};
+use lex_core::converter::ConvertedSegment;
+use lex_core::dict::connection::ConnectionMatrix;
+use lex_core::dict::TrieDictionary;
+use lex_core::user_history::UserHistory;
 
 // macOS virtual key codes
 pub(super) mod key {

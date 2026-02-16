@@ -6,7 +6,7 @@ mod submode;
 
 use std::sync::Arc;
 
-use crate::dict::{DictEntry, TrieDictionary};
+use lex_core::dict::{DictEntry, TrieDictionary};
 
 use super::types::key;
 use super::InputSession;

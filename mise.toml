@@ -1,6 +1,6 @@
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
-sources = ["engine/src/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock"]
+sources = ["engine/src/**/*.rs", "engine/crates/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock"]
 outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash
@@ -269,8 +269,7 @@ cd engine && cargo run -p lex-cli --features neural --bin dictool -- neural-scor
 description = "Run cargo fmt --check and clippy"
 run = [
   "cd engine && cargo fmt --all --check",
-  "cd engine && cargo clippy -p lex_engine --features trace,neural -- -D warnings",
-  "cd engine && cargo clippy -p lex-cli -- -D warnings",
+  "cd engine && cargo clippy --workspace --all-features -- -D warnings",
 ]
 
 [tasks.audit]
@@ -281,12 +280,9 @@ run = [
 ]
 
 [tasks.test]
-description = "Run lint + engine tests"
+description = "Run lint + workspace tests"
 depends = ["lint"]
-run = [
-  "cd engine && cargo test -p lex_engine --features trace,neural",
-  "cd engine && cargo test -p lex-cli",
-]
+run = "cd engine && cargo test --workspace --all-features"
 
 [tasks.clean]
 description = "Remove build artifacts"

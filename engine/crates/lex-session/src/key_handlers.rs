@@ -1,6 +1,6 @@
 use tracing::debug_span;
 
-use crate::romaji::{RomajiTrie, TrieLookupResult};
+use lex_core::romaji::{RomajiTrie, TrieLookupResult};
 
 use super::types::{
     is_romaji_input, key, CandidateAction, Composition, ConversionMode, KeyResponse, SessionState,

@@ -1,13 +1,17 @@
-pub mod api;
-pub mod candidates;
-pub mod converter;
-pub mod dict;
+// Re-export lex-core: api/ の use crate::xxx パスを変更不要にする
+pub use lex_core::candidates;
+pub use lex_core::converter;
+pub use lex_core::dict;
 #[cfg(feature = "neural")]
-pub mod neural;
-pub mod romaji;
-pub mod session;
+pub use lex_core::neural;
+pub use lex_core::romaji;
+pub use lex_core::unicode;
+pub use lex_core::user_history;
+
+// Re-export lex-session: api/ の use crate::session::* を変更不要にする
+pub use lex_session as session;
+
+pub mod api;
 pub mod trace_init;
-pub mod unicode;
-pub mod user_history;
 
 uniffi::setup_scaffolding!();

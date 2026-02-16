@@ -734,17 +734,16 @@ name = "lex-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "lex_engine",
+ "lex-core",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "unicode-width",
  "ureq",
  "zip",
 ]
 
 [[package]]
-name = "lex_engine"
+name = "lex-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -754,12 +753,29 @@ dependencies = [
  "lexime-trie",
  "memmap2",
  "serde",
- "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
+name = "lex-session"
+version = "0.1.0"
+dependencies = [
+ "lex-core",
+ "tracing",
+]
+
+[[package]]
+name = "lex_engine"
+version = "0.1.0"
+dependencies = [
+ "lex-core",
+ "lex-session",
  "thiserror 2.0.18",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "unicode-width",
  "uniffi",
 ]
 
