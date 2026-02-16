@@ -61,6 +61,7 @@ class LeximeInputController: IMKInputController {
         }
 
         guard event.type == .keyDown else {
+            // Consume modifier-only events while composing
             return isComposing
         }
 
@@ -173,6 +174,8 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - History
 
+    /// Persist history to disk asynchronously.
+    /// History records are automatically recorded inside handle_key by the Rust API.
     private func saveHistory() {
         guard let history = AppContext.shared.history else { return }
         let path = AppContext.shared.historyPath
@@ -245,6 +248,11 @@ class LeximeInputController: IMKInputController {
         super.deactivateServer(sender)
     }
 
+    // Block IMKit's built-in mode switching during composition.
+    // IMKit calls setValue when Caps Lock or other mode keys are pressed.
+    // Passing these through during composition can trigger unwanted transformations
+    // (e.g. Shift-triggered katakana). We intentionally drop all mode changes
+    // while composing and let the engine handle mode via its own key handlers.
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         if isComposing { return }
         super.setValue(value, forTag: tag, client: sender)

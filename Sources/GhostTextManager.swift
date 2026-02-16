@@ -43,11 +43,6 @@ class GhostTextManager {
         }
     }
 
-    func cancel() {
-        debounceItem?.cancel()
-        debounceItem = nil
-    }
-
     func deactivate() {
         debounceItem?.cancel()
         debounceItem = nil

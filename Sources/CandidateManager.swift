@@ -76,8 +76,12 @@ class CandidateManager {
                        modeName: modeName)
             return
         }
+        // Reset early: if the async block below is cancelled (generation mismatch),
+        // the panel stays hidden, so the next show() takes the full path anyway.
         needsReposition = false
 
+        // Capture rect synchronously (client state is correct here),
+        // then defer panel show to next run loop (workaround for Chrome etc.)
         let rect = cursorRect(client: client, currentDisplay: currentDisplay)
         let gen = generation
         DispatchQueue.main.async { [weak self] in
