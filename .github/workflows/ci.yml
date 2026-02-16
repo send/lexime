@@ -17,6 +17,7 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       swift: ${{ steps.filter.outputs.swift }}
     steps:
+      - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
