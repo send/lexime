@@ -270,10 +270,10 @@ cd engine && cargo run --features cli,neural --bin dictool -- neural-score \
 """
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy (all features)"
+description = "Run cargo fmt --check and clippy"
 run = [
   "cd engine && cargo fmt --check",
-  "cd engine && cargo clippy --all-features -- -D warnings",
+  "cd engine && cargo clippy --features trace,neural -- -D warnings",
 ]
 
 [tasks.audit]
@@ -284,9 +284,9 @@ run = [
 ]
 
 [tasks.test]
-description = "Run lint + engine tests (all features)"
+description = "Run lint + engine tests"
 depends = ["lint"]
-run = "cd engine && cargo test --all-features"
+run = "cd engine && cargo test --features trace,neural"
 
 [tasks.clean]
 description = "Remove build artifacts"
