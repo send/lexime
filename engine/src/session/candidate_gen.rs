@@ -1,5 +1,5 @@
 use crate::candidates::CandidateResponse;
-use crate::converter::{convert, ConvertedSegment};
+use crate::converter::{convert, convert_with_history, ConvertedSegment};
 
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, Submode, MAX_CANDIDATES};
 use super::InputSession;
@@ -43,7 +43,13 @@ impl InputSession {
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
             // Quick sync 1-best for interim display (~1-2ms)
-            let segments = convert(&*self.dict, self.conn.as_deref(), &reading);
+            let segments = {
+                let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
+                match h_guard.as_deref() {
+                    Some(h) => convert_with_history(&*self.dict, self.conn.as_deref(), h, &reading),
+                    None => convert(&*self.dict, self.conn.as_deref(), &reading),
+                }
+            };
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();
             c.candidates.surfaces = vec![surface];
