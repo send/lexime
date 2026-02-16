@@ -1,10 +1,9 @@
 use std::ffi::{c_char, CString};
 use std::ptr;
 
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
-
 use super::candidates::LexCandidateResponse;
+use super::connection::LexConnWrapper;
+use super::dict::LexDictWrapper;
 use super::history::LexUserHistoryWrapper;
 
 #[cfg(feature = "neural")]
@@ -13,7 +12,7 @@ mod inner {
     use std::sync::Mutex;
 
     use crate::ffi::candidates::pack_candidate_response;
-    use crate::ffi::{conn_ref, cptr_to_str, ffi_close, ffi_guard, owned_new};
+    use crate::ffi::{cptr_to_str, ffi_close, ffi_guard, owned_new};
     use crate::user_history::UserHistory;
 
     pub struct LexNeuralScorer {
@@ -98,8 +97,8 @@ mod inner {
     #[no_mangle]
     pub extern "C" fn lex_generate_neural_candidates(
         scorer: *mut LexNeuralScorer,
-        dict: *const TrieDictionary,
-        conn: *const ConnectionMatrix,
+        dict: *const LexDictWrapper,
+        conn: *const LexConnWrapper,
         history: *const LexUserHistoryWrapper,
         context: *const c_char,
         reading: *const c_char,
@@ -110,8 +109,12 @@ mod inner {
         }
         let reading_str = unsafe { cptr_to_str(reading) }.unwrap_or("");
         let context_str = unsafe { cptr_to_str(context) }.unwrap_or("");
-        let dict_ref = unsafe { &*dict };
-        let conn_opt = unsafe { conn_ref(conn) };
+        let dict_w = unsafe { &*dict };
+        let conn_opt = if conn.is_null() {
+            None
+        } else {
+            Some(unsafe { &*conn }.inner.as_ref())
+        };
         let scorer_wrapper = unsafe { &*scorer };
         let Ok(mut guard) = scorer_wrapper.inner.lock() else {
             return LexCandidateResponse::empty();
@@ -126,7 +129,7 @@ mod inner {
 
         let resp = crate::candidates::generate_neural_candidates(
             &mut guard,
-            dict_ref,
+            &dict_w.inner,
             conn_opt,
             hist_ref,
             context_str,
@@ -181,8 +184,8 @@ mod inner {
     #[no_mangle]
     pub extern "C" fn lex_generate_neural_candidates(
         _scorer: *mut LexNeuralScorer,
-        _dict: *const TrieDictionary,
-        _conn: *const ConnectionMatrix,
+        _dict: *const LexDictWrapper,
+        _conn: *const LexConnWrapper,
         _history: *const LexUserHistoryWrapper,
         _context: *const c_char,
         _reading: *const c_char,

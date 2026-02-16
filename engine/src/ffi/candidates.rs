@@ -1,14 +1,14 @@
 use std::ffi::{c_char, CString};
 use std::ptr;
 
-use super::{conn_ref, ffi_guard, owned_drop};
+use super::{ffi_guard, owned_drop};
 use crate::candidates::CandidateResponse;
 use crate::candidates::{generate_candidates, generate_prediction_candidates};
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
 use crate::user_history::UserHistory;
 
+use super::connection::LexConnWrapper;
 use super::convert::{pack_conversion_result, LexConversionResult};
+use super::dict::LexDictWrapper;
 use super::history::LexUserHistoryWrapper;
 
 // --- Unified Candidate Generation FFI ---
@@ -90,17 +90,21 @@ pub(crate) fn pack_candidate_response(resp: CandidateResponse) -> LexCandidateRe
 
 #[no_mangle]
 pub extern "C" fn lex_generate_candidates(
-    dict: *const TrieDictionary,
-    conn: *const ConnectionMatrix,
+    dict: *const LexDictWrapper,
+    conn: *const LexConnWrapper,
     history: *const LexUserHistoryWrapper,
     reading: *const c_char,
     max_results: u32,
 ) -> LexCandidateResponse {
     ffi_guard!(LexCandidateResponse::empty();
-        ref: dict        = dict,
+        ref: dict_w      = dict,
         str: reading_str = reading,
     );
-    let conn = unsafe { conn_ref(conn) };
+    let conn_ref = if conn.is_null() {
+        None
+    } else {
+        Some(unsafe { &*conn }.inner.as_ref())
+    };
     let hist: Option<std::sync::RwLockReadGuard<'_, UserHistory>> = if history.is_null() {
         None
     } else {
@@ -109,23 +113,33 @@ pub extern "C" fn lex_generate_candidates(
     };
     let hist_ref = hist.as_deref();
 
-    let resp = generate_candidates(dict, conn, hist_ref, reading_str, max_results as usize);
+    let resp = generate_candidates(
+        &dict_w.inner,
+        conn_ref,
+        hist_ref,
+        reading_str,
+        max_results as usize,
+    );
     pack_candidate_response(resp)
 }
 
 #[no_mangle]
 pub extern "C" fn lex_generate_prediction_candidates(
-    dict: *const TrieDictionary,
-    conn: *const ConnectionMatrix,
+    dict: *const LexDictWrapper,
+    conn: *const LexConnWrapper,
     history: *const LexUserHistoryWrapper,
     reading: *const c_char,
     max_results: u32,
 ) -> LexCandidateResponse {
     ffi_guard!(LexCandidateResponse::empty();
-        ref: dict        = dict,
+        ref: dict_w      = dict,
         str: reading_str = reading,
     );
-    let conn = unsafe { conn_ref(conn) };
+    let conn_ref = if conn.is_null() {
+        None
+    } else {
+        Some(unsafe { &*conn }.inner.as_ref())
+    };
     let hist: Option<std::sync::RwLockReadGuard<'_, UserHistory>> = if history.is_null() {
         None
     } else {
@@ -134,8 +148,13 @@ pub extern "C" fn lex_generate_prediction_candidates(
     };
     let hist_ref = hist.as_deref();
 
-    let resp =
-        generate_prediction_candidates(dict, conn, hist_ref, reading_str, max_results as usize);
+    let resp = generate_prediction_candidates(
+        &dict_w.inner,
+        conn_ref,
+        hist_ref,
+        reading_str,
+        max_results as usize,
+    );
     pack_candidate_response(resp)
 }
 

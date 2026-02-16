@@ -4,7 +4,7 @@ use super::types::{
 };
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn commit_composed(&mut self) -> KeyResponse {
         let mut resp = KeyResponse::consumed();
         let c = self.comp();

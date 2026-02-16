@@ -1,7 +1,7 @@
 use super::types::{AsyncGhostRequest, ConversionMode, KeyResponse};
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     /// Accept the current ghost text (Tab in idle with ghost visible).
     pub(super) fn accept_ghost_text(&mut self) -> KeyResponse {
         let text = self.ghost_text.take().unwrap();

@@ -11,7 +11,7 @@ void lex_trace_init(const char * _Nonnull log_dir);
 
 /* Dictionary API */
 
-typedef struct LexDict LexDict;              /* Rust: TrieDictionary */
+typedef struct LexDict LexDict;              /* Rust: LexDictWrapper (Arc<TrieDictionary>) */
 
 typedef struct {
     const char * _Nonnull reading;
@@ -32,7 +32,7 @@ void lex_candidates_free(LexCandidateList list);
 
 /* Connection matrix API */
 
-typedef struct LexConnectionMatrix LexConnectionMatrix;  /* Rust: ConnectionMatrix */
+typedef struct LexConnectionMatrix LexConnectionMatrix;  /* Rust: LexConnWrapper (Arc<ConnectionMatrix>) */
 
 LexConnectionMatrix * _Nullable lex_conn_open(const char * _Nonnull path);
 void lex_conn_close(LexConnectionMatrix * _Nullable conn);
@@ -52,7 +52,7 @@ typedef struct {
 
 /* User History API */
 
-typedef struct LexUserHistory LexUserHistory;  /* Rust: LexUserHistoryWrapper (RwLock<UserHistory>) */
+typedef struct LexUserHistory LexUserHistory;  /* Rust: LexUserHistoryWrapper (Arc<RwLock<UserHistory>>) */
 
 LexUserHistory * _Nullable lex_history_open(const char * _Nonnull path);
 void lex_history_close(LexUserHistory * _Nullable history);

@@ -1,7 +1,7 @@
 use super::types::{CandidateAction, KeyResponse, MarkedText, Submode};
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn toggle_submode(&mut self) -> KeyResponse {
         let current_submode = self.submode();
         let new_submode = match current_submode {

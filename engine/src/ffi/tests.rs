@@ -1,10 +1,9 @@
 use super::*;
-use crate::dict;
-use crate::dict::TrieDictionary;
+use crate::dict::{self, TrieDictionary};
 use std::ffi::{CStr, CString};
-use std::ptr;
+use std::sync::Arc;
 
-fn make_test_dict() -> *mut TrieDictionary {
+fn make_test_dict() -> *mut LexDictWrapper {
     let entries = vec![
         (
             "かんじ".to_string(),
@@ -34,7 +33,9 @@ fn make_test_dict() -> *mut TrieDictionary {
         ),
     ];
     let dict = TrieDictionary::from_entries(entries);
-    owned_new(dict)
+    owned_new(LexDictWrapper {
+        inner: Arc::new(dict),
+    })
 }
 
 #[test]
@@ -79,12 +80,12 @@ fn test_ffi_lookup_not_found() {
 #[test]
 fn test_ffi_null_safety() {
     let reading = CString::new("かんじ").unwrap();
-    let list = lex_dict_lookup(ptr::null(), reading.as_ptr());
+    let list = lex_dict_lookup(std::ptr::null(), reading.as_ptr());
     assert_eq!(list.len, 0);
     lex_candidates_free(list);
 
     let dict = make_test_dict();
-    let list = lex_dict_lookup(dict, ptr::null());
+    let list = lex_dict_lookup(dict, std::ptr::null());
     assert_eq!(list.len, 0);
     lex_candidates_free(list);
 
@@ -136,14 +137,14 @@ fn test_ffi_open_nonexistent() {
 
 #[test]
 fn test_ffi_conn_null_safety() {
-    let conn = lex_conn_open(ptr::null());
+    let conn = lex_conn_open(std::ptr::null());
     assert!(conn.is_null());
 
     let path = CString::new("/nonexistent/path/conn.bin").unwrap();
     let conn = lex_conn_open(path.as_ptr());
     assert!(conn.is_null());
 
-    lex_conn_close(ptr::null_mut());
+    lex_conn_close(std::ptr::null_mut());
 }
 
 #[test]
@@ -208,7 +209,7 @@ fn test_ffi_romaji_lookup_exact_and_prefix() {
 
 #[test]
 fn test_ffi_romaji_lookup_null_safety() {
-    let result = lex_romaji_lookup(ptr::null());
+    let result = lex_romaji_lookup(std::ptr::null());
     assert_eq!(result.tag, 0);
     assert!(result.kana.is_null());
     lex_romaji_lookup_free(result);
@@ -261,12 +262,12 @@ fn test_ffi_romaji_convert_collapse() {
 #[test]
 fn test_ffi_romaji_convert_null_safety() {
     let pending = CString::new("ka").unwrap();
-    let result = lex_romaji_convert(ptr::null(), pending.as_ptr(), 0);
+    let result = lex_romaji_convert(std::ptr::null(), pending.as_ptr(), 0);
     assert!(result.composed_kana.is_null());
     lex_romaji_convert_free(result);
 
     let kana = CString::new("あ").unwrap();
-    let result = lex_romaji_convert(kana.as_ptr(), ptr::null(), 0);
+    let result = lex_romaji_convert(kana.as_ptr(), std::ptr::null(), 0);
     assert!(result.composed_kana.is_null());
     lex_romaji_convert_free(result);
 }
@@ -278,7 +279,13 @@ fn test_ffi_generate_candidates_roundtrip() {
     let dict = make_test_dict();
     let reading = CString::new("かんじ").unwrap();
 
-    let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), reading.as_ptr(), 10);
+    let resp = lex_generate_candidates(
+        dict,
+        std::ptr::null(),
+        std::ptr::null(),
+        reading.as_ptr(),
+        10,
+    );
     assert!(
         resp.surfaces_len >= 1,
         "should return at least one candidate"
@@ -305,12 +312,24 @@ fn test_ffi_generate_candidates_roundtrip() {
 fn test_ffi_generate_candidates_null_safety() {
     let reading = CString::new("かんじ").unwrap();
 
-    let resp = lex_generate_candidates(ptr::null(), ptr::null(), ptr::null(), reading.as_ptr(), 10);
+    let resp = lex_generate_candidates(
+        std::ptr::null(),
+        std::ptr::null(),
+        std::ptr::null(),
+        reading.as_ptr(),
+        10,
+    );
     assert_eq!(resp.surfaces_len, 0);
     lex_candidate_response_free(resp);
 
     let dict = make_test_dict();
-    let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), ptr::null(), 10);
+    let resp = lex_generate_candidates(
+        dict,
+        std::ptr::null(),
+        std::ptr::null(),
+        std::ptr::null(),
+        10,
+    );
     assert_eq!(resp.surfaces_len, 0);
     lex_candidate_response_free(resp);
 
@@ -322,7 +341,13 @@ fn test_ffi_generate_candidates_punctuation() {
     let dict = make_test_dict();
     let reading = CString::new("。").unwrap();
 
-    let resp = lex_generate_candidates(dict, ptr::null(), ptr::null(), reading.as_ptr(), 10);
+    let resp = lex_generate_candidates(
+        dict,
+        std::ptr::null(),
+        std::ptr::null(),
+        reading.as_ptr(),
+        10,
+    );
     assert!(
         resp.surfaces_len >= 1,
         "punctuation should return candidates"
@@ -343,7 +368,7 @@ fn test_ffi_generate_candidates_punctuation() {
 #[test]
 fn test_ffi_session_roundtrip() {
     let dict = make_test_dict();
-    let session = lex_session_new(dict, ptr::null(), ptr::null());
+    let session = lex_session_new(dict, std::ptr::null(), std::ptr::null());
     assert!(!session.is_null());
 
     let k = CString::new("k").unwrap();
@@ -371,17 +396,17 @@ fn test_ffi_session_roundtrip() {
 
 #[test]
 fn test_ffi_session_null_safety() {
-    let resp = lex_session_handle_key(ptr::null_mut(), 0, ptr::null(), 0);
+    let resp = lex_session_handle_key(std::ptr::null_mut(), 0, std::ptr::null(), 0);
     assert_eq!(resp.consumed, 0);
     lex_key_response_free(resp);
 
-    let resp = lex_session_commit(ptr::null_mut());
+    let resp = lex_session_commit(std::ptr::null_mut());
     assert_eq!(resp.consumed, 0);
     lex_key_response_free(resp);
 
-    assert_eq!(lex_session_is_composing(ptr::null()), 0);
+    assert_eq!(lex_session_is_composing(std::ptr::null()), 0);
 
-    let session = lex_session_new(ptr::null(), ptr::null(), ptr::null());
+    let session = lex_session_new(std::ptr::null(), std::ptr::null(), std::ptr::null());
     assert!(session.is_null());
 }
 
@@ -396,7 +421,7 @@ fn test_ffi_session_with_history() {
     let history = lex_history_open(path_cstr.as_ptr());
     assert!(!history.is_null());
 
-    let session = lex_session_new(dict, ptr::null(), history);
+    let session = lex_session_new(dict, std::ptr::null(), history);
     assert!(!session.is_null());
 
     for ch in "kyou".chars() {
@@ -423,7 +448,7 @@ fn test_ffi_session_with_history() {
 #[test]
 fn test_ffi_session_programmer_mode() {
     let dict = make_test_dict();
-    let session = lex_session_new(dict, ptr::null(), ptr::null());
+    let session = lex_session_new(dict, std::ptr::null(), std::ptr::null());
     lex_session_set_programmer_mode(session, 1);
 
     let yen = CString::new("¥").unwrap();

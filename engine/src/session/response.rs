@@ -1,7 +1,7 @@
 use super::types::{CandidateAction, KeyResponse, MarkedText, Submode};
 use super::InputSession;
 
-impl InputSession<'_> {
+impl InputSession {
     pub(super) fn make_marked_text_response(&mut self) -> KeyResponse {
         let c = self.comp();
         let display = c.display();

@@ -4,7 +4,7 @@ use crate::session::types::{CandidateAction, Submode};
 #[test]
 fn test_tab_toggles_submode() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     assert_eq!(session.submode(), Submode::Japanese);
     session.handle_key(key::TAB, "", 0);
@@ -16,7 +16,7 @@ fn test_tab_toggles_submode() {
 #[test]
 fn test_english_submode_direct_input() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     session.handle_key(key::TAB, "", 0); // switch to English
     let resp = session.handle_key(0, "h", 0);
@@ -33,7 +33,7 @@ fn test_english_submode_direct_input() {
 #[test]
 fn test_english_mode_space_literal() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     session.handle_key(key::TAB, "", 0); // → English
     type_string(&mut session, "hi");
@@ -46,7 +46,7 @@ fn test_english_mode_space_literal() {
 #[test]
 fn test_programmer_mode_boundary_space() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_programmer_mode(true);
 
     // Type Japanese, toggle to English
@@ -70,7 +70,7 @@ fn test_programmer_mode_boundary_space() {
 #[test]
 fn test_toggle_submode_preserves_conversion() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Type "kyou" → candidates include "今日" (Viterbi best)
     type_string(&mut session, "kyou");
@@ -101,7 +101,7 @@ fn test_toggle_submode_preserves_conversion() {
 #[test]
 fn test_mixed_mode_commit() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Type "kyou" → "今日", then Tab to English, type "test", then Enter
     type_string(&mut session, "kyou");
@@ -122,7 +122,7 @@ fn test_mixed_mode_commit() {
 #[test]
 fn test_mixed_mode_display() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Type Japanese → English → Japanese
     type_string(&mut session, "kyou");
@@ -149,7 +149,7 @@ fn test_mixed_mode_display() {
 #[test]
 fn test_mixed_mode_backspace_into_prefix() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Type Japanese, toggle to English
     type_string(&mut session, "kyou");

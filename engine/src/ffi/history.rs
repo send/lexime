@@ -1,7 +1,7 @@
 use std::ffi::c_char;
 use std::path::Path;
 use std::ptr;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use super::{ffi_close, ffi_guard, owned_new};
 use crate::user_history::UserHistory;
@@ -9,7 +9,7 @@ use crate::user_history::UserHistory;
 // --- User History FFI ---
 
 pub struct LexUserHistoryWrapper {
-    pub(crate) inner: RwLock<UserHistory>,
+    pub(crate) inner: Arc<RwLock<UserHistory>>,
 }
 
 #[no_mangle]
@@ -18,7 +18,7 @@ pub extern "C" fn lex_history_open(path: *const c_char) -> *mut LexUserHistoryWr
 
     match UserHistory::open(Path::new(path_str)) {
         Ok(history) => owned_new(LexUserHistoryWrapper {
-            inner: RwLock::new(history),
+            inner: Arc::new(RwLock::new(history)),
         }),
         Err(_) => ptr::null_mut(),
     }

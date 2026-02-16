@@ -5,7 +5,7 @@ use crate::session::ConversionMode;
 #[test]
 fn test_candidates_generated() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
@@ -17,7 +17,7 @@ fn test_candidates_generated() {
 #[test]
 fn test_predictive_mode_generates_candidates() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
 
     type_string(&mut session, "kyou");
@@ -36,7 +36,7 @@ fn test_predictive_mode_generates_candidates() {
 #[test]
 fn test_predictive_mode_tab_commits() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
 
     type_string(&mut session, "kyou");
@@ -52,7 +52,7 @@ fn test_predictive_mode_tab_commits() {
 #[test]
 fn test_predictive_mode_space_cycles() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
 
     type_string(&mut session, "kyou");
@@ -68,7 +68,7 @@ fn test_predictive_mode_space_cycles() {
 #[test]
 fn test_predictive_mode_deferred_dispatch() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
     session.set_defer_candidates(true);
 
@@ -87,7 +87,7 @@ fn test_predictive_mode_deferred_dispatch() {
 #[test]
 fn test_standard_mode_deferred_dispatch() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Standard);
     session.set_defer_candidates(true);
 
@@ -102,7 +102,7 @@ fn test_standard_mode_deferred_dispatch() {
 #[test]
 fn test_conversion_mode_switch() {
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
 
     // Default is Standard
     assert_eq!(session.conversion_mode, ConversionMode::Standard);
@@ -137,7 +137,7 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
     use crate::candidates::generate_candidates;
 
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
 
     // Helper: complete one async candidate cycle.
@@ -208,7 +208,7 @@ fn test_predictive_mode_no_auto_commit() {
     use crate::candidates::generate_candidates;
 
     let dict = make_test_dict();
-    let mut session = InputSession::new(&dict, None, None);
+    let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
     session.set_defer_candidates(true);
 

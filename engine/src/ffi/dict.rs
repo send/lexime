@@ -1,10 +1,16 @@
 use std::ffi::{c_char, CString};
 use std::ptr;
+use std::sync::Arc;
 
-use super::{ffi_close, ffi_guard, ffi_open, owned_drop, OwnedVec};
+use super::{ffi_close, ffi_guard, owned_drop, owned_new, OwnedVec};
 use crate::dict::{self, Dictionary, TrieDictionary};
 
 // --- Dictionary FFI ---
+
+/// FFI wrapper that holds a dictionary in an `Arc` for shared ownership with sessions.
+pub struct LexDictWrapper {
+    pub(crate) inner: Arc<TrieDictionary>,
+}
 
 #[repr(C)]
 pub struct LexCandidate {
@@ -71,20 +77,31 @@ impl LexCandidateList {
     }
 }
 
-ffi_open!(lex_dict_open, TrieDictionary, |p| TrieDictionary::open(p));
-ffi_close!(lex_dict_close, TrieDictionary);
+#[no_mangle]
+#[must_use]
+pub extern "C" fn lex_dict_open(path: *const c_char) -> *mut LexDictWrapper {
+    ffi_guard!(ptr::null_mut() ; str: path_str = path ,);
+    match TrieDictionary::open(std::path::Path::new(path_str)) {
+        Ok(dict) => owned_new(LexDictWrapper {
+            inner: Arc::new(dict),
+        }),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+ffi_close!(lex_dict_close, LexDictWrapper);
 
 #[no_mangle]
 pub extern "C" fn lex_dict_lookup(
-    dict: *const TrieDictionary,
+    dict: *const LexDictWrapper,
     reading: *const c_char,
 ) -> LexCandidateList {
     ffi_guard!(LexCandidateList::empty();
-        ref: dict        = dict,
+        ref: wrapper     = dict,
         str: reading_str = reading,
     );
 
-    match dict.lookup(reading_str) {
+    match wrapper.inner.lookup(reading_str) {
         Some(entries) => LexCandidateList::from_entries(reading_str, entries),
         None => LexCandidateList::empty(),
     }

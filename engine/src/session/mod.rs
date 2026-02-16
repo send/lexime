@@ -17,6 +17,8 @@ mod submode;
 #[cfg(test)]
 mod tests;
 
+use std::sync::{Arc, RwLock};
+
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::TrieDictionary;
 use crate::user_history::UserHistory;
@@ -29,10 +31,10 @@ pub use types::{
 use types::{Composition, SessionState, Submode};
 
 /// Stateful IME session encapsulating all input processing logic.
-pub struct InputSession<'a> {
-    dict: &'a TrieDictionary,
-    conn: Option<&'a ConnectionMatrix>,
-    history: Option<&'a UserHistory>,
+pub struct InputSession {
+    dict: Arc<TrieDictionary>,
+    conn: Option<Arc<ConnectionMatrix>>,
+    history: Option<Arc<RwLock<UserHistory>>>,
 
     state: SessionState,
     /// Submode to use when starting a new composition from Idle.
@@ -57,11 +59,11 @@ pub struct InputSession<'a> {
     committed_context: String,
 }
 
-impl<'a> InputSession<'a> {
+impl InputSession {
     pub fn new(
-        dict: &'a TrieDictionary,
-        conn: Option<&'a ConnectionMatrix>,
-        history: Option<&'a UserHistory>,
+        dict: Arc<TrieDictionary>,
+        conn: Option<Arc<ConnectionMatrix>>,
+        history: Option<Arc<RwLock<UserHistory>>>,
     ) -> Self {
         Self {
             dict,
@@ -89,11 +91,6 @@ impl<'a> InputSession<'a> {
 
     pub fn set_conversion_mode(&mut self, mode: ConversionMode) {
         self.conversion_mode = mode;
-    }
-
-    /// Temporarily set the history reference. Used by FFI to pass a lock guard.
-    pub fn set_history(&mut self, history: Option<&'a UserHistory>) {
-        self.history = history;
     }
 
     pub fn is_composing(&self) -> bool {
