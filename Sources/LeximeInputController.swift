@@ -7,14 +7,14 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - State
 
-    var session: OpaquePointer?
+    var session: LexSession?
 
     /// Tracks the currently displayed marked text so composedString stays in sync.
     var currentDisplay: String?
 
     var isComposing: Bool {
         guard let session else { return false }
-        return lex_session_is_composing(session) != 0
+        return session.isComposing()
     }
 
     // Candidate panel state (for pagination)
@@ -37,7 +37,7 @@ class LeximeInputController: IMKInputController {
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
-        let version = String(cString: lex_engine_version())
+        let version = engineVersion()
         NSLog("Lexime: InputController initialized (engine: %@)", version)
 
         guard let dict = AppContext.shared.dict else {
@@ -48,21 +48,15 @@ class LeximeInputController: IMKInputController {
             return
         }
 
-        session = lex_session_new(dict, AppContext.shared.conn, AppContext.shared.history)
+        session = LexSession(dict: dict, conn: AppContext.shared.conn, history: AppContext.shared.history)
         guard let session else { return }
-        lex_session_set_defer_candidates(session, 1)
+        session.setDeferCandidates(enabled: true)
         if UserDefaults.standard.bool(forKey: "programmerMode") {
-            lex_session_set_programmer_mode(session, 1)
+            session.setProgrammerMode(enabled: true)
         }
         let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
         if convMode > 0, convMode <= UInt8.max {
-            lex_session_set_conversion_mode(session, UInt8(convMode))
-        }
-    }
-
-    deinit {
-        if let s = session {
-            lex_session_free(s)
+            session.setConversionMode(mode: UInt8(convMode))
         }
     }
 
@@ -169,12 +163,11 @@ class LeximeInputController: IMKInputController {
         }
 
         // Sync programmerMode setting on each key event
-        lex_session_set_programmer_mode(
-            session,
-            UserDefaults.standard.bool(forKey: "programmerMode") ? 1 : 0
+        session.setProgrammerMode(
+            enabled: UserDefaults.standard.bool(forKey: "programmerMode")
         )
         let convMode = min(max(UserDefaults.standard.integer(forKey: "conversionMode"), 0), Int(UInt8.max))
-        lex_session_set_conversion_mode(session, UInt8(convMode))
+        session.setConversionMode(mode: UInt8(convMode))
 
         let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
@@ -189,79 +182,75 @@ class LeximeInputController: IMKInputController {
         candidateGeneration &+= 1
 
         let text = event.characters ?? ""
-        let resp = lex_session_handle_key(session, event.keyCode, text, flags)
-        defer { lex_key_response_free(resp) }
+        let resp = session.handleKey(keyCode: event.keyCode, text: text, flags: flags)
         applyResponse(resp, client: client)
-        return resp.consumed != 0
+        return resp.consumed
     }
 
     // MARK: - Apply Response
 
-    private func applyResponse(_ resp: LexKeyResponse, client: IMKTextInput) {
+    private func applyResponse(_ resp: LexKeyResult, client: IMKTextInput) {
         // 1. Commit text
-        if let commitText = resp.commit_text {
-            let text = String(cString: commitText)
-            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        if let commitText = resp.commitText {
+            client.insertText(commitText, replacementRange: NSRange(location: NSNotFound, length: 0))
             currentDisplay = nil
             panelNeedsReposition = true
         }
 
         // 2. Marked text
-        if let markedText = resp.marked_text {
-            let text = String(cString: markedText)
-            currentDisplay = text
-            updateMarkedText(text, dashed: resp.is_dashed_underline != 0, client: client)
+        if let markedText = resp.markedText {
+            currentDisplay = markedText
+            updateMarkedText(markedText, dashed: resp.isDashedUnderline, client: client)
         }
 
         // 3. Candidate panel
-        if resp.hide_candidates != 0 {
+        switch resp.candidateAction {
+        case .hide:
             hideCandidatePanel()
-        }
-        if resp.show_candidates != 0 {
-            predictionCandidates = extractCandidates(resp)
-            selectedPredictionIndex = Int(resp.selected_index)
+        case .show(let surfaces, let selected):
+            predictionCandidates = surfaces
+            selectedPredictionIndex = Int(selected)
             showCandidatePanel(client: client)
+        case .keep:
+            break
         }
 
         // 4. Side effects
-        if resp.switch_to_abc != 0 {
+        if resp.switchToAbc {
             selectABCInputSource()
         }
-        if resp.save_history != 0 {
-            recordAndSaveHistory(resp)
+        if resp.saveHistory {
+            saveHistory()
         }
 
         // 5. Async candidate generation
-        if resp.needs_candidates != 0, let candidateReading = resp.candidate_reading {
+        if resp.needsCandidates, let candidateReading = resp.candidateReading {
             dispatchAsyncCandidates(
-                reading: String(cString: candidateReading),
-                dispatch: resp.candidate_dispatch
+                reading: candidateReading,
+                dispatch: resp.candidateDispatch
             )
         }
 
         // 6. Ghost text
-        if let ghostTextPtr = resp.ghost_text {
-            let text = String(cString: ghostTextPtr)
-            if text.isEmpty {
+        if let ghost = resp.ghostText {
+            if ghost.isEmpty {
                 // Clear ghost state. Only clear the display if no marked text was set
                 // in this same response (step 2 already replaced the screen content).
                 ghostText = nil
                 ghostDebounceItem?.cancel()
                 ghostDebounceItem = nil
-                if resp.marked_text == nil {
+                if resp.markedText == nil {
                     clearGhostText(client: client)
                 }
             } else {
-                ghostText = text
-                showGhostText(text, client: client)
+                ghostText = ghost
+                showGhostText(ghost, client: client)
             }
         }
 
         // 7. Ghost generation request (debounced)
-        if resp.needs_ghost_text != 0, let ghostContext = resp.ghost_context {
-            let context = String(cString: ghostContext)
-            let generation = resp.ghost_generation
-            requestGhostText(context: context, generation: generation)
+        if resp.needsGhostText, let ghostContext = resp.ghostContext {
+            requestGhostText(context: ghostContext, generation: resp.ghostGeneration)
         }
     }
 
@@ -269,68 +258,43 @@ class LeximeInputController: IMKInputController {
 
     private func dispatchAsyncCandidates(reading: String, dispatch: UInt8 = 0) {
         let gen = candidateGeneration
-        // These opaque pointers are long-lived singletons. The Rust types use
-        // internal synchronization (RwLock), so concurrent access from
-        // candidateQueue, historySaveQueue, and the main thread is safe.
-        nonisolated(unsafe) let dict = AppContext.shared.dict
-        nonisolated(unsafe) let conn = AppContext.shared.conn
-        nonisolated(unsafe) let history = AppContext.shared.history
-        nonisolated(unsafe) let neural = AppContext.shared.neural
+        let dict = AppContext.shared.dict
+        let conn = AppContext.shared.conn
+        let history = AppContext.shared.history
+        let neural = AppContext.shared.neural
         guard let dict else { return }
 
         // Capture committed context on main thread (LexSession is not thread-safe).
         let context: String
         if dispatch == 2, let session {
-            let ctxPtr = lex_session_committed_context(session)
-            context = ctxPtr.map { String(cString: $0) } ?? ""
-            lex_committed_context_free(ctxPtr)
+            context = session.committedContext()
         } else {
             context = ""
         }
 
         candidateQueue.async { [weak self] in
-            var result: LexCandidateResponse
+            let result: LexCandidateResult
             switch dispatch {
             case 2:  // neural (speculative decode)
                 if let neural {
-                    result = reading.withCString { readingCStr in
-                        context.withCString { ctxCStr in
-                            lex_generate_neural_candidates(neural, dict, conn, history, ctxCStr, readingCStr, 20)
-                        }
-                    }
+                    result = generateNeuralCandidates(
+                        scorer: neural, dict: dict, conn: conn, history: history,
+                        context: context, reading: reading, maxResults: 20)
                 } else {
                     // Fallback to standard if neural model not loaded
-                    result = reading.withCString { lex_generate_candidates(dict, conn, history, $0, 20) }
+                    result = generateCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
                 }
             case 1:  // prediction (Viterbi + bigram chaining)
-                result = reading.withCString { lex_generate_prediction_candidates(dict, conn, history, $0, 20) }
+                result = generatePredictionCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
             default: // standard
-                result = reading.withCString { lex_generate_candidates(dict, conn, history, $0, 20) }
+                result = generateCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self else {
-                    lex_candidate_response_free(result)
-                    return
-                }
-                guard self.candidateGeneration == gen else {
-                    lex_candidate_response_free(result)
-                    return
-                }
-                guard let client = self.client() else {
-                    lex_candidate_response_free(result)
-                    return
-                }
-                // Access session through self (protected by weak self guard above)
-                // instead of capturing the raw pointer directly.
-                guard let session = self.session else {
-                    lex_candidate_response_free(result)
-                    return
-                }
-                let resp = reading.withCString { readingCStr in
-                    lex_session_receive_candidates(session, readingCStr, &result)
-                }
-                lex_candidate_response_free(result)
-                defer { lex_key_response_free(resp) }
+                guard let self else { return }
+                guard self.candidateGeneration == gen else { return }
+                guard let client = self.client() else { return }
+                guard let session = self.session else { return }
+                guard let resp = session.receiveCandidates(reading: reading, result: result) else { return }
                 self.applyResponse(resp, client: client)
             }
         }
@@ -338,20 +302,16 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - History
 
-    /// Record history entries and persist to disk asynchronously.
-    /// Thread safety: `LexUserHistoryWrapper` uses `RwLock` internally, so
-    /// `record_history` (write lock, main thread) and `history_save`
-    /// (read lock + clone, historySaveQueue) are safely synchronized.
-    private func recordAndSaveHistory(_ resp: LexKeyResponse) {
+    /// Persist history to disk asynchronously.
+    /// History records are automatically recorded inside handle_key by the Rust API.
+    private func saveHistory() {
         guard let history = AppContext.shared.history else { return }
-        withUnsafePointer(to: resp) { respPtr in
-            lex_key_response_record_history(respPtr, history)
-        }
         let path = AppContext.shared.historyPath
         Self.historySaveQueue.async {
-            let result = lex_history_save(history, path)
-            if result != 0 {
-                NSLog("Lexime: Failed to save user history to %@", path)
+            do {
+                try history.save(path: path)
+            } catch {
+                NSLog("Lexime: Failed to save user history to %@: %@", path, "\(error)")
             }
         }
     }
@@ -367,22 +327,14 @@ class LeximeInputController: IMKInputController {
 
     private func requestGhostText(context: String, generation: UInt64) {
         ghostDebounceItem?.cancel()
-        nonisolated(unsafe) let neural = AppContext.shared.neural
+        let neural = AppContext.shared.neural
         guard let neural else { return }
         let item = DispatchWorkItem { [weak self] in
-            let result = context.withCString { ctxCStr in
-                lex_neural_generate_ghost(neural, ctxCStr, 30)
-            }
-            defer { lex_ghost_text_free(result) }
-            guard let textPtr = result.text else { return }
-            let text = String(cString: textPtr)
+            guard let text = neural.generateGhost(context: context, maxTokens: 30) else { return }
             guard !text.isEmpty else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, let session = self.session else { return }
-                let resp = text.withCString { textCStr in
-                    lex_session_receive_ghost_text(session, generation, textCStr)
-                }
-                defer { lex_key_response_free(resp) }
+                guard let resp = session.receiveGhostText(generation: generation, text: text) else { return }
                 guard let client = self.client() else { return }
                 self.applyResponse(resp, client: client)
             }
@@ -393,22 +345,10 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - Helpers
 
-    private func extractCandidates(_ resp: LexKeyResponse) -> [String] {
-        var result: [String] = []
-        guard resp.candidates_len > 0, let ptrs = resp.candidates else { return result }
-        for i in 0..<Int(resp.candidates_len) {
-            if let ptr = ptrs[i] {
-                result.append(String(cString: ptr))
-            }
-        }
-        return result
-    }
-
-    private func cycleConversionMode(session: OpaquePointer, client: IMKTextInput) {
+    private func cycleConversionMode(session: LexSession, client: IMKTextInput) {
         if isComposing {
-            let commitResp = lex_session_commit(session)
-            defer { lex_key_response_free(commitResp) }
-            applyResponse(commitResp, client: client)
+            let resp = session.commit()
+            applyResponse(resp, client: client)
         }
         if ghostText != nil {
             clearGhostDisplay(client: client)
@@ -417,7 +357,7 @@ class LeximeInputController: IMKInputController {
         let current = UserDefaults.standard.integer(forKey: "conversionMode")
         let next = (current + 1) % maxModes
         UserDefaults.standard.set(next, forKey: "conversionMode")
-        lex_session_set_conversion_mode(session, UInt8(next))
+        session.setConversionMode(mode: UInt8(next))
         let names = ["standard", "predictive", "ghost"]
         NSLog("Lexime: conversion mode → %@", names[next])
         let rect = cursorRect(client: client)
@@ -446,8 +386,7 @@ class LeximeInputController: IMKInputController {
 
     override func commitComposition(_ sender: Any!) {
         guard let session, let client = sender as? IMKTextInput else { return }
-        let resp = lex_session_commit(session)
-        defer { lex_key_response_free(resp) }
+        let resp = session.commit()
         applyResponse(resp, client: client)
     }
 

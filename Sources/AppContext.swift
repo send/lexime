@@ -3,10 +3,10 @@ import Foundation
 class AppContext {
     static let shared = AppContext()
 
-    let dict: OpaquePointer?
-    let conn: OpaquePointer?
-    let history: OpaquePointer?
-    let neural: OpaquePointer?  // LexNeuralScorer*
+    let dict: LexDictionary?
+    let conn: LexConnection?
+    let history: LexUserHistory?
+    let neural: LexNeuralScorer?
     let historyPath: String
     let candidatePanel = CandidatePanel()
 
@@ -17,23 +17,24 @@ class AppContext {
 
         // Load dictionary
         let dictPath = resourcePath + "/lexime.dict"
-        if let d = lex_dict_open(dictPath) {
+        do {
+            let d = try LexDictionary.open(path: dictPath)
             NSLog("Lexime: Dictionary loaded from %@", dictPath)
-            let list = lex_dict_lookup(d, "かんじ")
-            NSLog("Lexime: Sample lookup 'かんじ' → %d candidates", list.len)
-            lex_candidates_free(list)
+            let entries = d.lookup(reading: "かんじ")
+            NSLog("Lexime: Sample lookup 'かんじ' → %d candidates", entries.count)
             self.dict = d
-        } else {
-            NSLog("Lexime: Failed to load dictionary at %@", dictPath)
+        } catch {
+            NSLog("Lexime: Failed to load dictionary at %@: %@", dictPath, "\(error)")
             self.dict = nil
         }
 
         // Load connection matrix (optional — falls back to unigram if not found)
         let connPath = resourcePath + "/lexime.conn"
-        if let c = lex_conn_open(connPath) {
+        do {
+            let c = try LexConnection.open(path: connPath)
             NSLog("Lexime: Connection matrix loaded from %@", connPath)
             self.conn = c
-        } else {
+        } catch {
             NSLog("Lexime: Connection matrix not found at %@ (using unigram fallback)", connPath)
             self.conn = nil
         }
@@ -50,24 +51,26 @@ class AppContext {
             .libraryDirectory, .userDomainMask, true).first ?? "/tmp") + "/Logs/Lexime"
         try? FileManager.default.createDirectory(
             atPath: logDir, withIntermediateDirectories: true)
-        lex_trace_init(logDir)
+        traceInit(logDir: logDir)
 
-        if let h = lex_history_open(self.historyPath) {
+        do {
+            let h = try LexUserHistory.open(path: self.historyPath)
             NSLog("Lexime: User history loaded from %@", self.historyPath)
             self.history = h
-        } else {
-            NSLog("Lexime: Failed to open user history at %@", self.historyPath)
+        } catch {
+            NSLog("Lexime: Failed to open user history at %@: %@", self.historyPath, "\(error)")
             self.history = nil
         }
 
         // Load neural model (optional — GhostText mode requires this)
         let modelPath = resourcePath + "/zenz-v3.1-Q5_K_M.gguf"
         if FileManager.default.fileExists(atPath: modelPath) {
-            if let n = lex_neural_open(modelPath) {
+            do {
+                let n = try LexNeuralScorer.open(modelPath: modelPath)
                 NSLog("Lexime: Neural model loaded from %@", modelPath)
                 self.neural = n
-            } else {
-                NSLog("Lexime: Failed to load neural model at %@", modelPath)
+            } catch {
+                NSLog("Lexime: Failed to load neural model at %@: %@", modelPath, "\(error)")
                 self.neural = nil
             }
         } else {

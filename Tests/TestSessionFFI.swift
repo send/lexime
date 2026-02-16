@@ -3,9 +3,9 @@ import Foundation
 func testSessionFFI() {
     print("--- Session FFI Tests ---")
 
-    // Free null is safe (_Nullable parameter)
+    // Version string is non-empty
     do {
-        lex_session_free(nil)
-        testsPassed += 1
+        let version = engineVersion()
+        assertTrue(!version.isEmpty, "engine version non-empty")
     }
 }
