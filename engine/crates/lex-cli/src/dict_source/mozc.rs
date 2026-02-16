@@ -5,7 +5,7 @@ use std::path::Path;
 use super::{
     is_hiragana, parse_dict_files, parse_id_cost, DictSource, DictSourceError, ParsedLine,
 };
-use crate::dict::DictEntry;
+use lex_engine::dict::DictEntry;
 
 const MOZC_CONTENTS_URL: &str =
     "https://api.github.com/repos/google/mozc/contents/src/data/dictionary_oss";

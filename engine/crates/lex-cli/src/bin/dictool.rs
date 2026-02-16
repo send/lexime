@@ -5,16 +5,15 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
+use lex_cli::dict_source;
+use lex_cli::dict_source::pos_map;
+use lex_cli::dict_source::SudachiSource;
 use lex_engine::converter::{
     convert, convert_nbest, convert_nbest_with_history, convert_with_history,
 };
 use lex_engine::dict::connection::ConnectionMatrix;
-use lex_engine::dict::source;
-use lex_engine::dict::source::SudachiSource;
 use lex_engine::dict::{DictEntry, Dictionary, TrieDictionary};
 use lex_engine::user_history::UserHistory;
-
-use lex_engine::dict::source::pos_map;
 
 #[cfg(feature = "neural")]
 use lex_engine::neural::NeuralScorer;
@@ -217,7 +216,7 @@ fn main() {
                 let src = SudachiSource;
                 die!(src.fetch_full(output_dir), "Error fetching dictionary: {}");
             } else {
-                let dict_source = source::from_name(&source_name).unwrap_or_else(|| {
+                let dict_source = dict_source::from_name(&source_name).unwrap_or_else(|| {
                     eprintln!("Error: unknown source '{source_name}' (available: mozc, sudachi)");
                     process::exit(1);
                 });
@@ -308,7 +307,7 @@ fn main() {
 }
 
 fn compile(source_name: &str, remap_ids: Option<&str>, input_dir: &str, output_file: &str) {
-    let dict_source = source::from_name(source_name).unwrap_or_else(|| {
+    let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
         eprintln!("Error: unknown source '{source_name}' (available: mozc, sudachi)");
         process::exit(1);
     });

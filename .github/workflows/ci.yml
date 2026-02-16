@@ -12,6 +12,7 @@ jobs:
       pull-requests: read
     outputs:
       engine: ${{ steps.filter.outputs.engine }}
+      cli: ${{ steps.filter.outputs.cli }}
       swift: ${{ steps.filter.outputs.swift }}
     steps:
       - uses: dorny/paths-filter@v3
@@ -19,8 +20,11 @@ jobs:
         with:
           filters: |
             engine:
-              - 'engine/**'
-              - 'mise.toml'
+              - 'engine/src/**'
+              - 'engine/Cargo.toml'
+              - 'engine/Cargo.lock'
+            cli:
+              - 'engine/crates/lex-cli/**'
             swift:
               - 'Sources/**'
               - 'Tests/**'
@@ -28,7 +32,7 @@ jobs:
 
   engine:
     needs: changes
-    if: needs.changes.outputs.engine == 'true'
+    if: needs.changes.outputs.engine == 'true' || needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

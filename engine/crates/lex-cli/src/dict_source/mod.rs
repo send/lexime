@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::DictEntry;
+use lex_engine::dict::DictEntry;
 
 pub use mozc::MozcSource;
 pub use sudachi::SudachiSource;
@@ -33,7 +33,7 @@ pub enum DictSourceError {
     Http(String),
 }
 
-pub(super) use crate::unicode::is_hiragana_reading as is_hiragana;
+pub(crate) use lex_engine::unicode::is_hiragana_reading as is_hiragana;
 
 /// List files in `dir` whose names satisfy `predicate`, sorted by name.
 ///

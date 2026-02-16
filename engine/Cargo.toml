@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
 [package]
 name = "lex_engine"
 version = "0.1.0"
@@ -8,23 +12,12 @@ rust-version = "1.77"
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [[bin]]
-name = "dictool"
-path = "src/bin/dictool.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "lextool"
-path = "src/bin/lextool.rs"
-required-features = ["cli"]
-
-[[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 required-features = ["uniffi-cli"]
 
 [features]
 default = []
-cli = ["dep:clap"]
 uniffi-cli = ["uniffi/cli"]
 trace = ["tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
 neural = ["candle-core", "candle-nn", "dep:anyhow"]
@@ -37,10 +30,7 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1"
 serde_json = "1"
 thiserror = "2"
-ureq = "3"
-zip = { version = "7", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
-clap = { version = "4", features = ["derive"], optional = true }
 unicode-width = "0.2"
 anyhow = { version = "1", optional = true }
 

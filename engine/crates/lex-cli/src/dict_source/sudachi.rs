@@ -6,7 +6,7 @@ use std::path::Path;
 use super::{
     is_hiragana, parse_dict_files, parse_id_cost, DictSource, DictSourceError, ParsedLine,
 };
-use crate::dict::DictEntry;
+use lex_engine::dict::DictEntry;
 
 const SUDACHI_CDN_BASE: &str = "https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw";
 const SUDACHI_S3_LIST_URL: &str = "https://sudachi.s3.ap-northeast-1.amazonaws.com/?list-type=2&prefix=sudachidict-raw/&delimiter=/";
