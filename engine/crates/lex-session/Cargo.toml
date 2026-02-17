@@ -13,3 +13,6 @@ trace = ["tracing/max_level_debug", "lex-core/trace"]
 [dependencies]
 lex-core = { path = "../lex-core" }
 tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
