@@ -384,6 +384,20 @@ pub(super) fn is_romaji_input(text: &str) -> bool {
     }
 }
 
+/// A typed record of what the user confirmed, for history learning.
+#[derive(Debug, Clone)]
+pub enum LearningRecord {
+    /// User confirmed a whole reading→surface mapping.
+    /// Generates unigram entry + optional sub-phrase bigrams.
+    Committed {
+        reading: String,
+        surface: String,
+        /// Pre-segmented N-best path (if available and multi-segment).
+        /// Used for sub-phrase unigram + bigram learning.
+        segments: Option<Vec<(String, String)>>,
+    },
+}
+
 pub(super) fn cyclic_index(current: usize, delta: i32, count: usize) -> usize {
     if count == 0 {
         return 0;

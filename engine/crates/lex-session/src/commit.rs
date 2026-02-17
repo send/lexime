@@ -1,6 +1,6 @@
 use super::types::{
-    AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse, MarkedText, SessionState,
-    Submode,
+    AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse, LearningRecord, MarkedText,
+    SessionState, Submode,
 };
 use super::InputSession;
 
@@ -77,14 +77,12 @@ impl InputSession {
         if self.history.is_none() {
             return;
         }
-        // Record whole pair
-        self.history_records
-            .push(vec![(reading.clone(), surface.clone())]);
-
-        // Sub-phrase learning: if a matching N-best path exists
-        if let Some(seg_pairs) = self.comp().find_matching_path(&surface) {
-            self.history_records.push(seg_pairs);
-        }
+        let segments = self.comp().find_matching_path(&surface);
+        self.history_records.push(LearningRecord::Committed {
+            reading,
+            surface,
+            segments,
+        });
     }
 
     pub(super) fn reset_state(&mut self) {

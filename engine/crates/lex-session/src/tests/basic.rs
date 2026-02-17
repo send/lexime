@@ -1,7 +1,9 @@
 use std::sync::{Arc, RwLock};
 
 use super::*;
-use crate::types::{cyclic_index, is_romaji_input, CandidateAction, FLAG_HAS_MODIFIER};
+use crate::types::{
+    cyclic_index, is_romaji_input, CandidateAction, LearningRecord, FLAG_HAS_MODIFIER,
+};
 use lex_core::user_history::UserHistory;
 
 // --- Basic romaji input ---
@@ -349,8 +351,14 @@ fn test_history_recorded_on_escape() {
     let records = session.take_history_records();
     assert!(!records.is_empty());
     // Should record kana → kana
-    assert_eq!(records[0][0].0, "きょう");
-    assert_eq!(records[0][0].1, "きょう");
+    match &records[0] {
+        LearningRecord::Committed {
+            reading, surface, ..
+        } => {
+            assert_eq!(reading, "きょう");
+            assert_eq!(surface, "きょう");
+        }
+    }
 }
 
 // --- Cyclic index ---
