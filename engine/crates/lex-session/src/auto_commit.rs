@@ -5,7 +5,7 @@ use super::InputSession;
 
 impl InputSession {
     pub(super) fn try_auto_commit(&mut self) -> Option<KeyResponse> {
-        if !self.conversion_mode.auto_commit_enabled() {
+        if !self.config.conversion_mode.auto_commit_enabled() {
             return None;
         }
         // Extract data from comp() in a block so the borrow is dropped before
@@ -94,7 +94,7 @@ impl InputSession {
                 text: String::new(),
                 dashed: false,
             });
-        } else if self.defer_candidates {
+        } else if self.config.defer_candidates {
             // Async mode: extract provisional candidates from remaining N-best
             // segments so the candidate panel stays visible (no flicker).
             let c = self.comp();
@@ -134,7 +134,7 @@ impl InputSession {
             });
             resp.async_request = Some(AsyncCandidateRequest {
                 reading: c.kana.clone(),
-                candidate_dispatch: self.conversion_mode.candidate_dispatch(),
+                candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
             });
             resp.candidates = CandidateAction::Show {
                 surfaces: provisional,

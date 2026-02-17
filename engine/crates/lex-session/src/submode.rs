@@ -12,7 +12,7 @@ impl InputSession {
         if self.is_composing() {
             // Flush pending romaji before switching
             if !self.comp().pending.is_empty() {
-                self.flush();
+                self.comp().flush();
             }
 
             // Undo boundary space if nothing was typed since the last toggle
@@ -46,7 +46,7 @@ impl InputSession {
 
             // Programmer mode: insert space at submode boundary
             c.prefix.has_boundary_space = false;
-            if self.programmer_mode && !self.comp().prefix.is_empty() {
+            if self.config.programmer_mode && !self.comp().prefix.is_empty() {
                 if let Some(last) = self.comp().prefix.text.chars().last() {
                     let last_is_ascii = last.is_ascii();
                     let should_insert = (current_submode == Submode::Japanese

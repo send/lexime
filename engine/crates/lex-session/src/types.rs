@@ -142,6 +142,31 @@ impl Composition {
     pub(super) fn display_kana(&self) -> String {
         format!("{}{}{}", self.prefix.text, self.kana, self.pending)
     }
+
+    /// Convert pending romaji to kana. If `force`, flush incomplete sequences.
+    pub(super) fn drain_pending(&mut self, force: bool) {
+        let result = lex_core::romaji::convert_romaji(&self.kana, &self.pending, force);
+        self.kana = result.composed_kana;
+        self.pending = result.pending_romaji;
+    }
+
+    /// Flush all pending romaji (force incomplete sequences).
+    pub(super) fn flush(&mut self) {
+        self.drain_pending(true);
+    }
+}
+
+// --- Session-level groupings ---
+
+pub(super) struct SessionConfig {
+    pub(super) programmer_mode: bool,
+    pub(super) defer_candidates: bool,
+    pub(super) conversion_mode: ConversionMode,
+}
+
+pub(super) struct GhostState {
+    pub(super) text: Option<String>,
+    pub(super) generation: u64,
 }
 
 // --- Sub-structures for grouping related state ---

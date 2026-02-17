@@ -18,9 +18,9 @@ impl InputSession {
         let has_shift = flags & FLAG_SHIFT != 0;
 
         // Clear ghost text on any key except Tab (ghost accept is handled in handle_idle)
-        let had_ghost = self.ghost_text.is_some();
+        let had_ghost = self.ghost.text.is_some();
         if had_ghost && key_code != key::TAB {
-            self.ghost_text = None;
+            self.ghost.text = None;
         }
 
         // Eisu key → commit if composing, switch to ABC
@@ -44,7 +44,7 @@ impl InputSession {
             } else {
                 KeyResponse::not_consumed()
             }
-        } else if key_code == key::YEN && self.programmer_mode && !has_shift {
+        } else if key_code == key::YEN && self.config.programmer_mode && !has_shift {
             // Programmer mode: ¥ key → insert backslash
             let mut r = if self.is_composing() {
                 self.commit_current_state()
@@ -74,8 +74,8 @@ impl InputSession {
     pub(super) fn handle_idle(&mut self, key_code: u16, text: &str) -> KeyResponse {
         // Ghost text: Tab accepts ghost (GhostText mode only)
         if key_code == key::TAB
-            && self.ghost_text.is_some()
-            && self.conversion_mode == ConversionMode::GhostText
+            && self.ghost.text.is_some()
+            && self.config.conversion_mode == ConversionMode::GhostText
         {
             return self.accept_ghost_text();
         }
@@ -195,7 +195,7 @@ impl InputSession {
                 }
             }
 
-            key::TAB => match self.conversion_mode.tab_action() {
+            key::TAB => match self.config.conversion_mode.tab_action() {
                 TabAction::ToggleSubmode => self.toggle_submode(),
                 TabAction::Commit => {
                     // Lazy generate: ensure candidates for commit
@@ -209,7 +209,7 @@ impl InputSession {
             key::BACKSPACE => self.handle_backspace(),
 
             key::ESCAPE => {
-                self.flush();
+                self.comp().flush();
                 {
                     let c = self.comp();
                     if c.submode == Submode::Japanese && !c.kana.is_empty() {
@@ -268,7 +268,7 @@ impl InputSession {
             });
             resp.candidates = CandidateAction::Hide;
             resp
-        } else if self.defer_candidates && self.comp().submode == Submode::Japanese {
+        } else if self.config.defer_candidates && self.comp().submode == Submode::Japanese {
             self.make_deferred_candidates_response()
         } else {
             if self.comp().submode == Submode::Japanese {

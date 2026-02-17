@@ -15,7 +15,7 @@ impl InputSession {
             return;
         }
 
-        let mode = self.conversion_mode;
+        let mode = self.config.conversion_mode;
         let reading = self.comp().kana.clone();
         let CandidateResponse { surfaces, paths } = {
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
@@ -62,7 +62,7 @@ impl InputSession {
         if !reading.is_empty() {
             resp.async_request = Some(AsyncCandidateRequest {
                 reading,
-                candidate_dispatch: self.conversion_mode.candidate_dispatch(),
+                candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
             });
         }
         resp
