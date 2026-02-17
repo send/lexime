@@ -82,20 +82,8 @@ impl InputSession {
             .push(vec![(reading.clone(), surface.clone())]);
 
         // Sub-phrase learning: if a matching N-best path exists
-        if let Some(matching_path) = self
-            .comp()
-            .candidates
-            .paths
-            .iter()
-            .find(|path| path.iter().map(|s| s.surface.as_str()).collect::<String>() == surface)
-        {
-            if matching_path.len() > 1 {
-                let seg_pairs: Vec<(String, String)> = matching_path
-                    .iter()
-                    .map(|s| (s.reading.clone(), s.surface.clone()))
-                    .collect();
-                self.history_records.push(seg_pairs);
-            }
+        if let Some(seg_pairs) = self.comp().find_matching_path(&surface) {
+            self.history_records.push(seg_pairs);
         }
     }
 
