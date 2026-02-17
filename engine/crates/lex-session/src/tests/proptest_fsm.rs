@@ -7,7 +7,7 @@ use proptest::prelude::*;
 
 use super::make_test_dict;
 use crate::types::key;
-use crate::{CandidateAction, InputSession};
+use crate::{CandidateAction, ConversionMode, InputSession};
 
 // ---------------------------------------------------------------------------
 // Action enum — models every user-facing operation
@@ -27,6 +27,12 @@ enum Action {
     Kana,
     TypeDigit(char),
     TypePunctuation(char),
+    /// Simulate receiving async candidates for current reading.
+    ReceiveCandidates,
+    /// Switch to GhostText conversion mode.
+    SetGhostTextMode,
+    /// Switch to Predictive conversion mode.
+    SetPredictiveMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +70,9 @@ fn arb_action() -> impl Strategy<Value = Action> {
             .prop_map(Action::TypeDigit),
         3 => prop::sample::select(vec!['.', ',', '/', '-'])
             .prop_map(Action::TypePunctuation),
+        5 => Just(Action::ReceiveCandidates),
+        2 => Just(Action::SetGhostTextMode),
+        2 => Just(Action::SetPredictiveMode),
     ]
 }
 
@@ -71,28 +80,52 @@ fn arb_action() -> impl Strategy<Value = Action> {
 // Execute an Action against the session
 // ---------------------------------------------------------------------------
 
-fn execute_action(session: &mut InputSession, action: &Action) -> crate::KeyResponse {
+fn execute_action(
+    session: &mut InputSession,
+    action: &Action,
+    dict: &lex_core::dict::TrieDictionary,
+) -> Option<crate::KeyResponse> {
     match action {
         Action::TypeRomaji(ch) => {
             let text = ch.to_string();
-            session.handle_key(0, &text, 0)
+            Some(session.handle_key(0, &text, 0))
         }
-        Action::Enter => session.handle_key(key::ENTER, "", 0),
-        Action::Space => session.handle_key(key::SPACE, " ", 0),
-        Action::Backspace => session.handle_key(key::BACKSPACE, "", 0),
-        Action::Escape => session.handle_key(key::ESCAPE, "", 0),
-        Action::Tab => session.handle_key(key::TAB, "", 0),
-        Action::ArrowDown => session.handle_key(key::DOWN, "", 0),
-        Action::ArrowUp => session.handle_key(key::UP, "", 0),
-        Action::Eisu => session.handle_key(key::EISU, "", 0),
-        Action::Kana => session.handle_key(key::KANA, "", 0),
+        Action::Enter => Some(session.handle_key(key::ENTER, "", 0)),
+        Action::Space => Some(session.handle_key(key::SPACE, " ", 0)),
+        Action::Backspace => Some(session.handle_key(key::BACKSPACE, "", 0)),
+        Action::Escape => Some(session.handle_key(key::ESCAPE, "", 0)),
+        Action::Tab => Some(session.handle_key(key::TAB, "", 0)),
+        Action::ArrowDown => Some(session.handle_key(key::DOWN, "", 0)),
+        Action::ArrowUp => Some(session.handle_key(key::UP, "", 0)),
+        Action::Eisu => Some(session.handle_key(key::EISU, "", 0)),
+        Action::Kana => Some(session.handle_key(key::KANA, "", 0)),
         Action::TypeDigit(ch) => {
             let text = ch.to_string();
-            session.handle_key(0, &text, 0)
+            Some(session.handle_key(0, &text, 0))
         }
         Action::TypePunctuation(ch) => {
             let text = ch.to_string();
-            session.handle_key(0, &text, 0)
+            Some(session.handle_key(0, &text, 0))
+        }
+        Action::ReceiveCandidates => {
+            if !session.is_composing() {
+                return None;
+            }
+            let reading = session.comp().kana.clone();
+            if reading.is_empty() {
+                return None;
+            }
+            let mode = session.config.conversion_mode;
+            let cand = mode.generate_candidates(dict, None, None, &reading, 20);
+            session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        }
+        Action::SetGhostTextMode => {
+            session.set_conversion_mode(ConversionMode::GhostText);
+            None
+        }
+        Action::SetPredictiveMode => {
+            session.set_conversion_mode(ConversionMode::Predictive);
+            None
         }
     }
 }
@@ -181,6 +214,29 @@ fn assert_invariants(
             action,
         );
     }
+
+    // 8. Ghost state coherence: ghost text only visible when idle in GhostText mode
+    if session.has_ghost_text() {
+        assert!(
+            !session.is_composing(),
+            "Ghost text must not be present while composing, after {:?}",
+            action,
+        );
+        assert!(
+            session.config.conversion_mode == ConversionMode::GhostText,
+            "Ghost text must only be present in GhostText mode, after {:?}",
+            action,
+        );
+    }
+
+    // 9. Async candidate request implies composing state
+    if resp.async_request.is_some() {
+        assert!(
+            session.is_composing(),
+            "Async candidate request must imply composing state, after {:?}",
+            action,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,11 +249,27 @@ proptest! {
     #[test]
     fn session_invariants_hold(actions in prop::collection::vec(arb_action(), 1..100)) {
         let dict = make_test_dict();
-        let mut session = InputSession::new(dict, None, None);
+        let mut session = InputSession::new(dict.clone(), None, None);
         for action in &actions {
             let was_composing = session.is_composing();
-            let resp = execute_action(&mut session, action);
-            assert_invariants(&session, &resp, action, was_composing);
+            if let Some(resp) = execute_action(&mut session, action, &dict) {
+                assert_invariants(&session, &resp, action, was_composing);
+            }
+        }
+    }
+
+    #[test]
+    fn session_invariants_with_deferred_candidates(
+        actions in prop::collection::vec(arb_action(), 1..100)
+    ) {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(dict.clone(), None, None);
+        session.set_defer_candidates(true);
+        for action in &actions {
+            let was_composing = session.is_composing();
+            if let Some(resp) = execute_action(&mut session, action, &dict) {
+                assert_invariants(&session, &resp, action, was_composing);
+            }
         }
     }
 }
