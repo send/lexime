@@ -52,6 +52,20 @@ class AppContext {
             atPath: logDir, withIntermediateDirectories: true)
         traceInit(logDir: logDir)
 
+        // Load custom romaji config if present
+        let romajiPath = appSupport
+            .appendingPathComponent("Lexime/romaji.toml").path
+        if FileManager.default.fileExists(atPath: romajiPath) {
+            do {
+                try romajiLoadConfig(path: romajiPath)
+                NSLog("Lexime: Custom romaji loaded from %@", romajiPath)
+            } catch {
+                NSLog("Lexime: romaji config error at %@: %@",
+                      romajiPath, "\(error)")
+                // Embedded default will be used
+            }
+        }
+
         let history: LexUserHistory?
         do {
             let h = try LexUserHistory.open(path: self.historyPath)

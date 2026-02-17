@@ -442,6 +442,15 @@ fn romaji_convert(kana: String, pending: String, force: bool) -> LexRomajiConver
 }
 
 #[uniffi::export]
+fn romaji_load_config(path: String) -> Result<(), LexError> {
+    let content = std::fs::read_to_string(&path).map_err(|e| LexError::Io {
+        msg: format!("{path}: {e}"),
+    })?;
+    RomajiTrie::init_custom(content).map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
+    Ok(())
+}
+
+#[uniffi::export]
 fn trace_init(log_dir: String) {
     crate::trace_init::init_tracing(Path::new(&log_dir));
 }
