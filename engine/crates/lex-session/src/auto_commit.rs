@@ -1,6 +1,8 @@
 use lex_core::converter::ConvertedSegment;
 
-use super::types::{AsyncCandidateRequest, CandidateAction, KeyResponse, MarkedText, Submode};
+use super::types::{
+    AsyncCandidateRequest, CandidateAction, KeyResponse, LearningRecord, MarkedText, Submode,
+};
 use super::InputSession;
 
 impl InputSession {
@@ -65,11 +67,11 @@ impl InputSession {
 
         // Record to history (comp() borrow is dropped)
         if committed_surface != committed_reading {
-            let pairs = vec![(committed_reading.clone(), committed_surface.clone())];
-            self.history_records.push(pairs);
-        }
-        if let Some(seg_pairs) = seg_pairs {
-            self.history_records.push(seg_pairs);
+            self.history_records.push(LearningRecord::Committed {
+                reading: committed_reading.clone(),
+                surface: committed_surface.clone(),
+                segments: seg_pairs,
+            });
         }
 
         // Remove committed reading from kana.

@@ -13,7 +13,7 @@ use crate::converter::ConvertedSegment;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{Dictionary, TrieDictionary};
 use crate::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
-use crate::session::{CandidateAction, InputSession, KeyResponse};
+use crate::session::{CandidateAction, InputSession, KeyResponse, LearningRecord};
 use crate::user_history::UserHistory;
 
 // ---------------------------------------------------------------------------
@@ -345,14 +345,25 @@ impl LexSession {
 }
 
 impl LexSession {
-    fn record_history(&self, records: &[Vec<(String, String)>]) {
+    fn record_history(&self, records: &[LearningRecord]) {
         if records.is_empty() {
             return;
         }
         if let Some(ref h) = self.history {
             if let Ok(mut hist) = h.inner.write() {
                 for r in records {
-                    hist.record(r);
+                    match r {
+                        LearningRecord::Committed {
+                            reading,
+                            surface,
+                            segments,
+                        } => {
+                            hist.record(&[(reading.clone(), surface.clone())]);
+                            if let Some(segs) = segments {
+                                hist.record(segs);
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -25,7 +25,7 @@ use lex_core::user_history::UserHistory;
 
 pub use types::{
     AsyncCandidateRequest, AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse,
-    MarkedText, SideEffects,
+    LearningRecord, MarkedText, SideEffects,
 };
 
 use types::{Composition, GhostState, SessionConfig, SessionState, Submode};
@@ -44,7 +44,7 @@ pub struct InputSession {
     config: SessionConfig,
 
     // History recording buffer
-    history_records: Vec<Vec<(String, String)>>,
+    history_records: Vec<LearningRecord>,
 
     ghost: GhostState,
 
@@ -124,7 +124,7 @@ impl InputSession {
 
     /// Take recorded history entries, clearing the internal buffer.
     /// The caller should feed these to `UserHistory::record()`.
-    pub fn take_history_records(&mut self) -> Vec<Vec<(String, String)>> {
+    pub fn take_history_records(&mut self) -> Vec<LearningRecord> {
         std::mem::take(&mut self.history_records)
     }
 
