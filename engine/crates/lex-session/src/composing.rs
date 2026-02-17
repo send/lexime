@@ -1,5 +1,6 @@
 use lex_core::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
 
+use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{
     is_romaji_input, Composition, KeyResponse, SessionState, Submode, MAX_COMPOSED_KANA_LENGTH,
 };
@@ -14,7 +15,7 @@ impl InputSession {
                 if (0x20..0x7F).contains(&val) {
                     self.comp().prefix.has_boundary_space = false;
                     self.comp().kana.push_str(text);
-                    return self.make_marked_text_response();
+                    return build_marked_text(self.comp());
                 }
             }
             return KeyResponse::consumed();
@@ -72,7 +73,8 @@ impl InputSession {
             self.make_deferred_candidates_response()
         } else {
             self.update_candidates();
-            self.make_marked_text_and_candidates_response()
+            let resp = build_marked_text_and_candidates(self.comp());
+            self.maybe_auto_commit(resp)
         }
     }
 
@@ -89,7 +91,8 @@ impl InputSession {
                 if self.comp().pending.is_empty() {
                     self.update_candidates();
                 }
-                self.make_marked_text_and_candidates_response()
+                let resp = build_marked_text_and_candidates(self.comp());
+                self.maybe_auto_commit(resp)
             };
             return resp.with_display_from(sub_resp);
         }
@@ -104,14 +107,26 @@ impl InputSession {
                 self.make_deferred_candidates_response()
             } else {
                 // Pending romaji: show kana + pending, no candidates needed yet
-                self.make_marked_text_response()
+                build_marked_text(self.comp())
             }
         } else {
             // Sync mode: generate candidates immediately when romaji resolves
             if self.comp().pending.is_empty() {
                 self.update_candidates();
             }
-            self.make_marked_text_and_candidates_response()
+            let resp = build_marked_text_and_candidates(self.comp());
+            self.maybe_auto_commit(resp)
         }
+    }
+
+    /// Try auto-commit in sync mode. If auto-commit fires, return its response;
+    /// otherwise return the provided display response.
+    pub(super) fn maybe_auto_commit(&mut self, display_resp: KeyResponse) -> KeyResponse {
+        if !self.config.defer_candidates {
+            if let Some(auto_resp) = self.try_auto_commit() {
+                return auto_resp;
+            }
+        }
+        display_resp
     }
 }
