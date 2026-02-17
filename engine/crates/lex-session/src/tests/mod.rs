@@ -1,7 +1,9 @@
 mod auto_commit;
 mod basic;
 mod candidates;
+mod corpus;
 mod ghost;
+mod simulator;
 mod submode;
 
 use std::sync::Arc;
