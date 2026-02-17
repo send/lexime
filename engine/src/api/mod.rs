@@ -2,6 +2,9 @@
 //!
 //! Each public type here maps to a generated Swift class, struct, or enum.
 
+mod engine;
+pub use engine::LexEngine;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 

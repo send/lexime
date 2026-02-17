@@ -30,17 +30,15 @@ class LeximeInputController: IMKInputController {
         let version = engineVersion()
         NSLog("Lexime: InputController initialized (engine: %@)", version)
 
-        guard let dict = AppContext.shared.dict else {
+        guard let engine = AppContext.shared.engine else {
             if !Self.hasShownDictWarning {
                 Self.hasShownDictWarning = true
-                NSLog("Lexime: WARNING - dictionary not loaded. Conversion is unavailable.")
+                NSLog("Lexime: WARNING - engine not loaded. Conversion is unavailable.")
             }
             return
         }
 
-        session = LexSession(dict: dict, conn: AppContext.shared.conn,
-                             history: AppContext.shared.history,
-                             neural: AppContext.shared.neural)
+        session = engine.createSession()
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
         if UserDefaults.standard.bool(forKey: "programmerMode") {
@@ -200,11 +198,11 @@ class LeximeInputController: IMKInputController {
     /// Persist history to disk asynchronously.
     /// History records are automatically recorded inside handle_key by the Rust API.
     private func saveHistory() {
-        guard let history = AppContext.shared.history else { return }
+        guard let engine = AppContext.shared.engine else { return }
         let path = AppContext.shared.historyPath
         Self.historySaveQueue.async {
             do {
-                try history.save(path: path)
+                try engine.saveHistory(path: path)
             } catch {
                 NSLog("Lexime: Failed to save user history to %@: %@", path, "\(error)")
             }
@@ -221,7 +219,7 @@ class LeximeInputController: IMKInputController {
         if ghostManager.text != nil {
             ghostManager.clear(client: client, updateDisplay: true)
         }
-        let maxModes = AppContext.shared.neural != nil ? 3 : 2
+        let maxModes = (AppContext.shared.engine?.hasNeural() ?? false) ? 3 : 2
         let current = UserDefaults.standard.integer(forKey: "conversionMode")
         let next = (current + 1) % maxModes
         UserDefaults.standard.set(next, forKey: "conversionMode")
