@@ -112,12 +112,34 @@ impl TrieDictionary {
         })
     }
 
-    /// Return prediction candidates ranked by cost (lowest first).
-    ///
-    /// Scans up to `scan_limit` readings from the trie's predictive search,
-    /// flattens all entries, deduplicates by surface (keeping the lowest cost),
-    /// and returns the top `max_results` entries as `(reading, DictEntry)` pairs.
-    pub fn predict_ranked(
+    /// Returns (reading_count, entry_count).
+    pub fn stats(&self) -> (usize, usize) {
+        let readings = self.values.len();
+        let entries: usize = self.values.iter().map(|v| v.len()).sum();
+        (readings, entries)
+    }
+}
+
+impl Dictionary for TrieDictionary {
+    fn lookup(&self, reading: &str) -> Option<&[DictEntry]> {
+        self.trie
+            .exact_match(reading.as_bytes())
+            .map(|id| self.values[id as usize].as_slice())
+    }
+
+    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>> {
+        self.trie
+            .predictive_search(prefix.as_bytes())
+            .take(max_results)
+            .map(|m| SearchResult {
+                reading: String::from_utf8(m.key)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                entries: self.values[m.value_id as usize].as_slice(),
+            })
+            .collect()
+    }
+
+    fn predict_ranked(
         &self,
         prefix: &str,
         max_results: usize,
@@ -145,33 +167,6 @@ impl TrieDictionary {
 
         flat.truncate(max_results);
         flat
-    }
-
-    /// Returns (reading_count, entry_count).
-    pub fn stats(&self) -> (usize, usize) {
-        let readings = self.values.len();
-        let entries: usize = self.values.iter().map(|v| v.len()).sum();
-        (readings, entries)
-    }
-}
-
-impl Dictionary for TrieDictionary {
-    fn lookup(&self, reading: &str) -> Option<&[DictEntry]> {
-        self.trie
-            .exact_match(reading.as_bytes())
-            .map(|id| self.values[id as usize].as_slice())
-    }
-
-    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>> {
-        self.trie
-            .predictive_search(prefix.as_bytes())
-            .take(max_results)
-            .map(|m| SearchResult {
-                reading: String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-                entries: self.values[m.value_id as usize].as_slice(),
-            })
-            .collect()
     }
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>> {

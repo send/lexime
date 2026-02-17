@@ -191,7 +191,7 @@ fn candidate_worker(
                     if let Ok(mut scorer) = neural.lock() {
                         crate::candidates::generate_neural_candidates(
                             &mut scorer,
-                            &dict,
+                            &*dict,
                             conn_ref,
                             hist_ref,
                             &latest.context,
@@ -200,7 +200,7 @@ fn candidate_worker(
                         )
                     } else {
                         crate::candidates::generate_candidates(
-                            &dict,
+                            &*dict,
                             conn_ref,
                             hist_ref,
                             &latest.reading,
@@ -209,7 +209,7 @@ fn candidate_worker(
                     }
                 } else {
                     crate::candidates::generate_candidates(
-                        &dict,
+                        &*dict,
                         conn_ref,
                         hist_ref,
                         &latest.reading,
@@ -219,21 +219,21 @@ fn candidate_worker(
             }
             #[cfg(not(feature = "neural"))]
             2 => crate::candidates::generate_candidates(
-                &dict,
+                &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,
                 20,
             ),
             1 => crate::candidates::generate_prediction_candidates(
-                &dict,
+                &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,
                 20,
             ),
             _ => crate::candidates::generate_candidates(
-                &dict,
+                &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
+use crate::dict::Dictionary;
 use crate::neural::NeuralScorer;
 use crate::user_history::UserHistory;
 
@@ -16,7 +16,7 @@ use super::{generate_punctuation_candidates, punctuation_alternatives, Candidate
 /// candidate generation on neural failure.
 pub fn generate(
     scorer: &mut NeuralScorer,
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
     context: &str,

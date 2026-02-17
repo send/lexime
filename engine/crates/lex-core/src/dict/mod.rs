@@ -63,4 +63,32 @@ pub trait Dictionary: Send + Sync {
     fn lookup(&self, reading: &str) -> Option<&[DictEntry]>;
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>>;
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>>;
+
+    /// Prediction candidates ranked by cost, deduplicated by surface.
+    ///
+    /// Scans up to `scan_limit` readings from predictive search, flattens all
+    /// entries, deduplicates by surface (keeping the lowest cost), and returns
+    /// the top `max_results` entries as `(reading, DictEntry)` pairs.
+    fn predict_ranked(
+        &self,
+        prefix: &str,
+        max_results: usize,
+        scan_limit: usize,
+    ) -> Vec<(String, DictEntry)> {
+        let mut flat: Vec<(String, DictEntry)> = Vec::new();
+        for sr in self.predict(prefix, scan_limit) {
+            flat.reserve(sr.entries.len());
+            for e in sr.entries {
+                flat.push((sr.reading.clone(), e.clone()));
+            }
+        }
+
+        flat.sort_by_key(|(_, e)| e.cost);
+
+        let mut seen = std::collections::HashSet::new();
+        flat.retain(|(_, e)| seen.insert(e.surface.clone()));
+
+        flat.truncate(max_results);
+        flat
+    }
 }

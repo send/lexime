@@ -22,7 +22,7 @@ impl InputSession {
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
             let history_ref = h_guard.as_deref();
             mode.generate_candidates(
-                &self.dict,
+                &*self.dict,
                 self.conn.as_deref(),
                 history_ref,
                 &reading,

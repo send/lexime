@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::converter::ConvertedSegment;
-use crate::dict::TrieDictionary;
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 pub mod predictive;
@@ -52,7 +52,7 @@ fn punctuation_alternatives(reading: &str) -> Option<&'static [&'static str]> {
 
 /// Generate punctuation candidates: learned predictions first, then default + alternatives.
 fn generate_punctuation_candidates(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
@@ -102,7 +102,7 @@ fn generate_punctuation_candidates(
 
 /// Unified candidate generation: handles both punctuation and normal input.
 pub fn generate_candidates(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
     reading: &str,
@@ -113,7 +113,7 @@ pub fn generate_candidates(
 
 /// Generate prediction candidates with bigram chaining.
 pub fn generate_prediction_candidates(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
     reading: &str,
@@ -126,7 +126,7 @@ pub fn generate_prediction_candidates(
 #[cfg(feature = "neural")]
 pub fn generate_neural_candidates(
     scorer: &mut crate::neural::NeuralScorer,
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
     context: &str,

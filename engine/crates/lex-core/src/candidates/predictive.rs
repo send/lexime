@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
@@ -47,7 +47,7 @@ fn chain_bigram_phrase(
 /// Uses Viterbi N-best as the base, then chains bigram successors from history
 /// to produce progressively longer multi-word phrases.
 pub fn generate(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
     reading: &str,
