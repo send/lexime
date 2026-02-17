@@ -174,4 +174,22 @@ fn test_viterbi_best_preserved_despite_history_boost() {
         "Viterbi #1 '気がします' should be preserved after history reranking, got: {:?}",
         history_surfaces,
     );
+
+    // Simulate the user selecting "気がします" once. In practice, grouping
+    // merges segments into one, so record_history only records the whole-reading
+    // unigram (sub-phrase learning is skipped for single-segment grouped paths).
+    h.record(&[("きがします".into(), "気がします".into())]);
+
+    // After a single explicit selection, the compound should become #1
+    // thanks to the ×5 whole-path boost weight.
+    let after_learn = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
+    let learned_surfaces: Vec<String> = after_learn
+        .iter()
+        .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
+        .collect();
+    assert_eq!(
+        learned_surfaces[0], "気がします",
+        "after 1 selection, compound should be #1, got: {:?}",
+        learned_surfaces,
+    );
 }

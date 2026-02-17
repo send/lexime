@@ -122,6 +122,15 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
             boost +=
                 history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface, now);
         }
+        // Whole-path boost: reward paths whose full reading→surface has been learned.
+        // This is the strongest learning signal — the user explicitly selected this
+        // exact conversion. Weighted higher than per-segment boosts (which may come
+        // from unrelated words via cross-reading contamination, e.g. き→機 from "機械"
+        // overriding compound きがし→気がし). The ×5 weight ensures a single explicit
+        // selection can overcome maxed-out per-segment cross-contamination.
+        let full_reading: String = path.segments.iter().map(|s| s.reading.as_str()).collect();
+        let full_surface: String = path.segments.iter().map(|s| s.surface.as_str()).collect();
+        boost += history.unigram_boost(&full_reading, &full_surface, now) * 5;
         path.viterbi_cost -= boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
