@@ -28,7 +28,7 @@ pub use types::{
     MarkedText, SideEffects,
 };
 
-use types::{Composition, SessionState, Submode};
+use types::{Composition, GhostState, SessionConfig, SessionState, Submode};
 
 /// Stateful IME session encapsulating all input processing logic.
 pub struct InputSession {
@@ -41,19 +41,12 @@ pub struct InputSession {
     /// Reset to Japanese on commit/reset, toggled by Tab in Idle.
     idle_submode: Submode,
 
-    // Settings
-    programmer_mode: bool,
-    /// When true, handle_key skips synchronous candidate generation and
-    /// sets `needs_candidates` in the response for async generation by the caller.
-    defer_candidates: bool,
-    conversion_mode: ConversionMode,
+    config: SessionConfig,
 
     // History recording buffer
     history_records: Vec<Vec<(String, String)>>,
 
-    // Ghost text state (GhostText mode)
-    ghost_text: Option<String>,
-    ghost_generation: u64,
+    ghost: GhostState,
 
     // Accumulated committed text for neural context
     committed_context: String,
@@ -71,26 +64,30 @@ impl InputSession {
             history,
             state: SessionState::Idle,
             idle_submode: Submode::Japanese,
-            programmer_mode: false,
-            defer_candidates: false,
-            conversion_mode: ConversionMode::Standard,
+            config: SessionConfig {
+                programmer_mode: false,
+                defer_candidates: false,
+                conversion_mode: ConversionMode::Standard,
+            },
             history_records: Vec::new(),
-            ghost_text: None,
-            ghost_generation: 0,
+            ghost: GhostState {
+                text: None,
+                generation: 0,
+            },
             committed_context: String::new(),
         }
     }
 
     pub fn set_programmer_mode(&mut self, enabled: bool) {
-        self.programmer_mode = enabled;
+        self.config.programmer_mode = enabled;
     }
 
     pub fn set_defer_candidates(&mut self, enabled: bool) {
-        self.defer_candidates = enabled;
+        self.config.defer_candidates = enabled;
     }
 
     pub fn set_conversion_mode(&mut self, mode: ConversionMode) {
-        self.conversion_mode = mode;
+        self.config.conversion_mode = mode;
     }
 
     pub fn is_composing(&self) -> bool {
@@ -138,6 +135,6 @@ impl InputSession {
 
     /// Whether ghost text is currently being displayed.
     pub fn has_ghost_text(&self) -> bool {
-        self.ghost_text.is_some()
+        self.ghost.text.is_some()
     }
 }

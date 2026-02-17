@@ -22,15 +22,14 @@ impl InputSession {
     }
 
     pub(super) fn commit_current_state(&mut self) -> KeyResponse {
-        if !self.is_composing() {
+        let SessionState::Composing(ref mut c) = self.state else {
             return KeyResponse::consumed();
-        }
+        };
 
         let mut resp = KeyResponse::consumed();
         resp.candidates = CandidateAction::Hide;
-        self.flush();
+        c.flush();
 
-        let c = self.comp();
         let prefix_text = std::mem::take(&mut c.prefix.text);
 
         if c.candidates.selected < c.candidates.surfaces.len() {
@@ -41,7 +40,9 @@ impl InputSession {
             resp.side_effects.save_history = true;
             resp.commit = Some(format!("{}{}", prefix_text, surface));
         } else {
-            let c = self.comp();
+            let SessionState::Composing(ref c) = self.state else {
+                unreachable!();
+            };
             if !c.kana.is_empty() || !prefix_text.is_empty() {
                 resp.commit = Some(format!("{}{}", prefix_text, c.kana));
             } else {
@@ -60,11 +61,11 @@ impl InputSession {
         // GhostText mode: request ghost text generation after commit.
         // Use full committed_context (not just the latest commit) so the
         // neural model sees the complete preceding text.
-        if self.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
-            self.ghost_generation += 1;
+        if self.config.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
+            self.ghost.generation += 1;
             resp.ghost_request = Some(AsyncGhostRequest {
                 context: self.committed_context.clone(),
-                generation: self.ghost_generation,
+                generation: self.ghost.generation,
             });
         }
 

@@ -7,6 +7,6 @@ fn test_set_conversion_mode_ghosttext() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     session.set_conversion_mode(ConversionMode::GhostText);
-    assert_eq!(session.conversion_mode, ConversionMode::GhostText);
-    assert_eq!(session.conversion_mode.candidate_dispatch(), 2);
+    assert_eq!(session.config.conversion_mode, ConversionMode::GhostText);
+    assert_eq!(session.config.conversion_mode.candidate_dispatch(), 2);
 }

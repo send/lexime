@@ -68,7 +68,7 @@ impl InputSession {
 
         // Unrecognized non-romaji character — add to kana
         self.comp().kana.push_str(text);
-        if self.defer_candidates {
+        if self.config.defer_candidates {
             self.make_deferred_candidates_response()
         } else {
             self.update_candidates();
@@ -82,8 +82,8 @@ impl InputSession {
             let resp = self.commit_composed();
             self.state = SessionState::Composing(Composition::new(Submode::Japanese));
             self.comp().pending.push_str(input);
-            self.drain_pending(false);
-            let sub_resp = if self.defer_candidates {
+            self.comp().drain_pending(false);
+            let sub_resp = if self.config.defer_candidates {
                 self.make_deferred_candidates_response()
             } else {
                 if self.comp().pending.is_empty() {
@@ -96,9 +96,9 @@ impl InputSession {
 
         self.comp().prefix.has_boundary_space = false;
         self.comp().pending.push_str(input);
-        self.drain_pending(false);
+        self.comp().drain_pending(false);
 
-        if self.defer_candidates {
+        if self.config.defer_candidates {
             if self.comp().pending.is_empty() {
                 // Kana resolved — defer candidate generation to caller
                 self.make_deferred_candidates_response()
@@ -113,16 +113,5 @@ impl InputSession {
             }
             self.make_marked_text_and_candidates_response()
         }
-    }
-
-    pub(super) fn drain_pending(&mut self, force: bool) {
-        let c = self.comp();
-        let result = convert_romaji(&c.kana, &c.pending, force);
-        c.kana = result.composed_kana;
-        c.pending = result.pending_romaji;
-    }
-
-    pub(super) fn flush(&mut self) {
-        self.drain_pending(true);
     }
 }

@@ -32,7 +32,7 @@ impl InputSession {
         }
 
         // Try auto-commit (only in sync mode; async mode handles it in receive_candidates)
-        if !self.defer_candidates {
+        if !self.config.defer_candidates {
             if let Some(auto_resp) = self.try_auto_commit() {
                 resp = auto_resp;
             }

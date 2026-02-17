@@ -105,11 +105,11 @@ fn test_conversion_mode_switch() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     // Default is Standard
-    assert_eq!(session.conversion_mode, ConversionMode::Standard);
+    assert_eq!(session.config.conversion_mode, ConversionMode::Standard);
 
     // Switch to Predictive
     session.set_conversion_mode(ConversionMode::Predictive);
-    assert_eq!(session.conversion_mode, ConversionMode::Predictive);
+    assert_eq!(session.config.conversion_mode, ConversionMode::Predictive);
 
     type_string(&mut session, "kyou");
     // Tab should commit (Predictive behavior)
@@ -119,7 +119,7 @@ fn test_conversion_mode_switch() {
 
     // Switch back to Standard
     session.set_conversion_mode(ConversionMode::Standard);
-    assert_eq!(session.conversion_mode, ConversionMode::Standard);
+    assert_eq!(session.config.conversion_mode, ConversionMode::Standard);
 
     type_string(&mut session, "kyou");
     // Tab should toggle submode (Standard behavior)
