@@ -4,14 +4,14 @@ use tracing::{debug, debug_span};
 
 use crate::converter::{convert_nbest, convert_nbest_with_history};
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::{DictEntry, Dictionary, TrieDictionary};
+use crate::dict::{DictEntry, Dictionary};
 use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
 
 /// Generate candidates for normal (non-punctuation) input.
 pub(super) fn generate_normal_candidates(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
     reading: &str,
@@ -132,7 +132,7 @@ pub(super) fn generate_normal_candidates(
 
 /// Unified candidate generation: handles both punctuation and normal input.
 pub fn generate(
-    dict: &TrieDictionary,
+    dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
     reading: &str,

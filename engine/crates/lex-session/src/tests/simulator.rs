@@ -90,7 +90,7 @@ impl HeadlessIME {
 
         let mode = self.session.config.conversion_mode;
         let cand: CandidateResponse = mode.generate_candidates(
-            &self.dict,
+            &*self.dict,
             self.conn.as_deref(),
             None,
             &reading,

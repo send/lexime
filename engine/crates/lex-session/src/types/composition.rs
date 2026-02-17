@@ -3,7 +3,7 @@ use lex_core::candidates::{
 };
 use lex_core::converter::ConvertedSegment;
 use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::TrieDictionary;
+use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
 /// Pluggable conversion mode: determines how candidates are generated,
@@ -26,7 +26,7 @@ pub(crate) enum TabAction {
 impl ConversionMode {
     pub(crate) fn generate_candidates(
         &self,
-        dict: &TrieDictionary,
+        dict: &dyn Dictionary,
         conn: Option<&ConnectionMatrix>,
         history: Option<&UserHistory>,
         reading: &str,

@@ -1,5 +1,5 @@
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 use super::CandidateResponse;
@@ -40,7 +40,7 @@ impl CandidateStrategy<'_> {
     /// Generate candidates using the selected strategy.
     pub fn generate(
         &mut self,
-        dict: &TrieDictionary,
+        dict: &dyn Dictionary,
         conn: Option<&ConnectionMatrix>,
         history: Option<&UserHistory>,
         reading: &str,
