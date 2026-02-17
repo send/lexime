@@ -135,4 +135,9 @@ impl InputSession {
     pub fn committed_context(&self) -> String {
         self.committed_context.clone()
     }
+
+    /// Whether ghost text is currently being displayed.
+    pub fn has_ghost_text(&self) -> bool {
+        self.ghost_text.is_some()
+    }
 }

@@ -23,6 +23,8 @@ class LeximeInputController: IMKInputController {
     private static var hasShownDictWarning = false
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
+    private var pollTimer: Timer?
+
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = engineVersion()
@@ -36,7 +38,9 @@ class LeximeInputController: IMKInputController {
             return
         }
 
-        session = LexSession(dict: dict, conn: AppContext.shared.conn, history: AppContext.shared.history)
+        session = LexSession(dict: dict, conn: AppContext.shared.conn,
+                             history: AppContext.shared.history,
+                             neural: AppContext.shared.neural)
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
         if UserDefaults.standard.bool(forKey: "programmerMode") {
@@ -59,6 +63,12 @@ class LeximeInputController: IMKInputController {
         guard let session, let event, let client = sender as? IMKTextInput else {
             return false
         }
+
+        // Poll for completed async results before handling new key
+        while let asyncResp = session.poll() {
+            applyResponse(asyncResp, client: client)
+        }
+        cancelPollTimer()
 
         guard event.type == .keyDown else {
             // Consume modifier-only events while composing
@@ -136,19 +146,7 @@ class LeximeInputController: IMKInputController {
             saveHistory()
         }
 
-        // 5. Async candidate generation
-        if resp.needsCandidates, let candidateReading = resp.candidateReading, let session {
-            candidateManager.dispatchAsync(
-                reading: candidateReading,
-                dispatch: resp.candidateDispatch,
-                session: session
-            ) { [weak self] resp in
-                guard let self, let client = self.client() else { return }
-                self.applyResponse(resp, client: client)
-            }
-        }
-
-        // 6. Ghost text
+        // 5. Ghost text
         if let ghost = resp.ghostText {
             if ghost.isEmpty {
                 // Clear ghost state. Only clear the display if no marked text was set
@@ -159,17 +157,42 @@ class LeximeInputController: IMKInputController {
             }
         }
 
-        // 7. Ghost generation request (debounced)
-        if resp.needsGhostText, let ghostContext = resp.ghostContext, let session {
-            ghostManager.requestGeneration(
-                context: ghostContext,
-                generation: resp.ghostGeneration,
-                session: session
-            ) { [weak self] resp in
-                guard let self, let client = self.client() else { return }
+        // 6. Poll timer: pending work means Rust workers are generating results
+        if resp.hasPendingWork {
+            schedulePollTimer(client: client)
+        }
+    }
+
+    // MARK: - Poll Timer
+
+    private func schedulePollTimer(client: IMKTextInput) {
+        guard pollTimer == nil else { return }
+        var idleTicks = 0
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, let session = self.session, let client = self.client() else {
+                self?.cancelPollTimer()
+                return
+            }
+            var hadResult = false
+            while let resp = session.poll() {
                 self.applyResponse(resp, client: client)
+                hadResult = true
+            }
+            if hadResult {
+                idleTicks = 0
+            } else {
+                idleTicks += 1
+                // Stop polling after ~5s of no results (100 * 50ms)
+                if idleTicks >= 100 {
+                    self.cancelPollTimer()
+                }
             }
         }
+    }
+
+    private func cancelPollTimer() {
+        pollTimer?.invalidate()
+        pollTimer = nil
     }
 
     // MARK: - History
@@ -242,6 +265,7 @@ class LeximeInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        cancelPollTimer()
         candidateManager.deactivate()
         ghostManager.deactivate()
         currentDisplay = nil

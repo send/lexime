@@ -12,8 +12,6 @@ class CandidateManager {
     /// Set when commit_text moves the cursor; forces panel to recalculate position on next show.
     private var needsReposition = false
 
-    private let queue = DispatchQueue(label: "sh.send.lexime.candidates", qos: .userInitiated)
-
     static let maxDisplay = 9
 
     // MARK: - Generation
@@ -110,52 +108,5 @@ class CandidateManager {
             }
         }
         return rect
-    }
-
-    // MARK: - Async Candidates
-
-    func dispatchAsync(
-        reading: String,
-        dispatch: UInt8,
-        session: LexSession,
-        completion: @escaping (LexKeyResult) -> Void
-    ) {
-        let gen = generation
-        let dict = AppContext.shared.dict
-        let conn = AppContext.shared.conn
-        let history = AppContext.shared.history
-        let neural = AppContext.shared.neural
-        guard let dict else { return }
-
-        let context: String
-        if dispatch == 2 {
-            context = session.committedContext()
-        } else {
-            context = ""
-        }
-
-        queue.async { [weak self] in
-            let result: LexCandidateResult
-            switch dispatch {
-            case 2:  // neural (speculative decode)
-                if let neural {
-                    result = generateNeuralCandidates(
-                        scorer: neural, dict: dict, conn: conn, history: history,
-                        context: context, reading: reading, maxResults: 20)
-                } else {
-                    result = generateCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
-                }
-            case 1:  // prediction (Viterbi + bigram chaining)
-                result = generatePredictionCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
-            default: // standard
-                result = generateCandidates(dict: dict, conn: conn, history: history, reading: reading, maxResults: 20)
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.generation == gen else { return }
-                guard let resp = session.receiveCandidates(reading: reading, result: result)
-                else { return }
-                completion(resp)
-            }
-        }
     }
 }

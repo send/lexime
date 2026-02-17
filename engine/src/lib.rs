@@ -12,6 +12,7 @@ pub use lex_core::user_history;
 pub use lex_session as session;
 
 pub mod api;
+pub(crate) mod async_worker;
 pub mod trace_init;
 
 uniffi::setup_scaffolding!();
