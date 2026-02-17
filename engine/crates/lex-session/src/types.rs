@@ -154,6 +154,23 @@ impl Composition {
     pub(super) fn flush(&mut self) {
         self.drain_pending(true);
     }
+
+    /// Find the N-best path whose concatenated surfaces match `surface`.
+    /// Returns segment pairs (reading, surface) for sub-phrase history recording.
+    pub(super) fn find_matching_path(&self, surface: &str) -> Option<Vec<(String, String)>> {
+        let path =
+            self.candidates.paths.iter().find(|path| {
+                path.iter().map(|s| s.surface.as_str()).collect::<String>() == surface
+            })?;
+        if path.len() <= 1 {
+            return None;
+        }
+        Some(
+            path.iter()
+                .map(|s| (s.reading.clone(), s.surface.clone()))
+                .collect(),
+        )
+    }
 }
 
 // --- Session-level groupings ---
