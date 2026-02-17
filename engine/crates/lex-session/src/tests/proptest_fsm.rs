@@ -1,0 +1,203 @@
+//! Property-based tests for InputSession state machine.
+//!
+//! Generates random key-input sequences via proptest and verifies
+//! that structural invariants hold after every action.
+
+use proptest::prelude::*;
+
+use super::make_test_dict;
+use crate::types::key;
+use crate::{CandidateAction, InputSession};
+
+// ---------------------------------------------------------------------------
+// Action enum — models every user-facing operation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Action {
+    TypeRomaji(char),
+    Enter,
+    Space,
+    Backspace,
+    Escape,
+    Tab,
+    ArrowDown,
+    ArrowUp,
+    Eisu,
+    Kana,
+    TypeDigit(char),
+    TypePunctuation(char),
+}
+
+// ---------------------------------------------------------------------------
+// Strategy: weighted random Action generation
+// ---------------------------------------------------------------------------
+
+fn arb_romaji_char() -> impl Strategy<Value = char> {
+    // Vowels at higher weight for more realistic romaji
+    prop_oneof![
+        3 => Just('a'),
+        3 => Just('i'),
+        3 => Just('u'),
+        3 => Just('e'),
+        3 => Just('o'),
+        1 => prop::sample::select(vec![
+            'k', 's', 't', 'n', 'h', 'm', 'y', 'r', 'w',
+            'g', 'z', 'd', 'b', 'p', 'c', 'f', 'j', 'l', 'v', 'x', 'q',
+        ]),
+    ]
+}
+
+fn arb_action() -> impl Strategy<Value = Action> {
+    prop_oneof![
+        50 => arb_romaji_char().prop_map(Action::TypeRomaji),
+        8 => Just(Action::Enter),
+        8 => Just(Action::Space),
+        8 => Just(Action::Backspace),
+        5 => Just(Action::Escape),
+        5 => Just(Action::Tab),
+        3 => Just(Action::ArrowDown),
+        3 => Just(Action::ArrowUp),
+        2 => Just(Action::Eisu),
+        2 => Just(Action::Kana),
+        3 => prop::sample::select(vec!['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])
+            .prop_map(Action::TypeDigit),
+        3 => prop::sample::select(vec!['.', ',', '/', '-'])
+            .prop_map(Action::TypePunctuation),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Execute an Action against the session
+// ---------------------------------------------------------------------------
+
+fn execute_action(session: &mut InputSession, action: &Action) -> crate::KeyResponse {
+    match action {
+        Action::TypeRomaji(ch) => {
+            let text = ch.to_string();
+            session.handle_key(0, &text, 0)
+        }
+        Action::Enter => session.handle_key(key::ENTER, "", 0),
+        Action::Space => session.handle_key(key::SPACE, " ", 0),
+        Action::Backspace => session.handle_key(key::BACKSPACE, "", 0),
+        Action::Escape => session.handle_key(key::ESCAPE, "", 0),
+        Action::Tab => session.handle_key(key::TAB, "", 0),
+        Action::ArrowDown => session.handle_key(key::DOWN, "", 0),
+        Action::ArrowUp => session.handle_key(key::UP, "", 0),
+        Action::Eisu => session.handle_key(key::EISU, "", 0),
+        Action::Kana => session.handle_key(key::KANA, "", 0),
+        Action::TypeDigit(ch) => {
+            let text = ch.to_string();
+            session.handle_key(0, &text, 0)
+        }
+        Action::TypePunctuation(ch) => {
+            let text = ch.to_string();
+            session.handle_key(0, &text, 0)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Invariant checks — run after every action
+// ---------------------------------------------------------------------------
+
+fn assert_invariants(
+    session: &InputSession,
+    resp: &crate::KeyResponse,
+    action: &Action,
+    was_composing: bool,
+) {
+    // 1. Idle → composed_string is empty
+    if !session.is_composing() {
+        assert!(
+            session.composed_string().is_empty(),
+            "Idle session must have empty composed_string, got {:?} after {:?}",
+            session.composed_string(),
+            action,
+        );
+    }
+
+    // 2. Enter from composing → Idle
+    //    (Enter calls commit_current_state → reset_state → Idle.)
+    //    Escape does NOT transition: it stays Composing for IMKit commitComposition.
+    if was_composing && matches!(action, Action::Enter) {
+        assert!(
+            !session.is_composing(),
+            "Enter must transition from Composing to Idle, after {:?}",
+            action,
+        );
+    }
+
+    // 3. Escape from composing → stays Composing (candidates cleared)
+    //    IMKit externally calls commitComposition to finalize.
+    if was_composing && matches!(action, Action::Escape) {
+        assert!(
+            session.is_composing(),
+            "Escape must keep session in Composing (for IMKit commitComposition), after {:?}",
+            action,
+        );
+    }
+
+    // 4. Candidate index bounds
+    if let CandidateAction::Show { surfaces, selected } = &resp.candidates {
+        assert!(
+            !surfaces.is_empty(),
+            "CandidateAction::Show must have non-empty surfaces after {:?}",
+            action,
+        );
+        assert!(
+            (*selected as usize) < surfaces.len(),
+            "selected ({}) out of bounds for {} candidates after {:?}",
+            selected,
+            surfaces.len(),
+            action,
+        );
+    }
+
+    // 5. Eisu → switch_to_abc
+    if matches!(action, Action::Eisu) {
+        assert!(
+            resp.side_effects.switch_to_abc,
+            "Eisu key must set switch_to_abc, after {:?}",
+            action,
+        );
+    }
+
+    // 6. Escape → never shows candidates
+    if matches!(action, Action::Escape) {
+        if let CandidateAction::Show { .. } = &resp.candidates {
+            panic!(
+                "Escape must not show candidates, got Show after {:?}",
+                action,
+            );
+        }
+    }
+
+    // 7. Committed text is non-empty when present
+    if let Some(text) = &resp.commit {
+        assert!(
+            !text.is_empty(),
+            "Committed text must be non-empty after {:?}",
+            action,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// proptest entry point
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn session_invariants_hold(actions in prop::collection::vec(arb_action(), 1..100)) {
+        let dict = make_test_dict();
+        let mut session = InputSession::new(dict, None, None);
+        for action in &actions {
+            let was_composing = session.is_composing();
+            let resp = execute_action(&mut session, action);
+            assert_invariants(&session, &resp, action, was_composing);
+        }
+    }
+}
