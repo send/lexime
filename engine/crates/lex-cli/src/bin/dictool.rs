@@ -136,6 +136,13 @@ enum Command {
         /// Right POS ID (left_id of next morpheme)
         right: u16,
     },
+    /// Export default romaji mappings as TOML
+    RomajiExport,
+    /// Validate a custom romaji TOML file
+    RomajiValidate {
+        /// Path to the TOML file
+        file: String,
+    },
     /// Score N-best candidates with neural model (requires --features neural)
     #[cfg(feature = "neural")]
     NeuralScore {
@@ -266,6 +273,10 @@ fn main() {
             left,
             right,
         } => conn_cost_cmd(&conn_file, left, right),
+        Command::RomajiExport => {
+            print!("{}", lex_core::romaji::default_toml());
+        }
+        Command::RomajiValidate { file } => romaji_validate(&file),
         #[cfg(feature = "neural")]
         Command::NeuralScore {
             dict_file,
@@ -785,6 +796,12 @@ fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: 
             println!("#{:>2}: {}", i + 1, segs.join(" | "));
         }
     }
+}
+
+fn romaji_validate(file: &str) {
+    let content = die!(fs::read_to_string(file), "Error reading {file}: {}");
+    let map = die!(lex_core::romaji::parse_romaji_toml(&content), "Error: {}");
+    println!("OK: {} mappings", map.len());
 }
 
 #[cfg(feature = "neural")]

@@ -1,9 +1,11 @@
-use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use lexime_trie::DoubleArray;
 
-use super::table::MAPPINGS;
+use super::config::{parse_romaji_toml, RomajiConfigError};
+use super::table::DEFAULT_TOML;
+
+static CUSTOM_TOML: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, PartialEq)]
 pub enum TrieLookupResult {
@@ -19,21 +21,28 @@ pub struct RomajiTrie {
 }
 
 impl RomajiTrie {
+    /// Set custom TOML before first `global()` call.
+    pub fn init_custom(toml_content: String) -> Result<(), RomajiConfigError> {
+        // Validate eagerly
+        parse_romaji_toml(&toml_content)?;
+        CUSTOM_TOML
+            .set(toml_content)
+            .map_err(|_| RomajiConfigError::AlreadyInitialized)
+    }
+
     /// Get or initialize the global singleton.
     pub fn global() -> &'static RomajiTrie {
         static INSTANCE: OnceLock<RomajiTrie> = OnceLock::new();
         INSTANCE.get_or_init(|| {
-            // Deduplicate: last occurrence wins (matches old HashMap insert behavior).
-            // BTreeMap keeps keys sorted by byte order.
-            let mut map = BTreeMap::new();
-            for &(romaji, kana) in MAPPINGS {
-                map.insert(romaji, kana);
-            }
-
+            let toml_str = CUSTOM_TOML
+                .get()
+                .map(|s| s.as_str())
+                .unwrap_or(DEFAULT_TOML);
+            let map = parse_romaji_toml(toml_str).expect("romaji TOML must be valid");
+            // BTreeMap is already sorted — DoubleArray build needs sorted keys
             let keys: Vec<&[u8]> = map.keys().map(|r| r.as_bytes()).collect();
-            let values: Vec<String> = map.values().map(|k| k.to_string()).collect();
+            let values: Vec<String> = map.values().cloned().collect();
             let da = DoubleArray::<u8>::build(&keys);
-
             RomajiTrie { da, values }
         })
     }
@@ -138,7 +147,8 @@ mod tests {
     #[test]
     fn test_all_mappings_roundtrip() {
         let trie = RomajiTrie::global();
-        for &(romaji, kana) in MAPPINGS {
+        let map = parse_romaji_toml(DEFAULT_TOML).unwrap();
+        for (romaji, kana) in &map {
             match trie.lookup(romaji) {
                 TrieLookupResult::Exact(ref k) | TrieLookupResult::ExactAndPrefix(ref k) => {
                     assert_eq!(k, kana, "mapping mismatch for romaji={romaji}");
