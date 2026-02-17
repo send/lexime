@@ -265,6 +265,10 @@ cd engine && cargo run -p lex-cli --features neural --bin dictool -- neural-scor
   "$@"
 """
 
+[tasks.romaji-export]
+description = "Export default romaji mappings to TOML"
+run = "cd engine && cargo run -p lex-cli --bin dictool -- romaji-export"
+
 [tasks.bench]
 description = "Run criterion benchmarks"
 run = "cd engine && cargo bench -p lex-core"
