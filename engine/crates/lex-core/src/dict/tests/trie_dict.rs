@@ -75,7 +75,7 @@ fn sample_dict() -> TrieDictionary {
 #[test]
 fn test_lookup_exact() {
     let dict = sample_dict();
-    let results = dict.lookup("かんじ").unwrap();
+    let results = dict.lookup("かんじ");
     assert_eq!(results.len(), 3);
     assert_eq!(results[0].surface, "漢字");
     assert_eq!(results[1].surface, "感じ");
@@ -85,7 +85,7 @@ fn test_lookup_exact() {
 #[test]
 fn test_lookup_not_found() {
     let dict = sample_dict();
-    assert!(dict.lookup("そんざい").is_none());
+    assert!(dict.lookup("そんざい").is_empty());
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_predict_no_match() {
 #[test]
 fn test_cost_ordering() {
     let dict = sample_dict();
-    let results = dict.lookup("かんじ").unwrap();
+    let results = dict.lookup("かんじ");
     for w in results.windows(2) {
         assert!(w[0].cost <= w[1].cost, "entries should be sorted by cost");
     }
@@ -135,8 +135,8 @@ fn test_serialize_roundtrip() {
     let bytes = dict.to_bytes().unwrap();
     let dict2 = TrieDictionary::from_bytes(&bytes).unwrap();
 
-    let r1 = dict.lookup("かんじ").unwrap();
-    let r2 = dict2.lookup("かんじ").unwrap();
+    let r1 = dict.lookup("かんじ");
+    let r2 = dict2.lookup("かんじ");
     assert_eq!(r1.len(), r2.len());
     for (a, b) in r1.iter().zip(r2.iter()) {
         assert_eq!(a.surface, b.surface);
@@ -239,7 +239,8 @@ fn test_mozc_dict_known_entries() {
         .expect("failed to open lexime-sudachi.dict — run `make dict` first");
 
     // かんじ should have 漢字
-    let results = dict.lookup("かんじ").expect("かんじ should exist");
+    let results = dict.lookup("かんじ");
+    assert!(!results.is_empty(), "かんじ should exist");
     let surfaces: Vec<&str> = results.iter().map(|e| e.surface.as_str()).collect();
     assert!(
         surfaces.contains(&"漢字"),
@@ -251,7 +252,8 @@ fn test_mozc_dict_known_entries() {
     );
 
     // にほん should have 日本
-    let results = dict.lookup("にほん").expect("にほん should exist");
+    let results = dict.lookup("にほん");
+    assert!(!results.is_empty(), "にほん should exist");
     let surfaces: Vec<&str> = results.iter().map(|e| e.surface.as_str()).collect();
     assert!(
         surfaces.contains(&"日本"),

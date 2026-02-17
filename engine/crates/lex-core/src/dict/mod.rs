@@ -54,15 +54,15 @@ impl From<lexime_trie::TrieError> for DictError {
     }
 }
 
-pub struct SearchResult<'a> {
+pub struct SearchResult {
     pub reading: String,
-    pub entries: &'a [DictEntry],
+    pub entries: Vec<DictEntry>,
 }
 
 pub trait Dictionary: Send + Sync {
-    fn lookup(&self, reading: &str) -> Option<&[DictEntry]>;
-    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>>;
-    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>>;
+    fn lookup(&self, reading: &str) -> Vec<DictEntry>;
+    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult>;
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult>;
 
     /// Prediction candidates ranked by cost, deduplicated by surface.
     ///
@@ -79,7 +79,7 @@ pub trait Dictionary: Send + Sync {
         for sr in self.predict(prefix, scan_limit) {
             flat.reserve(sr.entries.len());
             for e in sr.entries {
-                flat.push((sr.reading.clone(), e.clone()));
+                flat.push((sr.reading.clone(), e));
             }
         }
 

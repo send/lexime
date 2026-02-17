@@ -68,7 +68,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
         for result in &matches {
             let reading_char_count = result.reading.chars().count();
             let end = start + reading_char_count;
-            for entry in result.entries {
+            for entry in &result.entries {
                 let idx = nodes.len();
                 nodes.push(LatticeNode {
                     start,

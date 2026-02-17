@@ -21,21 +21,21 @@ fn main() {
         "です",
         "たいです",
     ] {
-        match dict.lookup(key) {
-            Some(entries) => {
-                let surfaces: Vec<String> = entries
-                    .iter()
-                    .take(8)
-                    .map(|e| {
-                        format!(
-                            "{}(cost={},L={},R={})",
-                            e.surface, e.cost, e.left_id, e.right_id
-                        )
-                    })
-                    .collect();
-                println!("  {key} -> {}", surfaces.join(", "));
-            }
-            None => println!("  {key} -> NOT FOUND"),
+        let entries = dict.lookup(key);
+        if entries.is_empty() {
+            println!("  {key} -> NOT FOUND");
+        } else {
+            let surfaces: Vec<String> = entries
+                .iter()
+                .take(8)
+                .map(|e| {
+                    format!(
+                        "{}(cost={},L={},R={})",
+                        e.surface, e.cost, e.left_id, e.right_id
+                    )
+                })
+                .collect();
+            println!("  {key} -> {}", surfaces.join(", "));
         }
     }
 
