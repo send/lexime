@@ -114,14 +114,27 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
     }
     let now = crate::user_history::now_epoch();
     for path in paths.iter_mut() {
-        let mut boost: i64 = 0;
+        // Per-segment boosts normalized by segment count. Fragmented paths
+        // (e.g. き→機 + が + し + ます) accumulate boosts from common particles
+        // (が, し, は, etc.) across ALL prior conversions, giving them a structural
+        // advantage over compound paths. Dividing by segment count neutralizes this.
+        let seg_count = path.segments.len().max(1) as i64;
+        let mut seg_boost: i64 = 0;
         for seg in &path.segments {
-            boost += history.unigram_boost(&seg.reading, &seg.surface, now);
+            seg_boost += history.unigram_boost(&seg.reading, &seg.surface, now);
         }
         for pair in path.segments.windows(2) {
-            boost +=
+            seg_boost +=
                 history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface, now);
         }
+        let mut boost = seg_boost / seg_count;
+
+        // Whole-path boost (not normalized): reward paths whose full reading→surface
+        // has been explicitly selected. This is the strongest learning signal and is
+        // not subject to cross-reading contamination.
+        let full_reading: String = path.segments.iter().map(|s| s.reading.as_str()).collect();
+        let full_surface: String = path.segments.iter().map(|s| s.surface.as_str()).collect();
+        boost += history.unigram_boost(&full_reading, &full_surface, now) * 5;
         path.viterbi_cost -= boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);

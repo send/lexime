@@ -17,10 +17,34 @@ pub(super) fn postprocess(
 ) -> Vec<Vec<ConvertedSegment>> {
     let _span = debug_span!("postprocess", n, paths_in = paths.len()).entered();
     reranker::rerank(paths, conn);
+
+    // Remember the pure-Viterbi best surface before history reranking.
+    // History boosts per-segment unigrams (e.g. き→機 from past "機械") which can
+    // push fragmented single-char paths above the statistically correct compound
+    // path (e.g. きがし→気がし). Preserving the Viterbi #1 ensures it is always
+    // available as a candidate.
+    let viterbi_best_key = if history.is_some() && !paths.is_empty() {
+        Some(paths[0].surface_key())
+    } else {
+        None
+    };
+
     if let Some(h) = history {
         reranker::history_rerank(paths, h);
     }
     let mut top: Vec<ScoredPath> = paths.drain(..n.min(paths.len())).collect();
+
+    // If the Viterbi #1 was pushed out of the top-n by history boosts, pull it
+    // back in at position 1 (after the history-preferred #1).
+    if let Some(ref best_key) = viterbi_best_key {
+        if !top.iter().any(|p| p.surface_key() == *best_key) {
+            if let Some(pos) = paths.iter().position(|p| p.surface_key() == *best_key) {
+                let best = paths.remove(pos);
+                let insert_at = 1.min(top.len());
+                top.insert(insert_at, best);
+            }
+        }
+    }
     let katakana_rw = rewriter::KatakanaRewriter;
     let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&katakana_rw];
     rewriter::run_rewriters(&rewriters, &mut top, kana);

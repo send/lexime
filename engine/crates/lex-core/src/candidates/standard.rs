@@ -41,22 +41,35 @@ pub(super) fn generate_normal_candidates(
     }
 
     // 2. Reading (kana) — position depends on history boost.
-    //    If the user previously selected the hiragana form, promote it to
-    //    position 0 (inline preview) so it becomes the default candidate.
-    //    The kana may already exist in N-best (via fallback nodes); if so, move it.
+    //    If the user previously selected the hiragana form, promote it —
+    //    but only above the N-best #1 when the #1 hasn't been explicitly
+    //    learned. When the #1 has its own whole-path history boost, kana
+    //    goes to position 1 instead so explicit kanji selection is respected.
     let now = crate::user_history::now_epoch();
     let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
+    let top_has_boost = if !surfaces.is_empty() && surfaces[0] != reading {
+        history.is_some_and(|h| h.unigram_boost(reading, &surfaces[0], now) > 0)
+    } else {
+        false
+    };
+    let kana_target = if kana_boost > 0 && !top_has_boost {
+        0
+    } else {
+        1
+    };
     let kana_existing_pos = surfaces.iter().position(|s| s == reading);
     if kana_boost > 0 {
         match kana_existing_pos {
-            Some(0) => {} // already at top
+            Some(pos) if pos == kana_target => {} // already where we want it
             Some(pos) => {
                 surfaces.remove(pos);
-                surfaces.insert(0, reading.to_string());
+                let at = kana_target.min(surfaces.len());
+                surfaces.insert(at, reading.to_string());
             }
             None => {
                 seen.insert(reading.to_string());
-                surfaces.insert(0, reading.to_string());
+                let at = kana_target.min(surfaces.len());
+                surfaces.insert(at, reading.to_string());
             }
         }
     } else if kana_existing_pos.is_none() {
