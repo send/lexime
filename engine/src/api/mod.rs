@@ -1,13 +1,11 @@
 //! UniFFI export layer — type-safe Swift bindings for the Lexime engine.
 //!
 //! Each public type here maps to a generated Swift class, struct, or enum.
-//! The old C FFI in `ffi/` remains for now; PR-3 will remove it and switch
-//! Swift to use these bindings exclusively.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::candidates::CandidateResponse;
+use crate::async_worker::AsyncWorker;
 use crate::converter::ConvertedSegment;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{Dictionary, TrieDictionary};
@@ -58,7 +56,7 @@ pub struct LexRomajiConvert {
     pub pending_romaji: String,
 }
 
-/// Response from handle_key / commit.
+/// Response from handle_key / commit / poll.
 #[derive(uniffi::Record)]
 pub struct LexKeyResult {
     pub consumed: bool,
@@ -68,13 +66,8 @@ pub struct LexKeyResult {
     pub candidate_action: LexCandidateAction,
     pub switch_to_abc: bool,
     pub save_history: bool,
-    pub needs_candidates: bool,
-    pub candidate_reading: Option<String>,
-    pub candidate_dispatch: u8,
+    pub has_pending_work: bool,
     pub ghost_text: Option<String>,
-    pub needs_ghost_text: bool,
-    pub ghost_context: Option<String>,
-    pub ghost_generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +178,7 @@ pub struct LexSession {
     conn: Option<Arc<LexConnection>>,
     history: Option<Arc<LexUserHistory>>,
     session: Mutex<InputSession>,
+    worker: AsyncWorker,
 }
 
 #[uniffi::export]
@@ -194,27 +188,65 @@ impl LexSession {
         dict: Arc<LexDictionary>,
         conn: Option<Arc<LexConnection>>,
         history: Option<Arc<LexUserHistory>>,
+        #[allow(unused_variables)] neural: Option<Arc<LexNeuralScorer>>,
     ) -> Arc<Self> {
         let session = InputSession::new(
             Arc::clone(&dict.inner),
             conn.as_ref().map(|c| Arc::clone(&c.inner)),
             history.as_ref().map(|h| Arc::clone(&h.inner)),
         );
+        let worker = AsyncWorker::new(
+            Arc::clone(&dict.inner),
+            conn.as_ref().map(|c| Arc::clone(&c.inner)),
+            history.as_ref().map(|h| Arc::clone(&h.inner)),
+            #[cfg(feature = "neural")]
+            neural.as_ref().map(|n| Arc::clone(&n.inner)),
+        );
         Arc::new(Self {
             dict,
             conn,
             history,
             session: Mutex::new(session),
+            worker,
         })
     }
 
     fn handle_key(&self, key_code: u16, text: String, flags: u8) -> LexKeyResult {
+        // Invalidate stale candidates from previous key events
+        self.worker.invalidate_candidates();
+
         let mut session = self.session.lock().unwrap();
+        let had_ghost = session.has_ghost_text();
         let resp = session.handle_key(key_code, &text, flags);
+
+        // Ghost was cleared by the key handler — invalidate pending ghost work
+        if had_ghost && !session.has_ghost_text() {
+            self.worker.invalidate_ghost();
+        }
+
+        // Submit async candidate work internally
+        let has_async = resp.async_request.is_some();
+        if let Some(ref req) = resp.async_request {
+            let context = if req.candidate_dispatch == 2 {
+                session.committed_context()
+            } else {
+                String::new()
+            };
+            self.worker
+                .submit_candidates(req.reading.clone(), req.candidate_dispatch, context);
+        }
+
+        // Submit ghost text work internally
+        let has_ghost_req = resp.ghost_request.is_some();
+        if let Some(ref req) = resp.ghost_request {
+            self.worker
+                .submit_ghost(req.context.clone(), req.generation);
+        }
+
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_response(resp)
+        convert_response(resp, has_async || has_ghost_req)
     }
 
     fn commit(&self) -> LexKeyResult {
@@ -223,7 +255,52 @@ impl LexSession {
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_response(resp)
+        convert_response(resp, false)
+    }
+
+    fn poll(&self) -> Option<LexKeyResult> {
+        // 1. Check for candidate results
+        if let Some(result) = self.worker.try_recv_candidate() {
+            let surfaces = result.response.surfaces;
+            let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
+
+            let mut session = self.session.lock().unwrap();
+            if let Some(resp) = session.receive_candidates(&result.reading, surfaces, paths) {
+                // Chain: submit any new async requests from the response
+                let has_async = resp.async_request.is_some();
+                if let Some(ref req) = resp.async_request {
+                    let context = if req.candidate_dispatch == 2 {
+                        session.committed_context()
+                    } else {
+                        String::new()
+                    };
+                    self.worker.submit_candidates(
+                        req.reading.clone(),
+                        req.candidate_dispatch,
+                        context,
+                    );
+                }
+                let has_ghost_req = resp.ghost_request.is_some();
+                if let Some(ref req) = resp.ghost_request {
+                    self.worker
+                        .submit_ghost(req.context.clone(), req.generation);
+                }
+                let records = session.take_history_records();
+                drop(session);
+                self.record_history(&records);
+                return Some(convert_response(resp, has_async || has_ghost_req));
+            }
+        }
+
+        // 2. Check for ghost results
+        if let Some(result) = self.worker.try_recv_ghost() {
+            let mut session = self.session.lock().unwrap();
+            if let Some(resp) = session.receive_ghost_text(result.generation, result.text) {
+                return Some(convert_response(resp, false));
+            }
+        }
+
+        None
     }
 
     fn is_composing(&self) -> bool {
@@ -253,42 +330,6 @@ impl LexSession {
     fn committed_context(&self) -> String {
         self.session.lock().unwrap().committed_context()
     }
-
-    fn receive_candidates(
-        &self,
-        reading: String,
-        result: LexCandidateResult,
-    ) -> Option<LexKeyResult> {
-        let paths: Vec<Vec<ConvertedSegment>> = result
-            .paths
-            .into_iter()
-            .map(|p| {
-                p.into_iter()
-                    .map(|s| ConvertedSegment {
-                        reading: s.reading,
-                        surface: s.surface,
-                    })
-                    .collect()
-            })
-            .collect();
-
-        let mut session = self.session.lock().unwrap();
-        let resp = session.receive_candidates(&reading, result.surfaces, paths)?;
-        let records = session.take_history_records();
-        drop(session);
-        self.record_history(&records);
-        Some(convert_response(resp))
-    }
-
-    fn receive_ghost_text(&self, generation: u64, text: String) -> Option<LexKeyResult> {
-        let mut session = self.session.lock().unwrap();
-        let resp = session.receive_ghost_text(generation, text)?;
-        Some(convert_response(resp))
-    }
-
-    fn ghost_generation(&self) -> u64 {
-        self.session.lock().unwrap().ghost_generation()
-    }
 }
 
 impl LexSession {
@@ -316,7 +357,7 @@ mod neural_api {
 
     #[derive(uniffi::Object)]
     pub struct LexNeuralScorer {
-        inner: Mutex<crate::neural::NeuralScorer>,
+        pub(crate) inner: Arc<Mutex<crate::neural::NeuralScorer>>,
     }
 
     #[uniffi::export]
@@ -326,59 +367,38 @@ mod neural_api {
             let scorer = crate::neural::NeuralScorer::open(Path::new(&model_path))
                 .map_err(|e| LexError::Io { msg: e.to_string() })?;
             Ok(Arc::new(Self {
-                inner: Mutex::new(scorer),
+                inner: Arc::new(Mutex::new(scorer)),
             }))
         }
-
-        fn generate_ghost(&self, context: Option<String>, max_tokens: u32) -> Option<String> {
-            let mut guard = self.inner.lock().ok()?;
-            let config = crate::neural::GenerateConfig {
-                max_tokens: max_tokens as usize,
-                ..crate::neural::GenerateConfig::default()
-            };
-            guard
-                .generate_text(context.as_deref().unwrap_or(""), &config)
-                .ok()
-        }
-    }
-
-    #[uniffi::export]
-    fn generate_neural_candidates(
-        scorer: &LexNeuralScorer,
-        dict: &LexDictionary,
-        conn: Option<Arc<LexConnection>>,
-        history: Option<Arc<LexUserHistory>>,
-        context: Option<String>,
-        reading: Option<String>,
-        max_results: u32,
-    ) -> LexCandidateResult {
-        let mut guard = match scorer.inner.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                return LexCandidateResult {
-                    surfaces: vec![],
-                    paths: vec![],
-                }
-            }
-        };
-        let h_guard = history.as_ref().and_then(|h| h.inner.read().ok());
-        let hist_ref = h_guard.as_deref();
-        let conn_ref = conn.as_ref().map(|c| c.inner.as_ref());
-        let resp = crate::candidates::generate_neural_candidates(
-            &mut guard,
-            &dict.inner,
-            conn_ref,
-            hist_ref,
-            context.as_deref().unwrap_or(""),
-            reading.as_deref().unwrap_or(""),
-            max_results as usize,
-        );
-        convert_candidate_response(resp)
     }
 }
 
 #[cfg(feature = "neural")]
 pub use neural_api::*;
+
+#[cfg(not(feature = "neural"))]
+mod neural_stub {
+    use super::*;
+
+    #[derive(uniffi::Object)]
+    pub struct LexNeuralScorer;
+
+    #[uniffi::export]
+    impl LexNeuralScorer {
+        #[uniffi::constructor]
+        fn open(model_path: String) -> Result<Arc<Self>, LexError> {
+            Err(LexError::Internal {
+                msg: format!(
+                    "neural feature not enabled, cannot load model: {}",
+                    model_path
+                ),
+            })
+        }
+    }
+}
+
+#[cfg(not(feature = "neural"))]
+pub use neural_stub::*;
 
 // ---------------------------------------------------------------------------
 // Top-level functions
@@ -410,48 +430,6 @@ fn romaji_convert(kana: String, pending: String, force: bool) -> LexRomajiConver
 }
 
 #[uniffi::export]
-fn generate_candidates(
-    dict: &LexDictionary,
-    conn: Option<Arc<LexConnection>>,
-    history: Option<Arc<LexUserHistory>>,
-    reading: String,
-    max_results: u32,
-) -> LexCandidateResult {
-    let h_guard = history.as_ref().and_then(|h| h.inner.read().ok());
-    let hist_ref = h_guard.as_deref();
-    let conn_ref = conn.as_ref().map(|c| c.inner.as_ref());
-    let resp = crate::candidates::generate_candidates(
-        &dict.inner,
-        conn_ref,
-        hist_ref,
-        &reading,
-        max_results as usize,
-    );
-    convert_candidate_response(resp)
-}
-
-#[uniffi::export]
-fn generate_prediction_candidates(
-    dict: &LexDictionary,
-    conn: Option<Arc<LexConnection>>,
-    history: Option<Arc<LexUserHistory>>,
-    reading: String,
-    max_results: u32,
-) -> LexCandidateResult {
-    let h_guard = history.as_ref().and_then(|h| h.inner.read().ok());
-    let hist_ref = h_guard.as_deref();
-    let conn_ref = conn.as_ref().map(|c| c.inner.as_ref());
-    let resp = crate::candidates::generate_prediction_candidates(
-        &dict.inner,
-        conn_ref,
-        hist_ref,
-        &reading,
-        max_results as usize,
-    );
-    convert_candidate_response(resp)
-}
-
-#[uniffi::export]
 fn trace_init(log_dir: String) {
     crate::trace_init::init_tracing(Path::new(&log_dir));
 }
@@ -460,7 +438,7 @@ fn trace_init(log_dir: String) {
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-fn convert_response(resp: KeyResponse) -> LexKeyResult {
+fn convert_response(resp: KeyResponse, has_pending_work: bool) -> LexKeyResult {
     let is_dashed = resp.marked.as_ref().is_some_and(|m| m.dashed);
     let candidate_action = match resp.candidates {
         CandidateAction::Keep => LexCandidateAction::Keep,
@@ -468,14 +446,6 @@ fn convert_response(resp: KeyResponse) -> LexKeyResult {
             LexCandidateAction::Show { surfaces, selected }
         }
         CandidateAction::Hide => LexCandidateAction::Hide,
-    };
-    let (needs_candidates, candidate_reading, candidate_dispatch) = match resp.async_request {
-        Some(req) => (true, Some(req.reading), req.candidate_dispatch),
-        None => (false, None, 0),
-    };
-    let (needs_ghost_text, ghost_context, ghost_generation) = match resp.ghost_request {
-        Some(req) => (true, Some(req.context), req.generation),
-        None => (false, None, 0),
     };
     LexKeyResult {
         consumed: resp.consumed,
@@ -485,31 +455,7 @@ fn convert_response(resp: KeyResponse) -> LexKeyResult {
         candidate_action,
         switch_to_abc: resp.side_effects.switch_to_abc,
         save_history: resp.side_effects.save_history,
-        needs_candidates,
-        candidate_reading,
-        candidate_dispatch,
+        has_pending_work,
         ghost_text: resp.ghost_text,
-        needs_ghost_text,
-        ghost_context,
-        ghost_generation,
-    }
-}
-
-fn convert_candidate_response(resp: CandidateResponse) -> LexCandidateResult {
-    let paths = resp
-        .paths
-        .into_iter()
-        .map(|p| {
-            p.into_iter()
-                .map(|s| LexSegment {
-                    reading: s.reading,
-                    surface: s.surface,
-                })
-                .collect()
-        })
-        .collect();
-    LexCandidateResult {
-        surfaces: resp.surfaces,
-        paths,
     }
 }
