@@ -1,6 +1,7 @@
 use lex_core::candidates::CandidateResponse;
 use lex_core::converter::{convert, convert_with_history, ConvertedSegment};
 
+use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, Submode, MAX_CANDIDATES};
 use super::InputSession;
 
@@ -58,7 +59,7 @@ impl InputSession {
         } else {
             self.comp().candidates.clear();
         }
-        let mut resp = self.make_marked_text_response();
+        let mut resp = build_marked_text(self.comp());
         if !reading.is_empty() {
             resp.async_request = Some(AsyncCandidateRequest {
                 reading,
@@ -94,6 +95,6 @@ impl InputSession {
         }
 
         // No auto-commit: update marked text to Viterbi #1 and show candidates
-        Some(self.make_marked_text_and_candidates_response())
+        Some(build_marked_text_and_candidates(self.comp()))
     }
 }

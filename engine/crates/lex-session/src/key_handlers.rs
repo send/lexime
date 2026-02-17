@@ -2,6 +2,9 @@ use tracing::debug_span;
 
 use lex_core::romaji::{RomajiTrie, TrieLookupResult};
 
+use super::response::{
+    build_candidate_selection, build_marked_text, build_marked_text_and_candidates,
+};
 use super::types::{
     is_romaji_input, key, CandidateAction, Composition, ConversionMode, KeyResponse, SessionState,
     Submode, TabAction, FLAG_HAS_MODIFIER, FLAG_SHIFT,
@@ -93,7 +96,7 @@ impl InputSession {
                     self.state = SessionState::Composing(Composition::new(Submode::English));
                     self.comp().prefix.has_boundary_space = false;
                     self.comp().kana.push_str(text);
-                    return self.make_marked_text_response();
+                    return build_marked_text(self.comp());
                 }
             }
             return KeyResponse::not_consumed();
@@ -135,7 +138,7 @@ impl InputSession {
             key::SPACE => {
                 if self.comp().submode == Submode::English {
                     self.comp().kana.push(' ');
-                    self.make_marked_text_response()
+                    build_marked_text(self.comp())
                 } else {
                     // Lazy generate: ensure candidates for Space cycling
                     if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
@@ -152,7 +155,7 @@ impl InputSession {
                                 c.candidates.surfaces.len(),
                             );
                         }
-                        self.make_candidate_selection_response()
+                        build_candidate_selection(self.comp())
                     } else {
                         KeyResponse::consumed()
                     }
@@ -171,7 +174,7 @@ impl InputSession {
                         1,
                         c.candidates.surfaces.len(),
                     );
-                    self.make_candidate_selection_response()
+                    build_candidate_selection(self.comp())
                 } else {
                     KeyResponse::consumed()
                 }
@@ -189,7 +192,7 @@ impl InputSession {
                         -1,
                         c.candidates.surfaces.len(),
                     );
-                    self.make_candidate_selection_response()
+                    build_candidate_selection(self.comp())
                 } else {
                     KeyResponse::consumed()
                 }
@@ -274,7 +277,8 @@ impl InputSession {
             if self.comp().submode == Submode::Japanese {
                 self.update_candidates();
             }
-            self.make_marked_text_and_candidates_response()
+            let resp = build_marked_text_and_candidates(self.comp());
+            self.maybe_auto_commit(resp)
         }
     }
 }
