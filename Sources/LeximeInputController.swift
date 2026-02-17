@@ -64,7 +64,7 @@ class LeximeInputController: IMKInputController {
 
         // Poll for completed async results before handling new key
         while let asyncResp = session.poll() {
-            applyResponse(asyncResp, client: client)
+            applyEvents(asyncResp, client: client)
         }
         cancelPollTimer()
 
@@ -105,59 +105,41 @@ class LeximeInputController: IMKInputController {
 
         let text = event.characters ?? ""
         let resp = session.handleKey(keyCode: event.keyCode, text: text, flags: flags)
-        applyResponse(resp, client: client)
+        applyEvents(resp, client: client)
         return resp.consumed
     }
 
-    // MARK: - Apply Response
+    // MARK: - Apply Events
 
-    private func applyResponse(_ resp: LexKeyResult, client: IMKTextInput) {
-        // 1. Commit text
-        if let commitText = resp.commitText {
-            client.insertText(commitText, replacementRange: NSRange(location: NSNotFound, length: 0))
-            currentDisplay = nil
-            candidateManager.flagReposition()
-        }
-
-        // 2. Marked text
-        if let markedText = resp.markedText {
-            currentDisplay = markedText
-            updateMarkedText(markedText, dashed: resp.isDashedUnderline, client: client)
-        }
-
-        // 3. Candidate panel
-        switch resp.candidateAction {
-        case .hide:
-            candidateManager.hide()
-        case .show(let surfaces, let selected):
-            candidateManager.update(surfaces: surfaces, selected: Int(selected))
-            candidateManager.show(client: client, currentDisplay: currentDisplay)
-        case .keep:
-            break
-        }
-
-        // 4. Side effects
-        if resp.switchToAbc {
-            selectABCInputSource()
-        }
-        if resp.saveHistory {
-            saveHistory()
-        }
-
-        // 5. Ghost text
-        if let ghost = resp.ghostText {
-            if ghost.isEmpty {
-                // Clear ghost state. Only clear the display if no marked text was set
-                // in this same response (step 2 already replaced the screen content).
-                ghostManager.clear(client: client, updateDisplay: resp.markedText == nil)
-            } else {
-                ghostManager.set(ghost, client: client)
+    private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
+        for event in resp.events {
+            switch event {
+            case .commit(let text):
+                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                currentDisplay = nil
+                candidateManager.flagReposition()
+            case .setMarkedText(let text, let dashed):
+                currentDisplay = text
+                updateMarkedText(text, dashed: dashed, client: client)
+            case .clearMarkedText:
+                currentDisplay = nil
+                updateMarkedText("", dashed: false, client: client)
+            case .showCandidates(let surfaces, let selected):
+                candidateManager.update(surfaces: surfaces, selected: Int(selected))
+                candidateManager.show(client: client, currentDisplay: currentDisplay)
+            case .hideCandidates:
+                candidateManager.hide()
+            case .switchToAbc:
+                selectABCInputSource()
+            case .saveHistory:
+                saveHistory()
+            case .setGhostText(let text):
+                ghostManager.set(text, client: client)
+            case .clearGhostText(let updateDisplay):
+                ghostManager.clear(client: client, updateDisplay: updateDisplay)
+            case .schedulePoll:
+                schedulePollTimer(client: client)
             }
-        }
-
-        // 6. Poll timer: pending work means Rust workers are generating results
-        if resp.hasPendingWork {
-            schedulePollTimer(client: client)
         }
     }
 
@@ -173,7 +155,7 @@ class LeximeInputController: IMKInputController {
             }
             var hadResult = false
             while let resp = session.poll() {
-                self.applyResponse(resp, client: client)
+                self.applyEvents(resp, client: client)
                 hadResult = true
             }
             if hadResult {
@@ -214,7 +196,7 @@ class LeximeInputController: IMKInputController {
     private func cycleConversionMode(session: LexSession, client: IMKTextInput) {
         if isComposing {
             let resp = session.commit()
-            applyResponse(resp, client: client)
+            applyEvents(resp, client: client)
         }
         if ghostManager.text != nil {
             ghostManager.clear(client: client, updateDisplay: true)
@@ -253,7 +235,7 @@ class LeximeInputController: IMKInputController {
     override func commitComposition(_ sender: Any!) {
         guard let session, let client = sender as? IMKTextInput else { return }
         let resp = session.commit()
-        applyResponse(resp, client: client)
+        applyEvents(resp, client: client)
     }
 
     override func activateServer(_ sender: Any!) {

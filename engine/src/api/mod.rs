@@ -59,32 +59,41 @@ pub struct LexRomajiConvert {
     pub pending_romaji: String,
 }
 
-/// Response from handle_key / commit / poll.
+/// Event-driven response from handle_key / commit / poll.
 #[derive(uniffi::Record)]
-pub struct LexKeyResult {
+pub struct LexKeyResponse {
     pub consumed: bool,
-    pub commit_text: Option<String>,
-    pub marked_text: Option<String>,
-    pub is_dashed_underline: bool,
-    pub candidate_action: LexCandidateAction,
-    pub switch_to_abc: bool,
-    pub save_history: bool,
-    pub has_pending_work: bool,
-    pub ghost_text: Option<String>,
+    pub events: Vec<LexEvent>,
 }
 
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
-#[derive(uniffi::Enum)]
-pub enum LexCandidateAction {
-    Keep,
-    Show {
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum LexEvent {
+    Commit {
+        text: String,
+    },
+    SetMarkedText {
+        text: String,
+        dashed: bool,
+    },
+    ClearMarkedText,
+    ShowCandidates {
         surfaces: Vec<String>,
         selected: u32,
     },
-    Hide,
+    HideCandidates,
+    SwitchToAbc,
+    SaveHistory,
+    SetGhostText {
+        text: String,
+    },
+    ClearGhostText {
+        update_display: bool,
+    },
+    SchedulePoll,
 }
 
 #[derive(uniffi::Enum)]
@@ -214,7 +223,7 @@ impl LexSession {
         })
     }
 
-    fn handle_key(&self, key_code: u16, text: String, flags: u8) -> LexKeyResult {
+    fn handle_key(&self, key_code: u16, text: String, flags: u8) -> LexKeyResponse {
         // Invalidate stale candidates from previous key events
         self.worker.invalidate_candidates();
 
@@ -249,19 +258,19 @@ impl LexSession {
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_response(resp, has_async || has_ghost_req)
+        convert_to_events(resp, has_async || has_ghost_req)
     }
 
-    fn commit(&self) -> LexKeyResult {
+    fn commit(&self) -> LexKeyResponse {
         let mut session = self.session.lock().unwrap();
         let resp = session.commit();
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_response(resp, false)
+        convert_to_events(resp, false)
     }
 
-    fn poll(&self) -> Option<LexKeyResult> {
+    fn poll(&self) -> Option<LexKeyResponse> {
         // 1. Check for candidate results
         if let Some(result) = self.worker.try_recv_candidate() {
             let surfaces = result.response.surfaces;
@@ -291,7 +300,7 @@ impl LexSession {
                 let records = session.take_history_records();
                 drop(session);
                 self.record_history(&records);
-                return Some(convert_response(resp, has_async || has_ghost_req));
+                return Some(convert_to_events(resp, has_async || has_ghost_req));
             }
         }
 
@@ -299,7 +308,7 @@ impl LexSession {
         if let Some(result) = self.worker.try_recv_ghost() {
             let mut session = self.session.lock().unwrap();
             if let Some(resp) = session.receive_ghost_text(result.generation, result.text) {
-                return Some(convert_response(resp, false));
+                return Some(convert_to_events(resp, false));
             }
         }
 
@@ -441,24 +450,59 @@ fn trace_init(log_dir: String) {
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-fn convert_response(resp: KeyResponse, has_pending_work: bool) -> LexKeyResult {
-    let is_dashed = resp.marked.as_ref().is_some_and(|m| m.dashed);
-    let candidate_action = match resp.candidates {
-        CandidateAction::Keep => LexCandidateAction::Keep,
+fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> LexKeyResponse {
+    let has_marked = resp.marked.is_some();
+    let mut events = Vec::new();
+
+    // 1. Commit
+    if let Some(text) = resp.commit {
+        events.push(LexEvent::Commit { text });
+    }
+
+    // 2. Marked text
+    if let Some(m) = resp.marked {
+        events.push(LexEvent::SetMarkedText {
+            text: m.text,
+            dashed: m.dashed,
+        });
+    }
+
+    // 3. Candidates
+    match resp.candidates {
         CandidateAction::Show { surfaces, selected } => {
-            LexCandidateAction::Show { surfaces, selected }
+            events.push(LexEvent::ShowCandidates { surfaces, selected });
         }
-        CandidateAction::Hide => LexCandidateAction::Hide,
-    };
-    LexKeyResult {
+        CandidateAction::Hide => events.push(LexEvent::HideCandidates),
+        CandidateAction::Keep => {}
+    }
+
+    // 4. Side effects
+    if resp.side_effects.switch_to_abc {
+        events.push(LexEvent::SwitchToAbc);
+    }
+    if resp.side_effects.save_history {
+        events.push(LexEvent::SaveHistory);
+    }
+
+    // 5. Ghost text
+    if let Some(ghost) = resp.ghost_text {
+        if ghost.is_empty() {
+            // Clear ghost. update_display = true when no marked text was set in this response
+            events.push(LexEvent::ClearGhostText {
+                update_display: !has_marked,
+            });
+        } else {
+            events.push(LexEvent::SetGhostText { text: ghost });
+        }
+    }
+
+    // 6. Schedule poll
+    if has_pending_work {
+        events.push(LexEvent::SchedulePoll);
+    }
+
+    LexKeyResponse {
         consumed: resp.consumed,
-        commit_text: resp.commit,
-        marked_text: resp.marked.map(|m| m.text),
-        is_dashed_underline: is_dashed,
-        candidate_action,
-        switch_to_abc: resp.side_effects.switch_to_abc,
-        save_history: resp.side_effects.save_history,
-        has_pending_work,
-        ghost_text: resp.ghost_text,
+        events,
     }
 }
