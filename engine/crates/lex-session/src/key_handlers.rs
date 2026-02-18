@@ -26,29 +26,23 @@ impl InputSession {
             self.ghost.text = None;
         }
 
-        // Eisu key → commit if composing, switch to ABC
+        // Eisu key → commit if composing, enter ABC passthrough
         let mut resp = if key_code == key::EISU {
-            let mut r = if self.is_composing() {
+            let r = if self.is_composing() {
                 self.commit_current_state()
             } else {
                 KeyResponse::consumed()
             };
-            r.side_effects.switch_to_abc = true;
+            self.abc_passthrough = true;
             r
+
+        // Kana key → exit ABC passthrough
         } else if key_code == key::KANA {
-            // Kana key → already in Japanese mode, consume
+            self.abc_passthrough = false;
             KeyResponse::consumed()
-        } else if has_modifier {
-            // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
-            if self.is_composing() {
-                let mut r = self.commit_current_state();
-                r.consumed = false;
-                r
-            } else {
-                KeyResponse::not_consumed()
-            }
+
+        // Programmer mode: ¥ key → insert backslash (before passthrough check)
         } else if key_code == key::YEN && self.config.programmer_mode && !has_shift {
-            // Programmer mode: ¥ key → insert backslash
             let mut r = if self.is_composing() {
                 self.commit_current_state()
             } else {
@@ -59,6 +53,20 @@ impl InputSession {
                 None => r.commit = Some("\\".to_string()),
             }
             r
+
+        // ABC passthrough: pass everything else through to the app
+        } else if self.abc_passthrough {
+            KeyResponse::not_consumed()
+
+        // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
+        } else if has_modifier {
+            if self.is_composing() {
+                let mut r = self.commit_current_state();
+                r.consumed = false;
+                r
+            } else {
+                KeyResponse::not_consumed()
+            }
         } else {
             match &self.state {
                 SessionState::Idle => self.handle_idle(key_code, text),

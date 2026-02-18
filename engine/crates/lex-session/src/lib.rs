@@ -48,6 +48,9 @@ pub struct InputSession {
 
     ghost: GhostState,
 
+    /// ABC passthrough mode: all keys pass through to app, except ¥→`\` and Kana.
+    abc_passthrough: bool,
+
     // Accumulated committed text for neural context
     committed_context: String,
 }
@@ -74,6 +77,7 @@ impl InputSession {
                 text: None,
                 generation: 0,
             },
+            abc_passthrough: false,
             committed_context: String::new(),
         }
     }
@@ -92,6 +96,10 @@ impl InputSession {
 
     pub fn is_composing(&self) -> bool {
         matches!(self.state, SessionState::Composing(_))
+    }
+
+    pub fn is_abc_passthrough(&self) -> bool {
+        self.abc_passthrough
     }
 
     /// Current submode, whether composing or idle.

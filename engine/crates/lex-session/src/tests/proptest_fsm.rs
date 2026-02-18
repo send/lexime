@@ -189,11 +189,25 @@ fn assert_invariants(
         );
     }
 
-    // 5. Eisu → switch_to_abc
+    // 5. Eisu → enters ABC passthrough (no longer sets switch_to_abc)
     if matches!(action, Action::Eisu) {
         assert!(
-            resp.side_effects.switch_to_abc,
-            "Eisu key must set switch_to_abc, after {:?}",
+            session.is_abc_passthrough(),
+            "Eisu key must activate ABC passthrough, after {:?}",
+            action,
+        );
+        assert!(
+            !resp.side_effects.switch_to_abc,
+            "Eisu key must not set switch_to_abc, after {:?}",
+            action,
+        );
+    }
+
+    // 5b. Kana → exits ABC passthrough
+    if matches!(action, Action::Kana) {
+        assert!(
+            !session.is_abc_passthrough(),
+            "Kana key must deactivate ABC passthrough, after {:?}",
             action,
         );
     }

@@ -200,7 +200,8 @@ fn test_eisu_switches_to_abc() {
 
     let resp = session.handle_key(key::EISU, "", 0);
     assert!(resp.consumed);
-    assert!(resp.side_effects.switch_to_abc);
+    assert!(!resp.side_effects.switch_to_abc);
+    assert!(session.is_abc_passthrough());
 }
 
 #[test]
@@ -213,9 +214,10 @@ fn test_eisu_commits_and_switches() {
 
     let resp = session.handle_key(key::EISU, "", 0);
     assert!(resp.consumed);
-    assert!(resp.side_effects.switch_to_abc);
+    assert!(!resp.side_effects.switch_to_abc);
     assert!(resp.commit.is_some());
     assert!(!session.is_composing());
+    assert!(session.is_abc_passthrough());
 }
 
 // --- Kana key ---
