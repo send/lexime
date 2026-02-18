@@ -460,7 +460,8 @@ fn info_dict(dict_file: &str) {
     println!();
     println!("Sample lookups:");
     for key in &sample_keys {
-        if let Some(entries) = dict.lookup(key) {
+        let entries = dict.lookup(key);
+        if !entries.is_empty() {
             let surfaces: Vec<&str> = entries.iter().take(5).map(|e| e.surface.as_str()).collect();
             println!("  {key} → {}", surfaces.join(", "));
         } else {
@@ -729,12 +730,12 @@ fn lookup(dict_file: &str, reading: &str) {
         TrieDictionary::open(Path::new(dict_file)),
         "Error opening dictionary: {}"
     );
-    match dict.lookup(reading) {
-        Some(entries) => {
-            println!("{reading}: {} entries", entries.len());
-            print_entries(entries);
-        }
-        None => println!("{reading}: not found"),
+    let entries = dict.lookup(reading);
+    if entries.is_empty() {
+        println!("{reading}: not found");
+    } else {
+        println!("{reading}: {} entries", entries.len());
+        print_entries(&entries);
     }
 }
 
@@ -750,7 +751,7 @@ fn prefix(dict_file: &str, query: &str) {
     }
     for r in &results {
         println!("{} ({} entries):", r.reading, r.entries.len());
-        print_entries(r.entries);
+        print_entries(&r.entries);
     }
 }
 

@@ -24,10 +24,8 @@ impl LexDictionary {
     }
 
     fn lookup(&self, reading: String) -> Vec<super::LexDictEntry> {
-        let Some(entries) = self.inner.lookup(&reading) else {
-            return Vec::new();
-        };
-        entries
+        self.inner
+            .lookup(&reading)
             .iter()
             .map(|e| super::LexDictEntry {
                 reading: reading.clone(),

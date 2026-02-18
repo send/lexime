@@ -121,20 +121,21 @@ impl TrieDictionary {
 }
 
 impl Dictionary for TrieDictionary {
-    fn lookup(&self, reading: &str) -> Option<&[DictEntry]> {
+    fn lookup(&self, reading: &str) -> Vec<DictEntry> {
         self.trie
             .exact_match(reading.as_bytes())
-            .map(|id| self.values[id as usize].as_slice())
+            .map(|id| self.values[id as usize].to_vec())
+            .unwrap_or_default()
     }
 
-    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult<'_>> {
+    fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
         self.trie
             .predictive_search(prefix.as_bytes())
             .take(max_results)
             .map(|m| SearchResult {
                 reading: String::from_utf8(m.key)
                     .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-                entries: self.values[m.value_id as usize].as_slice(),
+                entries: self.values[m.value_id as usize].to_vec(),
             })
             .collect()
     }
@@ -169,7 +170,7 @@ impl Dictionary for TrieDictionary {
         flat
     }
 
-    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult<'_>> {
+    fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
         let query_bytes = query.as_bytes();
         self.trie
             .common_prefix_search(query_bytes)
@@ -177,7 +178,7 @@ impl Dictionary for TrieDictionary {
                 let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
                 Some(SearchResult {
                     reading: reading.to_string(),
-                    entries: self.values[m.value_id as usize].as_slice(),
+                    entries: self.values[m.value_id as usize].to_vec(),
                 })
             })
             .collect()

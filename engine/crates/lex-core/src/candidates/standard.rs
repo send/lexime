@@ -4,7 +4,7 @@ use tracing::{debug, debug_span};
 
 use crate::converter::{convert_nbest, convert_nbest_with_history};
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::{DictEntry, Dictionary};
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
@@ -99,28 +99,21 @@ pub(super) fn generate_normal_candidates(
     }
 
     // 4. Dictionary lookup
-    let lookup_entries: Vec<&DictEntry> = if let Some(h) = history {
-        if let Some(entries) = dict.lookup(reading) {
-            let reordered = h.reorder_candidates(reading, entries);
-            // We need owned entries; collect surfaces
+    let lookup_entries = dict.lookup(reading);
+    if let Some(h) = history {
+        if !lookup_entries.is_empty() {
+            let reordered = h.reorder_candidates(reading, &lookup_entries);
             for entry in &reordered {
                 if seen.insert(entry.surface.clone()) {
                     surfaces.push(entry.surface.clone());
                 }
             }
-            Vec::new() // already processed
-        } else {
-            Vec::new()
         }
-    } else if let Some(entries) = dict.lookup(reading) {
-        entries.iter().collect()
     } else {
-        Vec::new()
-    };
-
-    for entry in &lookup_entries {
-        if seen.insert(entry.surface.clone()) {
-            surfaces.push(entry.surface.clone());
+        for entry in &lookup_entries {
+            if seen.insert(entry.surface.clone()) {
+                surfaces.push(entry.surface.clone());
+            }
         }
     }
 
