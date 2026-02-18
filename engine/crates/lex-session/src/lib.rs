@@ -102,6 +102,10 @@ impl InputSession {
         self.abc_passthrough
     }
 
+    pub fn set_abc_passthrough(&mut self, enabled: bool) {
+        self.abc_passthrough = enabled;
+    }
+
     /// Current submode, whether composing or idle.
     fn submode(&self) -> Submode {
         match &self.state {

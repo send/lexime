@@ -54,9 +54,18 @@ impl InputSession {
             }
             r
 
-        // ABC passthrough: pass everything else through to the app
+        // ABC passthrough: commit printable chars directly, pass through the rest.
+        // Consuming printable chars avoids macOS keyboard layout re-interpretation
+        // which can produce wrong characters on JIS keyboards.
         } else if self.abc_passthrough {
-            KeyResponse::not_consumed()
+            match text.chars().next() {
+                Some(c) if (' '..='~').contains(&c) => {
+                    let mut r = KeyResponse::consumed();
+                    r.commit = Some(text.to_string());
+                    r
+                }
+                _ => KeyResponse::not_consumed(),
+            }
 
         // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
         } else if has_modifier {

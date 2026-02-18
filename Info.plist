@@ -51,10 +51,26 @@
                 <key>tsInputModePrimaryInScriptKey</key>
                 <true/>
             </dict>
+            <key>sh.send.inputmethod.Lexime.Roman</key>
+            <dict>
+                <key>TISIntendedLanguage</key>
+                <string>en</string>
+                <key>tsInputModeDefaultStateKey</key>
+                <true/>
+                <key>tsInputModeScriptKey</key>
+                <string>smRoman</string>
+                <key>tsInputModeMenuIconFileKey</key>
+                <string>icon-roman.tiff</string>
+                <key>tsInputModeIsVisibleKey</key>
+                <true/>
+                <key>tsInputModePrimaryInScriptKey</key>
+                <false/>
+            </dict>
         </dict>
         <key>tsVisibleInputModeOrderedArrayKey</key>
         <array>
             <string>sh.send.inputmethod.Lexime.Japanese</string>
+            <string>sh.send.inputmethod.Lexime.Roman</string>
         </array>
     </dict>
 </dict>

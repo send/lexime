@@ -36,4 +36,10 @@ rsvg-convert -w 16 -h 16 "assets/icon/master/lexime-menubar.svg" -o "$MENUBAR_PN
 sips -s format tiff "$MENUBAR_PNG" --out Resources/icon.tiff >/dev/null
 rm -f "$MENUBAR_PNG"
 
+# --- IME menu bar icon: Roman mode ---
+ROMAN_PNG=$(mktemp /tmp/lexime-menubar-roman-XXXXXX.png)
+rsvg-convert -w 16 -h 16 "assets/icon/master/lexime-menubar-roman.svg" -o "$ROMAN_PNG"
+sips -s format tiff "$ROMAN_PNG" --out Resources/icon-roman.tiff >/dev/null
+rm -f "$ROMAN_PNG"
+
 echo "Icon generation complete."
