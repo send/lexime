@@ -1,6 +1,7 @@
 use tracing::{debug, debug_span};
 
 use crate::dict::Dictionary;
+use crate::settings::settings;
 
 /// A node in the conversion lattice.
 ///
@@ -39,8 +40,6 @@ pub struct Lattice {
     /// Number of characters in input
     pub char_count: usize,
 }
-
-const UNKNOWN_WORD_COST: i16 = 10000;
 
 /// Build a lattice from a kana string using dictionary lookups.
 ///
@@ -99,7 +98,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
                 end: start + 1,
                 reading: ch.clone(),
                 surface: ch,
-                cost: UNKNOWN_WORD_COST,
+                cost: settings().cost.unknown_word_cost,
                 left_id: 0,
                 right_id: 0,
             });

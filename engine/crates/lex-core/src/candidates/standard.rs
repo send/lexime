@@ -5,6 +5,7 @@ use tracing::{debug, debug_span};
 use crate::converter::{convert_nbest, convert_nbest_with_history};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
+use crate::settings::settings;
 use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
@@ -24,7 +25,7 @@ pub(super) fn generate_normal_candidates(
     //    history_rerank is applied post-Viterbi on N-best paths (not during
     //    lattice search), so it cannot cause fragmentation. Time-decayed
     //    boosts (half-life 168h) prevent stale history from dominating.
-    let nbest = 5usize;
+    let nbest = settings().candidates.nbest;
     let paths = if let Some(h) = history {
         convert_nbest_with_history(dict, conn, h, reading, nbest)
     } else {

@@ -4,7 +4,9 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
-use super::cost::{conn_cost, script_cost, DefaultCostFunction, SEGMENT_PENALTY};
+use crate::settings::settings;
+
+use super::cost::{conn_cost, script_cost, DefaultCostFunction};
 use super::lattice::{build_lattice, LatticeNode};
 use super::reranker;
 use super::viterbi::{viterbi_nbest, ScoredPath};
@@ -105,7 +107,7 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 reading: seg.reading.clone(),
                 surface: seg.surface.clone(),
                 word_cost: seg.word_cost as i64,
-                segment_penalty: SEGMENT_PENALTY,
+                segment_penalty: settings().cost.segment_penalty,
                 script_cost: script_cost(&seg.surface),
                 connection_cost: connection,
                 left_id: seg.left_id,
@@ -350,7 +352,7 @@ mod tests {
 
         for path in &result.paths {
             for seg in &path.segments {
-                assert_eq!(seg.segment_penalty, SEGMENT_PENALTY);
+                assert_eq!(seg.segment_penalty, settings().cost.segment_penalty);
             }
         }
     }

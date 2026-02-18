@@ -4,6 +4,7 @@ pub mod dict;
 #[cfg(feature = "neural")]
 pub mod neural;
 pub mod romaji;
+pub mod settings;
 pub mod unicode;
 pub mod user_dict;
 pub mod user_history;

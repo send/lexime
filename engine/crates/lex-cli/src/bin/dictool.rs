@@ -144,6 +144,13 @@ enum Command {
         /// Path to the TOML file
         file: String,
     },
+    /// Export default settings as TOML
+    SettingsExport,
+    /// Validate a custom settings TOML file
+    SettingsValidate {
+        /// Path to the TOML file
+        file: String,
+    },
     /// Manage user dictionary
     UserDict {
         /// User dictionary file (default: ~/Library/Application Support/Lexime/user_dict.lxuw)
@@ -307,6 +314,10 @@ fn main() {
             print!("{}", lex_core::romaji::default_toml());
         }
         Command::RomajiValidate { file } => romaji_validate(&file),
+        Command::SettingsExport => {
+            print!("{}", lex_core::settings::default_toml());
+        }
+        Command::SettingsValidate { file } => settings_validate(&file),
         #[cfg(feature = "neural")]
         Command::NeuralScore {
             dict_file,
@@ -881,6 +892,18 @@ fn romaji_validate(file: &str) {
     let content = die!(fs::read_to_string(file), "Error reading {file}: {}");
     let map = die!(lex_core::romaji::parse_romaji_toml(&content), "Error: {}");
     println!("OK: {} mappings", map.len());
+}
+
+fn settings_validate(file: &str) {
+    let content = die!(fs::read_to_string(file), "Error reading {file}: {}");
+    let s = die!(
+        lex_core::settings::parse_settings_toml(&content),
+        "Error: {}"
+    );
+    println!(
+        "OK: cost.segment_penalty={}, candidates.nbest={}, candidates.max_results={}",
+        s.cost.segment_penalty, s.candidates.nbest, s.candidates.max_results
+    );
 }
 
 #[cfg(feature = "neural")]

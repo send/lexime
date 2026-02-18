@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::candidates::CandidateResponse;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
+use crate::settings::settings;
 use crate::user_history::UserHistory;
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ fn candidate_worker(
         let hist_ref = h_guard.as_deref();
         let conn_ref = conn.as_deref();
 
+        let max_results = settings().candidates.max_results;
         let response = match latest.dispatch {
             #[cfg(feature = "neural")]
             2 => {
@@ -196,7 +198,7 @@ fn candidate_worker(
                             hist_ref,
                             &latest.context,
                             &latest.reading,
-                            20,
+                            max_results,
                         )
                     } else {
                         crate::candidates::generate_candidates(
@@ -204,7 +206,7 @@ fn candidate_worker(
                             conn_ref,
                             hist_ref,
                             &latest.reading,
-                            20,
+                            max_results,
                         )
                     }
                 } else {
@@ -213,7 +215,7 @@ fn candidate_worker(
                         conn_ref,
                         hist_ref,
                         &latest.reading,
-                        20,
+                        max_results,
                     )
                 }
             }
@@ -223,21 +225,21 @@ fn candidate_worker(
                 conn_ref,
                 hist_ref,
                 &latest.reading,
-                20,
+                max_results,
             ),
             1 => crate::candidates::generate_prediction_candidates(
                 &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,
-                20,
+                max_results,
             ),
             _ => crate::candidates::generate_candidates(
                 &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,
-                20,
+                max_results,
             ),
         };
 

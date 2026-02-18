@@ -1,32 +1,8 @@
 use crate::dict::connection::ConnectionMatrix;
+use crate::settings::settings;
 use crate::unicode::{is_hiragana, is_kanji, is_katakana, is_latin};
 
 use super::lattice::LatticeNode;
-
-/// Per-segment penalty added to each node's word cost.
-/// Discourages the Viterbi algorithm from choosing paths with many short segments
-/// over paths with fewer, longer (and usually more natural) segments.
-pub const SEGMENT_PENALTY: i64 = 5000;
-
-/// Bonus subtracted from word cost for mixed-script surfaces (kanji + kana).
-/// Verb conjugations like 通っ, 食べ, 走る contain both kanji and kana — these are
-/// the primary conversion targets for an IME and should be preferred.
-const MIXED_SCRIPT_BONUS: i64 = 3000;
-
-/// Penalty added to word cost when the surface is all katakana.
-/// Katakana noun forms (e.g. タラ) often have low dictionary costs but are rarely
-/// the intended conversion for grammatical words (e.g. たら as 助動詞).
-const KATAKANA_PENALTY: i64 = 5000;
-
-/// Bonus subtracted from word cost for pure-kanji surfaces (方, 気, 人, etc.).
-/// Single-kanji content words often have higher dictionary costs than their
-/// hiragana forms (e.g. 方=733 vs ほう=0), but are the expected IME output.
-const PURE_KANJI_BONUS: i64 = 1000;
-
-/// Penalty for surfaces containing ASCII/Latin characters.
-/// SudachiDict includes English surface forms (e.g. death for です, tie for たい)
-/// with low costs intended for morphological analysis, not IME conversion.
-const LATIN_PENALTY: i64 = 20000;
 
 /// Cost adjustment based on the surface script.
 /// - Mixed-script (kanji+kana, e.g. 通っ, 食べる): bonus (negative)
@@ -35,12 +11,13 @@ const LATIN_PENALTY: i64 = 20000;
 /// - All-katakana (e.g. タラ, オッ): penalty (positive)
 /// - Otherwise (pure hiragana, etc.): no adjustment
 pub fn script_cost(surface: &str) -> i64 {
+    let s = settings();
     let mut has_kanji = false;
     let mut has_kana = false;
     let mut all_katakana = !surface.is_empty();
     for c in surface.chars() {
         if is_latin(c) {
-            return LATIN_PENALTY;
+            return s.cost.latin_penalty;
         }
         if is_kanji(c) {
             has_kanji = true;
@@ -53,11 +30,11 @@ pub fn script_cost(surface: &str) -> i64 {
         }
     }
     if has_kanji && has_kana {
-        -MIXED_SCRIPT_BONUS
+        -s.cost.mixed_script_bonus
     } else if has_kanji {
-        -PURE_KANJI_BONUS
+        -s.cost.pure_kanji_bonus
     } else if all_katakana {
-        KATAKANA_PENALTY
+        s.cost.katakana_penalty
     } else {
         0
     }
@@ -89,15 +66,12 @@ impl<'a> DefaultCostFunction<'a> {
 
 impl CostFunction for DefaultCostFunction<'_> {
     fn word_cost(&self, node: &LatticeNode) -> i64 {
+        let seg_penalty = settings().cost.segment_penalty;
         let is_fw = self
             .conn
             .map(|c| c.is_function_word(node.left_id))
             .unwrap_or(false);
-        let penalty = if is_fw {
-            SEGMENT_PENALTY / 2
-        } else {
-            SEGMENT_PENALTY
-        };
+        let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
         node.cost as i64 + penalty
     }
 

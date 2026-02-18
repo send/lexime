@@ -54,6 +54,20 @@ class AppContext {
             atPath: logDir, withIntermediateDirectories: true)
         traceInit(logDir: logDir)
 
+        // Load custom settings if present
+        let settingsPath = appSupport
+            .appendingPathComponent("Lexime/settings.toml").path
+        if FileManager.default.fileExists(atPath: settingsPath) {
+            do {
+                try settingsLoadConfig(path: settingsPath)
+                NSLog("Lexime: Custom settings loaded from %@", settingsPath)
+            } catch {
+                NSLog("Lexime: settings config error at %@: %@",
+                      settingsPath, "\(error)")
+                // Embedded defaults will be used
+            }
+        }
+
         // Load custom romaji config if present
         let romajiPath = appSupport
             .appendingPathComponent("Lexime/romaji.toml").path
