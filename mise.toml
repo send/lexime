@@ -129,6 +129,7 @@ sources = [
   "engine/data/lexime.conn",
   "Info.plist",
   "Resources/icon.tiff",
+  "Resources/icon-roman.tiff",
   "Resources/en.lproj/InfoPlist.strings",
   "Resources/ja.lproj/InfoPlist.strings",
 ]
@@ -153,6 +154,7 @@ lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime
 rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
+cp Resources/icon-roman.tiff "$RES/icon-roman.tiff"
 cp -R Resources/en.lproj "$RES/en.lproj"
 cp -R Resources/ja.lproj "$RES/ja.lproj"
 cp engine/data/lexime.dict "$RES/"
@@ -162,6 +164,10 @@ if [ -f data/zenz-v3.1-Q5_K_M.gguf ]; then
 fi
 codesign -f -s - "$APP"
 echo "Build complete: $APP"
+
+# Check if JIS keyCode 10 workaround is still needed
+swiftc -framework Carbon -framework Cocoa scripts/check-jis-keycode10.swift \
+  -o /tmp/check-jis-keycode10 2>/dev/null && /tmp/check-jis-keycode10 || true
 """
 
 [tasks.install]

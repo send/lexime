@@ -20,6 +20,9 @@ class LeximeInputController: IMKInputController {
     let candidateManager = CandidateManager()
     let ghostManager = GhostTextManager()
 
+    private static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
+    private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
+
     private static var hasShownDictWarning = false
     private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
@@ -103,7 +106,12 @@ class LeximeInputController: IMKInputController {
         // Invalidate any pending async candidate results
         candidateManager.invalidate()
 
-        let text = event.characters ?? ""
+        let text: String
+        if let fix = Self.jisKeyCodeFix[event.keyCode] {
+            text = dominated.contains(.shift) ? fix.shifted : fix.normal
+        } else {
+            text = event.characters ?? ""
+        }
         let resp = session.handleKey(keyCode: event.keyCode, text: text, flags: flags)
         applyEvents(resp, client: client)
         return resp.consumed
@@ -212,6 +220,35 @@ class LeximeInputController: IMKInputController {
         AppContext.shared.candidatePanel.showNotification(text: names[next], cursorRect: rect)
     }
 
+    /// Workaround for macOS bug: keyCode 10 (kVK_ISO_Section) returns § instead
+    /// of ] on JIS keyboards. Detected at runtime via UCKeyTranslate; automatically
+    /// disables when macOS fixes the issue. `mise run build` also checks and prints
+    /// a banner when the workaround becomes removable.
+    private static let jisKeyCodeFix: [UInt16: (normal: String, shifted: String)] = {
+        guard KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardJIS else { return [:] }
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let dataRef = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else { return [:] }
+        let data = Unmanaged<CFData>.fromOpaque(dataRef).takeUnretainedValue() as Data
+        let needsFix = data.withUnsafeBytes { buf -> Bool in
+            guard let ptr = buf.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self)
+            else { return false }
+            var dead: UInt32 = 0, len: Int = 0, chars = [UniChar](repeating: 0, count: 4)
+            let s = UCKeyTranslate(
+                ptr, 10, UInt16(kUCKeyActionDown), 0,
+                UInt32(LMGetKbdType()), UInt32(kUCKeyTranslateNoDeadKeysMask),
+                &dead, 4, &len, &chars)
+            guard s == noErr, len > 0 else { return false }
+            return String(utf16CodeUnits: chars, count: len) != "]"
+        }
+        if needsFix {
+            NSLog("Lexime: JIS keyCode 10 workaround ACTIVE (macOS returns § instead of ])")
+            return [10: (normal: "]", shifted: "}")]
+        }
+        NSLog("Lexime: JIS keyCode 10 workaround not needed — safe to remove")
+        return [:]
+    }()
+
     private func selectABCInputSource() {
         let conditions = [
             kTISPropertyInputSourceID as String: "com.apple.keylayout.ABC"
@@ -252,12 +289,29 @@ class LeximeInputController: IMKInputController {
         super.deactivateServer(sender)
     }
 
-    // Block IMKit's built-in mode switching during composition.
-    // IMKit calls setValue when Caps Lock or other mode keys are pressed.
-    // Passing these through during composition can trigger unwanted transformations
-    // (e.g. Shift-triggered katakana). We intentionally drop all mode changes
-    // while composing and let the engine handle mode via its own key handlers.
+    // Handle internal mode switching (Eisu → Roman, Kana → Japanese).
+    // macOS calls setValue when input mode changes (Eisu/Kana keys, menu bar selection).
+    // We intercept to toggle abc_passthrough in the Rust engine.
+    // Other mode changes (Caps Lock etc.) are blocked during composition.
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
+        let modeID = value as? String ?? ""
+
+        if modeID == Self.romanModeID {
+            if isComposing, let client = sender as? IMKTextInput {
+                let resp = session!.commit()
+                applyEvents(resp, client: client)
+            }
+            session?.setAbcPassthrough(enabled: true)
+            super.setValue(value, forTag: tag, client: sender)
+            return
+        }
+        if modeID == Self.japaneseModeID {
+            session?.setAbcPassthrough(enabled: false)
+            super.setValue(value, forTag: tag, client: sender)
+            return
+        }
+
+        // Block other mode changes (Caps Lock etc.) during composing
         if isComposing { return }
         super.setValue(value, forTag: tag, client: sender)
     }

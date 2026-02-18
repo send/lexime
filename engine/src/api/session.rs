@@ -166,6 +166,10 @@ impl LexSession {
             .set_conversion_mode(conversion_mode);
     }
 
+    fn set_abc_passthrough(&self, enabled: bool) {
+        self.session.lock().unwrap().set_abc_passthrough(enabled);
+    }
+
     fn committed_context(&self) -> String {
         self.session.lock().unwrap().committed_context()
     }
