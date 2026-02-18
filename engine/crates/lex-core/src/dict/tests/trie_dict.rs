@@ -227,6 +227,28 @@ fn test_predict_ranked_no_match() {
     assert!(results.is_empty());
 }
 
+#[test]
+fn test_open_mmap() {
+    let dict = sample_dict();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.dict");
+    dict.save(&path).unwrap();
+
+    let dict2 = TrieDictionary::open(&path).unwrap();
+    let r1 = dict.lookup("かんじ");
+    let r2 = dict2.lookup("かんじ");
+    assert_eq!(r1.len(), r2.len());
+    for (a, b) in r1.iter().zip(r2.iter()) {
+        assert_eq!(a.surface, b.surface);
+        assert_eq!(a.cost, b.cost);
+    }
+
+    // Verify predictive search also works with mmap-backed trie
+    let p1 = dict.predict("かん", 100);
+    let p2 = dict2.predict("かん", 100);
+    assert_eq!(p1.len(), p2.len());
+}
+
 // --- Integration tests (require compiled Mozc dictionary) ---
 
 #[test]

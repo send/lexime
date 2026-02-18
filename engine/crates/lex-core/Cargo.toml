@@ -13,7 +13,7 @@ neural = ["candle-core", "candle-nn", "dep:anyhow"]
 
 [dependencies]
 tracing = { workspace = true }
-lexime-trie = "0.1"
+lexime-trie = "0.2"
 serde = { workspace = true }
 bincode = "1"
 thiserror = { workspace = true }
