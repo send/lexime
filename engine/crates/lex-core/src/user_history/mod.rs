@@ -15,14 +15,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::dict::DictEntry;
+use crate::settings::settings;
 
 const MAGIC: &[u8; 4] = b"LXUD";
 const VERSION: u8 = 1;
-const MAX_UNIGRAMS: usize = 10_000;
-const MAX_BIGRAMS: usize = 10_000;
-const BOOST_PER_USE: i64 = 3000;
-const MAX_BOOST: i64 = 15000;
-const HALF_LIFE_HOURS: f64 = 168.0;
 
 #[derive(Clone)]
 pub struct UserHistory {
@@ -41,7 +37,8 @@ pub struct HistoryEntry {
 impl HistoryEntry {
     /// Compute boost score with time decay.
     fn boost(&self, now: u64) -> i64 {
-        let raw = (self.frequency as i64 * BOOST_PER_USE).min(MAX_BOOST);
+        let s = settings();
+        let raw = (self.frequency as i64 * s.history.boost_per_use).min(s.history.max_boost);
         (raw as f64 * decay(self.last_used, now)) as i64
     }
 }
@@ -79,7 +76,7 @@ pub fn now_epoch() -> u64 {
 
 fn decay(last_used: u64, now: u64) -> f64 {
     let hours = (now.saturating_sub(last_used)) as f64 / 3600.0;
-    1.0 / (1.0 + hours / HALF_LIFE_HOURS)
+    1.0 / (1.0 + hours / settings().history.half_life_hours)
 }
 
 /// Evict lowest-score entries from a nested HashMap when exceeding capacity.
@@ -338,8 +335,9 @@ impl UserHistory {
 
     /// Evict lowest-score entries when exceeding capacity.
     fn evict(&mut self) {
+        let s = settings();
         let now = now_epoch();
-        evict_map(&mut self.unigrams, MAX_UNIGRAMS, now);
-        evict_map(&mut self.bigrams, MAX_BIGRAMS, now);
+        evict_map(&mut self.unigrams, s.history.max_unigrams, now);
+        evict_map(&mut self.bigrams, s.history.max_bigrams, now);
     }
 }

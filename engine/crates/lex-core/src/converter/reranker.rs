@@ -1,20 +1,11 @@
 use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
+use crate::settings::settings;
 use crate::user_history::UserHistory;
 
 use super::cost::{conn_cost, script_cost};
 use super::viterbi::ScoredPath;
-
-/// Weight for the segment-length variance penalty.
-/// Penalises paths whose segments have very uneven reading lengths
-/// (e.g. 1-char + 3-char) in favour of more uniform splits (2+2).
-const LENGTH_VARIANCE_WEIGHT: i64 = 2000;
-
-/// Threshold for hard-filtering fragmented paths.
-/// Paths whose structure_cost exceeds the minimum by more than this value
-/// are dropped from the N-best pool. Inspired by Mozc's kStructureCostOffset (3453).
-const STRUCTURE_COST_FILTER: i64 = 4000;
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
@@ -48,7 +39,7 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
 
     // Step 2: Hard filter — drop paths exceeding min + threshold
     let min_sc = *structure_costs.iter().min().unwrap();
-    let threshold = min_sc + STRUCTURE_COST_FILTER;
+    let threshold = min_sc + settings().reranker.structure_cost_filter;
     if structure_costs.iter().any(|&sc| sc <= threshold) {
         let mut i = 0;
         let mut kept_costs = Vec::new();
@@ -89,7 +80,8 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
             let sum_sq_dev = n_i64 * sum_sq - sum * sum;
             // Divide by N² to get the true variance-based penalty:
             // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
-            path.viterbi_cost += sum_sq_dev * LENGTH_VARIANCE_WEIGHT / (n_i64 * n_i64);
+            path.viterbi_cost +=
+                sum_sq_dev * settings().reranker.length_variance_weight / (n_i64 * n_i64);
         }
 
         // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.

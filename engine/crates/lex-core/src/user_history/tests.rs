@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::settings::settings;
+
 use super::*;
 
 #[test]
@@ -61,13 +63,14 @@ fn test_open_nonexistent() {
 
 #[test]
 fn test_evict() {
+    let max_unigrams = settings().history.max_unigrams;
     let mut h = UserHistory::new();
-    // Insert MAX_UNIGRAMS + 1 entries
-    for i in 0..=MAX_UNIGRAMS {
+    // Insert max_unigrams + 1 entries
+    for i in 0..=max_unigrams {
         h.record(&[(format!("r{i}"), format!("s{i}"))]);
     }
     let count: usize = h.unigrams.values().map(|inner| inner.len()).sum();
-    assert!(count <= MAX_UNIGRAMS);
+    assert!(count <= max_unigrams);
 }
 
 #[test]

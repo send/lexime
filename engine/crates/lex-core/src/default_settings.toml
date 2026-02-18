@@ -1,0 +1,22 @@
+[cost]
+segment_penalty = 5000
+mixed_script_bonus = 3000
+katakana_penalty = 5000
+pure_kanji_bonus = 1000
+latin_penalty = 20000
+unknown_word_cost = 10000
+
+[reranker]
+length_variance_weight = 2000
+structure_cost_filter = 4000
+
+[history]
+boost_per_use = 3000
+max_boost = 15000
+half_life_hours = 168.0
+max_unigrams = 10000
+max_bigrams = 10000
+
+[candidates]
+nbest = 5
+max_results = 20
