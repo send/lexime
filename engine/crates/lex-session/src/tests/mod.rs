@@ -9,13 +9,13 @@ mod submode;
 
 use std::sync::Arc;
 
-use lex_core::dict::{DictEntry, TrieDictionary};
+use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
 use super::types::key;
 use super::InputSession;
 use super::KeyResponse;
 
-pub(super) fn make_test_dict() -> Arc<TrieDictionary> {
+pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
     let entries = vec![
         (
             "きょう".to_string(),

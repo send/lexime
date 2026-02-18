@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use lex_core::candidates::{generate_candidates, generate_prediction_candidates};
-use lex_core::dict::{DictEntry, TrieDictionary};
+use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
-fn bench_dict() -> Arc<TrieDictionary> {
+fn bench_dict() -> Arc<dyn Dictionary> {
     let entries = vec![
         (
             "きょう".into(),
