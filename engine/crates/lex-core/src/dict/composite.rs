@@ -35,7 +35,28 @@ fn dedup_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
     result
 }
 
-/// Merge search results by reading, deduplicating entries within each reading.
+/// Deduplicate entries by (surface, left_id, right_id), preserving POS variants.
+///
+/// Unlike `dedup_entries` (which collapses by surface only), this keeps all
+/// POS variants so that the Viterbi lattice can score connection costs correctly.
+fn merge_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
+    let mut best: HashMap<(String, u16, u16), DictEntry> = HashMap::new();
+    for e in entries {
+        let key = (e.surface.clone(), e.left_id, e.right_id);
+        best.entry(key)
+            .and_modify(|existing| {
+                if e.cost < existing.cost {
+                    *existing = e.clone();
+                }
+            })
+            .or_insert(e);
+    }
+    let mut result: Vec<DictEntry> = best.into_values().collect();
+    result.sort_by_key(|e| e.cost);
+    result
+}
+
+/// Merge search results by reading, preserving POS variants within each reading.
 fn merge_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut by_reading: HashMap<String, Vec<DictEntry>> = HashMap::new();
     for sr in results {
@@ -45,7 +66,7 @@ fn merge_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
         .into_iter()
         .map(|(reading, entries)| SearchResult {
             reading,
-            entries: dedup_entries(entries),
+            entries: merge_entries(entries),
         })
         .collect();
     merged.sort_by(|a, b| a.reading.cmp(&b.reading));
@@ -214,6 +235,36 @@ mod tests {
         let dict = CompositeDictionary::new(vec![layer_a(), layer_b()]);
         let results = dict.predict("きょう", 1);
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_preserves_pos_variants() {
+        // Same surface "で" with different POS IDs — both must survive
+        let layer = Arc::new(TrieDictionary::from_entries(vec![(
+            "で".to_string(),
+            vec![
+                DictEntry {
+                    surface: "で".to_string(),
+                    cost: 3000,
+                    left_id: 200, // 助詞
+                    right_id: 200,
+                },
+                DictEntry {
+                    surface: "で".to_string(),
+                    cost: 3500,
+                    left_id: 300, // 助動詞
+                    right_id: 300,
+                },
+            ],
+        )]));
+        let dict = CompositeDictionary::new(vec![layer]);
+        let results = dict.common_prefix_search("でてこない");
+        let de = results.iter().find(|r| r.reading == "で").unwrap();
+        // Both POS variants must be preserved for correct Viterbi scoring
+        assert_eq!(de.entries.len(), 2);
+        let pos_ids: Vec<u16> = de.entries.iter().map(|e| e.left_id).collect();
+        assert!(pos_ids.contains(&200));
+        assert!(pos_ids.contains(&300));
     }
 
     #[test]
