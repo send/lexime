@@ -5,4 +5,5 @@ pub mod dict;
 pub mod neural;
 pub mod romaji;
 pub mod unicode;
+pub mod user_dict;
 pub mod user_history;

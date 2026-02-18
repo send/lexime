@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::{Dictionary, TrieDictionary};
+use crate::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use crate::user_history::UserHistory;
 
-use super::LexError;
+use super::{LexError, LexUserDictionary};
 
 #[derive(uniffi::Object)]
 pub struct LexDictionary {
@@ -21,6 +21,27 @@ impl LexDictionary {
         Ok(Arc::new(Self {
             inner: Arc::new(dict),
         }))
+    }
+
+    #[uniffi::constructor]
+    fn open_with_user_dict(
+        path: String,
+        user_dict: Option<Arc<LexUserDictionary>>,
+    ) -> Result<Arc<Self>, LexError> {
+        let trie = TrieDictionary::open(Path::new(&path))
+            .map_err(|e: crate::dict::DictError| LexError::Io { msg: e.to_string() })?;
+
+        let inner: Arc<dyn Dictionary> = match user_dict {
+            Some(ud) => {
+                let trie_layer: Arc<dyn Dictionary> = Arc::new(trie);
+                let user_layer: Arc<dyn Dictionary> = Arc::clone(&ud.inner) as _;
+                let composite = CompositeDictionary::new(vec![trie_layer, user_layer]);
+                Arc::new(composite)
+            }
+            None => Arc::new(trie),
+        };
+
+        Ok(Arc::new(Self { inner }))
     }
 
     fn lookup(&self, reading: String) -> Vec<super::LexDictEntry> {

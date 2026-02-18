@@ -6,14 +6,16 @@ mod engine;
 mod resources;
 mod session;
 mod types;
+mod user_dict;
 
 pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
 pub use types::{
     LexCandidateResult, LexDictEntry, LexError, LexEvent, LexKeyResponse, LexRomajiConvert,
-    LexRomajiLookup, LexSegment,
+    LexRomajiLookup, LexSegment, LexUserWord,
 };
+pub use user_dict::LexUserDictionary;
 
 use std::path::Path;
 use std::sync::Arc;

@@ -13,6 +13,7 @@ use lex_core::converter::{
 };
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
+use lex_core::user_dict::UserDictionary;
 use lex_core::user_history::UserHistory;
 
 #[cfg(feature = "neural")]
@@ -143,6 +144,14 @@ enum Command {
         /// Path to the TOML file
         file: String,
     },
+    /// Manage user dictionary
+    UserDict {
+        /// User dictionary file (default: ~/Library/Application Support/Lexime/user_dict.lxuw)
+        #[arg(long)]
+        file: Option<String>,
+        #[command(subcommand)]
+        action: UserDictAction,
+    },
     /// Score N-best candidates with neural model (requires --features neural)
     #[cfg(feature = "neural")]
     NeuralScore {
@@ -203,6 +212,26 @@ enum Command {
         #[arg(long)]
         compare: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum UserDictAction {
+    /// Add a word
+    Add {
+        /// Reading (hiragana)
+        reading: String,
+        /// Surface form (kanji/kana)
+        surface: String,
+    },
+    /// Remove a word
+    Remove {
+        /// Reading (hiragana)
+        reading: String,
+        /// Surface form (kanji/kana)
+        surface: String,
+    },
+    /// List all registered words
+    List,
 }
 
 fn main() {
@@ -273,6 +302,7 @@ fn main() {
             left,
             right,
         } => conn_cost_cmd(&conn_file, left, right),
+        Command::UserDict { file, action } => user_dict_cmd(file.as_deref(), action),
         Command::RomajiExport => {
             print!("{}", lex_core::romaji::default_toml());
         }
@@ -795,6 +825,54 @@ fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: 
                 .map(|s| format!("{}({})", s.surface, s.reading))
                 .collect();
             println!("#{:>2}: {}", i + 1, segs.join(" | "));
+        }
+    }
+}
+
+fn default_user_dict_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    format!("{home}/Library/Application Support/Lexime/user_dict.lxuw")
+}
+
+fn user_dict_cmd(file: Option<&str>, action: UserDictAction) {
+    let path_str = file
+        .map(String::from)
+        .unwrap_or_else(default_user_dict_path);
+    let path = Path::new(&path_str);
+
+    let dict = die!(
+        UserDictionary::open(path),
+        "Error opening user dictionary: {}"
+    );
+
+    match action {
+        UserDictAction::Add { reading, surface } => {
+            if dict.register(&reading, &surface) {
+                die!(dict.save(path), "Error saving user dictionary: {}");
+                println!("Added: {reading} → {surface}");
+            } else {
+                println!("Already exists: {reading} → {surface}");
+            }
+        }
+        UserDictAction::Remove { reading, surface } => {
+            if dict.unregister(&reading, &surface) {
+                die!(dict.save(path), "Error saving user dictionary: {}");
+                println!("Removed: {reading} → {surface}");
+            } else {
+                println!("Not found: {reading} → {surface}");
+            }
+        }
+        UserDictAction::List => {
+            let entries = dict.list();
+            if entries.is_empty() {
+                println!("(empty)");
+            } else {
+                for (reading, surface) in &entries {
+                    println!("{reading}\t{surface}");
+                }
+                println!("---");
+                println!("{} entries", entries.len());
+            }
         }
     }
 }

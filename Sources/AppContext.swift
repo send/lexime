@@ -5,6 +5,7 @@ class AppContext {
 
     let engine: LexEngine?
     let historyPath: String
+    let userDictPath: String
     let candidatePanel = CandidatePanel()
 
     private init() {
@@ -14,7 +15,7 @@ class AppContext {
 
         // Load dictionary
         let dictPath = resourcePath + "/lexime.dict"
-        let dict: LexDictionary?
+        var dict: LexDictionary?
         do {
             let d = try LexDictionary.open(path: dictPath)
             NSLog("Lexime: Dictionary loaded from %@", dictPath)
@@ -44,6 +45,7 @@ class AppContext {
             fatalError("Lexime: Cannot find Application Support directory")
         }
         self.historyPath = appSupport.appendingPathComponent("Lexime/user_history.lxud").path
+        self.userDictPath = appSupport.appendingPathComponent("Lexime/user_dict.lxuw").path
 
         // Initialize tracing (no-op unless built with --features trace)
         let logDir = (NSSearchPathForDirectoriesInDomains(
@@ -63,6 +65,31 @@ class AppContext {
                 NSLog("Lexime: romaji config error at %@: %@",
                       romajiPath, "\(error)")
                 // Embedded default will be used
+            }
+        }
+
+        // Load user dictionary (optional — for custom word registration)
+        let userDict: LexUserDictionary?
+        do {
+            let ud = try LexUserDictionary.open(path: self.userDictPath)
+            NSLog("Lexime: User dictionary loaded from %@", self.userDictPath)
+            userDict = ud
+        } catch {
+            NSLog("Lexime: Failed to open user dictionary at %@: %@",
+                  self.userDictPath, "\(error)")
+            userDict = nil
+        }
+
+        // Reload dict with user dictionary layer if available
+        if userDict != nil, dict != nil {
+            do {
+                let composite = try LexDictionary.openWithUserDict(
+                    path: dictPath, userDict: userDict)
+                NSLog("Lexime: Composite dictionary created (system + user)")
+                dict = composite
+            } catch {
+                NSLog("Lexime: Failed to create composite dictionary: %@", "\(error)")
+                // Fall back to system-only dict (already set)
             }
         }
 
@@ -95,7 +122,9 @@ class AppContext {
 
         // Assemble engine (requires at least a dictionary)
         if let dict {
-            self.engine = LexEngine(dict: dict, conn: conn, history: history, neural: neural)
+            self.engine = LexEngine(
+                dict: dict, conn: conn, history: history, neural: neural,
+                userDict: userDict)
         } else {
             self.engine = nil
         }
