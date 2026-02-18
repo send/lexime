@@ -52,6 +52,7 @@ impl From<lexime_trie::TrieError> for DictError {
             lexime_trie::TrieError::InvalidMagic => DictError::InvalidMagic,
             lexime_trie::TrieError::InvalidVersion => DictError::UnsupportedVersion(0),
             lexime_trie::TrieError::TruncatedData => DictError::InvalidHeader,
+            lexime_trie::TrieError::MisalignedData => DictError::Parse("misaligned data".into()),
         }
     }
 }

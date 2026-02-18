@@ -1,17 +1,39 @@
 use std::fs::{self, File};
 use std::path::Path;
 
-use lexime_trie::DoubleArray;
+use lexime_trie::{DoubleArray, DoubleArrayRef};
 use memmap2::Mmap;
 
 use super::{DictEntry, DictError, Dictionary, SearchResult};
 
 const MAGIC: &[u8; 4] = b"LXDX";
-const VERSION: u8 = 2;
-const HEADER_SIZE: usize = 4 + 1 + 4 + 4; // magic + version + trie_len + values_len = 13
+const VERSION: u8 = 3;
+const HEADER_SIZE: usize = 4 + 1 + 3 + 4 + 4; // magic + version + reserved(3) + trie_len + values_len = 16
+
+enum TrieStore {
+    Owned(DoubleArray<u8>),
+    MmapRef {
+        _mmap: Mmap,
+        trie: DoubleArrayRef<'static, u8>,
+    },
+}
+
+/// Dispatch a method call on the inner trie, avoiding `Box<dyn Iterator>`.
+///
+/// Each match arm produces a concrete iterator type, so the compiler can
+/// monomorphize and inline the iteration instead of going through vtable
+/// dispatch + heap allocation.
+macro_rules! with_trie {
+    ($self:expr, |$t:ident| $body:expr) => {
+        match &$self.trie {
+            TrieStore::Owned($t) => $body,
+            TrieStore::MmapRef { trie: $t, .. } => $body,
+        }
+    };
+}
 
 pub struct TrieDictionary {
-    trie: DoubleArray<u8>,
+    trie: TrieStore,
     values: Vec<Vec<DictEntry>>,
 }
 
@@ -27,11 +49,21 @@ impl TrieDictionary {
         let trie = DoubleArray::<u8>::build(&keys);
         let values: Vec<Vec<DictEntry>> = pairs.into_iter().map(|(_, v)| v).collect();
 
-        Self { trie, values }
+        Self {
+            trie: TrieStore::Owned(trie),
+            values,
+        }
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, DictError> {
-        let trie_data = self.trie.as_bytes();
+        let trie_data = match &self.trie {
+            TrieStore::Owned(da) => da.as_bytes(),
+            TrieStore::MmapRef { .. } => {
+                return Err(DictError::Parse(
+                    "cannot serialize mmap-backed dictionary".into(),
+                ));
+            }
+        };
         let values_data = bincode::serialize(&self.values).map_err(DictError::Serialize)?;
 
         let trie_len: u32 = trie_data
@@ -46,6 +78,7 @@ impl TrieDictionary {
         let mut buf = Vec::with_capacity(HEADER_SIZE + trie_data.len() + values_data.len());
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
+        buf.extend_from_slice(&[0u8; 3]); // reserved padding
         buf.extend_from_slice(&trie_len.to_le_bytes());
         buf.extend_from_slice(&values_len.to_le_bytes());
         buf.extend_from_slice(&trie_data);
@@ -68,8 +101,8 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_le_bytes(data[5..9].try_into().unwrap()) as usize;
-        let values_len = u32::from_le_bytes(data[9..13].try_into().unwrap()) as usize;
+        let trie_len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let values_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
 
         let expected = HEADER_SIZE + trie_len + values_len;
         if data.len() < expected {
@@ -84,19 +117,67 @@ impl TrieDictionary {
             bincode::deserialize(&data[values_start..values_start + values_len])
                 .map_err(DictError::Deserialize)?;
 
-        Ok(Self { trie, values })
+        Ok(Self {
+            trie: TrieStore::Owned(trie),
+            values,
+        })
     }
 
-    /// Open a dictionary file, using mmap to avoid doubling peak memory.
+    /// Open a dictionary file, using mmap for zero-copy trie access.
     ///
-    /// The trie is deserialized from the mapped region (avoiding a separate
-    /// heap allocation for the raw file bytes), then the mapping is dropped.
+    /// The trie data is referenced directly from the memory-mapped region
+    /// via `DoubleArrayRef`, eliminating ~70MB of heap allocation for the
+    /// trie nodes/siblings arrays. The values (strings) are still
+    /// deserialized onto the heap.
     pub fn open(path: &Path) -> Result<Self, DictError> {
         let file = File::open(path)?;
         // SAFETY: The file is opened read-only and the mapping is immutable.
-        // The Mmap is dropped after deserialization completes below.
         let mmap = unsafe { Mmap::map(&file)? };
-        Self::from_bytes(&mmap)
+
+        if mmap.len() < 5 {
+            return Err(DictError::InvalidHeader);
+        }
+        if &mmap[..4] != MAGIC {
+            return Err(DictError::InvalidMagic);
+        }
+        if mmap[4] != VERSION {
+            return Err(DictError::UnsupportedVersion(mmap[4]));
+        }
+        if mmap.len() < HEADER_SIZE {
+            return Err(DictError::InvalidHeader);
+        }
+
+        let trie_len = u32::from_le_bytes(mmap[8..12].try_into().unwrap()) as usize;
+        let values_len = u32::from_le_bytes(mmap[12..16].try_into().unwrap()) as usize;
+
+        let expected = HEADER_SIZE + trie_len + values_len;
+        if mmap.len() < expected {
+            return Err(DictError::InvalidHeader);
+        }
+
+        let trie_start = HEADER_SIZE;
+        let values_start = trie_start + trie_len;
+
+        // Zero-copy trie from mmap
+        let trie_ref =
+            DoubleArrayRef::<u8>::from_bytes_ref(&mmap[trie_start..trie_start + trie_len])?;
+        // SAFETY: The mmap is stored in TrieStore::MmapRef._mmap and will be dropped
+        // after the trie reference (Rust drops fields in declaration order).
+        let trie_ref = unsafe {
+            std::mem::transmute::<DoubleArrayRef<'_, u8>, DoubleArrayRef<'static, u8>>(trie_ref)
+        };
+
+        let values: Vec<Vec<DictEntry>> =
+            bincode::deserialize(&mmap[values_start..values_start + values_len])
+                .map_err(DictError::Deserialize)?;
+
+        Ok(Self {
+            trie: TrieStore::MmapRef {
+                _mmap: mmap,
+                trie: trie_ref,
+            },
+            values,
+        })
     }
 
     pub fn save(&self, path: &Path) -> Result<(), DictError> {
@@ -105,11 +186,20 @@ impl TrieDictionary {
 
     /// Iterate over all `(reading, entries)` pairs in the trie.
     pub fn iter(&self) -> impl Iterator<Item = (String, &Vec<DictEntry>)> {
-        self.trie.predictive_search(b"").map(move |m| {
-            let reading = String::from_utf8(m.key)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            (reading, &self.values[m.value_id as usize])
-        })
+        // Collect into Vec so the return type is concrete regardless of TrieStore variant.
+        let pairs: Vec<_> = with_trie!(self, |t| {
+            t.predictive_search(b"")
+                .map(|m| {
+                    let reading = String::from_utf8(m.key)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                    let idx = m.value_id as usize;
+                    (reading, idx)
+                })
+                .collect()
+        });
+        pairs
+            .into_iter()
+            .map(move |(reading, idx)| (reading, &self.values[idx]))
     }
 
     /// Returns (reading_count, entry_count).
@@ -122,22 +212,24 @@ impl TrieDictionary {
 
 impl Dictionary for TrieDictionary {
     fn lookup(&self, reading: &str) -> Vec<DictEntry> {
-        self.trie
-            .exact_match(reading.as_bytes())
-            .map(|id| self.values[id as usize].to_vec())
-            .unwrap_or_default()
+        with_trie!(self, |t| {
+            t.exact_match(reading.as_bytes())
+                .map(|id| self.values[id as usize].to_vec())
+                .unwrap_or_default()
+        })
     }
 
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
-        self.trie
-            .predictive_search(prefix.as_bytes())
-            .take(max_results)
-            .map(|m| SearchResult {
-                reading: String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-                entries: self.values[m.value_id as usize].to_vec(),
-            })
-            .collect()
+        with_trie!(self, |t| {
+            t.predictive_search(prefix.as_bytes())
+                .take(max_results)
+                .map(|m| SearchResult {
+                    reading: String::from_utf8(m.key)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                    entries: self.values[m.value_id as usize].to_vec(),
+                })
+                .collect()
+        })
     }
 
     fn predict_ranked(
@@ -147,19 +239,17 @@ impl Dictionary for TrieDictionary {
         scan_limit: usize,
     ) -> Vec<(String, DictEntry)> {
         let mut flat: Vec<(String, DictEntry)> = Vec::new();
-        for m in self
-            .trie
-            .predictive_search(prefix.as_bytes())
-            .take(scan_limit)
-        {
-            let reading = String::from_utf8(m.key)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            let entries = &self.values[m.value_id as usize];
-            flat.reserve(entries.len());
-            for e in entries {
-                flat.push((reading.clone(), e.clone()));
+        with_trie!(self, |t| {
+            for m in t.predictive_search(prefix.as_bytes()).take(scan_limit) {
+                let reading = String::from_utf8(m.key)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                let entries = &self.values[m.value_id as usize];
+                flat.reserve(entries.len());
+                for e in entries {
+                    flat.push((reading.clone(), e.clone()));
+                }
             }
-        }
+        });
 
         flat.sort_by_key(|(_, e)| e.cost);
 
@@ -172,15 +262,16 @@ impl Dictionary for TrieDictionary {
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
         let query_bytes = query.as_bytes();
-        self.trie
-            .common_prefix_search(query_bytes)
-            .filter_map(|m| {
-                let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
-                Some(SearchResult {
-                    reading: reading.to_string(),
-                    entries: self.values[m.value_id as usize].to_vec(),
+        with_trie!(self, |t| {
+            t.common_prefix_search(query_bytes)
+                .filter_map(|m| {
+                    let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
+                    Some(SearchResult {
+                        reading: reading.to_string(),
+                        entries: self.values[m.value_id as usize].to_vec(),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
     }
 }
