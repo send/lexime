@@ -38,6 +38,12 @@ pub struct LexCandidateResult {
 }
 
 #[derive(uniffi::Record)]
+pub struct LexUserWord {
+    pub reading: String,
+    pub surface: String,
+}
+
+#[derive(uniffi::Record)]
 pub struct LexRomajiConvert {
     pub composed_kana: String,
     pub pending_romaji: String,

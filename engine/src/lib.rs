@@ -6,6 +6,7 @@ pub use lex_core::dict;
 pub use lex_core::neural;
 pub use lex_core::romaji;
 pub use lex_core::unicode;
+pub use lex_core::user_dict;
 pub use lex_core::user_history;
 
 // Re-export lex-session: api/ の use crate::session::* を変更不要にする
