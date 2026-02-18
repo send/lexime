@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::path::Path;
 
-use lexime_trie::{DoubleArray, DoubleArrayRef, PrefixMatch, SearchMatch};
+use lexime_trie::{DoubleArray, DoubleArrayRef};
 use memmap2::Mmap;
 
 use super::{DictEntry, DictError, Dictionary, SearchResult};
@@ -18,33 +18,18 @@ enum TrieStore {
     },
 }
 
-impl TrieStore {
-    fn exact_match(&self, key: &[u8]) -> Option<u32> {
-        match self {
-            Self::Owned(da) => da.exact_match(key),
-            Self::MmapRef { trie, .. } => trie.exact_match(key),
+/// Dispatch a method call on the inner trie, avoiding `Box<dyn Iterator>`.
+///
+/// Each match arm produces a concrete iterator type, so the compiler can
+/// monomorphize and inline the iteration instead of going through vtable
+/// dispatch + heap allocation.
+macro_rules! with_trie {
+    ($self:expr, |$t:ident| $body:expr) => {
+        match &$self.trie {
+            TrieStore::Owned($t) => $body,
+            TrieStore::MmapRef { trie: $t, .. } => $body,
         }
-    }
-
-    fn common_prefix_search<'a>(
-        &'a self,
-        query: &'a [u8],
-    ) -> Box<dyn Iterator<Item = PrefixMatch> + 'a> {
-        match self {
-            Self::Owned(da) => Box::new(da.common_prefix_search(query)),
-            Self::MmapRef { trie, .. } => Box::new(trie.common_prefix_search(query)),
-        }
-    }
-
-    fn predictive_search<'a>(
-        &'a self,
-        prefix: &'a [u8],
-    ) -> Box<dyn Iterator<Item = SearchMatch<u8>> + 'a> {
-        match self {
-            Self::Owned(da) => Box::new(da.predictive_search(prefix)),
-            Self::MmapRef { trie, .. } => Box::new(trie.predictive_search(prefix)),
-        }
-    }
+    };
 }
 
 pub struct TrieDictionary {
@@ -201,11 +186,20 @@ impl TrieDictionary {
 
     /// Iterate over all `(reading, entries)` pairs in the trie.
     pub fn iter(&self) -> impl Iterator<Item = (String, &Vec<DictEntry>)> {
-        self.trie.predictive_search(b"").map(move |m| {
-            let reading = String::from_utf8(m.key)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            (reading, &self.values[m.value_id as usize])
-        })
+        // Collect into Vec so the return type is concrete regardless of TrieStore variant.
+        let pairs: Vec<_> = with_trie!(self, |t| {
+            t.predictive_search(b"")
+                .map(|m| {
+                    let reading = String::from_utf8(m.key)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                    let idx = m.value_id as usize;
+                    (reading, idx)
+                })
+                .collect()
+        });
+        pairs
+            .into_iter()
+            .map(move |(reading, idx)| (reading, &self.values[idx]))
     }
 
     /// Returns (reading_count, entry_count).
@@ -218,22 +212,24 @@ impl TrieDictionary {
 
 impl Dictionary for TrieDictionary {
     fn lookup(&self, reading: &str) -> Vec<DictEntry> {
-        self.trie
-            .exact_match(reading.as_bytes())
-            .map(|id| self.values[id as usize].to_vec())
-            .unwrap_or_default()
+        with_trie!(self, |t| {
+            t.exact_match(reading.as_bytes())
+                .map(|id| self.values[id as usize].to_vec())
+                .unwrap_or_default()
+        })
     }
 
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
-        self.trie
-            .predictive_search(prefix.as_bytes())
-            .take(max_results)
-            .map(|m| SearchResult {
-                reading: String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-                entries: self.values[m.value_id as usize].to_vec(),
-            })
-            .collect()
+        with_trie!(self, |t| {
+            t.predictive_search(prefix.as_bytes())
+                .take(max_results)
+                .map(|m| SearchResult {
+                    reading: String::from_utf8(m.key)
+                        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                    entries: self.values[m.value_id as usize].to_vec(),
+                })
+                .collect()
+        })
     }
 
     fn predict_ranked(
@@ -243,19 +239,17 @@ impl Dictionary for TrieDictionary {
         scan_limit: usize,
     ) -> Vec<(String, DictEntry)> {
         let mut flat: Vec<(String, DictEntry)> = Vec::new();
-        for m in self
-            .trie
-            .predictive_search(prefix.as_bytes())
-            .take(scan_limit)
-        {
-            let reading = String::from_utf8(m.key)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            let entries = &self.values[m.value_id as usize];
-            flat.reserve(entries.len());
-            for e in entries {
-                flat.push((reading.clone(), e.clone()));
+        with_trie!(self, |t| {
+            for m in t.predictive_search(prefix.as_bytes()).take(scan_limit) {
+                let reading = String::from_utf8(m.key)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                let entries = &self.values[m.value_id as usize];
+                flat.reserve(entries.len());
+                for e in entries {
+                    flat.push((reading.clone(), e.clone()));
+                }
             }
-        }
+        });
 
         flat.sort_by_key(|(_, e)| e.cost);
 
@@ -268,15 +262,16 @@ impl Dictionary for TrieDictionary {
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
         let query_bytes = query.as_bytes();
-        self.trie
-            .common_prefix_search(query_bytes)
-            .filter_map(|m| {
-                let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
-                Some(SearchResult {
-                    reading: reading.to_string(),
-                    entries: self.values[m.value_id as usize].to_vec(),
+        with_trie!(self, |t| {
+            t.common_prefix_search(query_bytes)
+                .filter_map(|m| {
+                    let reading = std::str::from_utf8(&query_bytes[..m.len]).ok()?;
+                    Some(SearchResult {
+                        reading: reading.to_string(),
+                        entries: self.values[m.value_id as usize].to_vec(),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
     }
 }
