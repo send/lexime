@@ -9,7 +9,7 @@ use super::LexError;
 
 #[derive(uniffi::Object)]
 pub struct LexDictionary {
-    pub(crate) inner: Arc<TrieDictionary>,
+    pub(crate) inner: Arc<dyn Dictionary>,
 }
 
 #[uniffi::export]

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::candidates::CandidateResponse;
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::TrieDictionary;
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ pub(crate) struct AsyncWorker {
 
 impl AsyncWorker {
     pub fn new(
-        dict: Arc<TrieDictionary>,
+        dict: Arc<dyn Dictionary>,
         conn: Option<Arc<ConnectionMatrix>>,
         history: Option<Arc<RwLock<UserHistory>>>,
         #[cfg(feature = "neural")] neural: Option<Arc<Mutex<crate::neural::NeuralScorer>>>,
@@ -163,7 +163,7 @@ fn candidate_worker(
     rx: mpsc::Receiver<CandidateWork>,
     tx: mpsc::Sender<CandidateResult>,
     gen: Arc<AtomicU64>,
-    dict: Arc<TrieDictionary>,
+    dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
     history: Option<Arc<RwLock<UserHistory>>>,
     #[cfg(feature = "neural")] neural: Option<Arc<Mutex<crate::neural::NeuralScorer>>>,

@@ -3,6 +3,7 @@
 //! `TrieDictionary` stores reading → entries mappings in a serialized trie.
 //! `ConnectionMatrix` stores POS bigram transition costs for Viterbi scoring.
 
+mod composite;
 pub mod connection;
 mod connection_io;
 mod entry;
@@ -10,6 +11,7 @@ mod entry;
 mod tests;
 mod trie_dict;
 
+pub use composite::CompositeDictionary;
 pub use entry::DictEntry;
 pub use trie_dict::TrieDictionary;
 

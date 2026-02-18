@@ -20,7 +20,7 @@ mod tests;
 use std::sync::{Arc, RwLock};
 
 use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::TrieDictionary;
+use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
 pub use types::{
@@ -32,7 +32,7 @@ use types::{Composition, GhostState, SessionConfig, SessionState, Submode};
 
 /// Stateful IME session encapsulating all input processing logic.
 pub struct InputSession {
-    dict: Arc<TrieDictionary>,
+    dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
     history: Option<Arc<RwLock<UserHistory>>>,
 
@@ -54,7 +54,7 @@ pub struct InputSession {
 
 impl InputSession {
     pub fn new(
-        dict: Arc<TrieDictionary>,
+        dict: Arc<dyn Dictionary>,
         conn: Option<Arc<ConnectionMatrix>>,
         history: Option<Arc<RwLock<UserHistory>>>,
     ) -> Self {

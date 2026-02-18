@@ -5,6 +5,8 @@
 
 use proptest::prelude::*;
 
+use lex_core::dict::Dictionary;
+
 use super::make_test_dict;
 use crate::types::key;
 use crate::{CandidateAction, ConversionMode, InputSession};
@@ -83,7 +85,7 @@ fn arb_action() -> impl Strategy<Value = Action> {
 fn execute_action(
     session: &mut InputSession,
     action: &Action,
-    dict: &lex_core::dict::TrieDictionary,
+    dict: &dyn Dictionary,
 ) -> Option<crate::KeyResponse> {
     match action {
         Action::TypeRomaji(ch) => {
@@ -252,7 +254,7 @@ proptest! {
         let mut session = InputSession::new(dict.clone(), None, None);
         for action in &actions {
             let was_composing = session.is_composing();
-            if let Some(resp) = execute_action(&mut session, action, &dict) {
+            if let Some(resp) = execute_action(&mut session, action, &*dict) {
                 assert_invariants(&session, &resp, action, was_composing);
             }
         }
@@ -267,7 +269,7 @@ proptest! {
         session.set_defer_candidates(true);
         for action in &actions {
             let was_composing = session.is_composing();
-            if let Some(resp) = execute_action(&mut session, action, &dict) {
+            if let Some(resp) = execute_action(&mut session, action, &*dict) {
                 assert_invariants(&session, &resp, action, was_composing);
             }
         }

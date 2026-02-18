@@ -139,7 +139,7 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
 
     // Helper: complete one async candidate cycle.
     // Returns the response from receive_candidates (None if stale).
-    fn complete_cycle(session: &mut InputSession, dict: &TrieDictionary) -> Option<KeyResponse> {
+    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
         let reading = session.comp().kana.clone();
         if reading.is_empty() {
             return None;
@@ -151,17 +151,17 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
     // Build up "きょうはいいてんき" with async cycles after each romaji group.
     // Each cycle increments the stability counter (first segment = "きょう").
     type_string(&mut session, "kyou"); // "きょう"
-    let r = complete_cycle(&mut session, &dict);
+    let r = complete_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
 
     type_string(&mut session, "ha"); // "きょうは"
-    let r = complete_cycle(&mut session, &dict);
+    let r = complete_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
 
     type_string(&mut session, "ii"); // "きょうはいい"
-    let r = complete_cycle(&mut session, &dict);
+    let r = complete_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(
         r.unwrap().commit.is_none(),
@@ -169,7 +169,7 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
     );
 
     type_string(&mut session, "tenki"); // "きょうはいいてんき"
-    let r = complete_cycle(&mut session, &dict);
+    let r = complete_cycle(&mut session, &*dict);
     let resp = r.expect("receive_candidates should return a response");
 
     // Auto-commit should fire: first segment committed, remaining shown
@@ -209,7 +209,7 @@ fn test_predictive_mode_no_auto_commit() {
     session.set_conversion_mode(ConversionMode::Predictive);
     session.set_defer_candidates(true);
 
-    fn complete_cycle(session: &mut InputSession, dict: &TrieDictionary) -> Option<KeyResponse> {
+    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
         let reading = session.comp().kana.clone();
         if reading.is_empty() {
             return None;
@@ -220,13 +220,13 @@ fn test_predictive_mode_no_auto_commit() {
 
     // Build up enough input that would trigger auto-commit in Standard mode
     type_string(&mut session, "kyou");
-    complete_cycle(&mut session, &dict);
+    complete_cycle(&mut session, &*dict);
     type_string(&mut session, "ha");
-    complete_cycle(&mut session, &dict);
+    complete_cycle(&mut session, &*dict);
     type_string(&mut session, "ii");
-    complete_cycle(&mut session, &dict);
+    complete_cycle(&mut session, &*dict);
     type_string(&mut session, "tenki");
-    let r = complete_cycle(&mut session, &dict);
+    let r = complete_cycle(&mut session, &*dict);
 
     // In Predictive mode, auto-commit should NOT fire
     if let Some(resp) = r {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lex_core::candidates::CandidateResponse;
 use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::TrieDictionary;
+use lex_core::dict::Dictionary;
 
 use super::type_string;
 use crate::types::MAX_CANDIDATES;
@@ -14,12 +14,12 @@ use crate::InputSession;
 /// and provides helpers that drive the full type → generate → receive → commit cycle.
 pub(super) struct HeadlessIME {
     pub session: InputSession,
-    dict: Arc<TrieDictionary>,
+    dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
 }
 
 impl HeadlessIME {
-    pub fn new(dict: Arc<TrieDictionary>, conn: Option<Arc<ConnectionMatrix>>) -> Self {
+    pub fn new(dict: Arc<dyn Dictionary>, conn: Option<Arc<ConnectionMatrix>>) -> Self {
         let mut session = InputSession::new(dict.clone(), conn.clone(), None);
         session.set_defer_candidates(true);
         Self {
