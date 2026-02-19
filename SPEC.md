@@ -1,4 +1,4 @@
-# Lexime 仕様書 (v1.1)
+# Lexime 仕様書 (v2.0)
 
 ## 概要
 
@@ -8,27 +8,33 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 ## アーキテクチャ
 
 ```
-┌──────────────────────────────────────────────┐
-│  macOS (InputMethodKit)                      │
-│  ┌────────────────────────────────────────┐  │
-│  │  Swift: IME Frontend                   │  │
-│  │  - LeximeInputController (状態管理)     │  │
-│  │  - KeyHandlers (キー入力処理)           │  │
-│  │  - MarkedTextManager (インライン表示)   │  │
-│  │  - CandidatePanel (候補ウィンドウ)      │  │
-│  │  - DictBridge (FFI ラッパー)            │  │
-│  └─────────────┬──────────────────────────┘  │
-│                │ FFI (C ABI)                  │
-│  ┌─────────────▼──────────────────────────┐  │
-│  │  Rust: 変換エンジン (liblex_engine)     │  │
-│  │  - romaji (ローマ字→かな変換)          │  │
-│  │  - candidates (統一候補生成)            │  │
-│  │  - dict (辞書検索・予測)                │  │
-│  │  - converter (ラティス構築・Viterbi)    │  │
-│  │  - user_history (学習・ランキング)      │  │
-│  │  - lib.rs (FFI 関数)                   │  │
-│  └────────────────────────────────────────┘  │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  macOS (InputMethodKit)                          │
+│  ┌────────────────────────────────────────────┐  │
+│  │  Swift: IME Frontend                       │  │
+│  │  - AppContext (リソース初期化)              │  │
+│  │  - LeximeInputController (イベント駆動)    │  │
+│  │  - MarkedTextManager (インライン表示)       │  │
+│  │  - CandidateManager (候補状態管理)          │  │
+│  │  - GhostTextManager (ゴースト表示)          │  │
+│  │  - CandidatePanel (候補ウィンドウ)          │  │
+│  └─────────────┬──────────────────────────────┘  │
+│                │ UniFFI (自動生成バインディング)   │
+│  ┌─────────────▼──────────────────────────────┐  │
+│  │  Rust: 変換エンジン (lex_engine)            │  │
+│  │  ┌──────────────────────────────────────┐  │  │
+│  │  │  api/ (UniFFI エクスポート層)         │  │  │
+│  │  │  async_worker (候補・ゴースト非同期)  │  │  │
+│  │  ├──────────────────────────────────────┤  │  │
+│  │  │  lex-session (セッション状態機械)     │  │  │
+│  │  ├──────────────────────────────────────┤  │  │
+│  │  │  lex-core (計算エンジン)              │  │  │
+│  │  │  romaji / candidates / converter /   │  │  │
+│  │  │  dict / user_history / user_dict /   │  │  │
+│  │  │  neural / settings                   │  │  │
+│  │  └──────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────┘
 ```
 
 ## コンポーネント詳細
@@ -37,26 +43,63 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 
 | ファイル | 役割 |
 |---|---|
-| `main.swift` | エントリポイント。辞書・接続行列・学習データの読み込み、IMKServer 起動 |
-| `LeximeInputController.swift` | IMKInputController サブクラス。状態管理、学習記録 |
-| `KeyHandlers.swift` | idle / composing 各状態のキー入力ハンドラ |
-| `MarkedTextManager.swift` | インライン表示（未確定文字列） |
-| `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション） |
-| `DictBridge.swift` | Rust FFI のラッパー関数（romaji lookup / convert / generate candidates） |
-| `InputState.swift` | `InputState` enum（idle / composing）、`InputSubmode` enum（japanese / english） |
+| `main.swift` | エントリポイント。AppContext 初期化、IMKServer 起動 |
+| `AppContext.swift` | シングルトン: 辞書・接続行列・学習データ・ユーザー辞書の読み込み、LexEngine 管理 |
+| `LeximeInputController.swift` | IMKInputController サブクラス。LexSession 保持、ポールタイマー管理、イベント実行 |
+| `MarkedTextManager.swift` | インライン表示（未確定文字列、点線下線） |
+| `CandidateManager.swift` | 候補リスト状態管理（surfaces, selectedIndex, generation counter） |
+| `GhostTextManager.swift` | ゴーストテキスト表示・消去 |
+| `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション、VoiceOver） |
 
-### Rust Engine (`engine/src/`)
+Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` の列を `applyEvents` ループで逐次適用する。
+
+### Rust Engine（ワークスペース構成）
+
+依存グラフ: `lex-engine → lex-session → lex-core`、`lex-cli → lex-core`
+
+#### lex_engine (engine/src/) — UniFFI ラッパー
 
 | モジュール | 内容 |
 |---|---|
-| `lib.rs` | FFI 関数 (39 関数)。C 互換構造体、メモリ管理（`OwnedVec` パターン） |
-| `romaji/` | ローマ字→かな変換。Trie（HashMap ベース）、141+ マッピング、促音・撥音・コラプス |
-| `candidates.rs` | 統一候補生成。句読点代替、予測 + Viterbi N-best + 辞書 lookup の統合・重複排除。予測モード（bigram chaining） |
-| `dict/` | `Dictionary` trait、`TrieDictionary`（bincode）、`ConnectionMatrix`（LXCX） |
-| `dict/source/` | `DictSource` trait、`MozcSource`、`SudachiSource`、`pos_map`（POS ID リマップ） |
-| `converter/` | `Lattice` 構築、`Viterbi` N-best 探索、`Reranker`、`CostFunction` trait |
-| `user_history/` | ユニグラム・バイグラム学習、LXUD 形式 |
-| `bin/dictool.rs` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info） |
+| `api/` | UniFFI エクスポート関数・型定義（engine, session, resources, types, user_dict） |
+| `async_worker.rs` | 候補・ゴーストテキストの非同期ワーカースレッド（mpsc, AtomicU64 staleness） |
+| `lib.rs` | `pub use lex_core::*; pub use lex_session as session;` + `uniffi::setup_scaffolding!()` |
+
+#### lex-core (engine/crates/lex-core/) — 計算エンジン
+
+| モジュール | 内容 |
+|---|---|
+| `romaji/` | ローマ字→かな変換。Trie + TOML 設定対応（`default_romaji.toml`, 306 エントリ） |
+| `candidates/` | 統一候補生成。CandidateStrategy enum（Standard / Predictive / Neural） |
+| `converter/` | Lattice 構築、Viterbi N-best、Reranker、Rewriter、CostFunction trait |
+| `dict/` | `Dictionary` trait、`TrieDictionary`、`CompositeDictionary`、`ConnectionMatrix` |
+| `user_history/` | ユニグラム・バイグラム学習、WAL、LXUD 形式 |
+| `user_dict/` | ユーザー辞書、LXUW 形式 |
+| `neural/` | GPT-2 (Zenzai) ニューラルスコアリング（feature gate: `--features neural`） |
+| `settings.rs` | 設定管理（`default_settings.toml`, OnceLock パターン） |
+| `unicode.rs` | Unicode ユーティリティ（ひらがな・カタカナ判定、変換） |
+| `numeric.rs` | 日本語数詞→数字変換（にじゅうさん → 23） |
+
+#### lex-session (engine/crates/lex-session/) — セッション状態機械
+
+| モジュール | 内容 |
+|---|---|
+| `key_handlers.rs` | キー入力処理（idle / composing 分岐） |
+| `composing.rs` | 入力中状態管理（Composition の操作） |
+| `commit.rs` | 確定操作 |
+| `auto_commit.rs` | 自動確定ロジック（安定度トラッカー、ASCII グルーピング） |
+| `submode.rs` | サブモード管理（japanese / english） |
+| `ghost.rs` | ゴーストテキスト生成リクエスト |
+| `candidate_gen.rs` | 候補生成ディスパッチ |
+| `response.rs` | レスポンスビルダー（free functions） |
+| `types/` | セッション型定義（SessionConfig, GhostState）、Composition |
+
+#### lex-cli (engine/crates/lex-cli/) — CLI ツール
+
+| バイナリ | 内容 |
+|---|---|
+| `dictool` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info / user-dict / romaji-export / romaji-validate / settings-export / settings-validate / neural-score） |
+| `lextool` | 変換テスト CLI |
 
 ### 辞書データ
 
@@ -66,23 +109,66 @@ Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
 - **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）。V3 フォーマットでは POS ロールメタデータ（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）を埋め込み、文節グルーピングに使用
 - POS ID ペアの遷移コストを O(1) で参照
 
-### FFI (C ABI)
+### UniFFI バインディング
 
-`engine/include/engine.h` で公開する 39 関数:
+UniFFI proc-macro で Swift バインディングを自動生成。`generated/lex_engine.swift` + `lex_engineFFI.modulemap`。
 
-| カテゴリ | 関数 |
+**エクスポート型**:
+
+| 型 | 種類 | 説明 |
+|---|---|---|
+| `LexEngine` | Object | 変換エンジン本体。セッション生成、ユーザー辞書操作 |
+| `LexSession` | Object | 入力セッション。handle_key / commit / poll |
+| `LexDictionary` | Object | 辞書リソース（open / open_with_user_dict） |
+| `LexConnection` | Object | 接続行列 |
+| `LexUserHistory` | Object | 学習履歴（WAL 付き） |
+| `LexUserDictionary` | Object | ユーザー辞書 |
+| `LexNeuralScorer` | Object | ニューラルスコアラー（feature-gated、stub 付き） |
+| `LexKeyResponse` | Record | キー入力レスポンス（consumed + events） |
+| `LexEvent` | Enum | イベント（下記参照） |
+| `LexCandidateResult` | Record | 候補生成結果（surfaces + paths） |
+| `LexSegment` | Record | 変換セグメント（reading + surface） |
+| `LexDictEntry` | Record | 辞書エントリ |
+| `LexUserWord` | Record | ユーザー辞書ワード |
+
+**LexEvent enum**:
+
+| バリアント | 説明 |
 |---|---|
-| ユーティリティ | `lex_engine_version`, `lex_engine_echo`, `lex_trace_init` |
-| ローマ字 | `lex_romaji_lookup`, `lex_romaji_lookup_free`, `lex_romaji_convert`, `lex_romaji_convert_free` |
-| 辞書 | `lex_dict_open`, `lex_dict_close`, `lex_dict_lookup`, `lex_dict_predict`, `lex_dict_predict_ranked`, `lex_candidates_free` |
-| 接続行列 | `lex_conn_open`, `lex_conn_close` |
-| 変換 | `lex_convert`, `lex_conversion_free`, `lex_convert_nbest`, `lex_convert_nbest_with_history`, `lex_conversion_result_list_free` |
-| 候補生成 | `lex_generate_candidates`, `lex_generate_prediction_candidates`, `lex_candidate_response_free` |
-| セッション | `lex_session_new`, `lex_session_free`, `lex_session_set_programmer_mode`, `lex_session_set_defer_candidates`, `lex_session_set_conversion_mode`, `lex_session_handle_key`, `lex_session_commit`, `lex_session_is_composing`, `lex_session_receive_candidates` |
-| 学習 | `lex_history_open`, `lex_history_close`, `lex_history_record`, `lex_history_save`, `lex_convert_with_history`, `lex_dict_lookup_with_history`, `lex_key_response_record_history` |
-| レスポンス | `lex_key_response_free` |
+| `Commit { text }` | テキスト確定 |
+| `SetMarkedText { text, dashed }` | マークドテキスト設定（dashed: 英字サブモード点線） |
+| `ClearMarkedText` | マークドテキストクリア |
+| `ShowCandidates { surfaces, selected }` | 候補パネル表示 |
+| `HideCandidates` | 候補パネル非表示 |
+| `SwitchToAbc` | システム ABC 入力ソースに切替 |
+| `SetGhostText { text }` | ゴーストテキスト表示 |
+| `ClearGhostText { update_display }` | ゴーストテキストクリア |
+| `SchedulePoll` | ポールタイマー開始要求 |
 
-メモリ管理: Rust 側が `OwnedVec` / `OwnedCandidateResponse` で文字列を所有し、呼び出し元が `*_free()` で解放する。
+**トップレベル関数**:
+
+| 関数 | 説明 |
+|---|---|
+| `engine_version()` | バージョン文字列 |
+| `romaji_lookup(romaji)` | ローマ字 Trie 照合（None / Prefix / Exact / ExactAndPrefix） |
+| `romaji_convert(kana, pending, force)` | ローマ字→かな変換 |
+| `romaji_load_config(path)` | カスタムローマ字設定読み込み |
+| `settings_load_config(path)` | カスタム設定読み込み |
+| `trace_init(log_dir)` | 構造化ログ初期化 |
+
+**LexSession メソッド**:
+
+| メソッド | 説明 |
+|---|---|
+| `handle_key(key_code, text, flags)` | キー入力処理 → `LexKeyResponse` |
+| `commit()` | 現在の入力を確定 → `LexKeyResponse` |
+| `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
+| `is_composing()` | 入力中かどうか |
+| `set_programmer_mode(enabled)` | プログラマーモード設定 |
+| `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
+| `set_conversion_mode(mode)` | 変換モード切替（0=Standard, 1=Predictive, 2=GhostText） |
+| `set_abc_passthrough(enabled)` | ABC パススルー設定 |
+| `committed_context()` | 確定済みコンテキスト取得 |
 
 ## 入力モデル
 
@@ -146,7 +232,7 @@ JIS キーボードの ¥ キー（keyCode 93）のみ対象。US キーボー�
 
 ### ローマ字変換
 
-Rust engine 内の Trie（HashMap ベース）で 141+ のマッピングをサポート:
+Rust engine 内の Trie（HashMap ベース）で 306 のマッピングをサポート（`default_romaji.toml`、`include_str!` で埋め込み）:
 
 - 基本五十音、濁音・半濁音、拗音
 - 小書き（`xa`/`la` 系）
@@ -157,42 +243,43 @@ Rust engine 内の Trie（HashMap ベース）で 141+ のマッピングをサ�
 - 撥音: `n` + 非母音・非 n・非 y → ん
 - ラテン子音＋かな母音のコラプス: composedKana 内の `[latin][あいうえお]` パターンを trie で再検索して合成（例: `kあ`→`か`、`shあ`→`しゃ`）
 
+カスタムローマ字テーブル: `~/Library/Application Support/Lexime/romaji.toml`（完全置換、マージなし）。`mise run romaji-export` でデフォルトをエクスポート可能。
+
 ### 候補生成
 
 #### Standard モード
 
-composing 中、キーストロークごとに `lex_generate_candidates` を 1 回呼び出し、以下の候補を engine 内で統合する:
+composing 中、キーストロークごとに候補を生成し、以下の順序で統合する:
 
-1. **Viterbi #1** — N-best 変換の最良候補（先頭、リアルタイム表示用）
-2. **ひらがな** — 元のかな（Viterbi #1 と同一なら重複排除でスキップ）
-3. **予測候補** — `predict_ranked` による prefix search
-4. **Viterbi #2+** — N-best 変換の 2 位以降
-5. **辞書 lookup** — 全読み候補
+1. **Viterbi N-best** — N-best 変換候補（#1 はリアルタイム表示用）
+2. **学習済みサーフェス** — ユーザーが過去に確定した変換をブースト降順で注入（N-best に含まれない場合のみ）
+3. **ひらがな** — 元のかな（学習ブーストがあれば上位に移動）
+4. **予測候補** — `predict_ranked` による prefix search
+5. **辞書 lookup** — 全読み候補（学習履歴で並び替え）
 
 重複は engine 内で排除する。句読点入力時は代替候補（`。`→`．`/`.` 等）を生成する。
 マークドテキストには Viterbi #1（変換結果）をリアルタイム表示し、Space / ↑↓ で他の候補に切り替える。
 
 #### Predictive モード
 
-`lex_generate_prediction_candidates` を使用。Viterbi N-best をベースに、学習バイグラムを連鎖させた予測候補を生成する:
+Viterbi N-best をベースに、学習バイグラムを連鎖させた予測候補を生成する:
 
 1. Viterbi N-best で変換候補を取得
 2. 各候補の末尾セグメントから `bigram_successors` でバイグラム後続を探索
 3. サイクル検出（`HashSet` で訪問済みサーフェスを追跡）付きで最大チェーン長まで連鎖
 4. 重複排除後に統合
 
-非同期候補生成（`defer_candidates`）と組み合わせて使用する（詳細は後述）。
+非同期候補生成（`defer_candidates`）と組み合わせて使用する。
 
 ### 変換モード
 
-`ConversionMode` enum で Standard / Predictive を切り替える。
+`ConversionMode` enum で Standard / Predictive / GhostText を切り替える。
 
-| | Standard | Predictive |
-|---|---|---|
-| 候補生成 | `lex_generate_candidates` | `lex_generate_prediction_candidates` |
-| Tab の動作 | サブモード切替（japanese ↔ english） | 確定 |
-| 自動確定 | 有効 | 無効 |
-| `candidate_dispatch` | `0` | `1` |
+| | Standard | Predictive | GhostText |
+|---|---|---|---|
+| 候補生成 | standard | predictive (bigram chaining) | neural |
+| Tab の動作 | サブモード切替 | 確定 | ゴースト受け入れ |
+| 自動確定 | 有効 | 無効 | 無効 |
 
 - Option+Tab で切替（composing 中は現在の変換を確定してから切替）
 - UserDefaults `predictiveMode` で永続化
@@ -201,13 +288,14 @@ composing 中、キーストロークごとに `lex_generate_candidates` を 1 �
 
 ```
 ローマ字入力
-  → ひらがな (engine/romaji)
-  → 統一候補生成 (engine/candidates)
+  → ひらがな (lex-core/romaji)
+  → 統一候補生成 (lex-core/candidates)
     → ラティス構築 (common_prefix_search + 1文字フォールバック)
     → Viterbi N-best 探索
     → Reranker (structure cost + 学習ブースト)
+    → Rewriters (カタカナ / ひらがな / 数字)
     → 文節グルーピング (自立語 + 付属語)
-    → 予測候補 + 辞書 lookup の統合・重複排除
+    → 学習済みサーフェス注入 + 予測候補 + 辞書 lookup の統合・重複排除
   → 候補表示 (CandidatePanel)
 ```
 
@@ -223,6 +311,10 @@ composing 中、キーストロークごとに `lex_generate_candidates` を 1 �
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
 - **Reranker**: Viterbi で over-generate（1-best: 10 候補、N-best: 3x）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
+- **Rewriters**: N-best パスに対して追加候補を生成
+  - `KatakanaRewriter` — カタカナ候補追加
+  - `HiraganaVariantRewriter` — 漢字セグメントをひらがなに置換した候補追加
+  - `NumericRewriter` — 日本語数詞の半角・全角数字候補追加
 - **文節グルーピング**: 接続行列 V3 に埋め込まれた POS ロール（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）に基づき、形態素列を自立語 + 付属語のフレーズ単位にマージ
 
 ### CostFunction trait
@@ -257,29 +349,29 @@ Standard モードでのみ有効（`try_auto_commit` 内で `auto_commit_enable
 
 english サブモードで入力された連続 ASCII セグメントは、1 文字ずつではなく単語単位でまとめて自動確定する。
 
-### Deferred モード
+## 非同期候補・ゴースト生成
 
-`defer_candidates` 有効時は、候補生成を非同期に行い、メインスレッドのキー入力処理をブロックしない。provisional candidates（暫定候補）を表示し、非同期結果が到着次第更新する。
-
-## 非同期候補生成
-
-`defer_candidates` モードでは、候補生成をバックグラウンドで実行する。
+候補生成とゴーストテキスト生成は Rust 側の `AsyncWorker` でバックグラウンド実行する。Swift はポーリングで結果を受け取る。
 
 ### アーキテクチャ
 
-1. キー入力 → セッションが `AsyncCandidateRequest { reading, candidate_dispatch }` を返す
-2. Swift 側の `candidateQueue`（DispatchQueue）でバックグラウンド生成を実行
-3. `candidateGeneration` カウンタ（UInt64）でリクエストの鮮度を管理
-4. 生成完了後、`candidateGeneration` が一致する場合のみ `lex_session_receive_candidates` でメインスレッドに配信
+1. キー入力 → `LexSession::handle_key()` → セッションが `async_request` / `ghost_request` を返す
+2. `handle_key` 内で自動的に `AsyncWorker` にサブミット
+3. レスポンスに `SchedulePoll` イベントを含めて返す
+4. Swift 側の 50ms ポールタイマーが `LexSession::poll()` を呼び出し
+5. `poll()` が `AsyncWorker` のチャネルから結果を取得し、セッションに配信
+6. 結果が stale（generation counter 不一致）なら破棄
 
-### candidate_dispatch
+### AsyncWorker
 
-| 値 | モード | 使用する FFI |
+| スレッド | 優先度 | 内容 |
 |---|---|---|
-| `0` | Standard | `lex_generate_candidates` |
-| `1` | Predictive | `lex_generate_prediction_candidates` |
+| Candidate | `.userInitiated` | 候補生成（Standard / Predictive / Neural） |
+| Ghost | `.utility` | ゴーストテキスト生成（150ms デバウンス） |
 
-stale な候補（生成開始時と完了時で `candidateGeneration` が異なる）は破棄される。
+- `AtomicU64` generation counters で staleness を管理
+- mpsc チャネルの drain-to-latest で最新リクエストのみ処理
+- ポールタイマーは 5 秒アイドルタイムアウトで自動停止
 
 ## 学習機能
 
@@ -299,21 +391,59 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 - 半減期: 1 週間（168 時間）
 - 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
+- 学習済みサーフェスを候補上位に注入（N-best 直後、boost 降順）
 
 ### バイグラム後続探索
 
 `bigram_successors(prev_surface)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順で返す。Predictive モードの bigram chaining で使用される。
 
-### 保存
+### LearningRecord
 
-- **形式**: LXUD（マジック `LXUD` + version 1 + bincode）
+`LearningRecord::Committed { reading, surface, segments }` — セッション側で確定時に生成。FFI 層（`LexSession::record_history`）が enum を解釈して `UserHistory::record_at()` を呼び出す。whole-reading + sub-segments の 2 段階記録。
+
+### 保存（WAL + Checkpoint）
+
+- **Checkpoint**: LXUD（マジック `LXUD` + version 1 + bincode）
+- **WAL**: `history.lxud.wal`（フレーム形式: length + CRC32 + bincode）
 - **場所**: `~/Library/Application Support/Lexime/user_history.lxud`
-- **書き込み**: アトミック（`.tmp` に書いてリネーム）
-- **タイミング**: 確定時に記録（同期）、ファイル保存はバックグラウンドキュー
+- **書き込み**: 確定時に WAL append（同期）、閾値到達で background compaction（checkpoint 書き出し + WAL truncate）
+- **起動時**: checkpoint ロード → WAL replay → in-memory 復元
 
 ### 退避
 
 容量超過時、`frequency × decay(last_used)` のスコアが低いエントリから削除。
+
+## ユーザー辞書
+
+ユーザーが手動登録する単語辞書。`Dictionary` trait を実装し、`CompositeDictionary` のレイヤーとして統合。
+
+- **データ構造**: `RwLock<HashMap<String, Vec<UserEntry>>>`（reading → entries）
+- **POS ID**: 1852（名詞,一般）、cost: -1（システム辞書より常に優先）
+- **形式**: LXUW（マジック `LXUW` + version 1 + bincode）、アトミック書き込み
+- **場所**: `~/Library/Application Support/Lexime/user_dict.lxuw`
+- **操作**: `register` / `unregister` は write lock、`Dictionary` trait（lookup / predict 等）は read lock
+- **CLI**: `dictool user-dict add/remove/list`
+
+## 設定の外部化
+
+### settings.toml
+
+`default_settings.toml`（`include_str!`）+ OnceLock パターン。カスタム: `~/Library/Application Support/Lexime/settings.toml`（完全置換）。
+
+| セクション | パラメータ |
+|---|---|
+| `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty, pure_kanji_bonus, latin_penalty, unknown_word_cost |
+| `[reranker]` | length_variance_weight, structure_cost_filter |
+| `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
+| `[candidates]` | nbest, max_results |
+
+`mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。
+
+### romaji.toml
+
+`default_romaji.toml`（306 エントリ、`include_str!`）+ OnceLock パターン。カスタム: `~/Library/Application Support/Lexime/romaji.toml`（完全置換、マージなし）。
+
+`mise run romaji-export` でデフォルトをエクスポート。`dictool romaji-validate` で検証。
 
 ## アクセシビリティ
 
@@ -352,18 +482,19 @@ macOS で動作する最小限の IME を構築。
 - ユニグラム + バイグラム学習（時間減衰付き）
 - Reranker による学習ブースト適用
 - 候補リストの並び替え（学習済みエントリ優先）
-- ローカル保存（LXUD 形式、アトミック書き込み）
+- 学習済みサーフェスの候補上位注入
+- ローカル保存（LXUD + WAL 形式、アトミック書き込み）
 
-### Phase 4: Speed of Thought
+### Phase 4: Speed of Thought — **完了**
 
 思考の速度で日本語を書ける開発者向け IME を目指す。
 
-**1発目精度の向上** — **完了**
+**1発目精度の向上**
 
 - 学習収束の高速化（`BOOST_PER_USE` を 3000 に引き上げ、frequency 5 で最大ブースト到達）
 - バイグラム活用の強化（直前の文脈を変換精度に反映）
 
-**リアルタイム変換表示 + 句読点自動確定** — **完了**
+**リアルタイム変換表示 + 句読点自動確定**
 
 - マークドテキストに Viterbi #1 をリアルタイム表示（かなではなく変換結果）
 - 句読点入力で直前の変換を自動コミット＋句読点を直接挿入
@@ -371,7 +502,7 @@ macOS で動作する最小限の IME を構築。
 - Escape はひらがなで確定（IMKit の制約: Escape 後に `commitComposition` が呼ばれる）
 - `currentDisplay` トラッキングで `composedString` とマークドテキストを同期
 
-**Tab インライン英字** — **完了**
+**Tab インライン英字**
 
 - Tab キーで japanese / english サブモードをトグル
 - english モード中はローマ字変換をバイパスし、入力をそのまま composedKana に追加（大文字小文字保持）
@@ -380,21 +511,33 @@ macOS で動作する最小限の IME を構築。
 - english モードはマークドテキストに点線下線（patternDash）で表示
 - 自動確定は連続 ASCII セグメントを単語単位でまとめて確定
 
-**候補パネルのカーソル追従** — **完了**
+**候補パネルのカーソル追従**
 
 - 候補パネルをマークドテキスト末尾（入力カーソル位置）に追従させる
 - composedKana を長く保持する方針と整合させ、視線移動を最小化
 
-**Predictive モード** — **完了**
+**Predictive モード**
 
 - Viterbi base + bigram chaining による予測変換
-- `ConversionMode` enum（Standard / Predictive）で切替可能
+- `ConversionMode` enum（Standard / Predictive / GhostText）で切替可能
 - Option+Tab で変換モードをトグル（UserDefaults `predictiveMode` で永続化）
 - Tab キーで予測候補を確定（Standard モードのサブモード切替と差別化）
 
+**アーキテクチャ改善**
+
+- UniFFI proc-macro バインディング（手動 C FFI 全削除）
+- ワークスペース分割（lex-core / lex-session / lex-cli）
+- 非同期内部化（AsyncWorker: 候補・ゴースト生成を Rust ワーカースレッドで実行）
+- イベント駆動 FFI（LexKeyResponse + LexEvent enum）
+- セッション責務分離（composing / commit / auto_commit / submode / ghost / response）
+- ローマ字・設定の TOML 外部化
+- Dictionary trait 統一 + CompositeDictionary
+- ユーザー辞書（LXUW 形式、CompositeDictionary レイヤー）
+- WAL 付き学習履歴
+- Rewriters（カタカナ / ひらがら / 数字候補追加）
+
 ### Phase 5+ (今後)
 
-- ユーザー辞書
 - 設定 UI
 - ゴーストテキスト: GGUF ニューラルモデル（azooKey/Zenzai 方式）による AI 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）。長文（3 文節〜）で Viterbi N-best をニューラルリスコアする方向
 
@@ -405,35 +548,54 @@ macOS で動作する最小限の IME を構築。
 | タスク | 内容 |
 |---|---|
 | `engine-lib` | universal static library ビルド（x86_64 + aarch64、lipo） |
-| `fetch-dict-sudachi` | SudachiDict データのダウンロード |
-| `fetch-dict-sudachi-full` | SudachiDict Full データのダウンロード（core + notcore） |
-| `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
-| `dict-sudachi-full` | SudachiDict Full 辞書のコンパイル（Mozc POS ID にリマップ） |
-| `dict-mozc` | Mozc 辞書バイナリのコンパイル |
-| `dict` | Mozc 辞書のコピー（`lexime-mozc.dict` → `lexime.dict`） |
-| `conn` | Mozc 接続行列のコンパイル |
-| `build` | Lexime.app ユニバーサルバイナリのビルド（depends: dict, conn） |
+| `uniffi-gen` | UniFFI Swift バインディング自動生成 |
+| `build` | Lexime.app ユニバーサルバイナリのビルド |
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
-| `log` | ログストリーミング |
-| `icon` | アイコンアセット生成 |
-| `test-swift` | Swift FFI ラウンドトリップテスト（depends: engine-lib） |
+| `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
+| `fetch-dict-sudachi` | SudachiDict データのダウンロード |
+| `fetch-dict-sudachi-full` | SudachiDict Full データのダウンロード |
+| `dict-mozc` | Mozc 辞書バイナリのコンパイル |
+| `dict-sudachi-full` | SudachiDict Full 辞書のコンパイル |
+| `dict` | 辞書のコピー |
+| `dict-clean` | コンパイル済み辞書の削除（次回ビルドで再コンパイル） |
+| `conn` | 接続行列のコンパイル |
+| `test-swift` | Swift UniFFI ラウンドトリップテスト |
+| `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy` |
-| `test` | lint + `cargo test` |
+| `audit` | cargo-audit（脆弱性）+ cargo-machete（未使用 deps） |
+| `log` | ログストリーミング |
+| `trace-log` | トレース JSONL ストリーミング |
+| `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
-| `explain` | 変換パイプラインの説明出力（指定リーディングのラティス・Viterbi 過程を表示） |
-| `snapshot` | 変換スナップショット生成（テストリーディング一覧の変換結果を記録） |
-| `diff-snapshot` | 現在の変換結果とベースラインスナップショットの差分比較 |
-| `trace-log` | トレース JSONL 出力のストリーミング |
+| `explain` | 変換パイプラインの説明出力 |
+| `snapshot` | 変換スナップショット生成 |
+| `diff-snapshot` | スナップショット差分比較 |
+| `bench` | criterion ベンチマーク |
+| `fetch-model` | Zenzai GGUF モデルダウンロード |
+| `neural-score` | ニューラルスコアリングベンチマーク |
+| `romaji-export` | デフォルトローマ字テーブルの TOML エクスポート |
+| `settings-export` | デフォルト設定の TOML エクスポート |
 
 ### CI
 
 `.github/workflows/ci.yml`:
 
-- **トリガー**: pull_request
-- **パスフィルタ**: `engine/**` 変更時のみ Rust CI、`engine/**` かつ `Sources/**`/`Tests/**` 両方変更時のみ Swift CI を実行
-- **engine ジョブ** (ubuntu-latest): `mise run test`（lint + cargo test）
-- **swift ジョブ** (macos-latest): `mise run test-swift`（engine-lib ビルド + FFI テスト）。macOS クレジット節約のため両方変更時のみ実行
+- **トリガー**: push to main + pull_request
+- **パスフィルタ**: `dorny/paths-filter` で変更コンポーネントを検出し、不要なジョブをスキップ
+
+| ジョブ | 環境 | 条件 | 内容 |
+|---|---|---|---|
+| `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / swift） |
+| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy` |
+| `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
+| `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
+| `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace,neural` |
+| `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
+| `audit` | ubuntu-latest | core 変更時 | `cargo-audit` + `cargo-machete` |
+| `swift` | macos-latest | engine + Swift 両方変更時 | `mise run test-swift` |
+
+全 Rust ジョブは `Swatinem/rust-cache@v2` で `shared-key: engine` キャッシュを共有。
 
 ## 未決事項
 
