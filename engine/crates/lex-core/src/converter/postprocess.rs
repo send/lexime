@@ -7,7 +7,7 @@ use super::reranker;
 use super::rewriter;
 use super::viterbi::{ConvertedSegment, RichSegment, ScoredPath};
 
-/// Shared post-processing pipeline: rerank → history_rerank → take(n) → rewrite → group.
+/// Shared post-processing pipeline: rerank → hiragana_rewrite → history_rerank → take(n) → rewrite → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
@@ -17,6 +17,11 @@ pub(super) fn postprocess(
 ) -> Vec<Vec<ConvertedSegment>> {
     let _span = debug_span!("postprocess", n, paths_in = paths.len()).entered();
     reranker::rerank(paths, conn);
+
+    // Hiragana variant must run BEFORE history_rerank so that whole-path
+    // unigram boosts (×5) can promote a previously-selected hiragana variant.
+    let hiragana_rw = rewriter::HiraganaVariantRewriter;
+    rewriter::run_rewriters(&[&hiragana_rw], paths, kana);
 
     // Remember the pure-Viterbi best surface before history reranking.
     // History boosts per-segment unigrams (e.g. き→機 from past "機械") which can
