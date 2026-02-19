@@ -211,6 +211,21 @@ impl UserHistory {
         results
     }
 
+    /// Return surfaces the user has previously confirmed for this reading,
+    /// sorted by boost descending. Only returns entries with positive boost.
+    pub fn learned_surfaces(&self, reading: &str, now: u64) -> Vec<(String, i64)> {
+        let Some(inner) = self.unigrams.get(reading) else {
+            return Vec::new();
+        };
+        let mut results: Vec<(String, i64)> = inner
+            .iter()
+            .map(|(surface, entry)| (surface.clone(), entry.boost(now)))
+            .filter(|(_, boost)| *boost > 0)
+            .collect();
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results
+    }
+
     /// Reorder dictionary candidates so learned entries appear first.
     pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
         let now = now_epoch();

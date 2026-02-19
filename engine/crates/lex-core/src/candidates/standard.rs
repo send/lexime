@@ -41,6 +41,16 @@ pub(super) fn generate_normal_candidates(
         nbest_paths.push(path.clone());
     }
 
+    // 1.5. Inject history-learned surfaces not in N-best.
+    if let Some(h) = history {
+        let now = crate::user_history::now_epoch();
+        for (surface, _boost) in h.learned_surfaces(reading, now) {
+            if seen.insert(surface.clone()) {
+                surfaces.push(surface);
+            }
+        }
+    }
+
     // 2. Reading (kana) — position depends on history boost.
     //    If the user previously selected the hiragana form, promote it —
     //    but only above the N-best #1 when the #1 hasn't been explicitly
