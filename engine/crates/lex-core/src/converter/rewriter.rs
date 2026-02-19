@@ -1,3 +1,4 @@
+use crate::numeric;
 use crate::unicode::hiragana_to_katakana;
 
 use super::viterbi::{RichSegment, ScoredPath};
@@ -46,6 +47,48 @@ impl Rewriter for KatakanaRewriter {
             }],
             viterbi_cost: worst_cost.saturating_add(10000),
         });
+    }
+}
+
+/// Adds numeric candidates (half-width and full-width) when the reading is a
+/// Japanese number expression.
+pub(crate) struct NumericRewriter;
+
+impl Rewriter for NumericRewriter {
+    fn rewrite(&self, paths: &mut Vec<ScoredPath>, reading: &str) {
+        let Some(n) = numeric::parse_japanese_number(reading) else {
+            return;
+        };
+        let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
+        let base_cost = worst_cost.saturating_add(5000);
+
+        let halfwidth = numeric::to_halfwidth(n);
+        if !paths.iter().any(|p| p.surface_key() == halfwidth) {
+            paths.push(ScoredPath {
+                segments: vec![RichSegment {
+                    reading: reading.to_string(),
+                    surface: halfwidth,
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                }],
+                viterbi_cost: base_cost,
+            });
+        }
+
+        let fullwidth = numeric::to_fullwidth(n);
+        if !paths.iter().any(|p| p.surface_key() == fullwidth) {
+            paths.push(ScoredPath {
+                segments: vec![RichSegment {
+                    reading: reading.to_string(),
+                    surface: fullwidth,
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                }],
+                viterbi_cost: base_cost.saturating_add(1),
+            });
+        }
     }
 }
 
@@ -128,5 +171,72 @@ mod tests {
 
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[1].surface_key(), "ア");
+    }
+
+    #[test]
+    fn test_numeric_rewriter_adds_candidates() {
+        let rw = NumericRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "にじゅうさん".into(),
+                surface: "二十三".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 3000,
+        }];
+
+        rw.rewrite(&mut paths, "にじゅうさん");
+
+        assert_eq!(paths.len(), 3);
+        assert_eq!(paths[1].surface_key(), "23");
+        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
+        assert_eq!(paths[2].surface_key(), "２３");
+        assert_eq!(paths[2].viterbi_cost, 3000 + 5001);
+    }
+
+    #[test]
+    fn test_numeric_rewriter_skips_non_numeric() {
+        let rw = NumericRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "きょう".into(),
+                surface: "今日".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            }],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "きょう");
+
+        assert_eq!(
+            paths.len(),
+            1,
+            "should not add numeric candidates for non-numeric input"
+        );
+    }
+
+    #[test]
+    fn test_numeric_rewriter_skips_duplicate() {
+        let rw = NumericRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "いち".into(),
+                surface: "1".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            }],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "いち");
+
+        // Half-width "1" already exists, only full-width should be added
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[1].surface_key(), "１");
     }
 }
