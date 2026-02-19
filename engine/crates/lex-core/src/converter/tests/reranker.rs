@@ -129,11 +129,10 @@ fn test_rerank_empty_noop() {
 
 #[test]
 fn test_rerank_penalizes_uneven_segments() {
-    // Uneven split: で(1) | 来たり(3) — variance penalty should apply
-    // Even split:   出来(2) | たり(2) — no variance penalty
+    // 2-segment paths are exempt from length variance penalty (n >= 3 threshold).
+    // Only script cost differentiates them.
     let mut paths = vec![
-        // Uneven: readings 1 + 3 chars → mean=2, sum_sq_dev=2×(1+1)=4 (via formula: N*Σl²-S² = 2*10-16=4)
-        // penalty = 4 * 2000 / 4 = 2000
+        // Uneven: readings 1 + 3 chars — no variance penalty (2-segment exempt)
         ScoredPath {
             segments: vec![
                 RichSegment {
@@ -178,11 +177,11 @@ fn test_rerank_penalizes_uneven_segments() {
     rerank(&mut paths, None);
 
     // script_cost: "来たり" is mixed (kanji+kana) → -3000; "出来" is pure kanji → -1000
-    // Uneven: 5000 + variance(2000) + script("で"=0 + "来たり"=-3000) = 4000
-    // Even:   6500 + variance(0)    + script("出来"=-1000 + "たり"=0) = 5500
+    // Uneven: 5000 + variance(0, exempt) + script("で"=0 + "来たり"=-3000) = 2000
+    // Even:   6500 + variance(0, exempt) + script("出来"=-1000 + "たり"=0) = 5500
     // Uneven path wins due to mixed-script bonus on "来たり"
     assert_eq!(paths[0].segments[0].surface, "で");
-    assert_eq!(paths[0].viterbi_cost, 4000);
+    assert_eq!(paths[0].viterbi_cost, 2000);
     assert_eq!(paths[1].segments[0].surface, "出来");
     assert_eq!(paths[1].viterbi_cost, 5500);
 }
