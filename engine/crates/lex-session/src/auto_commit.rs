@@ -87,7 +87,6 @@ impl InputSession {
         c.prefix.has_boundary_space = false;
         let mut resp = KeyResponse::consumed();
         resp.commit = Some(format!("{}{}", prefix_text, committed_surface));
-        resp.side_effects.save_history = true;
 
         if self.comp().kana.is_empty() {
             self.comp().candidates.clear();

@@ -42,13 +42,6 @@ impl LexEngine {
         )
     }
 
-    fn save_history(&self, path: String) -> Result<(), LexError> {
-        match &self.history {
-            Some(h) => h.save(path),
-            None => Ok(()),
-        }
-    }
-
     fn has_neural(&self) -> bool {
         self.neural.is_some()
     }

@@ -24,7 +24,6 @@ class LeximeInputController: IMKInputController {
     private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
 
     private static var hasShownDictWarning = false
-    private static let historySaveQueue = DispatchQueue(label: "sh.send.lexime.history-save")
 
     private var pollTimer: Timer?
 
@@ -139,8 +138,6 @@ class LeximeInputController: IMKInputController {
                 candidateManager.hide()
             case .switchToAbc:
                 selectABCInputSource()
-            case .saveHistory:
-                saveHistory()
             case .setGhostText(let text):
                 ghostManager.set(text, client: client)
             case .clearGhostText(let updateDisplay):
@@ -181,22 +178,6 @@ class LeximeInputController: IMKInputController {
     private func cancelPollTimer() {
         pollTimer?.invalidate()
         pollTimer = nil
-    }
-
-    // MARK: - History
-
-    /// Persist history to disk asynchronously.
-    /// History records are automatically recorded inside handle_key by the Rust API.
-    private func saveHistory() {
-        guard let engine = AppContext.shared.engine else { return }
-        let path = AppContext.shared.historyPath
-        Self.historySaveQueue.async {
-            do {
-                try engine.saveHistory(path: path)
-            } catch {
-                NSLog("Lexime: Failed to save user history to %@: %@", path, "\(error)")
-            }
-        }
     }
 
     // MARK: - Helpers

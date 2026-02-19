@@ -876,6 +876,7 @@ dependencies = [
  "bincode",
  "candle-core",
  "candle-nn",
+ "crc32fast",
  "criterion",
  "lexime-trie",
  "memmap2",

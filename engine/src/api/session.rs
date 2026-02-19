@@ -11,10 +11,6 @@ use super::LexNeuralScorer;
 
 #[derive(uniffi::Object)]
 pub struct LexSession {
-    #[allow(dead_code)]
-    dict: Arc<LexDictionary>,
-    #[allow(dead_code)]
-    conn: Option<Arc<LexConnection>>,
     history: Option<Arc<LexUserHistory>>,
     session: Mutex<InputSession>,
     worker: AsyncWorker,
@@ -42,8 +38,6 @@ impl LexSession {
             neural.as_ref().map(|n| Arc::clone(&n.inner)),
         );
         Arc::new(Self {
-            dict,
-            conn,
             history,
             session: Mutex::new(session),
             worker,
@@ -180,23 +174,39 @@ impl LexSession {
         if records.is_empty() {
             return;
         }
-        if let Some(ref h) = self.history {
-            if let Ok(mut hist) = h.inner.write() {
-                for r in records {
-                    match r {
-                        LearningRecord::Committed {
-                            reading,
-                            surface,
-                            segments,
-                        } => {
-                            hist.record(&[(reading.clone(), surface.clone())]);
-                            if let Some(segs) = segments {
-                                hist.record(segs);
-                            }
+        let Some(ref h) = self.history else {
+            return;
+        };
+
+        // Phase 1: in-memory update (write lock)
+        let now = crate::user_history::now_epoch();
+        let mut wal_entries: Vec<Vec<(String, String)>> = Vec::new();
+        if let Ok(mut hist) = h.inner.write() {
+            for r in records {
+                match r {
+                    LearningRecord::Committed {
+                        reading,
+                        surface,
+                        segments,
+                    } => {
+                        let segs = vec![(reading.clone(), surface.clone())];
+                        hist.record_at(&segs, now);
+                        wal_entries.push(segs);
+                        if let Some(sub_segs) = segments {
+                            hist.record_at(sub_segs, now);
+                            wal_entries.push(sub_segs.clone());
                         }
                     }
                 }
             }
         }
+
+        // Phase 2: WAL append (write lock released, wal mutex only)
+        for segments in &wal_entries {
+            h.append_wal(segments, now);
+        }
+
+        // Phase 3: background compaction if threshold reached
+        h.maybe_compact();
     }
 }

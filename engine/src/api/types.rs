@@ -76,7 +76,6 @@ pub enum LexEvent {
     },
     HideCandidates,
     SwitchToAbc,
-    SaveHistory,
     SetGhostText {
         text: String,
     },
@@ -127,9 +126,6 @@ pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> Le
     // 4. Side effects
     if resp.side_effects.switch_to_abc {
         events.push(LexEvent::SwitchToAbc);
-    }
-    if resp.side_effects.save_history {
-        events.push(LexEvent::SaveHistory);
     }
 
     // 5. Ghost text

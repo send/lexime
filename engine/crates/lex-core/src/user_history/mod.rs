@@ -5,6 +5,7 @@
 
 #[cfg(test)]
 mod tests;
+pub mod wal;
 
 use std::collections::HashMap;
 use std::fs;
@@ -128,8 +129,11 @@ impl UserHistory {
 
     /// Record a confirmed conversion: list of (reading, surface) segments.
     pub fn record(&mut self, segments: &[(String, String)]) {
-        let now = now_epoch();
+        self.record_at(segments, now_epoch());
+    }
 
+    /// Record with an explicit timestamp (for WAL replay).
+    pub fn record_at(&mut self, segments: &[(String, String)], now: u64) {
         for (reading, surface) in segments {
             let entry = self
                 .unigrams

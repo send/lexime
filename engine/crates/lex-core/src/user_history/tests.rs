@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::settings::settings;
 
+use super::wal::HistoryWal;
 use super::*;
 
 #[test]
@@ -256,4 +257,178 @@ fn test_save_to_invalid_path() {
     let result = h.save(Path::new("/nonexistent/deeply/nested/dir/history.lxud"));
     // create_dir_all on a path under /nonexistent should fail on macOS
     assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// WAL tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_wal_append_and_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    let mut wal = HistoryWal::new(&cp);
+    let now = 1_700_000_000;
+    wal.append(&[("きょう".into(), "今日".into())], now)
+        .unwrap();
+    wal.append(
+        &[("きょう".into(), "今日".into()), ("は".into(), "は".into())],
+        now + 1,
+    )
+    .unwrap();
+    assert_eq!(wal.entry_count(), 2);
+
+    // Replay into fresh history
+    let mut h = UserHistory::new();
+    let mut wal2 = HistoryWal::new(&cp);
+    let count = wal2.replay(&mut h).unwrap();
+    assert_eq!(count, 2);
+    assert!(h.unigram_boost("きょう", "今日", now + 2) > 0);
+    assert!(h.bigram_boost("今日", "は", "は", now + 2) > 0);
+}
+
+#[test]
+fn test_wal_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    let mut h = UserHistory::new();
+    let mut wal = HistoryWal::new(&cp);
+    let now = 1_700_000_000;
+
+    wal.append(&[("きょう".into(), "今日".into())], now)
+        .unwrap();
+    h.record_at(&[("きょう".into(), "今日".into())], now);
+
+    // Force compact
+    h.save(&cp).unwrap();
+    wal.truncate_wal().unwrap();
+    assert_eq!(wal.entry_count(), 0);
+    assert!(cp.exists(), "checkpoint should exist");
+    assert_eq!(
+        fs::read(wal.wal_path()).unwrap().len(),
+        0,
+        "WAL should be empty"
+    );
+
+    // Reopen: checkpoint has the data, WAL is empty
+    let mut h2 = UserHistory::open(&cp).unwrap();
+    let mut wal2 = HistoryWal::new(&cp);
+    let replayed = wal2.replay(&mut h2).unwrap();
+    assert_eq!(replayed, 0);
+    assert!(h2.unigram_boost("きょう", "今日", now + 1) > 0);
+}
+
+#[test]
+fn test_wal_truncated_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    let mut wal = HistoryWal::new(&cp);
+    let now = 1_700_000_000;
+    wal.append(&[("きょう".into(), "今日".into())], now)
+        .unwrap();
+    wal.append(&[("あした".into(), "明日".into())], now)
+        .unwrap();
+
+    // Truncate the WAL mid-frame (remove last 5 bytes)
+    let data = fs::read(wal.wal_path()).unwrap();
+    fs::write(wal.wal_path(), &data[..data.len() - 5]).unwrap();
+
+    // Replay should recover the first entry only
+    let mut h = UserHistory::new();
+    let mut wal2 = HistoryWal::new(&cp);
+    let count = wal2.replay(&mut h).unwrap();
+    assert_eq!(count, 1);
+    assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
+    assert_eq!(h.unigram_boost("あした", "明日", now + 1), 0);
+}
+
+#[test]
+fn test_wal_corrupt_crc() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    let mut wal = HistoryWal::new(&cp);
+    let now = 1_700_000_000;
+    wal.append(&[("きょう".into(), "今日".into())], now)
+        .unwrap();
+    wal.append(&[("あした".into(), "明日".into())], now)
+        .unwrap();
+
+    // Corrupt the CRC of the first frame (bytes 4..8)
+    let mut data = fs::read(wal.wal_path()).unwrap();
+    data[4] ^= 0xFF;
+    fs::write(wal.wal_path(), &data).unwrap();
+
+    // Replay should stop at the corrupt frame
+    let mut h = UserHistory::new();
+    let mut wal2 = HistoryWal::new(&cp);
+    let count = wal2.replay(&mut h).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_wal_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    // Create empty WAL file
+    fs::write(cp.with_extension("lxud.wal"), b"").unwrap();
+
+    let mut h = UserHistory::new();
+    let mut wal = HistoryWal::new(&cp);
+    let count = wal.replay(&mut h).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_wal_migration_from_v1() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    // Create a v1 checkpoint (no WAL file)
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into())]);
+    h.save(&cp).unwrap();
+    assert!(!cp.with_extension("lxud.wal").exists());
+
+    // open_with_wal should load checkpoint and create WAL handle with 0 entries
+    let (h2, wal) = super::wal::open_with_wal(&cp).unwrap();
+    assert!(h2.unigram_boost("きょう", "今日", now_epoch()) > 0);
+    assert_eq!(wal.entry_count(), 0);
+}
+
+#[test]
+fn test_record_at_preserves_timestamp() {
+    let mut h = UserHistory::new();
+    let ts = 1_600_000_000;
+    h.record_at(&[("きょう".into(), "今日".into())], ts);
+    let entry = &h.unigrams["きょう"]["今日"];
+    assert_eq!(entry.last_used, ts);
+}
+
+#[test]
+fn test_wal_roundtrip_with_bigrams() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+    let now = 1_700_000_000;
+
+    let segments: Vec<(String, String)> = vec![
+        ("きょう".into(), "今日".into()),
+        ("は".into(), "は".into()),
+        ("いい".into(), "良い".into()),
+    ];
+
+    let mut wal = HistoryWal::new(&cp);
+    wal.append(&segments, now).unwrap();
+
+    let mut h = UserHistory::new();
+    let mut wal2 = HistoryWal::new(&cp);
+    wal2.replay(&mut h).unwrap();
+
+    assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
+    assert!(h.bigram_boost("今日", "は", "は", now + 1) > 0);
+    assert!(h.bigram_boost("は", "いい", "良い", now + 1) > 0);
 }

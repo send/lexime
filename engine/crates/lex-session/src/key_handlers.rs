@@ -240,9 +240,6 @@ impl InputSession {
                 self.comp().candidates.clear();
                 let mut resp = KeyResponse::consumed();
                 resp.candidates = CandidateAction::Hide;
-                if !self.history_records.is_empty() {
-                    resp.side_effects.save_history = true;
-                }
                 // Escape: IMKit will call commitComposition after.
                 // composedString() uses display() which computes from current state.
                 resp

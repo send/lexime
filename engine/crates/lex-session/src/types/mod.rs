@@ -56,7 +56,6 @@ pub struct AsyncCandidateRequest {
 #[derive(Default)]
 pub struct SideEffects {
     pub switch_to_abc: bool,
-    pub save_history: bool,
 }
 
 /// Request for asynchronous ghost text generation (GhostText mode).

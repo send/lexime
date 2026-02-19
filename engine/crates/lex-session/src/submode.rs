@@ -74,9 +74,6 @@ impl InputSession {
                 });
             }
             resp.candidates = CandidateAction::Hide;
-            if !self.history_records.is_empty() {
-                resp.side_effects.save_history = true;
-            }
             resp
         } else {
             // Idle: just toggle the idle_submode
