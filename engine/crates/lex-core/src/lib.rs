@@ -1,3 +1,6 @@
+#[cfg(not(target_endian = "little"))]
+compile_error!("lex-core requires a little-endian platform");
+
 pub mod candidates;
 pub mod converter;
 pub mod dict;
