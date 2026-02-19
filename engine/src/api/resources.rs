@@ -1,8 +1,12 @@
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+
+use tracing::warn;
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{CompositeDictionary, Dictionary, TrieDictionary};
+use crate::user_history::wal::HistoryWal;
 use crate::user_history::UserHistory;
 
 use super::{LexError, LexUserDictionary};
@@ -77,25 +81,85 @@ impl LexConnection {
 #[derive(uniffi::Object)]
 pub struct LexUserHistory {
     pub(crate) inner: Arc<RwLock<UserHistory>>,
+    wal: Mutex<HistoryWal>,
+    compacting: AtomicBool,
 }
 
 #[uniffi::export]
 impl LexUserHistory {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
-        let history = UserHistory::open(Path::new(&path))
+        let cp = Path::new(&path);
+        let (history, wal) = crate::user_history::wal::open_with_wal(cp)
             .map_err(|e: std::io::Error| LexError::Io { msg: e.to_string() })?;
         Ok(Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
+            wal: Mutex::new(wal),
+            compacting: AtomicBool::new(false),
         }))
     }
+}
 
-    pub(super) fn save(&self, path: String) -> Result<(), LexError> {
-        let h = self
-            .inner
-            .read()
-            .map_err(|e| LexError::Internal { msg: e.to_string() })?;
-        h.save(Path::new(&path))
-            .map_err(|e| LexError::Io { msg: e.to_string() })
+impl LexUserHistory {
+    /// Append a WAL entry. Does not block on compaction.
+    pub(super) fn append_wal(&self, segments: &[(String, String)], timestamp: u64) {
+        let mut wal = match self.wal.lock() {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("WAL lock poisoned: {e}");
+                return;
+            }
+        };
+        if let Err(e) = wal.append(segments, timestamp) {
+            warn!("WAL append failed: {e}");
+        }
+    }
+
+    /// Spawn background compaction if threshold is reached.
+    pub(super) fn maybe_compact(self: &Arc<Self>) {
+        let needs = match self.wal.lock() {
+            Ok(wal) => wal.needs_compact(),
+            Err(_) => false,
+        };
+        if !needs {
+            return;
+        }
+        // Prevent concurrent compactions
+        if self.compacting.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let this = Arc::clone(self);
+        std::thread::spawn(move || {
+            this.run_compact();
+            this.compacting.store(false, Ordering::Relaxed);
+        });
+    }
+
+    fn run_compact(&self) {
+        // 1. Clone history under read lock (brief)
+        let snapshot = match self.inner.read() {
+            Ok(h) => h.clone(),
+            Err(e) => {
+                warn!("history read lock failed during compaction: {e}");
+                return;
+            }
+        };
+        let cp_path = match self.wal.lock() {
+            Ok(wal) => wal.checkpoint_path().to_path_buf(),
+            Err(_) => return,
+        };
+
+        // 2. Write checkpoint (no locks held, slow I/O)
+        if let Err(e) = snapshot.save(&cp_path) {
+            warn!("checkpoint write failed: {e}");
+            return;
+        }
+
+        // 3. Truncate WAL (brief lock)
+        if let Ok(mut wal) = self.wal.lock() {
+            if let Err(e) = wal.truncate_wal() {
+                warn!("WAL truncate failed: {e}");
+            }
+        }
     }
 }

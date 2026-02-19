@@ -37,7 +37,6 @@ impl InputSession {
             let surface = c.candidates.surfaces[c.candidates.selected].clone();
 
             self.record_history(reading, surface.clone());
-            resp.side_effects.save_history = true;
             resp.commit = Some(format!("{}{}", prefix_text, surface));
         } else {
             let SessionState::Composing(ref c) = self.state else {
