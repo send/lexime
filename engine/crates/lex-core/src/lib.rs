@@ -6,6 +6,7 @@ pub mod converter;
 pub mod dict;
 #[cfg(feature = "neural")]
 pub mod neural;
+pub mod numeric;
 pub mod romaji;
 pub mod settings;
 pub mod unicode;

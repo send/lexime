@@ -45,12 +45,13 @@ pub(super) fn postprocess(
             }
         }
     }
-    let katakana_rw = rewriter::KatakanaRewriter;
-    let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&katakana_rw];
-    rewriter::run_rewriters(&rewriters, &mut top, kana);
-    // Rewriters may append extra candidates (e.g. katakana fallback);
-    // truncate back to the requested n to honour the caller's limit.
+    // Truncate Viterbi paths to n before rewriters so that rewriter-added
+    // candidates (numeric, katakana) are not immediately pruned.
     top.truncate(n);
+    let numeric_rw = rewriter::NumericRewriter;
+    let katakana_rw = rewriter::KatakanaRewriter;
+    let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&numeric_rw, &katakana_rw];
+    rewriter::run_rewriters(&rewriters, &mut top, kana);
     if let Some(c) = conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);
