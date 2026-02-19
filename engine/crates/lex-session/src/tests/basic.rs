@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use super::*;
 use crate::types::{
-    cyclic_index, is_romaji_input, CandidateAction, LearningRecord, FLAG_HAS_MODIFIER,
+    cyclic_index, is_romaji_input, CandidateAction, LearningRecord, FLAG_HAS_MODIFIER, FLAG_SHIFT,
 };
 use lex_core::user_history::UserHistory;
 
@@ -231,42 +231,90 @@ fn test_kana_consumed() {
     assert!(resp.consumed);
 }
 
-// --- Yen key (programmer mode) ---
+// --- Keymap remap (replaces programmer_mode ¥ tests) ---
 
 #[test]
-fn test_yen_programmer_mode() {
+fn test_keymap_yen_idle() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
-    session.set_programmer_mode(true);
 
-    let resp = session.handle_key(key::YEN, "¥", 0);
+    // keyCode 93 (¥) is remapped to \ by default settings
+    let resp = session.handle_key(93, "¥", 0);
     assert!(resp.consumed);
     assert_eq!(resp.commit.as_deref(), Some("\\"));
 }
 
 #[test]
-fn test_yen_programmer_mode_composing() {
+fn test_keymap_yen_shifted() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
-    session.set_programmer_mode(true);
 
-    type_string(&mut session, "kyou");
-    let resp = session.handle_key(key::YEN, "¥", 0);
+    // keyCode 93 + shift → |
+    let resp = session.handle_key(93, "¥", FLAG_SHIFT);
     assert!(resp.consumed);
-    // Should commit current + add backslash
-    assert!(resp.commit.is_some());
-    let text = resp.commit.unwrap();
-    assert!(text.ends_with('\\'));
+    assert_eq!(resp.commit.as_deref(), Some("|"));
 }
 
 #[test]
-fn test_yen_non_programmer_mode_passthrough() {
+fn test_keymap_yen_composing() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    // Without programmer mode, ¥ in idle state should not be consumed (romaji check)
-    let resp = session.handle_key(key::YEN, "¥", 0);
+    type_string(&mut session, "kyou");
+    let resp = session.handle_key(93, "¥", 0);
+    assert!(resp.consumed);
+    // In composing, remapped text is fed as input (not commit-and-insert)
+    assert!(resp.commit.is_none());
+    assert!(session.is_composing());
+    // The backslash should be added to the composition
+    assert!(session.comp().kana.contains('\\'));
+}
+
+#[test]
+fn test_keymap_jis_bracket() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    // keyCode 10 is remapped to ] by default settings.
+    // ] is in the romaji trie (] → 」), so it enters composing via trie match.
+    let resp = session.handle_key(10, "§", 0);
+    assert!(resp.consumed);
+    assert!(session.is_composing());
+    assert!(session.comp().kana.contains('」'));
+
+    // Commit to reset state
+    session.handle_key(key::ENTER, "", 0);
+
+    // shifted → } (not in trie, so direct commit)
+    let resp = session.handle_key(10, "§", FLAG_SHIFT);
+    assert!(resp.consumed);
+    assert_eq!(resp.commit.as_deref(), Some("}"));
+}
+
+// --- Tab behavior ---
+
+#[test]
+fn test_tab_idle_passthrough() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    // Tab in idle is not consumed (passthrough)
+    let resp = session.handle_key(key::TAB, "", 0);
     assert!(!resp.consumed);
+}
+
+#[test]
+fn test_tab_composing_commits() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    assert!(session.is_composing());
+
+    let resp = session.handle_key(key::TAB, "", 0);
+    assert!(resp.consumed);
+    assert!(resp.commit.is_some());
+    assert!(!session.is_composing());
 }
 
 // --- Punctuation auto-commit ---

@@ -122,11 +122,10 @@ fn test_conversion_mode_switch() {
     assert_eq!(session.config.conversion_mode, ConversionMode::Standard);
 
     type_string(&mut session, "kyou");
-    // Tab should toggle submode (Standard behavior)
+    // Tab in Standard mode now commits (no more submode toggle)
     let resp = session.handle_key(key::TAB, "", 0);
-    assert!(resp.commit.is_none());
-    assert!(session.is_composing());
-    assert_eq!(session.comp().submode, crate::types::Submode::English);
+    assert!(resp.commit.is_some());
+    assert!(!session.is_composing());
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //! - `settings()` returns `&'static Settings` (lazy-init singleton)
 //! - Default values are embedded via `include_str!("default_settings.toml")`
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -53,6 +54,30 @@ pub struct Settings {
     pub reranker: RerankerSettings,
     pub history: HistorySettings,
     pub candidates: CandidateSettings,
+    #[serde(default)]
+    keymap: HashMap<String, Vec<String>>,
+    /// Parsed keymap: key_code → (normal, shifted).
+    #[serde(skip)]
+    keymap_parsed: Vec<(u16, String, String)>,
+}
+
+impl Settings {
+    /// Look up a remapped key by key_code and shift state.
+    pub fn keymap_get(&self, key_code: u16, has_shift: bool) -> Option<&str> {
+        self.keymap_parsed
+            .iter()
+            .find_map(|(code, normal, shifted)| {
+                if *code == key_code {
+                    Some(if has_shift {
+                        shifted.as_str()
+                    } else {
+                        normal.as_str()
+                    })
+                } else {
+                    None
+                }
+            })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,9 +112,31 @@ pub struct CandidateSettings {
 }
 
 pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
-    let s: Settings = toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
+    let mut s: Settings =
+        toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
     validate(&s)?;
+    s.keymap_parsed = parse_keymap(&s.keymap)?;
     Ok(s)
+}
+
+fn parse_keymap(
+    raw: &HashMap<String, Vec<String>>,
+) -> Result<Vec<(u16, String, String)>, SettingsError> {
+    let mut result = Vec::new();
+    for (key_str, values) in raw {
+        let key_code: u16 = key_str.parse().map_err(|_| SettingsError::InvalidValue {
+            field: format!("keymap.{}", key_str),
+            reason: "key_code must be a u16 integer".to_string(),
+        })?;
+        if values.len() != 2 {
+            return Err(SettingsError::InvalidValue {
+                field: format!("keymap.{}", key_str),
+                reason: "value must be [\"normal\", \"shifted\"]".to_string(),
+            });
+        }
+        result.push((key_code, values[0].clone(), values[1].clone()));
+    }
+    Ok(result)
 }
 
 fn validate(s: &Settings) -> Result<(), SettingsError> {
@@ -165,6 +212,12 @@ mod tests {
         assert_eq!(s.history.max_bigrams, 10000);
         assert_eq!(s.candidates.nbest, 5);
         assert_eq!(s.candidates.max_results, 20);
+        // Keymap defaults
+        assert_eq!(s.keymap_get(10, false), Some("]"));
+        assert_eq!(s.keymap_get(10, true), Some("}"));
+        assert_eq!(s.keymap_get(93, false), Some("\\"));
+        assert_eq!(s.keymap_get(93, true), Some("|"));
+        assert_eq!(s.keymap_get(999, false), None);
     }
 
     #[test]
@@ -287,6 +340,70 @@ max_results = 20
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(err.to_string().contains("candidates.nbest"));
+    }
+
+    #[test]
+    fn keymap_omitted_is_empty() {
+        let toml = r#"
+[cost]
+segment_penalty = 5000
+mixed_script_bonus = 3000
+katakana_penalty = 5000
+pure_kanji_bonus = 1000
+latin_penalty = 20000
+unknown_word_cost = 10000
+
+[reranker]
+length_variance_weight = 2000
+structure_cost_filter = 4000
+
+[history]
+boost_per_use = 3000
+max_boost = 15000
+half_life_hours = 168.0
+max_unigrams = 10000
+max_bigrams = 10000
+
+[candidates]
+nbest = 5
+max_results = 20
+"#;
+        let s = parse_settings_toml(toml).unwrap();
+        assert_eq!(s.keymap_get(10, false), None);
+        assert_eq!(s.keymap_get(93, false), None);
+    }
+
+    #[test]
+    fn error_keymap_invalid_key_code() {
+        let toml = r#"
+[cost]
+segment_penalty = 5000
+mixed_script_bonus = 3000
+katakana_penalty = 5000
+pure_kanji_bonus = 1000
+latin_penalty = 20000
+unknown_word_cost = 10000
+
+[reranker]
+length_variance_weight = 2000
+structure_cost_filter = 4000
+
+[history]
+boost_per_use = 3000
+max_boost = 15000
+half_life_hours = 168.0
+max_unigrams = 10000
+max_bigrams = 10000
+
+[candidates]
+nbest = 5
+max_results = 20
+
+[keymap]
+abc = ["]", "}"]
+"#;
+        let err = parse_settings_toml(toml).unwrap_err();
+        assert!(err.to_string().contains("keymap.abc"));
     }
 
     #[test]

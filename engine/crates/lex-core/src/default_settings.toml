@@ -20,3 +20,10 @@ max_bigrams = 10000
 [candidates]
 nbest = 5
 max_results = 20
+
+[keymap]
+# key_code = ["normal", "shifted"]
+# macOS bug: keyCode 10 returns § instead of ] on JIS keyboards
+10 = ["]", "}"]
+# ¥ key → backslash (replaces programmer_mode)
+93 = ["\\", "|"]

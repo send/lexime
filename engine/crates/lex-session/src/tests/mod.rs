@@ -5,7 +5,6 @@ mod corpus;
 mod ghost;
 mod proptest_fsm;
 mod simulator;
-mod submode;
 
 use std::sync::Arc;
 

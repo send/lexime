@@ -1,13 +1,12 @@
 use tracing::debug_span;
 
 use lex_core::romaji::{RomajiTrie, TrieLookupResult};
+use lex_core::settings::settings;
 
-use super::response::{
-    build_candidate_selection, build_marked_text, build_marked_text_and_candidates,
-};
+use super::response::{build_candidate_selection, build_marked_text_and_candidates};
 use super::types::{
     is_romaji_input, key, CandidateAction, Composition, ConversionMode, KeyResponse, SessionState,
-    Submode, TabAction, FLAG_HAS_MODIFIER, FLAG_SHIFT,
+    FLAG_HAS_MODIFIER, FLAG_SHIFT,
 };
 use super::InputSession;
 
@@ -41,18 +40,26 @@ impl InputSession {
             self.abc_passthrough = false;
             KeyResponse::consumed()
 
-        // Programmer mode: ¥ key → insert backslash (before passthrough check)
-        } else if key_code == key::YEN && self.config.programmer_mode && !has_shift {
-            let mut r = if self.is_composing() {
-                self.commit_current_state()
+        // Keymap remap: feed remapped text through normal input path (trie, candidates, etc.)
+        // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
+        } else if let Some(remapped) = settings().keymap_get(key_code, has_shift) {
+            if self.abc_passthrough {
+                let mut r = KeyResponse::consumed();
+                r.commit = Some(remapped.to_string());
+                r
+            } else if self.is_composing() {
+                self.handle_composing_text(remapped)
             } else {
-                KeyResponse::consumed()
-            };
-            match r.commit {
-                Some(ref mut t) => t.push('\\'),
-                None => r.commit = Some("\\".to_string()),
+                let r = self.handle_idle(key_code, remapped);
+                if r.consumed {
+                    r
+                } else {
+                    // Not handled by trie/romaji (e.g. \) — commit directly
+                    let mut r = KeyResponse::consumed();
+                    r.commit = Some(remapped.to_string());
+                    r
+                }
             }
-            r
 
         // ABC passthrough: commit printable chars directly, pass through the rest.
         // Consuming printable chars avoids macOS keyboard layout re-interpretation
@@ -100,28 +107,14 @@ impl InputSession {
             return self.accept_ghost_text();
         }
 
-        // Tab — toggle submode
+        // Tab in idle: passthrough (no more submode toggle)
         if key_code == key::TAB {
-            return self.toggle_submode();
-        }
-
-        // English submode: add characters directly
-        if self.idle_submode == Submode::English {
-            if let Some(scalar) = text.chars().next() {
-                let val = scalar as u32;
-                if (0x20..0x7F).contains(&val) {
-                    self.state = SessionState::Composing(Composition::new(Submode::English));
-                    self.comp().prefix.has_boundary_space = false;
-                    self.comp().kana.push_str(text);
-                    return build_marked_text(self.comp());
-                }
-            }
             return KeyResponse::not_consumed();
         }
 
         // Romaji input
         if is_romaji_input(text) {
-            self.state = SessionState::Composing(Composition::new(Submode::Japanese));
+            self.state = SessionState::Composing(Composition::new());
             return self.append_and_convert(&text.to_lowercase());
         }
 
@@ -129,7 +122,7 @@ impl InputSession {
         let trie = RomajiTrie::global();
         match trie.lookup(text) {
             TrieLookupResult::Exact(_) | TrieLookupResult::ExactAndPrefix(_) => {
-                self.state = SessionState::Composing(Composition::new(Submode::Japanese));
+                self.state = SessionState::Composing(Composition::new());
                 self.append_and_convert(text)
             }
             _ => KeyResponse::not_consumed(),
@@ -139,43 +132,32 @@ impl InputSession {
     pub(super) fn handle_composing(&mut self, key_code: u16, text: &str) -> KeyResponse {
         match key_code {
             key::ENTER => {
-                if self.comp().submode == Submode::English {
-                    let mut resp = self.commit_composed();
-                    resp.candidates = CandidateAction::Hide;
-                    resp
-                } else {
-                    // Lazy generate: ensure candidates are available for commit
-                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                        self.update_candidates();
-                    }
-                    self.commit_current_state()
+                // Lazy generate: ensure candidates are available for commit
+                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
+                    self.update_candidates();
                 }
+                self.commit_current_state()
             }
 
             key::SPACE => {
-                if self.comp().submode == Submode::English {
-                    self.comp().kana.push(' ');
-                    build_marked_text(self.comp())
-                } else {
-                    // Lazy generate: ensure candidates for Space cycling
-                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                        self.update_candidates();
-                    }
-                    let c = self.comp();
-                    if !c.candidates.is_empty() {
-                        if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
-                            c.candidates.selected = 1;
-                        } else {
-                            c.candidates.selected = super::types::cyclic_index(
-                                c.candidates.selected,
-                                1,
-                                c.candidates.surfaces.len(),
-                            );
-                        }
-                        build_candidate_selection(self.comp())
+                // Lazy generate: ensure candidates for Space cycling
+                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
+                    self.update_candidates();
+                }
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
+                        c.candidates.selected = 1;
                     } else {
-                        KeyResponse::consumed()
+                        c.candidates.selected = super::types::cyclic_index(
+                            c.candidates.selected,
+                            1,
+                            c.candidates.surfaces.len(),
+                        );
                     }
+                    build_candidate_selection(self.comp())
+                } else {
+                    KeyResponse::consumed()
                 }
             }
 
@@ -215,16 +197,13 @@ impl InputSession {
                 }
             }
 
-            key::TAB => match self.config.conversion_mode.tab_action() {
-                TabAction::ToggleSubmode => self.toggle_submode(),
-                TabAction::Commit => {
-                    // Lazy generate: ensure candidates for commit
-                    if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                        self.update_candidates();
-                    }
-                    self.commit_current_state()
+            key::TAB => {
+                // Tab in composing: always commit
+                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
+                    self.update_candidates();
                 }
-            },
+                self.commit_current_state()
+            }
 
             key::BACKSPACE => self.handle_backspace(),
 
@@ -232,7 +211,7 @@ impl InputSession {
                 self.comp().flush();
                 {
                     let c = self.comp();
-                    if c.submode == Submode::Japanese && !c.kana.is_empty() {
+                    if !c.kana.is_empty() {
                         let kana = c.kana.clone();
                         self.record_history(kana.clone(), kana);
                     }
@@ -269,7 +248,6 @@ impl InputSession {
             resp.candidates = CandidateAction::Hide;
             resp.marked = Some(super::MarkedText {
                 text: String::new(),
-                dashed: false,
             });
             self.reset_state();
             resp
@@ -279,18 +257,13 @@ impl InputSession {
             c.candidates.clear();
             let display = c.display();
             let mut resp = KeyResponse::consumed();
-            resp.marked = Some(super::MarkedText {
-                text: display,
-                dashed: c.submode == Submode::English,
-            });
+            resp.marked = Some(super::MarkedText { text: display });
             resp.candidates = CandidateAction::Hide;
             resp
-        } else if self.config.defer_candidates && self.comp().submode == Submode::Japanese {
+        } else if self.config.defer_candidates {
             self.make_deferred_candidates_response()
         } else {
-            if self.comp().submode == Submode::Japanese {
-                self.update_candidates();
-            }
+            self.update_candidates();
             let resp = build_marked_text_and_candidates(self.comp());
             self.maybe_auto_commit(resp)
         }

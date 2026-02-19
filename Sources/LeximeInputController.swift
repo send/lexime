@@ -43,9 +43,6 @@ class LeximeInputController: IMKInputController {
         session = engine.createSession()
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
-        if UserDefaults.standard.bool(forKey: "programmerMode") {
-            session.setProgrammerMode(enabled: true)
-        }
         let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
         if convMode > 0, convMode <= UInt8.max {
             session.setConversionMode(mode: UInt8(convMode))
@@ -86,10 +83,6 @@ class LeximeInputController: IMKInputController {
             return true
         }
 
-        // Sync programmerMode setting on each key event
-        session.setProgrammerMode(
-            enabled: UserDefaults.standard.bool(forKey: "programmerMode")
-        )
         let convMode = min(max(UserDefaults.standard.integer(forKey: "conversionMode"), 0), Int(UInt8.max))
         session.setConversionMode(mode: UInt8(convMode))
 
@@ -105,12 +98,7 @@ class LeximeInputController: IMKInputController {
         // Invalidate any pending async candidate results
         candidateManager.invalidate()
 
-        let text: String
-        if let fix = Self.jisKeyCodeFix[event.keyCode] {
-            text = dominated.contains(.shift) ? fix.shifted : fix.normal
-        } else {
-            text = event.characters ?? ""
-        }
+        let text = event.characters ?? ""
         let resp = session.handleKey(keyCode: event.keyCode, text: text, flags: flags)
         applyEvents(resp, client: client)
         return resp.consumed
@@ -125,12 +113,12 @@ class LeximeInputController: IMKInputController {
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
                 currentDisplay = nil
                 candidateManager.flagReposition()
-            case .setMarkedText(let text, let dashed):
+            case .setMarkedText(let text):
                 currentDisplay = text
-                updateMarkedText(text, dashed: dashed, client: client)
+                updateMarkedText(text, client: client)
             case .clearMarkedText:
                 currentDisplay = nil
-                updateMarkedText("", dashed: false, client: client)
+                updateMarkedText("", client: client)
             case .showCandidates(let surfaces, let selected):
                 candidateManager.update(surfaces: surfaces, selected: Int(selected))
                 candidateManager.show(client: client, currentDisplay: currentDisplay)
@@ -200,35 +188,6 @@ class LeximeInputController: IMKInputController {
         let rect = candidateManager.cursorRect(client: client, currentDisplay: currentDisplay)
         AppContext.shared.candidatePanel.showNotification(text: names[next], cursorRect: rect)
     }
-
-    /// Workaround for macOS bug: keyCode 10 (kVK_ISO_Section) returns § instead
-    /// of ] on JIS keyboards. Detected at runtime via UCKeyTranslate; automatically
-    /// disables when macOS fixes the issue. `mise run build` also checks and prints
-    /// a banner when the workaround becomes removable.
-    private static let jisKeyCodeFix: [UInt16: (normal: String, shifted: String)] = {
-        guard KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardJIS else { return [:] }
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let dataRef = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
-        else { return [:] }
-        let data = Unmanaged<CFData>.fromOpaque(dataRef).takeUnretainedValue() as Data
-        let needsFix = data.withUnsafeBytes { buf -> Bool in
-            guard let ptr = buf.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self)
-            else { return false }
-            var dead: UInt32 = 0, len: Int = 0, chars = [UniChar](repeating: 0, count: 4)
-            let s = UCKeyTranslate(
-                ptr, 10, UInt16(kUCKeyActionDown), 0,
-                UInt32(LMGetKbdType()), UInt32(kUCKeyTranslateNoDeadKeysMask),
-                &dead, 4, &len, &chars)
-            guard s == noErr, len > 0 else { return false }
-            return String(utf16CodeUnits: chars, count: len) != "]"
-        }
-        if needsFix {
-            NSLog("Lexime: JIS keyCode 10 workaround ACTIVE (macOS returns § instead of ])")
-            return [10: (normal: "]", shifted: "}")]
-        }
-        NSLog("Lexime: JIS keyCode 10 workaround not needed — safe to remove")
-        return [:]
-    }()
 
     private func selectABCInputSource() {
         let conditions = [
