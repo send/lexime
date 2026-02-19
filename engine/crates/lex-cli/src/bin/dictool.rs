@@ -608,10 +608,7 @@ fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &MergeOp
 
     // Insert all entries from A.
     for (reading, entries) in dict_a.iter() {
-        merged
-            .entry(reading)
-            .or_default()
-            .extend(entries.iter().cloned());
+        merged.entry(reading).or_default().extend(entries);
     }
 
     // Insert entries from B, deduplicating by surface and keeping lower cost.
@@ -620,10 +617,10 @@ fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &MergeOp
         for entry in entries {
             if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
                 if entry.cost < existing.cost {
-                    *existing = entry.clone();
+                    *existing = entry;
                 }
             } else {
-                slot.push(entry.clone());
+                slot.push(entry);
             }
         }
     }
@@ -671,10 +668,10 @@ fn collect_pairs(dict: &TrieDictionary) -> (HashSet<(String, String)>, HashSet<S
     let mut pairs = HashSet::new();
     let mut readings = HashSet::new();
     for (reading, entries) in dict.iter() {
-        readings.insert(reading.clone());
-        for entry in entries {
+        for entry in &entries {
             pairs.insert((reading.clone(), entry.surface.clone()));
         }
+        readings.insert(reading);
     }
     (pairs, readings)
 }
@@ -682,9 +679,9 @@ fn collect_pairs(dict: &TrieDictionary) -> (HashSet<(String, String)>, HashSet<S
 /// Build a map from reading to first entry (for sampling).
 fn first_entry_by_reading(dict: &TrieDictionary) -> std::collections::HashMap<String, DictEntry> {
     let mut map = std::collections::HashMap::new();
-    for (reading, entries) in dict.iter() {
-        if let Some(entry) = entries.first() {
-            map.insert(reading, entry.clone());
+    for (reading, mut entries) in dict.iter() {
+        if !entries.is_empty() {
+            map.insert(reading, entries.swap_remove(0));
         }
     }
     map
