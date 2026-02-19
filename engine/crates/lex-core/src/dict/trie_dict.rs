@@ -80,9 +80,9 @@ impl ValuesStore {
         }
 
         let entry_offset =
-            u32::from_le_bytes(idx[slot_start..slot_start + 4].try_into().unwrap()) as usize;
+            u32::from_ne_bytes(idx[slot_start..slot_start + 4].try_into().unwrap()) as usize;
         let count =
-            u16::from_le_bytes(idx[slot_start + 4..slot_start + 6].try_into().unwrap()) as usize;
+            u16::from_ne_bytes(idx[slot_start + 4..slot_start + 6].try_into().unwrap()) as usize;
 
         let data = self.entries_data();
         let pool = self.string_pool();
@@ -93,11 +93,11 @@ impl ValuesStore {
             if off + ENTRY_SIZE > data.len() {
                 break;
             }
-            let str_offset = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-            let str_len = u16::from_le_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
-            let cost = i16::from_le_bytes(data[off + 6..off + 8].try_into().unwrap());
-            let left_id = u16::from_le_bytes(data[off + 8..off + 10].try_into().unwrap());
-            let right_id = u16::from_le_bytes(data[off + 10..off + 12].try_into().unwrap());
+            let str_offset = u32::from_ne_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+            let str_len = u16::from_ne_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
+            let cost = i16::from_ne_bytes(data[off + 6..off + 8].try_into().unwrap());
+            let left_id = u16::from_ne_bytes(data[off + 8..off + 10].try_into().unwrap());
+            let right_id = u16::from_ne_bytes(data[off + 10..off + 12].try_into().unwrap());
 
             let surface = if str_offset + str_len <= pool.len() {
                 String::from_utf8_lossy(&pool[str_offset..str_offset + str_len]).into_owned()
@@ -154,15 +154,15 @@ impl TrieDictionary {
                 });
                 let str_len = e.surface.len() as u16;
 
-                entries_data.extend_from_slice(&str_offset.to_le_bytes());
-                entries_data.extend_from_slice(&str_len.to_le_bytes());
-                entries_data.extend_from_slice(&e.cost.to_le_bytes());
-                entries_data.extend_from_slice(&e.left_id.to_le_bytes());
-                entries_data.extend_from_slice(&e.right_id.to_le_bytes());
+                entries_data.extend_from_slice(&str_offset.to_ne_bytes());
+                entries_data.extend_from_slice(&str_len.to_ne_bytes());
+                entries_data.extend_from_slice(&e.cost.to_ne_bytes());
+                entries_data.extend_from_slice(&e.left_id.to_ne_bytes());
+                entries_data.extend_from_slice(&e.right_id.to_ne_bytes());
             }
 
-            reading_index.extend_from_slice(&entry_offset.to_le_bytes());
-            reading_index.extend_from_slice(&count.to_le_bytes());
+            reading_index.extend_from_slice(&entry_offset.to_ne_bytes());
+            reading_index.extend_from_slice(&count.to_ne_bytes());
         }
 
         Self {
@@ -209,10 +209,10 @@ impl TrieDictionary {
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
         buf.extend_from_slice(&[0u8; 3]); // reserved
-        buf.extend_from_slice(&trie_len.to_le_bytes());
-        buf.extend_from_slice(&pool_len.to_le_bytes());
-        buf.extend_from_slice(&entries_len.to_le_bytes());
-        buf.extend_from_slice(&reading_count.to_le_bytes());
+        buf.extend_from_slice(&trie_len.to_ne_bytes());
+        buf.extend_from_slice(&pool_len.to_ne_bytes());
+        buf.extend_from_slice(&entries_len.to_ne_bytes());
+        buf.extend_from_slice(&reading_count.to_ne_bytes());
         buf.extend_from_slice(&trie_data);
         buf.extend_from_slice(pool);
         buf.extend_from_slice(entries);
@@ -235,10 +235,10 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+        let trie_len = u32::from_ne_bytes(data[8..12].try_into().unwrap()) as usize;
+        let pool_len = u32::from_ne_bytes(data[12..16].try_into().unwrap()) as usize;
+        let entries_len = u32::from_ne_bytes(data[16..20].try_into().unwrap()) as usize;
+        let reading_count = u32::from_ne_bytes(data[20..24].try_into().unwrap()) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;
@@ -286,10 +286,10 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_le_bytes(mmap[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_le_bytes(mmap[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_le_bytes(mmap[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_le_bytes(mmap[20..24].try_into().unwrap()) as usize;
+        let trie_len = u32::from_ne_bytes(mmap[8..12].try_into().unwrap()) as usize;
+        let pool_len = u32::from_ne_bytes(mmap[12..16].try_into().unwrap()) as usize;
+        let entries_len = u32::from_ne_bytes(mmap[16..20].try_into().unwrap()) as usize;
+        let reading_count = u32::from_ne_bytes(mmap[20..24].try_into().unwrap()) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;

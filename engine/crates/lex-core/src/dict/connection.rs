@@ -55,7 +55,7 @@ impl ConnectionMatrix {
             CostStorage::Mapped(mmap) => {
                 let byte_offset = self.header_size + idx * 2;
                 mmap.get(byte_offset..byte_offset + 2)
-                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .map(|b| i16::from_ne_bytes([b[0], b[1]]))
                     .unwrap_or(0)
             }
         }

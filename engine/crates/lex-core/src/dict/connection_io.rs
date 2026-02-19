@@ -161,9 +161,9 @@ impl ConnectionMatrix {
         if version != VERSION {
             return Err(DictError::UnsupportedVersion(version));
         }
-        let num_ids = u16::from_le_bytes([data[5], data[6]]);
-        let fw_min = u16::from_le_bytes([data[7], data[8]]);
-        let fw_max = u16::from_le_bytes([data[9], data[10]]);
+        let num_ids = u16::from_ne_bytes([data[5], data[6]]);
+        let fw_min = u16::from_ne_bytes([data[7], data[8]]);
+        let fw_max = u16::from_ne_bytes([data[9], data[10]]);
         let roles_end = FIXED_HEADER_SIZE + num_ids as usize;
         if data.len() < roles_end {
             return Err(DictError::InvalidHeader);
@@ -202,7 +202,7 @@ impl ConnectionMatrix {
         let (num_ids, fw_min, fw_max, roles, hdr_size) = Self::validate_header(data)?;
         let costs: Vec<i16> = data[hdr_size..]
             .chunks_exact(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .map(|chunk| i16::from_ne_bytes([chunk[0], chunk[1]]))
             .collect();
         Ok(Self::new_owned(num_ids, fw_min, fw_max, roles, costs))
     }
@@ -218,12 +218,12 @@ impl ConnectionMatrix {
         let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + costs.len() * 2);
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
-        buf.extend_from_slice(&self.num_ids.to_le_bytes());
-        buf.extend_from_slice(&self.fw_min.to_le_bytes());
-        buf.extend_from_slice(&self.fw_max.to_le_bytes());
+        buf.extend_from_slice(&self.num_ids.to_ne_bytes());
+        buf.extend_from_slice(&self.fw_min.to_ne_bytes());
+        buf.extend_from_slice(&self.fw_max.to_ne_bytes());
         buf.extend_from_slice(&self.roles);
         for &cost in costs {
-            buf.extend_from_slice(&cost.to_le_bytes());
+            buf.extend_from_slice(&cost.to_ne_bytes());
         }
         buf
     }
@@ -234,14 +234,14 @@ impl ConnectionMatrix {
         let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + n * 2);
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
-        buf.extend_from_slice(&self.num_ids.to_le_bytes());
-        buf.extend_from_slice(&self.fw_min.to_le_bytes());
-        buf.extend_from_slice(&self.fw_max.to_le_bytes());
+        buf.extend_from_slice(&self.num_ids.to_ne_bytes());
+        buf.extend_from_slice(&self.fw_min.to_ne_bytes());
+        buf.extend_from_slice(&self.fw_max.to_ne_bytes());
         buf.extend_from_slice(&self.roles);
         for i in 0..n {
             let left = (i / self.num_ids as usize) as u16;
             let right = (i % self.num_ids as usize) as u16;
-            buf.extend_from_slice(&self.cost(left, right).to_le_bytes());
+            buf.extend_from_slice(&self.cost(left, right).to_ne_bytes());
         }
         buf
     }
