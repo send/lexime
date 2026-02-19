@@ -222,6 +222,28 @@ fn test_reorder_candidates_no_boost_preserves_order() {
 }
 
 #[test]
+fn test_learned_surfaces() {
+    let mut h = UserHistory::new();
+    let now = 1_700_000_000;
+    h.record_at(&[("ゆうかい".into(), "夕会".into())], now);
+    h.record_at(&[("ゆうかい".into(), "夕会".into())], now + 1);
+    h.record_at(&[("ゆうかい".into(), "誘拐".into())], now + 2);
+
+    let surfaces = h.learned_surfaces("ゆうかい", now + 3);
+    assert_eq!(surfaces.len(), 2);
+    // "夕会" has frequency=2 → higher boost → first
+    assert_eq!(surfaces[0].0, "夕会");
+    assert_eq!(surfaces[1].0, "誘拐");
+    assert!(surfaces[0].1 > surfaces[1].1);
+}
+
+#[test]
+fn test_learned_surfaces_empty() {
+    let h = UserHistory::new();
+    assert!(h.learned_surfaces("ゆうかい", now_epoch()).is_empty());
+}
+
+#[test]
 fn test_bigram_successors() {
     let mut h = UserHistory::new();
     h.record(&[
