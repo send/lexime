@@ -1,5 +1,5 @@
 use crate::numeric;
-use crate::unicode::hiragana_to_katakana;
+use crate::unicode::{hiragana_to_katakana, is_katakana};
 
 use super::viterbi::{RichSegment, ScoredPath};
 
@@ -46,6 +46,62 @@ impl Rewriter for KatakanaRewriter {
                 word_cost: 0,
             }],
             viterbi_cost: worst_cost.saturating_add(10000),
+        });
+    }
+}
+
+/// Adds a hiragana variant of the best Viterbi path by replacing kanji segments
+/// with their reading while keeping katakana and hiragana segments as-is.
+///
+/// Example: `リダイレクト|去れ|ます|化` → `リダイレクトされますか`
+pub(crate) struct HiraganaVariantRewriter;
+
+impl Rewriter for HiraganaVariantRewriter {
+    fn rewrite(&self, paths: &mut Vec<ScoredPath>, _reading: &str) {
+        let Some(best) = paths.first() else {
+            return;
+        };
+
+        let mut any_replaced = false;
+        let mut combined_reading = String::new();
+        let mut combined_surface = String::new();
+
+        for seg in &best.segments {
+            if seg.surface.chars().all(is_katakana) {
+                // Katakana → keep as-is
+                combined_reading.push_str(&seg.reading);
+                combined_surface.push_str(&seg.surface);
+            } else if seg.surface == seg.reading {
+                // Already hiragana → keep
+                combined_reading.push_str(&seg.reading);
+                combined_surface.push_str(&seg.surface);
+            } else {
+                // Kanji → replace with reading
+                combined_reading.push_str(&seg.reading);
+                combined_surface.push_str(&seg.reading);
+                any_replaced = true;
+            }
+        }
+
+        if !any_replaced {
+            return;
+        }
+
+        if paths.iter().any(|p| p.surface_key() == combined_surface) {
+            return;
+        }
+
+        let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
+
+        paths.push(ScoredPath {
+            segments: vec![RichSegment {
+                reading: combined_reading,
+                surface: combined_surface,
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            }],
+            viterbi_cost: worst_cost.saturating_add(5000),
         });
     }
 }
@@ -238,5 +294,142 @@ mod tests {
         // Half-width "1" already exists, only full-width should be added
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[1].surface_key(), "１");
+    }
+
+    #[test]
+    fn test_hiragana_variant_replaces_kanji() {
+        let rw = HiraganaVariantRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "りだいれくと".into(),
+                    surface: "リダイレクト".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "され".into(),
+                    surface: "去れ".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ます".into(),
+                    surface: "ます".into(),
+                    left_id: 30,
+                    right_id: 30,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "か".into(),
+                    surface: "化".into(),
+                    left_id: 40,
+                    right_id: 40,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 3000,
+        }];
+
+        rw.rewrite(&mut paths, "りだいれくとされますか");
+
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[1].surface_key(), "リダイレクトされますか");
+        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
+    }
+
+    #[test]
+    fn test_hiragana_variant_skips_all_hiragana() {
+        let rw = HiraganaVariantRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "され".into(),
+                    surface: "され".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ます".into(),
+                    surface: "ます".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "されます");
+
+        assert_eq!(
+            paths.len(),
+            1,
+            "should not add variant when all segments are already hiragana"
+        );
+    }
+
+    #[test]
+    fn test_hiragana_variant_skips_duplicate() {
+        let rw = HiraganaVariantRewriter;
+        let mut paths = vec![
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "され".into(),
+                    surface: "去れ".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                }],
+                viterbi_cost: 3000,
+            },
+            ScoredPath {
+                segments: vec![RichSegment {
+                    reading: "され".into(),
+                    surface: "され".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                }],
+                viterbi_cost: 4000,
+            },
+        ];
+
+        rw.rewrite(&mut paths, "され");
+
+        assert_eq!(paths.len(), 2, "should not add duplicate hiragana variant");
+    }
+
+    #[test]
+    fn test_hiragana_variant_keeps_katakana() {
+        let rw = HiraganaVariantRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "てすと".into(),
+                    surface: "テスト".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ちゅう".into(),
+                    surface: "中".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 2000,
+        }];
+
+        rw.rewrite(&mut paths, "てすとちゅう");
+
+        assert_eq!(paths.len(), 2);
+        // Katakana "テスト" kept, kanji "中" replaced with "ちゅう"
+        assert_eq!(paths[1].surface_key(), "テストちゅう");
     }
 }
