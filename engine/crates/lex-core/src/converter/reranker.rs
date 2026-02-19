@@ -62,11 +62,13 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
         // fragmented paths without dominating the Viterbi cost.
         path.viterbi_cost += structure_cost / 4;
 
-        // Length variance penalty: for paths with 2+ segments, penalise
-        // uneven reading lengths. Computed as sum-of-squared-deviations
-        // from the mean, scaled by LENGTH_VARIANCE_WEIGHT / N.
+        // Length variance penalty: for paths with 3+ segments, penalise
+        // uneven reading lengths. 2-segment paths are exempt because
+        // "long content word + short particle" is natural Japanese.
+        // Computed as sum-of-squared-deviations from the mean, scaled
+        // by LENGTH_VARIANCE_WEIGHT / N.
         let n = path.segments.len();
-        if n >= 2 {
+        if n >= 3 {
             let lengths: Vec<i64> = path
                 .segments
                 .iter()
