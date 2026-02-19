@@ -911,9 +911,9 @@ dependencies = [
 
 [[package]]
 name = "lexime-trie"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5708e6e116e0cb4c679c3718d548a99ee4b09e4aa48fe0df8c3a31862775829"
+checksum = "0aca197ce858a2d5ef89e8a8da9f41ab61df8301616d7f96ca1ae99d35250b96"
 
 [[package]]
 name = "libc"
