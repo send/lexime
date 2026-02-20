@@ -82,25 +82,32 @@ class LeximeInputController: IMKInputController {
 
         let text = event.characters ?? ""
 
-        // Build platform-independent key event
+        // Build platform-independent key event.
+        // Eisu/Kana are always mode-switch regardless of modifiers.
+        // For all other keys, modifier → commit + passthrough (ModifiedKey).
         let keyEvent: LexKeyEvent
         switch event.keyCode {
         case 102: keyEvent = .switchToDirectInput
         case 104: keyEvent = .switchToJapanese
-        case 36:  keyEvent = .enter
-        case 49:  keyEvent = .space
-        case 51:  keyEvent = .backspace
-        case 53:  keyEvent = .escape
-        case 48:  keyEvent = .tab
-        case 125: keyEvent = .arrowDown
-        case 126: keyEvent = .arrowUp
         default:
             if hasModifier {
                 keyEvent = .modifiedKey
-            } else if let remapped = keymapGet(keyCode: event.keyCode, hasShift: hasShift) {
-                keyEvent = .remapped(text: remapped, shift: hasShift)
             } else {
-                keyEvent = .text(text: text, shift: hasShift)
+                switch event.keyCode {
+                case 36:  keyEvent = .enter
+                case 49:  keyEvent = .space
+                case 51:  keyEvent = .backspace
+                case 53:  keyEvent = .escape
+                case 48:  keyEvent = .tab
+                case 125: keyEvent = .arrowDown
+                case 126: keyEvent = .arrowUp
+                default:
+                    if let remapped = keymapGet(keyCode: event.keyCode, hasShift: hasShift) {
+                        keyEvent = .remapped(text: remapped, shift: hasShift)
+                    } else {
+                        keyEvent = .text(text: text, shift: hasShift)
+                    }
+                }
             }
         }
 
