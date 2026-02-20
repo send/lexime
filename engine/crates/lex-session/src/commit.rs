@@ -14,7 +14,7 @@ impl InputSession {
             });
         }
 
-        // Accumulate committed text for neural context
+        // Accumulate committed text for context
         if let Some(ref committed) = resp.commit {
             self.committed_context.push_str(committed);
         }
@@ -53,7 +53,7 @@ impl InputSession {
             }
         }
 
-        // Accumulate committed text for neural context
+        // Accumulate committed text for context
         if let Some(ref committed) = resp.commit {
             self.committed_context.push_str(committed);
         }

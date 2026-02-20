@@ -6,9 +6,10 @@ use super::CandidateResponse;
 
 /// Strategy for candidate generation.
 ///
-/// `Standard` and `Predictive` are stateless.  `Neural` carries a mutable
-/// reference to the scorer plus the preceding context string, because
-/// speculative decoding needs both.
+/// `Standard` and `Predictive` are used in the IME runtime.
+/// `Neural` is retained for research only (not integrated into the FFI layer
+/// due to inference latency). It carries a mutable reference to the scorer
+/// plus the preceding context string for speculative decoding.
 pub enum CandidateStrategy<'a> {
     Standard,
     Predictive,
