@@ -30,7 +30,7 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 │  │  │  lex-core (計算エンジン)              │  │  │
 │  │  │  romaji / candidates / converter /   │  │  │
 │  │  │  dict / user_history / user_dict /   │  │  │
-│  │  │  neural / settings                   │  │  │
+│  │  │  neural (feature-gated) / settings    │  │  │
 │  │  └──────────────────────────────────────┘  │  │
 │  └────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
@@ -71,7 +71,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | モジュール | 内容 |
 |---|---|
 | `romaji/` | ローマ字→かな変換。Trie + TOML 設定対応（`default_romaji.toml`, 306 エントリ） |
-| `candidates/` | 統一候補生成。CandidateStrategy enum（Standard / Predictive / Neural） |
+| `candidates/` | 統一候補生成（Standard / Predictive）。Neural は feature-gated で research 用 |
 | `converter/` | Lattice 構築、Viterbi N-best、Reranker、Rewriter、CostFunction trait |
 | `dict/` | `Dictionary` trait、`TrieDictionary`、`CompositeDictionary`、`ConnectionMatrix` |
 | `user_history/` | ユニグラム・バイグラム学習、WAL、LXUD 形式 |
@@ -97,7 +97,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 
 | バイナリ | 内容 |
 |---|---|
-| `dictool` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info / user-dict / romaji-export / romaji-validate / settings-export / settings-validate / neural-score） |
+| `dictool` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info / user-dict / romaji-export / romaji-validate / settings-export / settings-validate / neural-score (`--features neural`)） |
 | `lextool` | 変換テスト CLI |
 
 ### 辞書データ
@@ -516,7 +516,7 @@ macOS で動作する最小限の IME を構築。
 - Dictionary trait 統一 + CompositeDictionary
 - ユーザー辞書（LXUW 形式、CompositeDictionary レイヤー）
 - WAL 付き学習履歴
-- Rewriters（カタカナ / ひらがら / 数字候補追加）
+- Rewriters（カタカナ / ひらがな / 数字候補追加）
 
 ### Phase 5: 設定 UI — **完了**
 
@@ -578,7 +578,7 @@ macOS で動作する最小限の IME を構築。
 | `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy` |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
-| `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace,neural` |
+| `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
 | `audit` | ubuntu-latest | core 変更時 | `cargo-audit` + `cargo-machete` |
 | `swift` | macos-latest | engine + Swift 両方変更時 | `mise run test-swift` |
