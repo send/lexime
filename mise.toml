@@ -131,7 +131,9 @@ sources = [
   "Resources/icon.tiff",
   "Resources/icon-roman.tiff",
   "Resources/en.lproj/InfoPlist.strings",
+  "Resources/en.lproj/Localizable.strings",
   "Resources/ja.lproj/InfoPlist.strings",
+  "Resources/ja.lproj/Localizable.strings",
 ]
 outputs = ["build/Lexime.app/Contents/MacOS/Lexime"]
 run = """
@@ -155,6 +157,7 @@ rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
 cp Resources/icon-roman.tiff "$RES/icon-roman.tiff"
+rm -rf "$RES/en.lproj" "$RES/ja.lproj"
 cp -R Resources/en.lproj "$RES/en.lproj"
 cp -R Resources/ja.lproj "$RES/ja.lproj"
 cp engine/data/lexime.dict "$RES/"

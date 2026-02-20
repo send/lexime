@@ -1,0 +1,31 @@
+/* Settings Window */
+"Lexime 設定" = "Lexime Settings";
+
+/* Tabs */
+"ユーザ辞書" = "User Dictionary";
+"開発者" = "Developer";
+
+/* Developer Settings */
+"変換モード" = "Conversion Mode";
+"モード" = "Mode";
+"保存" = "Save";
+"再読み込み" = "Reload";
+"デフォルトに戻す" = "Reset to Default";
+"変更を適用するには再起動が必要です" = "Restart required to apply changes";
+"Lexime を再起動" = "Restart Lexime";
+
+/* Accessibility - Developer */
+"ローマ字設定エディタ" = "Romaji configuration editor";
+"設定エディタ" = "Settings editor";
+
+/* User Dictionary */
+"ユーザ辞書は空です" = "User dictionary is empty";
+"単語を追加" = "Add Word";
+"選択した単語を削除" = "Delete selected word";
+"読み（ひらがな）" = "Reading (hiragana)";
+"表層（漢字など）" = "Surface (kanji, etc.)";
+"キャンセル" = "Cancel";
+"追加" = "Add";
+
+/* Interpolated */
+"%lld 語" = "%lld words";
