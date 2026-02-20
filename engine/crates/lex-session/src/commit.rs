@@ -16,6 +16,21 @@ impl InputSession {
                 text: String::new(),
             });
         }
+
+        // Accumulate committed text for neural context
+        if let Some(ref committed) = resp.commit {
+            self.committed_context.push_str(committed);
+        }
+
+        // GhostText mode: request ghost text generation after commit
+        if self.config.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
+            self.ghost.generation += 1;
+            resp.ghost_request = Some(AsyncGhostRequest {
+                context: self.committed_context.clone(),
+                generation: self.ghost.generation,
+            });
+        }
+
         self.reset_state();
         resp
     }

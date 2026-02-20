@@ -84,8 +84,13 @@ impl InputSession {
 
         // Include prefix in the committed text, then clear it
         let prefix_text = std::mem::take(&mut c.prefix.text);
+        let committed_text = format!("{}{}", prefix_text, committed_surface);
+
+        // Accumulate for neural context
+        self.committed_context.push_str(&committed_text);
+
         let mut resp = KeyResponse::consumed();
-        resp.commit = Some(format!("{}{}", prefix_text, committed_surface));
+        resp.commit = Some(committed_text);
 
         if self.comp().kana.is_empty() {
             self.comp().candidates.clear();
