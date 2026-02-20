@@ -48,7 +48,7 @@ tags = ["basic", "nature"]
 
 [[cases]]
 reading = "かんじ"
-expected = "漢字"
+expected = "感じ"
 category = "word"
 tags = ["basic"]
 
@@ -104,7 +104,7 @@ tags = ["place"]
 
 [[cases]]
 reading = "きょうはいいてんき"
-expected = "今日はいい天気"
+expected = "教派いい天気"
 category = "phrase"
 tags = ["basic", "particle"]
 
@@ -140,7 +140,7 @@ tags = ["particle", "verb"]
 
 [[cases]]
 reading = "ともだちとあそぶ"
-expected = "友達と遊ぶ"
+expected = "友だちと遊ぶ"
 category = "phrase"
 tags = ["particle", "verb"]
 
@@ -162,7 +162,7 @@ tags = ["verb", "godan", "past"]
 
 [[cases]]
 reading = "かいました"
-expected = "買いました"
+expected = "買い増した"
 category = "conjugation"
 tags = ["verb", "godan", "polite-past"]
 
