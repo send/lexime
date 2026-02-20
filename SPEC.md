@@ -185,6 +185,7 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | キー | 動作 |
 |---|---|
 | ローマ字 | composing へ遷移 |
+| Shift+英字 | 大文字のまま composing へ遷移（ローマ字変換しない） |
 | 句読点（`,` `.` 等） | 全角句読点で composing へ遷移 |
 | Tab | パススルー（消費しない） |
 | 英数キー | ABC パススルーモードに入る |
@@ -194,6 +195,7 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | キー | 動作 |
 |---|---|
 | ローマ字 | かな追加、候補更新（Viterbi #1 をインライン表示） |
+| Shift+英字 | 大文字のまま composedKana に追加（auto-commit 抑制、連続英字は一塊） |
 | z + `h/j/k/l/.,/-/[/]` | Mozc 互換 z-sequence（矢印・記号）を入力 |
 | Space / ↓ | 次の候補を選択（初回 Space は index 1 から開始） |
 | ↑ | 前の候補を選択 |
