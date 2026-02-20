@@ -1,6 +1,14 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icon/export/dark/png/icon_128x128.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/icon/export/light/png/icon_128x128.png">
+    <img alt="Lexime" src="assets/icon/export/light/png/icon_128x128.png" width="128">
+  </picture>
+</p>
+
 # Lexime
 
-macOS 向けの軽量な日本語入力システム（IME）。
+Lexime /lɛksɪm/ — 軽量な日本語入力システム（IME）
 
 ## 特徴
 
