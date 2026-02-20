@@ -26,7 +26,7 @@ class SettingsWindowController {
             backing: .buffered,
             defer: false
         )
-        win.title = "Lexime 設定"
+        win.title = NSLocalizedString("Lexime 設定", comment: "")
         win.contentView = hostingView
         win.center()
         win.isReleasedWhenClosed = false

@@ -1,3 +1,3 @@
 CFBundleName = "Lexime";
-"sh.send.inputmethod.Lexime.Japanese" = "Lex かな";
-"sh.send.inputmethod.Lexime.Roman" = "Lex abc";
+"sh.send.inputmethod.Lexime.Japanese" = "ひらがな (Lexime)";
+"sh.send.inputmethod.Lexime.Roman" = "英数 (Lexime)";
