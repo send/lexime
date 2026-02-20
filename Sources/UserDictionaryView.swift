@@ -23,6 +23,8 @@ struct UserDictionaryView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .tag(index)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(word.reading)、\(word.surface)")
                     }
                 }
             }
@@ -33,9 +35,11 @@ struct UserDictionaryView: View {
                 Button(action: { showingAddSheet = true }) {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("単語を追加")
                 Button(action: removeSelected) {
                     Image(systemName: "minus")
                 }
+                .accessibilityLabel("選択した単語を削除")
                 .disabled(selectedIndex == nil)
                 Spacer()
                 Text("\(words.count) 語")

@@ -54,6 +54,7 @@ struct DeveloperSettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(height: editorHeight)
                         .border(Color(nsColor: .separatorColor))
+                        .accessibilityLabel("ローマ字設定エディタ")
                     tomlButtons(
                         onSave: { saveFile(name: "romaji.toml", content: romajiText) },
                         onReload: { loadRomaji() },
@@ -66,6 +67,7 @@ struct DeveloperSettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(height: editorHeight)
                         .border(Color(nsColor: .separatorColor))
+                        .accessibilityLabel("設定エディタ")
                     tomlButtons(
                         onSave: { saveFile(name: "settings.toml", content: settingsText) },
                         onReload: { loadSettings() },
