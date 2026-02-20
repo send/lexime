@@ -1,13 +1,10 @@
-use super::types::{CandidateAction, Composition, KeyResponse, MarkedText, Submode};
+use super::types::{CandidateAction, Composition, KeyResponse, MarkedText};
 
 /// Build a response showing only marked text (no candidates).
 pub(super) fn build_marked_text(comp: &Composition) -> KeyResponse {
     let display = comp.display();
     let mut resp = KeyResponse::consumed();
-    resp.marked = Some(MarkedText {
-        text: display,
-        dashed: comp.submode == Submode::English,
-    });
+    resp.marked = Some(MarkedText { text: display });
     resp
 }
 
@@ -16,10 +13,7 @@ pub(super) fn build_marked_text_and_candidates(comp: &Composition) -> KeyRespons
     let mut resp = KeyResponse::consumed();
 
     let display = comp.display();
-    resp.marked = Some(MarkedText {
-        text: display,
-        dashed: comp.submode == Submode::English,
-    });
+    resp.marked = Some(MarkedText { text: display });
 
     if !comp.candidates.is_empty() {
         resp.candidates = CandidateAction::Show {
@@ -31,12 +25,11 @@ pub(super) fn build_marked_text_and_candidates(comp: &Composition) -> KeyRespons
     resp
 }
 
-/// Build a response for candidate selection (always solid underline).
+/// Build a response for candidate selection.
 pub(super) fn build_candidate_selection(comp: &Composition) -> KeyResponse {
     let mut resp = KeyResponse::consumed();
     resp.marked = Some(MarkedText {
         text: comp.display(),
-        dashed: false,
     });
     resp.candidates = CandidateAction::Show {
         surfaces: comp.candidates.surfaces.clone(),

@@ -2,7 +2,7 @@ use lex_core::candidates::CandidateResponse;
 use lex_core::converter::{convert, convert_with_history, ConvertedSegment};
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
-use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, Submode, MAX_CANDIDATES};
+use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
 use super::InputSession;
 
 impl InputSession {
@@ -77,9 +77,9 @@ impl InputSession {
         surfaces: Vec<String>,
         paths: Vec<Vec<ConvertedSegment>>,
     ) -> Option<KeyResponse> {
-        // Stale check: reading must match current state
+        // Stale check: reading must match current composing state
         match &self.state {
-            SessionState::Composing(c) if c.kana == reading && c.submode == Submode::Japanese => {}
+            SessionState::Composing(c) if c.kana == reading => {}
             _ => return None,
         }
 

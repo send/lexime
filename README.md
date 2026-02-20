@@ -63,17 +63,14 @@ mise run install
 | `z/` | ・ | `z-` | 〜 |
 | `z[` | 『 | `z]` | 』 |
 
-### プログラマモード
+### キーリマップ
 
-JIS キーボードの ¥ キーでバックスラッシュ `\` を入力するモード。
+JIS キーボード向けのキーリマップがデフォルトで有効:
 
-```sh
-# 有効化
-defaults write sh.send.inputmethod.Lexime programmerMode -bool true
+- ¥ キー (keyCode 93) → `\` / `|`
+- keyCode 10 → `]` / `}`
 
-# 無効化
-defaults write sh.send.inputmethod.Lexime programmerMode -bool false
-```
+`~/Library/Application Support/Lexime/settings.toml` の `[keymap]` セクションでカスタマイズ可能。
 
 ## 開発
 

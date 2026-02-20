@@ -8,7 +8,6 @@ pub(super) mod key {
     pub const SPACE: u16 = 49;
     pub const BACKSPACE: u16 = 51;
     pub const ESCAPE: u16 = 53;
-    pub const YEN: u16 = 93;
     pub const EISU: u16 = 102;
     pub const KANA: u16 = 104;
     pub const DOWN: u16 = 125;
@@ -22,10 +21,9 @@ pub(super) const FLAG_HAS_MODIFIER: u8 = 2;
 pub(super) const MAX_COMPOSED_KANA_LENGTH: usize = 100;
 pub(super) const MAX_CANDIDATES: usize = 20;
 
-/// Marked (composing) text with underline style.
+/// Marked (composing) text.
 pub struct MarkedText {
     pub text: String,
-    pub dashed: bool,
 }
 
 /// Candidate panel action — exactly one of three states.

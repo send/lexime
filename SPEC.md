@@ -88,7 +88,6 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | `composing.rs` | 入力中状態管理（Composition の操作） |
 | `commit.rs` | 確定操作 |
 | `auto_commit.rs` | 自動確定ロジック（安定度トラッカー、ASCII グルーピング） |
-| `submode.rs` | サブモード管理（japanese / english） |
 | `ghost.rs` | ゴーストテキスト生成リクエスト |
 | `candidate_gen.rs` | 候補生成ディスパッチ |
 | `response.rs` | レスポンスビルダー（free functions） |
@@ -136,7 +135,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | バリアント | 説明 |
 |---|---|
 | `Commit { text }` | テキスト確定 |
-| `SetMarkedText { text, dashed }` | マークドテキスト設定（dashed: 英字サブモード点線） |
+| `SetMarkedText { text }` | マークドテキスト設定 |
 | `ClearMarkedText` | マークドテキストクリア |
 | `ShowCandidates { surfaces, selected }` | 候補パネル表示 |
 | `HideCandidates` | 候補パネル非表示 |
@@ -164,7 +163,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `commit()` | 現在の入力を確定 → `LexKeyResponse` |
 | `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
 | `is_composing()` | 入力中かどうか |
-| `set_programmer_mode(enabled)` | プログラマーモード設定 |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（0=Standard, 1=Predictive, 2=GhostText） |
 | `set_abc_passthrough(enabled)` | ABC パススルー設定 |
@@ -175,9 +173,8 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 ### 状態遷移
 
 ```
-idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape)──→ idle
+idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
                                     │
-                                    ├──(Tab)──→ サブモード切替（japanese ↔ english）
                                     └──(Option+Tab)──→ 変換モード切替（Standard ↔ Predictive）
 ```
 
@@ -189,10 +186,10 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 |---|---|
 | ローマ字 | composing へ遷移 |
 | 句読点（`,` `.` 等） | 全角句読点で composing へ遷移 |
-| Tab | 日英サブモードをトグル |
-| 英数キー | システム ABC 入力ソースに切替 |
+| Tab | パススルー（消費しない） |
+| 英数キー | ABC パススルーモードに入る |
 
-**composing（japanese サブモード）**
+**composing**
 
 | キー | 動作 |
 |---|---|
@@ -201,34 +198,24 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Space / ↓ | 次の候補を選択（初回 Space は index 1 から開始） |
 | ↑ | 前の候補を選択 |
 | Enter | 表示中の候補を確定（変換結果 + 学習記録） |
-| Tab | Standard: english サブモードへ切替 / Predictive: 確定 |
+| Tab | 確定 |
 | Option+Tab | 変換モード切替（Standard ↔ Predictive） |
 | Backspace | 1 文字削除（空になれば idle へ） |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 | その他の文字 | composedKana に追加（Backspace で削除可能） |
 
-**composing（english サブモード）**
+**キーリマップ（settings.toml `[keymap]`）**
 
-| キー | 動作 |
-|---|---|
-| 印字可能 ASCII | composedKana にそのまま追加（大文字小文字保持、Viterbi スキップ） |
-| Space | スペース文字を composedKana に追加 |
-| Enter | composedKana をそのまま確定（学習なし） |
-| Tab | japanese サブモードへ切替 |
-| Backspace | 1 文字削除（空になれば idle へ） |
-| Escape | composedKana をそのまま確定 |
+| key_code | 通常 | Shift |
+|---|---|---|
+| 10 | `]` | `}` |
+| 93 | `\` | `\|` |
 
-**全状態共通（programmerMode）**
-
-| キー | 動作 |
-|---|---|
-| ¥（ON） | 入力中のテキストを確定し `\` を挿入 |
-| ¥（OFF） | 通常の ¥ をパススルー（デフォルト） |
-| Shift+¥ | `|`（パイプ）をパススルー（モード無関係） |
-
-`programmerMode` は UserDefaults で永続化（`defaults write sh.send.inputmethod.Lexime programmerMode -bool true/false`）。
-JIS キーボードの ¥ キー（keyCode 93）のみ対象。US キーボードには影響なし。
+keymap に登録されたキーはリマップ後のテキストとして処理される。
+かなモードではリマップ後のテキストがローマ字 trie・通常入力パスを経由する（例: `]` → `」`）。
+trie にマッチしない文字（例: `\`）は直接確定。ABC モードでは常に直接確定。
+`settings.toml` の `[keymap]` セクションで追加・変更可能。
 
 ### ローマ字変換
 
@@ -436,6 +423,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 | `[reranker]` | length_variance_weight, structure_cost_filter |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results |
+| `[keymap]` | key_code = ["normal", "shifted"]（オプショナル、デフォルト: 10→]/}, 93→\\/\|） |
 
 `mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。
 
@@ -502,14 +490,12 @@ macOS で動作する最小限の IME を構築。
 - Escape はひらがなで確定（IMKit の制約: Escape 後に `commitComposition` が呼ばれる）
 - `currentDisplay` トラッキングで `composedString` とマークドテキストを同期
 
-**Tab インライン英字**
+**キーリマップ**
 
-- Tab キーで japanese / english サブモードをトグル
-- english モード中はローマ字変換をバイパスし、入力をそのまま composedKana に追加（大文字小文字保持）
-- programmerMode 時は日英境界に自動スペース挿入（未使用時は再トグルで取消）
-  - 例: `今日 React のコンポーネントを commit した`
-- english モードはマークドテキストに点線下線（patternDash）で表示
-- 自動確定は連続 ASCII セグメントを単語単位でまとめて確定
+- `settings.toml` の `[keymap]` セクションで keyCode → 文字のリマップを定義
+- デフォルト: keyCode 10 → `]`/`}`、keyCode 93 → `\`/`|`（JIS キーボード対応）
+- かなモード: リマップ後のテキストをローマ字 trie・通常入力パスに通す（trie マッチしない文字は直接確定）
+- ABC モード: 直接確定
 
 **候補パネルのカーソル追従**
 
@@ -521,7 +507,7 @@ macOS で動作する最小限の IME を構築。
 - Viterbi base + bigram chaining による予測変換
 - `ConversionMode` enum（Standard / Predictive / GhostText）で切替可能
 - Option+Tab で変換モードをトグル（UserDefaults `predictiveMode` で永続化）
-- Tab キーで予測候補を確定（Standard モードのサブモード切替と差別化）
+- Tab キーで予測候補を確定
 
 **アーキテクチャ改善**
 
@@ -529,7 +515,7 @@ macOS で動作する最小限の IME を構築。
 - ワークスペース分割（lex-core / lex-session / lex-cli）
 - 非同期内部化（AsyncWorker: 候補・ゴースト生成を Rust ワーカースレッドで実行）
 - イベント駆動 FFI（LexKeyResponse + LexEvent enum）
-- セッション責務分離（composing / commit / auto_commit / submode / ghost / response）
+- セッション責務分離（composing / commit / auto_commit / ghost / response）
 - ローマ字・設定の TOML 外部化
 - Dictionary trait 統一 + CompositeDictionary
 - ユーザー辞書（LXUW 形式、CompositeDictionary レイヤー）

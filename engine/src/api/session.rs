@@ -140,10 +140,6 @@ impl LexSession {
         self.session.lock().unwrap().is_composing()
     }
 
-    fn set_programmer_mode(&self, enabled: bool) {
-        self.session.lock().unwrap().set_programmer_mode(enabled);
-    }
-
     fn set_defer_candidates(&self, enabled: bool) {
         self.session.lock().unwrap().set_defer_candidates(enabled);
     }

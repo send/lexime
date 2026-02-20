@@ -1,6 +1,6 @@
 use super::types::{
     AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse, LearningRecord, MarkedText,
-    SessionState, Submode,
+    SessionState,
 };
 use super::InputSession;
 
@@ -14,7 +14,6 @@ impl InputSession {
         } else {
             resp.marked = Some(MarkedText {
                 text: String::new(),
-                dashed: false,
             });
         }
         self.reset_state();
@@ -47,7 +46,6 @@ impl InputSession {
             } else {
                 resp.marked = Some(MarkedText {
                     text: String::new(),
-                    dashed: false,
                 });
             }
         }
@@ -86,6 +84,5 @@ impl InputSession {
 
     pub(super) fn reset_state(&mut self) {
         self.state = SessionState::Idle;
-        self.idle_submode = Submode::Japanese;
     }
 }

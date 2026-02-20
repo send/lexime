@@ -1,7 +1,7 @@
 use lex_core::converter::ConvertedSegment;
 
 use super::types::{
-    AsyncCandidateRequest, CandidateAction, KeyResponse, LearningRecord, MarkedText, Submode,
+    AsyncCandidateRequest, CandidateAction, KeyResponse, LearningRecord, MarkedText,
 };
 use super::InputSession;
 
@@ -84,7 +84,6 @@ impl InputSession {
 
         // Include prefix in the committed text, then clear it
         let prefix_text = std::mem::take(&mut c.prefix.text);
-        c.prefix.has_boundary_space = false;
         let mut resp = KeyResponse::consumed();
         resp.commit = Some(format!("{}{}", prefix_text, committed_surface));
 
@@ -93,7 +92,6 @@ impl InputSession {
             resp.candidates = CandidateAction::Hide;
             resp.marked = Some(MarkedText {
                 text: String::new(),
-                dashed: false,
             });
         } else if self.config.defer_candidates {
             // Async mode: extract provisional candidates from remaining N-best
@@ -131,7 +129,6 @@ impl InputSession {
             // above, so it is empty here — no need to prepend it.
             resp.marked = Some(MarkedText {
                 text: provisional[0].clone(),
-                dashed: false,
             });
             resp.async_request = Some(AsyncCandidateRequest {
                 reading: c.kana.clone(),
@@ -143,19 +140,13 @@ impl InputSession {
             };
         } else {
             // Sync mode: re-generate candidates for remaining input
-            let c = self.comp();
-            let dashed = c.submode == Submode::English;
-            let display = c.display_kana();
-            resp.marked = Some(MarkedText {
-                text: display,
-                dashed,
-            });
+            let display = self.comp().display_kana();
+            resp.marked = Some(MarkedText { text: display });
             self.update_candidates();
             let c = self.comp();
             if let Some(best) = c.candidates.surfaces.first() {
                 resp.marked = Some(MarkedText {
                     text: format!("{}{}", c.prefix.text, best),
-                    dashed,
                 });
             }
             if !c.candidates.is_empty() {

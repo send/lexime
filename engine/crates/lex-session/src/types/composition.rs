@@ -6,21 +6,16 @@ use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
-/// Pluggable conversion mode: determines how candidates are generated,
-/// what Tab does, and whether auto-commit fires.
+/// Pluggable conversion mode: determines how candidates are generated
+/// and whether auto-commit fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversionMode {
-    /// Standard IME: Viterbi N-best + predictions + lookup, Tab toggles submode.
+    /// Standard IME: Viterbi N-best + predictions + lookup.
     Standard,
-    /// Predictive: Viterbi base + bigram chaining for Copilot-like completions, Tab commits.
+    /// Predictive: Viterbi base + bigram chaining for Copilot-like completions.
     Predictive,
     /// GhostText: Speculative decode (composing) + GPT-2 ghost text (idle after commit).
     GhostText,
-}
-
-pub(crate) enum TabAction {
-    ToggleSubmode,
-    Commit,
 }
 
 impl ConversionMode {
@@ -42,13 +37,6 @@ impl ConversionMode {
         }
     }
 
-    pub(crate) fn tab_action(&self) -> TabAction {
-        match self {
-            Self::Standard => TabAction::ToggleSubmode,
-            Self::Predictive | Self::GhostText => TabAction::Commit,
-        }
-    }
-
     pub(crate) fn auto_commit_enabled(&self) -> bool {
         matches!(self, Self::Standard)
     }
@@ -64,19 +52,12 @@ impl ConversionMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Submode {
-    Japanese,
-    English,
-}
-
 pub(crate) enum SessionState {
     Idle,
     Composing(Composition),
 }
 
 pub(crate) struct Composition {
-    pub(crate) submode: Submode,
     pub(crate) kana: String,
     pub(crate) pending: String,
     pub(crate) prefix: FrozenPrefix,
@@ -85,9 +66,8 @@ pub(crate) struct Composition {
 }
 
 impl Composition {
-    pub(crate) fn new(submode: Submode) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            submode,
             kana: String::new(),
             pending: String::new(),
             prefix: FrozenPrefix::new(),
@@ -96,20 +76,17 @@ impl Composition {
         }
     }
 
-    /// Compute the display string (replaces `current_display` field).
-    /// Uses the selected candidate surface in Japanese mode, falls back to kana + pending.
+    /// Compute the display string.
+    /// Uses the selected candidate surface, falls back to kana + pending.
     /// When pending romaji is present, appends it to the candidate surface so the user
     /// sees e.g. "違和感なk" rather than reverting to raw kana "いわかんなk".
     pub(crate) fn display(&self) -> String {
-        let segment = if self.submode == Submode::Japanese {
-            if let Some(surface) = self.candidates.surfaces.get(self.candidates.selected) {
-                if self.pending.is_empty() {
-                    surface.clone()
-                } else {
-                    format!("{}{}", surface, self.pending)
-                }
+        let segment = if let Some(surface) = self.candidates.surfaces.get(self.candidates.selected)
+        {
+            if self.pending.is_empty() {
+                surface.clone()
             } else {
-                format!("{}{}", self.kana, self.pending)
+                format!("{}{}", surface, self.pending)
             }
         } else {
             format!("{}{}", self.kana, self.pending)
@@ -155,7 +132,6 @@ impl Composition {
 // --- Session-level groupings ---
 
 pub(crate) struct SessionConfig {
-    pub(crate) programmer_mode: bool,
     pub(crate) defer_candidates: bool,
     pub(crate) conversion_mode: ConversionMode,
 }
@@ -232,14 +208,12 @@ impl StabilityTracker {
 
 pub(crate) struct FrozenPrefix {
     pub(crate) text: String,
-    pub(crate) has_boundary_space: bool,
 }
 
 impl FrozenPrefix {
     pub(crate) fn new() -> Self {
         Self {
             text: String::new(),
-            has_boundary_space: false,
         }
     }
 
@@ -247,21 +221,7 @@ impl FrozenPrefix {
         self.text.is_empty()
     }
 
-    pub(crate) fn push_str(&mut self, s: &str) {
-        self.text.push_str(s);
-    }
-
     pub(crate) fn pop(&mut self) -> Option<char> {
         self.text.pop()
-    }
-
-    pub(crate) fn undo_boundary_space(&mut self) -> bool {
-        if self.has_boundary_space && self.text.ends_with(' ') {
-            self.text.pop();
-            self.has_boundary_space = false;
-            true
-        } else {
-            false
-        }
     }
 }

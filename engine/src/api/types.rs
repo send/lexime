@@ -67,7 +67,6 @@ pub enum LexEvent {
     },
     SetMarkedText {
         text: String,
-        dashed: bool,
     },
     ClearMarkedText,
     ShowCandidates {
@@ -108,10 +107,7 @@ pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> Le
 
     // 2. Marked text
     if let Some(m) = resp.marked {
-        events.push(LexEvent::SetMarkedText {
-            text: m.text,
-            dashed: m.dashed,
-        });
+        events.push(LexEvent::SetMarkedText { text: m.text });
     }
 
     // 3. Candidates

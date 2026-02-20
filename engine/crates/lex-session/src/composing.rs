@@ -2,25 +2,12 @@ use lex_core::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{
-    is_romaji_input, Composition, KeyResponse, SessionState, Submode, MAX_COMPOSED_KANA_LENGTH,
+    is_romaji_input, Composition, KeyResponse, SessionState, MAX_COMPOSED_KANA_LENGTH,
 };
 use super::InputSession;
 
 impl InputSession {
     pub(super) fn handle_composing_text(&mut self, text: &str) -> KeyResponse {
-        // English submode: add characters directly
-        if self.comp().submode == Submode::English {
-            if let Some(scalar) = text.chars().next() {
-                let val = scalar as u32;
-                if (0x20..0x7F).contains(&val) {
-                    self.comp().prefix.has_boundary_space = false;
-                    self.comp().kana.push_str(text);
-                    return build_marked_text(self.comp());
-                }
-            }
-            return KeyResponse::consumed();
-        }
-
         // z-sequences: composing 中、pending + text が trie にマッチする場合
         if !self.comp().pending.is_empty() {
             let candidate = format!("{}{}", self.comp().pending, text);
@@ -40,7 +27,7 @@ impl InputSession {
             let c = self.comp();
             if c.candidates.selected > 0 && c.candidates.selected < c.candidates.surfaces.len() {
                 let commit_resp = self.commit_current_state();
-                self.state = SessionState::Composing(Composition::new(Submode::Japanese));
+                self.state = SessionState::Composing(Composition::new());
                 let append_resp = self.append_and_convert(&text.to_lowercase());
                 return commit_resp.with_display_from(append_resp);
             }
@@ -82,7 +69,7 @@ impl InputSession {
         // Overflow: flush + commit if kana too long
         if self.comp().kana.len() >= MAX_COMPOSED_KANA_LENGTH {
             let resp = self.commit_composed();
-            self.state = SessionState::Composing(Composition::new(Submode::Japanese));
+            self.state = SessionState::Composing(Composition::new());
             self.comp().pending.push_str(input);
             self.comp().drain_pending(false);
             let sub_resp = if self.config.defer_candidates {
@@ -97,7 +84,6 @@ impl InputSession {
             return resp.with_display_from(sub_resp);
         }
 
-        self.comp().prefix.has_boundary_space = false;
         self.comp().pending.push_str(input);
         self.comp().drain_pending(false);
 

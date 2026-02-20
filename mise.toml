@@ -164,10 +164,6 @@ if [ -f data/zenz-v3.1-Q5_K_M.gguf ]; then
 fi
 codesign -f -s - "$APP"
 echo "Build complete: $APP"
-
-# Check if JIS keyCode 10 workaround is still needed
-swiftc -framework Carbon -framework Cocoa scripts/check-jis-keycode10.swift \
-  -o /tmp/check-jis-keycode10 2>/dev/null && /tmp/check-jis-keycode10 || true
 """
 
 [tasks.install]
