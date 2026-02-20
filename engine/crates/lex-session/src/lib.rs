@@ -106,7 +106,7 @@ impl InputSession {
 
     pub fn composed_string(&self) -> String {
         match &self.state {
-            SessionState::Composing(c) => c.display(),
+            SessionState::Composing(c) => c.display_kana(),
             SessionState::Idle => String::new(),
         }
     }

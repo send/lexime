@@ -2,7 +2,7 @@ use super::types::{CandidateAction, Composition, KeyResponse, MarkedText};
 
 /// Build a response showing only marked text (no candidates).
 pub(super) fn build_marked_text(comp: &Composition) -> KeyResponse {
-    let display = comp.display();
+    let display = comp.display_kana();
     let mut resp = KeyResponse::consumed();
     resp.marked = Some(MarkedText { text: display });
     resp
@@ -12,7 +12,7 @@ pub(super) fn build_marked_text(comp: &Composition) -> KeyResponse {
 pub(super) fn build_marked_text_and_candidates(comp: &Composition) -> KeyResponse {
     let mut resp = KeyResponse::consumed();
 
-    let display = comp.display();
+    let display = comp.display_kana();
     resp.marked = Some(MarkedText { text: display });
 
     if !comp.candidates.is_empty() {
