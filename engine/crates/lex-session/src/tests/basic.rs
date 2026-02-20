@@ -445,6 +445,47 @@ fn test_unrecognized_char_added_to_kana() {
     assert!(session.comp().kana.ends_with('1'));
 }
 
+// --- Shift+letter (uppercase passthrough) ---
+
+#[test]
+fn test_uppercase_idle() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    // Shift+A in idle: starts composing with "A" (not romaji-converted)
+    let resp = session.handle_key(0, "A", FLAG_SHIFT);
+    assert!(resp.consumed);
+    assert!(session.is_composing());
+    assert_eq!(session.comp().kana, "A");
+}
+
+#[test]
+fn test_uppercase_composing() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "ka"); // "か"
+    let resp = session.handle_key(0, "B", FLAG_SHIFT);
+    assert!(resp.consumed);
+    assert!(session.is_composing());
+    assert_eq!(session.comp().kana, "かB");
+}
+
+#[test]
+fn test_uppercase_with_pending() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kan"); // "か" + pending "n"
+    assert_eq!(session.comp().pending, "n");
+
+    let resp = session.handle_key(0, "A", FLAG_SHIFT);
+    assert!(resp.consumed);
+    // Pending "n" should be flushed to "ん", then "A" added
+    assert_eq!(session.comp().kana, "かんA");
+    assert!(session.comp().pending.is_empty());
+}
+
 // --- z-sequence ---
 
 #[test]
