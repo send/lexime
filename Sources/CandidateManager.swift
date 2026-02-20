@@ -43,14 +43,6 @@ class CandidateManager {
 
     // MARK: - Panel
 
-    private static let modeNames = ["standard", "predictive", "ghost"]
-
-    private var currentModeName: String? {
-        let mode = UserDefaults.standard.integer(forKey: "conversionMode")
-        guard mode > 0, mode < Self.modeNames.count else { return nil }
-        return Self.modeNames[mode]
-    }
-
     func show(client: IMKTextInput, currentDisplay: String?) {
         guard !candidates.isEmpty else { hide(); return }
         let clampedIndex = min(selectedIndex, candidates.count - 1)
@@ -64,14 +56,12 @@ class CandidateManager {
 
         let panel = AppContext.shared.candidatePanel
         let totalCount = candidates.count
-        let modeName = currentModeName
 
         // Mozc style: don't recalculate position while panel is visible (prevents jitter)
         // But if cursor moved (auto-commit), force reposition.
         if panel.isVisible && !needsReposition {
             panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
-                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: nil,
-                       modeName: modeName)
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: nil)
             return
         }
         // Reset early: if the async block below is cancelled (generation mismatch),
@@ -85,8 +75,7 @@ class CandidateManager {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.generation == gen else { return }
             panel.show(candidates: pageCandidates, selectedIndex: pageSelectedIndex,
-                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: rect,
-                       modeName: modeName)
+                       globalIndex: clampedIndex, totalCount: totalCount, cursorRect: rect)
         }
     }
 

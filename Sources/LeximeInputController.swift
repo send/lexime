@@ -75,17 +75,6 @@ class LeximeInputController: IMKInputController {
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
-        // Cycle conversion mode: Option+Tab or Shift+Tab
-        let isCycleMode = event.keyCode == 48 /* Tab */
-            && (dominated == [.option] || dominated == [.shift])
-        if isCycleMode {
-            cycleConversionMode(session: session, client: client)
-            return true
-        }
-
-        let convMode = min(max(UserDefaults.standard.integer(forKey: "conversionMode"), 0), Int(UInt8.max))
-        session.setConversionMode(mode: UInt8(convMode))
-
         let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
         let flags = shift | (hasModifier << 1)
@@ -170,25 +159,6 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - Helpers
 
-    private func cycleConversionMode(session: LexSession, client: IMKTextInput) {
-        if isComposing {
-            let resp = session.commit()
-            applyEvents(resp, client: client)
-        }
-        if ghostManager.text != nil {
-            ghostManager.clear(client: client, updateDisplay: true)
-        }
-        let maxModes = (AppContext.shared.engine?.hasNeural() ?? false) ? 3 : 2
-        let current = UserDefaults.standard.integer(forKey: "conversionMode")
-        let next = (current + 1) % maxModes
-        UserDefaults.standard.set(next, forKey: "conversionMode")
-        session.setConversionMode(mode: UInt8(next))
-        let names = ["standard", "predictive", "ghost"]
-        NSLog("Lexime: conversion mode → %@", names[next])
-        let rect = candidateManager.cursorRect(client: client, currentDisplay: currentDisplay)
-        AppContext.shared.candidatePanel.showNotification(text: names[next], cursorRect: rect)
-    }
-
     private func selectABCInputSource() {
         let conditions = [
             kTISPropertyInputSourceID as String: "com.apple.keylayout.ABC"
@@ -197,6 +167,24 @@ class LeximeInputController: IMKInputController {
                 as? [TISInputSource],
               let source = list.first else { return }
         TISSelectInputSource(source)
+    }
+
+    // MARK: - Menu
+
+    override func menu() -> NSMenu! {
+        let menu = NSMenu()
+        let settingsItem = NSMenuItem(
+            title: "設定...",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        return menu
+    }
+
+    @objc private func showSettings() {
+        SettingsWindowController.shared.showWindow()
     }
 
     // MARK: - IMKInputController Overrides
