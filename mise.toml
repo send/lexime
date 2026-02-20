@@ -197,7 +197,25 @@ depends = ["dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
   data/lexime.dict data/lexime.conn \
-  data/snapshot-readings.txt data/snapshot.jsonl -n 5
+  testcorpus/snapshot-readings.txt data/snapshot.jsonl -n 5
+"""
+
+[tasks.accuracy]
+description = "Run conversion accuracy tests"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
+  data/lexime.dict data/lexime.conn \
+  testcorpus/accuracy-corpus.toml "$@"
+"""
+
+[tasks.accuracy-history]
+description = "Run accuracy tests with history"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
+  data/lexime.dict data/lexime.conn \
+  testcorpus/accuracy-corpus-history.toml "$@"
 """
 
 [tasks.diff-snapshot]
@@ -206,7 +224,7 @@ depends = ["dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- diff-snapshot \
   data/lexime.dict data/lexime.conn \
-  data/snapshot-readings.txt data/snapshot.jsonl -n 5
+  testcorpus/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
 
 [tasks.trace-log]

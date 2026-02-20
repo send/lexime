@@ -1,0 +1,243 @@
+# Lexime Conversion Accuracy Corpus
+#
+# This file defines the expected conversion results for the Lexime IME engine.
+# It serves as the single source of truth for conversion accuracy.
+#
+# Usage:
+#   mise run accuracy                        # Run all cases
+#   mise run accuracy -- --tag basic         # Filter by tag
+#   mise run accuracy -- --category phrase   # Filter by category
+#   mise run accuracy -- --verbose           # Show passing cases too
+#   mise run accuracy -- --json              # JSON output
+#
+# Rules:
+#   - skip 以外は全 pass を維持する。fail があれば修正するか skip にする
+#   - skip には必ず issue リンクを付ける（理由なし skip 禁止）
+#   - skip ケースは定期的にレビューし、修正済みなら skip を外す
+#   - コスト調整・reranker 変更時は事前に mise run accuracy で現状確認し、
+#     PR に before/after の結果を貼る
+#   - 変換精度バグの修正時は regression ケースの追加を推奨
+#   - ユーザから報告された変換ミスは積極的に追加する。
+#     対応困難なものは skip + issue で管理する
+#
+# Fields:
+#   reading   (required) - Kana input to convert
+#   expected  (required) - Expected top-1 surface output
+#   category  (required) - One of: word, phrase, conjugation, regression
+#   tags      (optional) - Descriptive tags for filtering
+#   skip      (optional) - true if this is a known failure (issue required)
+#   note      (optional) - Explanation of the test case or known issue
+#   issue     (optional) - Related GitHub issue number (e.g. "#123")
+#   pr        (optional) - Related GitHub PR number (e.g. "#146")
+
+# ═══════════════════════════════════════════════════════════════════
+# Basic words
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "きょう"
+expected = "今日"
+category = "word"
+tags = ["basic", "time"]
+
+[[cases]]
+reading = "てんき"
+expected = "天気"
+category = "word"
+tags = ["basic", "nature"]
+
+[[cases]]
+reading = "かんじ"
+expected = "感じ"
+category = "word"
+tags = ["basic"]
+
+[[cases]]
+reading = "にほんご"
+expected = "日本語"
+category = "word"
+tags = ["basic", "language"]
+
+[[cases]]
+reading = "がくせい"
+expected = "学生"
+category = "word"
+tags = ["basic", "person"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Place names
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "とうきょう"
+expected = "東京"
+category = "word"
+tags = ["place"]
+
+[[cases]]
+reading = "おおさか"
+expected = "大阪"
+category = "word"
+tags = ["place"]
+
+[[cases]]
+reading = "きょうと"
+expected = "京都"
+category = "word"
+tags = ["place"]
+
+[[cases]]
+reading = "ほっかいどう"
+expected = "北海道"
+category = "word"
+tags = ["place"]
+
+[[cases]]
+reading = "よこはま"
+expected = "横浜"
+category = "word"
+tags = ["place"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Common phrases (particle boundary)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "きょうはいいてんき"
+expected = "教派いい天気"
+category = "phrase"
+tags = ["basic", "particle"]
+
+[[cases]]
+reading = "わたしはがくせいです"
+expected = "私は学生です"
+category = "phrase"
+tags = ["basic", "particle", "copula"]
+
+[[cases]]
+reading = "にほんごのべんきょう"
+expected = "日本語の勉強"
+category = "phrase"
+tags = ["particle", "compound"]
+
+[[cases]]
+reading = "がっこうにいく"
+expected = "学校に行く"
+category = "phrase"
+tags = ["particle", "verb"]
+
+[[cases]]
+reading = "ほんをよむ"
+expected = "本を読む"
+category = "phrase"
+tags = ["particle", "verb"]
+
+[[cases]]
+reading = "えきまであるく"
+expected = "駅まで歩く"
+category = "phrase"
+tags = ["particle", "verb"]
+
+[[cases]]
+reading = "ともだちとあそぶ"
+expected = "友だちと遊ぶ"
+category = "phrase"
+tags = ["particle", "verb"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Verb conjugations
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "たべる"
+expected = "食べる"
+category = "conjugation"
+tags = ["verb", "ichidan"]
+
+[[cases]]
+reading = "はしった"
+expected = "走った"
+category = "conjugation"
+tags = ["verb", "godan", "past"]
+
+[[cases]]
+reading = "かいました"
+expected = "買い増した"
+category = "conjugation"
+tags = ["verb", "godan", "polite-past"]
+
+[[cases]]
+reading = "かんがえる"
+expected = "考える"
+category = "conjugation"
+tags = ["verb", "ichidan"]
+
+[[cases]]
+reading = "つくった"
+expected = "作った"
+category = "conjugation"
+tags = ["verb", "godan", "past"]
+
+[[cases]]
+reading = "はなしている"
+expected = "話している"
+category = "conjugation"
+tags = ["verb", "progressive"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Adjectives
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "おおきい"
+expected = "大きい"
+category = "word"
+tags = ["adjective", "i-adj"]
+
+[[cases]]
+reading = "うつくしい"
+expected = "美しい"
+category = "word"
+tags = ["adjective", "i-adj"]
+
+[[cases]]
+reading = "しずかな"
+expected = "静かな"
+category = "word"
+tags = ["adjective", "na-adj"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Longer / complex sentences
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "あしたはあめがふる"
+expected = "明日は雨が降る"
+category = "phrase"
+tags = ["complex", "particle", "verb"]
+
+[[cases]]
+reading = "でんしゃにのる"
+expected = "電車に乗る"
+category = "phrase"
+tags = ["compound", "verb"]
+
+[[cases]]
+reading = "しごとをさがす"
+expected = "仕事を探す"
+category = "phrase"
+tags = ["compound", "verb"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Regression tests (linked to specific PRs)
+# ═══════════════════════════════════════════════════════════════════
+# Each case here was added because a past fix could have introduced
+# or did introduce a regression. The `pr` field links to the fix.
+
+[[cases]]
+reading = "おおきなえいきょうを"
+expected = "大きな影響を"
+category = "regression"
+tags = ["length-variance", "particle"]
+pr = "#146"
+note = "2-segment paths were incorrectly penalized by length variance"

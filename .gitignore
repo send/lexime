@@ -20,10 +20,8 @@ generated/
 
 # Dictionary data (downloaded / compiled)
 engine/data/*
-!engine/data/snapshot-readings.txt
-
 # Neural model files
-data/
+/data/
 
 # macOS
 .DS_Store
