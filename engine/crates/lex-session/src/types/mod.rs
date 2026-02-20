@@ -1,22 +1,68 @@
 mod composition;
 pub use composition::*;
 
-// macOS virtual key codes
-pub(super) mod key {
-    pub const ENTER: u16 = 36;
-    pub const TAB: u16 = 48;
-    pub const SPACE: u16 = 49;
-    pub const BACKSPACE: u16 = 51;
-    pub const ESCAPE: u16 = 53;
-    pub const EISU: u16 = 102;
-    pub const KANA: u16 = 104;
-    pub const DOWN: u16 = 125;
-    pub const UP: u16 = 126;
+/// Platform-independent key event.
+#[derive(Debug, Clone)]
+pub enum KeyEvent {
+    /// Text input (romaji, punctuation, etc.)
+    Text {
+        text: String,
+        /// Currently unused by lex-session (uppercase is detected from text content).
+        /// Reserved for platform frontends that need shift state (e.g. Fcitx5).
+        shift: bool,
+    },
+    /// Remapped text from platform keymap (e.g. JIS ¥→\).
+    /// Like Text but falls back to direct commit if trie doesn't match.
+    Remapped {
+        text: String,
+        /// Currently unused (remapped text already reflects shift state).
+        /// Reserved for platform frontends.
+        shift: bool,
+    },
+    Enter,
+    Space,
+    Backspace,
+    Escape,
+    Tab,
+    ArrowDown,
+    ArrowUp,
+    /// 英数キー (macOS) / Fcitx5 deactivate
+    SwitchToDirectInput,
+    /// かなキー (macOS) / Fcitx5 activate
+    SwitchToJapanese,
+    /// Cmd/Ctrl/Alt 付きキー — composing 中なら確定してパススルー
+    ModifiedKey,
 }
 
-// Flag bits for handle_key
-pub(super) const FLAG_SHIFT: u8 = 1;
-pub(super) const FLAG_HAS_MODIFIER: u8 = 2;
+impl KeyEvent {
+    pub fn text(s: &str) -> Self {
+        KeyEvent::Text {
+            text: s.to_string(),
+            shift: false,
+        }
+    }
+
+    pub fn text_shift(s: &str) -> Self {
+        KeyEvent::Text {
+            text: s.to_string(),
+            shift: true,
+        }
+    }
+
+    pub fn remapped(s: &str) -> Self {
+        KeyEvent::Remapped {
+            text: s.to_string(),
+            shift: false,
+        }
+    }
+
+    pub fn remapped_shift(s: &str) -> Self {
+        KeyEvent::Remapped {
+            text: s.to_string(),
+            shift: true,
+        }
+    }
+}
 
 pub(super) const MAX_COMPOSED_KANA_LENGTH: usize = 100;
 pub(super) const MAX_CANDIDATES: usize = 20;

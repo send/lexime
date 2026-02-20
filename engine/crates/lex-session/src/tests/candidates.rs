@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::CandidateAction;
+use crate::types::{CandidateAction, KeyEvent};
 use crate::ConversionMode;
 
 #[test]
@@ -42,7 +42,7 @@ fn test_predictive_mode_tab_commits() {
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
 
-    let resp = session.handle_key(key::TAB, "", 0);
+    let resp = session.handle_key(KeyEvent::Tab);
     assert!(resp.consumed);
     // Tab in Predictive mode commits (not toggles submode)
     assert!(resp.commit.is_some());
@@ -61,7 +61,7 @@ fn test_predictive_mode_space_cycles() {
     assert_eq!(session.comp().candidates.selected, 0);
 
     // Space cycles candidates in Predictive mode too
-    session.handle_key(key::SPACE, "", 0);
+    session.handle_key(KeyEvent::Space);
     assert_eq!(session.comp().candidates.selected, 1);
 }
 
@@ -73,8 +73,8 @@ fn test_predictive_mode_deferred_dispatch() {
     session.set_defer_candidates(true);
 
     // Type "ka" to trigger deferred candidate generation
-    session.handle_key(0, "k", 0);
-    let resp = session.handle_key(0, "a", 0);
+    session.handle_key(KeyEvent::text("k"));
+    let resp = session.handle_key(KeyEvent::text("a"));
     // Predictive mode uses prediction-specific generation (dispatch=1)
     if let Some(req) = resp.async_request {
         assert_eq!(
@@ -92,8 +92,8 @@ fn test_standard_mode_deferred_dispatch() {
     session.set_defer_candidates(true);
 
     // Type "ka" one char at a time to capture deferred response
-    session.handle_key(0, "k", 0);
-    let resp = session.handle_key(0, "a", 0);
+    session.handle_key(KeyEvent::text("k"));
+    let resp = session.handle_key(KeyEvent::text("a"));
     if let Some(req) = resp.async_request {
         assert_eq!(req.candidate_dispatch, 0, "standard dispatch should be 0");
     }
@@ -113,7 +113,7 @@ fn test_conversion_mode_switch() {
 
     type_string(&mut session, "kyou");
     // Tab should commit (Predictive behavior)
-    let resp = session.handle_key(key::TAB, "", 0);
+    let resp = session.handle_key(KeyEvent::Tab);
     assert!(resp.commit.is_some());
     assert!(!session.is_composing());
 
@@ -123,7 +123,7 @@ fn test_conversion_mode_switch() {
 
     type_string(&mut session, "kyou");
     // Tab in Standard mode now commits (no more submode toggle)
-    let resp = session.handle_key(key::TAB, "", 0);
+    let resp = session.handle_key(KeyEvent::Tab);
     assert!(resp.commit.is_some());
     assert!(!session.is_composing());
 }

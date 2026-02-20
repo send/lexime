@@ -1,9 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use super::*;
-use crate::types::{
-    cyclic_index, is_romaji_input, CandidateAction, LearningRecord, FLAG_HAS_MODIFIER, FLAG_SHIFT,
-};
+use crate::types::{cyclic_index, is_romaji_input, CandidateAction, KeyEvent, LearningRecord};
 use lex_core::user_history::UserHistory;
 
 // --- Basic romaji input ---
@@ -13,11 +11,11 @@ fn test_romaji_input_ka() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.handle_key(0, "k", 0);
+    let resp = session.handle_key(KeyEvent::text("k"));
     assert!(resp.consumed);
     assert!(session.is_composing());
 
-    let resp = session.handle_key(0, "a", 0);
+    let resp = session.handle_key(KeyEvent::text("a"));
     assert!(resp.consumed);
     // After "ka" → "か", marked text should be set
     assert!(resp.marked.is_some());
@@ -53,7 +51,7 @@ fn test_backspace_removes_pending() {
     type_string(&mut session, "k"); // pending_romaji = "k"
     assert_eq!(session.comp().pending, "k");
 
-    let resp = session.handle_key(key::BACKSPACE, "", 0);
+    let resp = session.handle_key(KeyEvent::Backspace);
     assert!(resp.consumed);
     assert!(!session.is_composing()); // back to idle (composition dropped)
 }
@@ -66,7 +64,7 @@ fn test_backspace_removes_kana() {
     type_string(&mut session, "ka"); // composedKana = "か"
     assert_eq!(session.comp().kana, "か");
 
-    let resp = session.handle_key(key::BACKSPACE, "", 0);
+    let resp = session.handle_key(KeyEvent::Backspace);
     assert!(resp.consumed);
     assert!(!session.is_composing()); // back to idle (composition dropped)
 }
@@ -80,7 +78,7 @@ fn test_backspace_partial() {
     assert_eq!(session.comp().kana, "か");
     assert_eq!(session.comp().pending, "k");
 
-    session.handle_key(key::BACKSPACE, "", 0);
+    session.handle_key(KeyEvent::Backspace);
     assert_eq!(session.comp().kana, "か");
     assert!(session.comp().pending.is_empty());
     assert!(session.is_composing());
@@ -95,7 +93,7 @@ fn test_escape_flushes() {
 
     type_string(&mut session, "kyoun"); // "きょう" + pending "n"
 
-    let resp = session.handle_key(key::ESCAPE, "", 0);
+    let resp = session.handle_key(KeyEvent::Escape);
     assert!(resp.consumed);
     assert!(matches!(resp.candidates, CandidateAction::Hide));
     // After escape, kana is flushed (n → ん)
@@ -113,7 +111,7 @@ fn test_enter_commits_selected() {
     type_string(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
 
-    let resp = session.handle_key(key::ENTER, "", 0);
+    let resp = session.handle_key(KeyEvent::Enter);
     assert!(resp.consumed);
     assert!(resp.commit.is_some());
     assert!(matches!(resp.candidates, CandidateAction::Hide));
@@ -133,13 +131,13 @@ fn test_space_cycles_candidates() {
     assert_eq!(session.comp().candidates.selected, 0);
 
     // First space jumps to index 1
-    let resp = session.handle_key(key::SPACE, "", 0);
+    let resp = session.handle_key(KeyEvent::Space);
     assert!(resp.consumed);
     assert_eq!(session.comp().candidates.selected, 1);
     assert!(matches!(resp.candidates, CandidateAction::Show { .. }));
 
     // Second space goes to index 2
-    let resp = session.handle_key(key::SPACE, "", 0);
+    let resp = session.handle_key(KeyEvent::Space);
     assert!(resp.consumed);
     assert_eq!(session.comp().candidates.selected, 2);
 }
@@ -155,14 +153,14 @@ fn test_arrow_keys_cycle() {
     let count = session.comp().candidates.surfaces.len();
     assert!(count > 1);
 
-    session.handle_key(key::DOWN, "", 0);
+    session.handle_key(KeyEvent::ArrowDown);
     assert_eq!(session.comp().candidates.selected, 1);
 
-    session.handle_key(key::UP, "", 0);
+    session.handle_key(KeyEvent::ArrowUp);
     assert_eq!(session.comp().candidates.selected, 0);
 
     // Up from 0 wraps to last
-    session.handle_key(key::UP, "", 0);
+    session.handle_key(KeyEvent::ArrowUp);
     assert_eq!(session.comp().candidates.selected, count - 1);
 }
 
@@ -173,7 +171,7 @@ fn test_modifier_passthrough_idle() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.handle_key(0, "c", FLAG_HAS_MODIFIER);
+    let resp = session.handle_key(KeyEvent::ModifiedKey);
     assert!(!resp.consumed);
 }
 
@@ -185,7 +183,7 @@ fn test_modifier_passthrough_composing() {
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
 
-    let resp = session.handle_key(0, "c", FLAG_HAS_MODIFIER);
+    let resp = session.handle_key(KeyEvent::ModifiedKey);
     assert!(!resp.consumed);
     assert!(resp.commit.is_some()); // commits before passing through
     assert!(!session.is_composing());
@@ -198,7 +196,7 @@ fn test_eisu_switches_to_abc() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.handle_key(key::EISU, "", 0);
+    let resp = session.handle_key(KeyEvent::SwitchToDirectInput);
     assert!(resp.consumed);
     assert!(!resp.side_effects.switch_to_abc);
     assert!(session.is_abc_passthrough());
@@ -212,7 +210,7 @@ fn test_eisu_commits_and_switches() {
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
 
-    let resp = session.handle_key(key::EISU, "", 0);
+    let resp = session.handle_key(KeyEvent::SwitchToDirectInput);
     assert!(resp.consumed);
     assert!(!resp.side_effects.switch_to_abc);
     assert!(resp.commit.is_some());
@@ -227,8 +225,23 @@ fn test_kana_consumed() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.handle_key(key::KANA, "", 0);
+    let resp = session.handle_key(KeyEvent::SwitchToJapanese);
     assert!(resp.consumed);
+}
+
+// --- ABC passthrough: Space commits as " " ---
+
+#[test]
+fn test_abc_passthrough_space() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    session.handle_key(KeyEvent::SwitchToDirectInput);
+    assert!(session.is_abc_passthrough());
+
+    let resp = session.handle_key(KeyEvent::Space);
+    assert!(resp.consumed);
+    assert_eq!(resp.commit.as_deref(), Some(" "));
 }
 
 // --- Keymap remap (replaces programmer_mode ¥ tests) ---
@@ -238,8 +251,8 @@ fn test_keymap_yen_idle() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    // keyCode 93 (¥) is remapped to \ by default settings
-    let resp = session.handle_key(93, "¥", 0);
+    // keyCode 93 (¥) is remapped to \ by default settings — caller now sends Remapped
+    let resp = session.handle_key(KeyEvent::remapped("\\"));
     assert!(resp.consumed);
     assert_eq!(resp.commit.as_deref(), Some("\\"));
 }
@@ -250,7 +263,7 @@ fn test_keymap_yen_shifted() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     // keyCode 93 + shift → |
-    let resp = session.handle_key(93, "¥", FLAG_SHIFT);
+    let resp = session.handle_key(KeyEvent::remapped_shift("|"));
     assert!(resp.consumed);
     assert_eq!(resp.commit.as_deref(), Some("|"));
 }
@@ -261,7 +274,7 @@ fn test_keymap_yen_composing() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "kyou");
-    let resp = session.handle_key(93, "¥", 0);
+    let resp = session.handle_key(KeyEvent::remapped("\\"));
     assert!(resp.consumed);
     // In composing, remapped text is fed as input (not commit-and-insert)
     assert!(resp.commit.is_none());
@@ -277,16 +290,16 @@ fn test_keymap_jis_bracket() {
 
     // keyCode 10 is remapped to ] by default settings.
     // ] is in the romaji trie (] → 」), so it enters composing via trie match.
-    let resp = session.handle_key(10, "§", 0);
+    let resp = session.handle_key(KeyEvent::remapped("]"));
     assert!(resp.consumed);
     assert!(session.is_composing());
     assert!(session.comp().kana.contains('」'));
 
     // Commit to reset state
-    session.handle_key(key::ENTER, "", 0);
+    session.handle_key(KeyEvent::Enter);
 
     // shifted → } (not in trie, so direct commit)
-    let resp = session.handle_key(10, "§", FLAG_SHIFT);
+    let resp = session.handle_key(KeyEvent::remapped_shift("}"));
     assert!(resp.consumed);
     assert_eq!(resp.commit.as_deref(), Some("}"));
 }
@@ -299,7 +312,7 @@ fn test_tab_idle_passthrough() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     // Tab in idle is not consumed (passthrough)
-    let resp = session.handle_key(key::TAB, "", 0);
+    let resp = session.handle_key(KeyEvent::Tab);
     assert!(!resp.consumed);
 }
 
@@ -311,7 +324,7 @@ fn test_tab_composing_commits() {
     type_string(&mut session, "kyou");
     assert!(session.is_composing());
 
-    let resp = session.handle_key(key::TAB, "", 0);
+    let resp = session.handle_key(KeyEvent::Tab);
     assert!(resp.consumed);
     assert!(resp.commit.is_some());
     assert!(!session.is_composing());
@@ -328,7 +341,7 @@ fn test_punctuation_auto_commit() {
     assert!(session.is_composing());
 
     // Type "." which is a romaji trie match for "。"
-    let resp = session.handle_key(0, ".", 0);
+    let resp = session.handle_key(KeyEvent::text("."));
     assert!(resp.consumed);
     // Should commit current state + append punctuation
     let text = resp.commit.unwrap();
@@ -383,7 +396,7 @@ fn test_history_recorded_on_commit() {
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
-    session.handle_key(key::ENTER, "", 0);
+    session.handle_key(KeyEvent::Enter);
 
     let records = session.take_history_records();
     assert!(!records.is_empty());
@@ -396,7 +409,7 @@ fn test_history_recorded_on_escape() {
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
-    session.handle_key(key::ESCAPE, "", 0);
+    session.handle_key(KeyEvent::Escape);
 
     let records = session.take_history_records();
     assert!(!records.is_empty());
@@ -441,7 +454,7 @@ fn test_unrecognized_char_added_to_kana() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "ka"); // "か"
-    session.handle_key(0, "1", 0); // unrecognized
+    session.handle_key(KeyEvent::text("1")); // unrecognized
     assert!(session.comp().kana.ends_with('1'));
 }
 
@@ -453,7 +466,7 @@ fn test_uppercase_idle() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     // Shift+A in idle: starts composing with "A" (not romaji-converted)
-    let resp = session.handle_key(0, "A", FLAG_SHIFT);
+    let resp = session.handle_key(KeyEvent::text_shift("A"));
     assert!(resp.consumed);
     assert!(session.is_composing());
     assert_eq!(session.comp().kana, "A");
@@ -465,7 +478,7 @@ fn test_uppercase_composing() {
     let mut session = InputSession::new(dict.clone(), None, None);
 
     type_string(&mut session, "ka"); // "か"
-    let resp = session.handle_key(0, "B", FLAG_SHIFT);
+    let resp = session.handle_key(KeyEvent::text_shift("B"));
     assert!(resp.consumed);
     assert!(session.is_composing());
     assert_eq!(session.comp().kana, "かB");
@@ -479,7 +492,7 @@ fn test_uppercase_with_pending() {
     type_string(&mut session, "kan"); // "か" + pending "n"
     assert_eq!(session.comp().pending, "n");
 
-    let resp = session.handle_key(0, "A", FLAG_SHIFT);
+    let resp = session.handle_key(KeyEvent::text_shift("A"));
     assert!(resp.consumed);
     // Pending "n" should be flushed to "ん", then "A" added
     assert_eq!(session.comp().kana, "かんA");

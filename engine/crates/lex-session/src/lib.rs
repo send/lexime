@@ -22,7 +22,7 @@ use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
 pub use types::{
-    AsyncCandidateRequest, CandidateAction, ConversionMode, KeyResponse, LearningRecord,
+    AsyncCandidateRequest, CandidateAction, ConversionMode, KeyEvent, KeyResponse, LearningRecord,
     MarkedText, SideEffects,
 };
 

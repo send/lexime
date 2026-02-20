@@ -12,8 +12,8 @@ pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
 pub use types::{
-    LexCandidateResult, LexDictEntry, LexError, LexEvent, LexKeyResponse, LexRomajiConvert,
-    LexRomajiLookup, LexSegment, LexUserWord,
+    LexCandidateResult, LexDictEntry, LexError, LexEvent, LexKeyEvent, LexKeyResponse,
+    LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 
@@ -77,6 +77,13 @@ fn romaji_default_config() -> String {
 #[uniffi::export]
 fn settings_default_config() -> String {
     crate::settings::DEFAULT_SETTINGS_TOML.to_string()
+}
+
+#[uniffi::export]
+fn keymap_get(key_code: u16, has_shift: bool) -> Option<String> {
+    crate::settings::settings()
+        .keymap_get(key_code, has_shift)
+        .map(|s| s.to_string())
 }
 
 #[uniffi::export]

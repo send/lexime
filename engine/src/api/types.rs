@@ -1,4 +1,4 @@
-use crate::session::{CandidateAction, KeyResponse};
+use crate::session::{CandidateAction, KeyEvent, KeyResponse};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -84,6 +84,42 @@ pub enum LexRomajiLookup {
     Prefix,
     Exact { kana: String },
     ExactAndPrefix { kana: String },
+}
+
+/// Platform-independent key event for FFI.
+#[derive(uniffi::Enum)]
+pub enum LexKeyEvent {
+    Text { text: String, shift: bool },
+    Remapped { text: String, shift: bool },
+    Enter,
+    Space,
+    Backspace,
+    Escape,
+    Tab,
+    ArrowDown,
+    ArrowUp,
+    SwitchToDirectInput,
+    SwitchToJapanese,
+    ModifiedKey,
+}
+
+impl From<LexKeyEvent> for KeyEvent {
+    fn from(e: LexKeyEvent) -> Self {
+        match e {
+            LexKeyEvent::Text { text, shift } => KeyEvent::Text { text, shift },
+            LexKeyEvent::Remapped { text, shift } => KeyEvent::Remapped { text, shift },
+            LexKeyEvent::Enter => KeyEvent::Enter,
+            LexKeyEvent::Space => KeyEvent::Space,
+            LexKeyEvent::Backspace => KeyEvent::Backspace,
+            LexKeyEvent::Escape => KeyEvent::Escape,
+            LexKeyEvent::Tab => KeyEvent::Tab,
+            LexKeyEvent::ArrowDown => KeyEvent::ArrowDown,
+            LexKeyEvent::ArrowUp => KeyEvent::ArrowUp,
+            LexKeyEvent::SwitchToDirectInput => KeyEvent::SwitchToDirectInput,
+            LexKeyEvent::SwitchToJapanese => KeyEvent::SwitchToJapanese,
+            LexKeyEvent::ModifiedKey => KeyEvent::ModifiedKey,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
 
 use super::type_string;
-use crate::types::MAX_CANDIDATES;
+use crate::types::{KeyEvent, MAX_CANDIDATES};
 use crate::InputSession;
 
 /// Headless IME simulator for integration tests.
@@ -35,7 +35,7 @@ impl HeadlessIME {
 
         // 1. Type romaji one character at a time, collecting any auto-commits
         for ch in romaji.chars() {
-            let resp = self.session.handle_key(0, &ch.to_string(), 0);
+            let resp = self.session.handle_key(KeyEvent::text(&ch.to_string()));
             if let Some(ref text) = resp.commit {
                 committed.push_str(text);
             }
@@ -49,7 +49,7 @@ impl HeadlessIME {
 
         // 2. Press Enter to commit remaining composition
         if self.session.is_composing() {
-            let resp = self.session.handle_key(super::key::ENTER, "", 0);
+            let resp = self.session.handle_key(KeyEvent::Enter);
             if let Some(ref text) = resp.commit {
                 committed.push_str(text);
             }
