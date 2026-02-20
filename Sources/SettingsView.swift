@@ -84,7 +84,6 @@ struct DeveloperSettingsView: View {
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.orange)
                     }
                 }
             }
