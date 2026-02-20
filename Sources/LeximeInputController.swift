@@ -7,10 +7,10 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - State
 
-    var session: LexSession?
+    private var session: LexSession?
 
     /// Tracks the currently displayed marked text so composedString stays in sync.
-    var currentDisplay: String?
+    private var currentDisplay: String?
 
     var isComposing: Bool {
         guard let session else { return false }
@@ -110,14 +110,14 @@ class LeximeInputController: IMKInputController {
             case .switchToAbc:
                 selectABCInputSource()
             case .schedulePoll:
-                schedulePollTimer(client: client)
+                schedulePollTimer()
             }
         }
     }
 
     // MARK: - Poll Timer
 
-    private func schedulePollTimer(client: IMKTextInput) {
+    private func schedulePollTimer() {
         guard pollTimer == nil else { return }
         var idleTicks = 0
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -164,7 +164,7 @@ class LeximeInputController: IMKInputController {
     override func menu() -> NSMenu! {
         let menu = NSMenu()
         let settingsItem = NSMenuItem(
-            title: "設定...",
+            title: NSLocalizedString("設定...", comment: "Settings menu item"),
             action: #selector(showSettings),
             keyEquivalent: ","
         )
@@ -214,8 +214,8 @@ class LeximeInputController: IMKInputController {
         let modeID = value as? String ?? ""
 
         if modeID == Self.romanModeID {
-            if isComposing, let client = sender as? IMKTextInput {
-                let resp = session!.commit()
+            if isComposing, let session, let client = sender as? IMKTextInput {
+                let resp = session.commit()
                 applyEvents(resp, client: client)
             }
             session?.setAbcPassthrough(enabled: true)
