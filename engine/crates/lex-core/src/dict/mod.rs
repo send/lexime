@@ -10,6 +10,7 @@ mod entry;
 #[cfg(test)]
 mod tests;
 mod trie_dict;
+mod trie_dict_io;
 
 pub use composite::CompositeDictionary;
 pub use entry::DictEntry;

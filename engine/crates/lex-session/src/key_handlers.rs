@@ -11,6 +11,13 @@ use super::types::{
 use super::InputSession;
 
 impl InputSession {
+    /// Ensure candidates are generated (lazy generate on first demand).
+    fn ensure_candidates(&mut self) {
+        if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
+            self.update_candidates();
+        }
+    }
+
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     ///
     /// `flags`: bit 0 = shift, bit 1 = has_modifier (Cmd/Ctrl/Opt)
@@ -129,18 +136,12 @@ impl InputSession {
     pub(super) fn handle_composing(&mut self, key_code: u16, text: &str) -> KeyResponse {
         match key_code {
             key::ENTER => {
-                // Lazy generate: ensure candidates are available for commit
-                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                    self.update_candidates();
-                }
+                self.ensure_candidates();
                 self.commit_current_state()
             }
 
             key::SPACE => {
-                // Lazy generate: ensure candidates for Space cycling
-                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                    self.update_candidates();
-                }
+                self.ensure_candidates();
                 let c = self.comp();
                 if !c.candidates.is_empty() {
                     if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
@@ -159,10 +160,7 @@ impl InputSession {
             }
 
             key::DOWN => {
-                // Lazy generate: ensure candidates for arrow cycling
-                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                    self.update_candidates();
-                }
+                self.ensure_candidates();
                 let c = self.comp();
                 if !c.candidates.is_empty() {
                     c.candidates.selected = super::types::cyclic_index(
@@ -177,10 +175,7 @@ impl InputSession {
             }
 
             key::UP => {
-                // Lazy generate: ensure candidates for arrow cycling
-                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                    self.update_candidates();
-                }
+                self.ensure_candidates();
                 let c = self.comp();
                 if !c.candidates.is_empty() {
                     c.candidates.selected = super::types::cyclic_index(
@@ -195,10 +190,7 @@ impl InputSession {
             }
 
             key::TAB => {
-                // Tab in composing: always commit
-                if self.comp().candidates.is_empty() && !self.comp().kana.is_empty() {
-                    self.update_candidates();
-                }
+                self.ensure_candidates();
                 self.commit_current_state()
             }
 
