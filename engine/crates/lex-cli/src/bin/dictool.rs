@@ -1,32 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::Path;
-use std::process;
 
 use clap::{Parser, Subcommand};
 
-use lex_cli::dict_source;
-use lex_cli::dict_source::pos_map;
-use lex_core::converter::{
-    convert, convert_nbest, convert_nbest_with_history, convert_with_history,
-};
-use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
-use lex_core::user_dict::UserDictionary;
-use lex_core::user_history::UserHistory;
-
-#[cfg(feature = "neural")]
-use lex_core::neural::NeuralScorer;
-
-/// Unwrap a Result or print the error and exit.
-macro_rules! die {
-    ($result:expr, $($arg:tt)*) => {
-        $result.unwrap_or_else(|e| {
-            eprintln!($($arg)*, e);
-            process::exit(1);
-        })
-    };
-}
+use lex_cli::commands::{config_ops, convert_ops, dict_ops, user_dict_ops};
 
 #[derive(Parser)]
 #[command(name = "dictool", about = "Lexime dictionary build tool")]
@@ -239,30 +215,19 @@ fn main() {
 
     match cli.command {
         Command::Fetch {
-            source: source_name,
-            output_dir,
-        } => {
-            let output_dir = Path::new(&output_dir);
-            let dict_source = dict_source::from_name(&source_name).unwrap_or_else(|| {
-                eprintln!("Error: unknown source '{source_name}' (available: mozc)");
-                process::exit(1);
-            });
-            die!(
-                dict_source.fetch(output_dir),
-                "Error fetching dictionary: {}"
-            );
-        }
+            source, output_dir, ..
+        } => dict_ops::fetch(&source, &output_dir),
         Command::Compile {
-            source: source_name,
+            source,
             input_dir,
             output_file,
-        } => compile(&source_name, &input_dir, &output_file),
+        } => dict_ops::compile(&source, &input_dir, &output_file),
         Command::CompileConn {
             input_txt,
             output_file,
             id_def,
-        } => compile_conn(&input_txt, &output_file, id_def.as_deref()),
-        Command::Info { file } => info(&file),
+        } => dict_ops::compile_conn(&input_txt, &output_file, id_def.as_deref()),
+        Command::Info { file } => dict_ops::info(&file),
         Command::Merge {
             max_cost,
             max_reading_len,
@@ -270,36 +235,44 @@ fn main() {
             dict_b,
             output_file,
         } => {
-            let opts = MergeOptions {
+            let opts = dict_ops::MergeOptions {
                 max_cost,
                 max_reading_len,
             };
-            merge(&dict_a, &dict_b, &output_file, &opts);
+            dict_ops::merge(&dict_a, &dict_b, &output_file, &opts);
         }
-        Command::Diff { dict_a, dict_b } => diff(&dict_a, &dict_b),
-        Command::Lookup { dict_file, reading } => lookup(&dict_file, &reading),
-        Command::Prefix { dict_file, query } => prefix(&dict_file, &query),
+        Command::Diff { dict_a, dict_b } => dict_ops::diff(&dict_a, &dict_b),
+        Command::Lookup { dict_file, reading } => dict_ops::lookup(&dict_file, &reading),
+        Command::Prefix { dict_file, query } => dict_ops::prefix(&dict_file, &query),
         Command::Convert {
             dict_file,
             conn_file,
             kana,
             n,
             history,
-        } => convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        } => convert_ops::convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
         Command::ConnCost {
             conn_file,
             left,
             right,
-        } => conn_cost_cmd(&conn_file, left, right),
-        Command::UserDict { file, action } => user_dict_cmd(file.as_deref(), action),
-        Command::RomajiExport => {
-            print!("{}", lex_core::romaji::default_toml());
+        } => convert_ops::conn_cost_cmd(&conn_file, left, right),
+        Command::RomajiExport => config_ops::romaji_export(),
+        Command::RomajiValidate { file } => config_ops::romaji_validate(&file),
+        Command::SettingsExport => config_ops::settings_export(),
+        Command::SettingsValidate { file } => config_ops::settings_validate(&file),
+        Command::UserDict { file, action } => {
+            let path_str = file.unwrap_or_else(user_dict_ops::default_user_dict_path);
+            let path = Path::new(&path_str);
+            match action {
+                UserDictAction::Add { reading, surface } => {
+                    user_dict_ops::user_dict_add(path, &reading, &surface)
+                }
+                UserDictAction::Remove { reading, surface } => {
+                    user_dict_ops::user_dict_remove(path, &reading, &surface)
+                }
+                UserDictAction::List => user_dict_ops::user_dict_list(path),
+            }
         }
-        Command::RomajiValidate { file } => romaji_validate(&file),
-        Command::SettingsExport => {
-            print!("{}", lex_core::settings::default_toml());
-        }
-        Command::SettingsValidate { file } => settings_validate(&file),
         #[cfg(feature = "neural")]
         Command::NeuralScore {
             dict_file,
@@ -309,21 +282,27 @@ fn main() {
             n,
             history,
             context,
-        } => neural_score_cmd(
-            &dict_file,
-            &conn_file,
-            &model,
-            &kana,
-            n,
-            history.as_deref(),
-            &context,
-        ),
+        } => {
+            use lex_cli::commands::neural_ops;
+            neural_ops::neural_score_cmd(
+                &dict_file,
+                &conn_file,
+                &model,
+                &kana,
+                n,
+                history.as_deref(),
+                &context,
+            )
+        }
         #[cfg(feature = "neural")]
         Command::Generate {
             model,
             context,
             max_tokens,
-        } => generate_cmd(&model, &context, max_tokens),
+        } => {
+            use lex_cli::commands::neural_ops;
+            neural_ops::generate_cmd(&model, &context, max_tokens)
+        }
         #[cfg(feature = "neural")]
         Command::SpeculativeDecode {
             dict_file,
@@ -334,793 +313,11 @@ fn main() {
             threshold,
             max_iter,
             compare,
-        } => speculative_decode_cmd(
-            &dict_file, &conn_file, &model, &kana, &context, threshold, max_iter, compare,
-        ),
-    }
-}
-
-fn compile(source_name: &str, input_dir: &str, output_file: &str) {
-    let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: mozc)");
-        process::exit(1);
-    });
-
-    let input_path = Path::new(input_dir);
-    if !input_path.is_dir() {
-        eprintln!("Error: {input_dir} is not a directory");
-        process::exit(1);
-    }
-
-    eprintln!("Source: {source_name}");
-    let entries = die!(
-        dict_source.parse_dir(input_path),
-        "Error parsing dictionary: {}"
-    );
-
-    let reading_count = entries.len();
-    let entry_count: usize = entries.values().map(|v| v.len()).sum();
-
-    eprintln!("Building trie from {reading_count} readings ({entry_count} entries)...");
-
-    let dict = TrieDictionary::from_entries(entries);
-    die!(
-        dict.save(Path::new(output_file)),
-        "Error writing dictionary: {}"
-    );
-
-    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "Wrote {output_file} ({:.1} MB)",
-        file_size as f64 / 1_048_576.0
-    );
-}
-
-fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
-    let text = die!(
-        fs::read_to_string(input_txt),
-        "Error reading {input_txt}: {}"
-    );
-
-    let (fw_min, fw_max, roles) = if let Some(id_def_path) = id_def {
-        let (min, max) = die!(
-            pos_map::function_word_id_range(Path::new(id_def_path)),
-            "Error extracting function-word range: {}"
-        );
-        eprintln!("Function-word ID range: {min}..={max}");
-        let roles = die!(
-            pos_map::morpheme_roles(Path::new(id_def_path)),
-            "Error extracting morpheme roles: {}"
-        );
-        let suffix_count = roles.iter().filter(|&&r| r == 2).count();
-        let prefix_count = roles.iter().filter(|&&r| r == 3).count();
-        eprintln!(
-            "Morpheme roles: {} suffixes, {} prefixes",
-            suffix_count, prefix_count
-        );
-        (min, max, roles)
-    } else {
-        (0, 0, Vec::new())
-    };
-
-    eprintln!("Parsing connection matrix from {input_txt}...");
-    let matrix = die!(
-        ConnectionMatrix::from_text_with_roles(&text, fw_min, fw_max, roles),
-        "Error parsing connection matrix: {}"
-    );
-
-    eprintln!("  Matrix size: {}x{}", matrix.num_ids(), matrix.num_ids());
-
-    die!(
-        matrix.save(Path::new(output_file)),
-        "Error writing {output_file}: {}"
-    );
-
-    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "Wrote {output_file} ({:.1} MB)",
-        file_size as f64 / 1_048_576.0
-    );
-}
-
-fn info(file: &str) {
-    // Auto-detect file type from magic bytes
-    let magic = fs::read(file)
-        .ok()
-        .and_then(|b| b.get(..4).map(|s| s.to_vec()));
-
-    match magic.as_deref() {
-        Some(b"LXCX") => info_conn(file),
-        Some(b"LXDX") => info_dict(file),
-        Some(other) => {
-            eprintln!(
-                "Unknown file format (magic: {:?})",
-                String::from_utf8_lossy(other)
-            );
-            process::exit(1);
-        }
-        None => {
-            eprintln!("Error reading file: {file}");
-            process::exit(1);
+        } => {
+            use lex_cli::commands::neural_ops;
+            neural_ops::speculative_decode_cmd(
+                &dict_file, &conn_file, &model, &kana, &context, threshold, max_iter, compare,
+            )
         }
     }
-}
-
-fn info_dict(dict_file: &str) {
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-
-    let file_size = fs::metadata(dict_file).map(|m| m.len()).unwrap_or(0);
-    let (reading_count, entry_count) = dict.stats();
-
-    println!("Dictionary: {dict_file}");
-    println!("File size:  {:.1} MB", file_size as f64 / 1_048_576.0);
-    println!("Readings:   {reading_count}");
-    println!("Entries:    {entry_count}");
-
-    // Sample some entries
-    let sample_keys = ["かんじ", "にほん", "とうきょう", "たべる"];
-    println!();
-    println!("Sample lookups:");
-    for key in &sample_keys {
-        let entries = dict.lookup(key);
-        if !entries.is_empty() {
-            let surfaces: Vec<&str> = entries.iter().take(5).map(|e| e.surface.as_str()).collect();
-            println!("  {key} → {}", surfaces.join(", "));
-        } else {
-            println!("  {key} → (not found)");
-        }
-    }
-}
-
-fn info_conn(conn_file: &str) {
-    let conn = die!(
-        ConnectionMatrix::open(Path::new(conn_file)),
-        "Error opening connection matrix: {}"
-    );
-
-    let file_size = fs::metadata(conn_file).map(|m| m.len()).unwrap_or(0);
-    let num_ids = conn.num_ids();
-
-    println!("Connection matrix: {conn_file}");
-    println!("File size:  {:.1} MB", file_size as f64 / 1_048_576.0);
-    println!("POS IDs:    {num_ids}");
-    println!(
-        "Matrix:     {num_ids}x{num_ids} = {} entries",
-        num_ids as u64 * num_ids as u64
-    );
-
-    let fw_min = conn.fw_min();
-    let fw_max = conn.fw_max();
-    if fw_min != 0 {
-        let fw_count = fw_max - fw_min + 1;
-        println!("FW range:   {fw_min}..={fw_max} ({fw_count} IDs)");
-    } else {
-        println!("FW range:   (none)");
-    }
-
-    // Count roles
-    let mut role_counts = [0u32; 4]; // 0=CW, 1=FW, 2=Suffix, 3=Prefix
-    for id in 0..num_ids {
-        let r = conn.role(id) as usize;
-        if r < role_counts.len() {
-            role_counts[r] += 1;
-        }
-    }
-    println!(
-        "Roles:      CW={}, FW={}, Suffix={}, Prefix={}",
-        role_counts[0], role_counts[1], role_counts[2], role_counts[3]
-    );
-}
-
-fn conn_cost_cmd(conn_file: &str, left: u16, right: u16) {
-    let conn = die!(
-        ConnectionMatrix::open(Path::new(conn_file)),
-        "Error opening connection matrix: {}"
-    );
-    let cost = conn.cost(left, right);
-    let left_role = conn.role(left);
-    let right_role = conn.role(right);
-    let left_fw = conn.is_function_word(left);
-    let right_fw = conn.is_function_word(right);
-
-    let role_name = |r: u8| match r {
-        0 => "CW",
-        1 => "FW",
-        2 => "Suffix",
-        3 => "Prefix",
-        _ => "?",
-    };
-
-    println!(
-        "conn({left}, {right}) = {cost}  [{} {}{}→ {} {}{}]",
-        left,
-        role_name(left_role),
-        if left_fw { "(fw)" } else { "" },
-        right,
-        role_name(right_role),
-        if right_fw { "(fw)" } else { "" },
-    );
-}
-
-struct MergeOptions {
-    max_cost: Option<i16>,
-    max_reading_len: Option<usize>,
-}
-
-fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &MergeOptions) {
-    eprintln!("Loading {dict_a_file}...");
-    let dict_a = die!(
-        TrieDictionary::open(Path::new(dict_a_file)),
-        "Error opening dictionary A: {}"
-    );
-    let (a_readings, a_entries) = dict_a.stats();
-    eprintln!("  A: {a_readings} readings, {a_entries} entries");
-
-    eprintln!("Loading {dict_b_file}...");
-    let dict_b = die!(
-        TrieDictionary::open(Path::new(dict_b_file)),
-        "Error opening dictionary B: {}"
-    );
-    let (b_readings, b_entries) = dict_b.stats();
-    eprintln!("  B: {b_readings} readings, {b_entries} entries");
-
-    eprintln!("Merging...");
-    let mut merged: HashMap<String, Vec<DictEntry>> = HashMap::new();
-
-    // Insert all entries from A.
-    for (reading, entries) in dict_a.iter() {
-        merged.entry(reading).or_default().extend(entries);
-    }
-
-    // Insert entries from B, deduplicating by surface and keeping lower cost.
-    for (reading, entries) in dict_b.iter() {
-        let slot = merged.entry(reading).or_default();
-        for entry in entries {
-            if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
-                if entry.cost < existing.cost {
-                    *existing = entry;
-                }
-            } else {
-                slot.push(entry);
-            }
-        }
-    }
-
-    // Apply filters.
-    let pre_filter_readings = merged.len();
-    let pre_filter_entries: usize = merged.values().map(|v| v.len()).sum();
-
-    if let Some(max_len) = opts.max_reading_len {
-        merged.retain(|reading, _| reading.chars().count() <= max_len);
-    }
-    if let Some(max_cost) = opts.max_cost {
-        for entries in merged.values_mut() {
-            entries.retain(|e| e.cost <= max_cost);
-        }
-        merged.retain(|_, entries| !entries.is_empty());
-    }
-
-    let reading_count = merged.len();
-    let entry_count: usize = merged.values().map(|v| v.len()).sum();
-
-    if opts.max_cost.is_some() || opts.max_reading_len.is_some() {
-        let dropped_readings = pre_filter_readings - reading_count;
-        let dropped_entries = pre_filter_entries - entry_count;
-        eprintln!("Filtered: dropped {dropped_readings} readings, {dropped_entries} entries");
-    }
-
-    eprintln!("Building trie from {reading_count} readings ({entry_count} entries)...");
-
-    let dict = TrieDictionary::from_entries(merged);
-    die!(
-        dict.save(Path::new(output_file)),
-        "Error writing dictionary: {}"
-    );
-
-    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "Wrote {output_file} ({:.1} MB)",
-        file_size as f64 / 1_048_576.0
-    );
-}
-
-/// Collect all (reading, surface) pairs and the set of readings from a dictionary.
-fn collect_pairs(dict: &TrieDictionary) -> (HashSet<(String, String)>, HashSet<String>) {
-    let mut pairs = HashSet::new();
-    let mut readings = HashSet::new();
-    for (reading, entries) in dict.iter() {
-        for entry in &entries {
-            pairs.insert((reading.clone(), entry.surface.clone()));
-        }
-        readings.insert(reading);
-    }
-    (pairs, readings)
-}
-
-/// Build a map from reading to first entry (for sampling).
-fn first_entry_by_reading(dict: &TrieDictionary) -> std::collections::HashMap<String, DictEntry> {
-    let mut map = std::collections::HashMap::new();
-    for (reading, mut entries) in dict.iter() {
-        if !entries.is_empty() {
-            map.insert(reading, entries.swap_remove(0));
-        }
-    }
-    map
-}
-
-fn diff(dict_a_file: &str, dict_b_file: &str) {
-    eprintln!("Loading {dict_a_file}...");
-    let dict_a = die!(
-        TrieDictionary::open(Path::new(dict_a_file)),
-        "Error opening dictionary A: {}"
-    );
-    eprintln!("Loading {dict_b_file}...");
-    let dict_b = die!(
-        TrieDictionary::open(Path::new(dict_b_file)),
-        "Error opening dictionary B: {}"
-    );
-
-    let (a_readings, a_entries) = dict_a.stats();
-    let (b_readings, b_entries) = dict_b.stats();
-
-    eprintln!("Collecting pairs...");
-    let (pairs_a, readings_a) = collect_pairs(&dict_a);
-    let (pairs_b, readings_b) = collect_pairs(&dict_b);
-
-    let readings_only_a = readings_a.difference(&readings_b).count();
-    let readings_only_b = readings_b.difference(&readings_a).count();
-    let readings_both = readings_a.intersection(&readings_b).count();
-
-    let pairs_only_a = pairs_a.difference(&pairs_b).count();
-    let pairs_only_b = pairs_b.difference(&pairs_a).count();
-    let pairs_both = pairs_a.intersection(&pairs_b).count();
-
-    println!("=== Dictionary Diff ===");
-    println!("A: {dict_a_file} ({a_readings} readings, {a_entries} entries)");
-    println!("B: {dict_b_file} ({b_readings} readings, {b_entries} entries)");
-    println!();
-    println!("Readings only in A: {readings_only_a:>10}");
-    println!("Readings only in B: {readings_only_b:>10}");
-    println!("Readings in both:   {readings_both:>10}");
-    println!();
-    println!("Surface pairs (reading+surface):");
-    println!("  Only in A: {pairs_only_a:>10}");
-    println!("  Only in B: {pairs_only_b:>10}");
-    println!("  In both:   {pairs_both:>10}");
-
-    // Sample: readings only in B
-    let sample_readings: Vec<&String> = readings_b.difference(&readings_a).take(20).collect();
-    if !sample_readings.is_empty() {
-        let b_first = first_entry_by_reading(&dict_b);
-        println!();
-        println!("--- Sample: readings only in B (up to 20) ---");
-        for reading in &sample_readings {
-            if let Some(entry) = b_first.get(*reading) {
-                println!("  {} -> {} (cost={})", reading, entry.surface, entry.cost);
-            }
-        }
-    }
-
-    // Sample: readings only in A
-    let sample_readings_a: Vec<&String> = readings_a.difference(&readings_b).take(20).collect();
-    if !sample_readings_a.is_empty() {
-        let a_first = first_entry_by_reading(&dict_a);
-        println!();
-        println!("--- Sample: readings only in A (up to 20) ---");
-        for reading in &sample_readings_a {
-            if let Some(entry) = a_first.get(*reading) {
-                println!("  {} -> {} (cost={})", reading, entry.surface, entry.cost);
-            }
-        }
-    }
-}
-
-fn print_entries(entries: &[DictEntry]) {
-    for e in entries {
-        println!(
-            "  {} \tcost={}\tL={}\tR={}",
-            e.surface, e.cost, e.left_id, e.right_id
-        );
-    }
-}
-
-fn lookup(dict_file: &str, reading: &str) {
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-    let entries = dict.lookup(reading);
-    if entries.is_empty() {
-        println!("{reading}: not found");
-    } else {
-        println!("{reading}: {} entries", entries.len());
-        print_entries(&entries);
-    }
-}
-
-fn prefix(dict_file: &str, query: &str) {
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-    let results = dict.common_prefix_search(query);
-    if results.is_empty() {
-        println!("{query}: no prefix matches");
-        return;
-    }
-    for r in &results {
-        println!("{} ({} entries):", r.reading, r.entries.len());
-        print_entries(&r.entries);
-    }
-}
-
-fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: Option<&str>) {
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-    let conn = die!(
-        ConnectionMatrix::open(Path::new(conn_file)),
-        "Error opening connection matrix: {}"
-    );
-
-    let user_history = history.map(|path| {
-        die!(
-            UserHistory::open(Path::new(path)),
-            "Error opening history: {}"
-        )
-    });
-
-    if n <= 1 {
-        let result = if let Some(ref h) = user_history {
-            convert_with_history(&dict, Some(&conn), h, kana)
-        } else {
-            convert(&dict, Some(&conn), kana)
-        };
-        let segs: Vec<String> = result
-            .iter()
-            .map(|s| format!("{}({})", s.surface, s.reading))
-            .collect();
-        println!("{}", segs.join(" | "));
-    } else {
-        let nbest = if let Some(ref h) = user_history {
-            convert_nbest_with_history(&dict, Some(&conn), h, kana, n)
-        } else {
-            convert_nbest(&dict, Some(&conn), kana, n)
-        };
-        for (i, path) in nbest.iter().enumerate() {
-            let segs: Vec<String> = path
-                .iter()
-                .map(|s| format!("{}({})", s.surface, s.reading))
-                .collect();
-            println!("#{:>2}: {}", i + 1, segs.join(" | "));
-        }
-    }
-}
-
-fn default_user_dict_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{home}/Library/Application Support/Lexime/user_dict.lxuw")
-}
-
-fn user_dict_cmd(file: Option<&str>, action: UserDictAction) {
-    let path_str = file
-        .map(String::from)
-        .unwrap_or_else(default_user_dict_path);
-    let path = Path::new(&path_str);
-
-    let dict = die!(
-        UserDictionary::open(path),
-        "Error opening user dictionary: {}"
-    );
-
-    match action {
-        UserDictAction::Add { reading, surface } => {
-            if dict.register(&reading, &surface) {
-                die!(dict.save(path), "Error saving user dictionary: {}");
-                println!("Added: {reading} → {surface}");
-            } else {
-                println!("Already exists: {reading} → {surface}");
-            }
-        }
-        UserDictAction::Remove { reading, surface } => {
-            if dict.unregister(&reading, &surface) {
-                die!(dict.save(path), "Error saving user dictionary: {}");
-                println!("Removed: {reading} → {surface}");
-            } else {
-                println!("Not found: {reading} → {surface}");
-            }
-        }
-        UserDictAction::List => {
-            let entries = dict.list();
-            if entries.is_empty() {
-                println!("(empty)");
-            } else {
-                for (reading, surface) in &entries {
-                    println!("{reading}\t{surface}");
-                }
-                println!("---");
-                println!("{} entries", entries.len());
-            }
-        }
-    }
-}
-
-fn romaji_validate(file: &str) {
-    let content = die!(fs::read_to_string(file), "Error reading {file}: {}");
-    let map = die!(lex_core::romaji::parse_romaji_toml(&content), "Error: {}");
-    println!("OK: {} mappings", map.len());
-}
-
-fn settings_validate(file: &str) {
-    let content = die!(fs::read_to_string(file), "Error reading {file}: {}");
-    let s = die!(
-        lex_core::settings::parse_settings_toml(&content),
-        "Error: {}"
-    );
-    println!(
-        "OK: cost.segment_penalty={}, candidates.nbest={}, candidates.max_results={}",
-        s.cost.segment_penalty, s.candidates.nbest, s.candidates.max_results
-    );
-}
-
-#[cfg(feature = "neural")]
-fn neural_score_cmd(
-    dict_file: &str,
-    conn_file: &str,
-    model_file: &str,
-    kana: &str,
-    n: usize,
-    history: Option<&str>,
-    context: &str,
-) {
-    use std::time::Instant;
-
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-    let conn = die!(
-        ConnectionMatrix::open(Path::new(conn_file)),
-        "Error opening connection matrix: {}"
-    );
-
-    let user_history = history.map(|path| {
-        die!(
-            UserHistory::open(Path::new(path)),
-            "Error opening history: {}"
-        )
-    });
-
-    // 1) Viterbi N-best
-    let viterbi_start = Instant::now();
-    let nbest = if let Some(ref h) = user_history {
-        convert_nbest_with_history(&dict, Some(&conn), h, kana, n)
-    } else {
-        convert_nbest(&dict, Some(&conn), kana, n)
-    };
-    let viterbi_elapsed = viterbi_start.elapsed();
-
-    println!("Input: {kana}");
-    if !context.is_empty() {
-        println!("Context: {context}");
-    } else {
-        println!("Context: (none)");
-    }
-    println!();
-
-    println!("Viterbi N-best (before neural):");
-    for (i, path) in nbest.iter().enumerate() {
-        let surface: String = path.iter().map(|s| s.surface.as_str()).collect();
-        println!("#{:>2}: {surface}", i + 1);
-    }
-    println!();
-
-    if nbest.is_empty() {
-        eprintln!("No Viterbi candidates to score.");
-        return;
-    }
-
-    // 2) Load neural model
-    eprintln!("Loading neural model from {model_file}...");
-    let model_start = Instant::now();
-    let mut scorer = die!(
-        NeuralScorer::open(Path::new(model_file)),
-        "Error loading neural model: {}"
-    );
-    let model_elapsed = model_start.elapsed();
-    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
-    eprintln!("  {}", scorer.config_summary());
-
-    // 3) Neural scoring
-    let neural_start = Instant::now();
-    let scores = die!(
-        scorer.score_paths(context, kana, &nbest),
-        "Error scoring paths: {}"
-    );
-    let neural_elapsed = neural_start.elapsed();
-
-    println!("Neural re-scored:");
-    for (rank, (path_idx, log_prob)) in scores.iter().enumerate() {
-        let path = &nbest[*path_idx];
-        let surface: String = path.iter().map(|s| s.surface.as_str()).collect();
-        println!(
-            "#{:>2}: {surface}  (log_prob: {log_prob:.2}, viterbi_rank: {})",
-            rank + 1,
-            path_idx + 1
-        );
-    }
-    println!();
-    println!(
-        "Latency: {:.0}ms (viterbi: {:.1}ms, neural: {:.0}ms, model_load: {:.0}ms)",
-        (viterbi_elapsed + neural_elapsed).as_millis(),
-        viterbi_elapsed.as_secs_f64() * 1000.0,
-        neural_elapsed.as_millis(),
-        model_elapsed.as_millis(),
-    );
-}
-
-#[cfg(feature = "neural")]
-fn generate_cmd(model_file: &str, context: &str, max_tokens: usize) {
-    use lex_core::neural::GenerateConfig;
-    use std::time::Instant;
-
-    println!(
-        "Context: {}",
-        if context.is_empty() {
-            "(none)"
-        } else {
-            context
-        }
-    );
-
-    eprintln!("Loading neural model from {model_file}...");
-    let model_start = Instant::now();
-    let mut scorer = die!(
-        NeuralScorer::open(Path::new(model_file)),
-        "Error loading neural model: {}"
-    );
-    let model_elapsed = model_start.elapsed();
-    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
-    eprintln!("  {}", scorer.config_summary());
-
-    let config = GenerateConfig {
-        max_tokens,
-        ..GenerateConfig::default()
-    };
-
-    let gen_start = Instant::now();
-    let text = die!(
-        scorer.generate_text(context, &config),
-        "Error generating text: {}"
-    );
-    let gen_elapsed = gen_start.elapsed();
-
-    println!("Generated: {text}");
-    println!(
-        "Latency: {:.0}ms (model_load: {:.0}ms)",
-        gen_elapsed.as_millis(),
-        model_elapsed.as_millis(),
-    );
-}
-
-#[cfg(feature = "neural")]
-#[allow(clippy::too_many_arguments)]
-fn speculative_decode_cmd(
-    dict_file: &str,
-    conn_file: &str,
-    model_file: &str,
-    kana: &str,
-    context: &str,
-    threshold: f64,
-    max_iter: usize,
-    compare: bool,
-) {
-    use lex_core::neural::speculative::{speculative_decode, SpeculativeConfig};
-    use std::time::Instant;
-
-    let dict = die!(
-        TrieDictionary::open(Path::new(dict_file)),
-        "Error opening dictionary: {}"
-    );
-    let conn = die!(
-        ConnectionMatrix::open(Path::new(conn_file)),
-        "Error opening connection matrix: {}"
-    );
-
-    println!("Input: {kana}");
-    if !context.is_empty() {
-        println!("Context: {context}");
-    } else {
-        println!("Context: (none)");
-    }
-    println!();
-
-    // Load neural model
-    eprintln!("Loading neural model from {model_file}...");
-    let model_start = Instant::now();
-    let mut scorer = die!(
-        NeuralScorer::open(Path::new(model_file)),
-        "Error loading neural model: {}"
-    );
-    let model_elapsed = model_start.elapsed();
-    eprintln!("  Model loaded in {:.0}ms", model_elapsed.as_millis());
-    eprintln!("  {}", scorer.config_summary());
-
-    // Compare mode: show Viterbi 1-best and N-best reranking
-    if compare {
-        let viterbi_start = Instant::now();
-        let viterbi_1best = convert(&dict, Some(&conn), kana);
-        let viterbi_elapsed = viterbi_start.elapsed();
-        let viterbi_surface: String = viterbi_1best.iter().map(|s| s.surface.as_str()).collect();
-        println!(
-            "Viterbi 1-best:  {viterbi_surface}  ({:.1}ms)",
-            viterbi_elapsed.as_secs_f64() * 1000.0
-        );
-
-        let nbest = convert_nbest(&dict, Some(&conn), kana, 10);
-        let neural_start = Instant::now();
-        let scores = die!(
-            scorer.score_paths(context, kana, &nbest),
-            "Error scoring paths: {}"
-        );
-        let neural_elapsed = neural_start.elapsed();
-
-        if let Some(&(best_idx, _)) = scores.first() {
-            let rerank_surface: String =
-                nbest[best_idx].iter().map(|s| s.surface.as_str()).collect();
-            println!(
-                "N-best rerank:   {rerank_surface}  ({:.0}ms neural)",
-                neural_elapsed.as_millis()
-            );
-        }
-        println!();
-    }
-
-    // Speculative decoding
-    let config = SpeculativeConfig {
-        threshold,
-        max_iterations: max_iter,
-        ..SpeculativeConfig::default()
-    };
-    let result = die!(
-        speculative_decode(&mut scorer, &dict, Some(&conn), context, kana, &config),
-        "Error in speculative decoding: {}"
-    );
-
-    let surface: String = result.segments.iter().map(|s| s.surface.as_str()).collect();
-    println!("Speculative:     {surface}");
-    println!("Segments:");
-    for (i, (seg, &score)) in result
-        .segments
-        .iter()
-        .zip(result.segment_scores.iter())
-        .enumerate()
-    {
-        let status = if score >= threshold { "OK" } else { "LOW" };
-        println!(
-            "  [{i}] {}({})      score={:.2}/char  {status}",
-            seg.surface, seg.reading, score
-        );
-    }
-    println!();
-    println!("Iterations: {}", result.metadata.iterations);
-    println!("Confirmed: {:?}", result.metadata.confirmed_counts);
-    println!("Converged: {}", result.metadata.converged);
-    if result.metadata.fell_back {
-        println!(
-            "Fell back to N-best reranking (< {} segments)",
-            config.min_segments
-        );
-    }
-    println!(
-        "Latency: {:.0}ms (viterbi: {:.1}ms, neural: {:.0}ms, model_load: {:.0}ms)",
-        result.metadata.total_latency.as_millis(),
-        result.metadata.viterbi_latency.as_secs_f64() * 1000.0,
-        result.metadata.neural_latency.as_millis(),
-        model_elapsed.as_millis(),
-    );
 }
