@@ -1,7 +1,8 @@
 //! Candidate generation for IME input.
 //!
-//! Provides pluggable strategies (standard, predictive, neural) for
-//! generating conversion candidates from a kana reading.
+//! Provides standard and predictive strategies for generating conversion
+//! candidates from a kana reading. Neural scoring is feature-gated for
+//! research use only.
 
 use std::collections::HashSet;
 
@@ -11,15 +12,12 @@ use crate::user_history::UserHistory;
 
 pub mod predictive;
 pub mod standard;
-pub mod strategy;
 
 #[cfg(feature = "neural")]
 pub mod neural;
 
 #[cfg(test)]
 mod tests;
-
-pub use strategy::CandidateStrategy;
 
 /// Alternative forms for punctuation characters.
 /// When the reading is a punctuation kana, we show the original + these alternatives.

@@ -110,7 +110,7 @@ jobs:
           workspaces: engine -> target
           shared-key: engine
 
-      - run: cd engine && cargo test -p lex_engine --features trace,neural
+      - run: cd engine && cargo test -p lex_engine --features trace
 
   test-cli:
     needs: [changes, lint]
