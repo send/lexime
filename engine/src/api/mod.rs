@@ -125,6 +125,16 @@ fn settings_load_config(path: String) -> Result<(), LexError> {
 }
 
 #[uniffi::export]
+fn romaji_default_config() -> String {
+    crate::romaji::default_toml().to_string()
+}
+
+#[uniffi::export]
+fn settings_default_config() -> String {
+    crate::settings::DEFAULT_SETTINGS_TOML.to_string()
+}
+
+#[uniffi::export]
 fn trace_init(log_dir: String) {
     crate::trace_init::init_tracing(Path::new(&log_dir));
 }
