@@ -44,6 +44,7 @@ impl InputSession {
         // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
         } else if let Some(remapped) = settings().keymap_get(key_code, has_shift) {
             if self.abc_passthrough {
+                self.committed_context.push_str(remapped);
                 let mut r = KeyResponse::consumed();
                 r.commit = Some(remapped.to_string());
                 r
@@ -55,6 +56,7 @@ impl InputSession {
                     r
                 } else {
                     // Not handled by trie/romaji (e.g. \) — commit directly
+                    self.committed_context.push_str(remapped);
                     let mut r = KeyResponse::consumed();
                     r.commit = Some(remapped.to_string());
                     r
@@ -67,6 +69,7 @@ impl InputSession {
         } else if self.abc_passthrough {
             match text.chars().next() {
                 Some(c) if (' '..='~').contains(&c) => {
+                    self.committed_context.push_str(text);
                     let mut r = KeyResponse::consumed();
                     r.commit = Some(text.to_string());
                     r
