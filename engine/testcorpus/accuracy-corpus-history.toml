@@ -1,0 +1,96 @@
+# Lexime Conversion Accuracy Corpus — with History
+#
+# This file tests that user history (learning) correctly influences
+# conversion results. Each [[history]] entry seeds the in-memory
+# UserHistory before running the test cases.
+#
+# Usage:
+#   mise run accuracy-history                        # Run all cases
+#   mise run accuracy-history -- --tag homophone     # Filter by tag
+#   mise run accuracy-history -- --verbose           # Show passing cases too
+#   mise run accuracy-history -- --json              # JSON output
+#
+# Rules:
+#   - skip 以外は全 pass を維持する。fail があれば修正するか skip にする
+#   - skip には必ず issue リンクを付ける（理由なし skip 禁止）
+#   - baseline がずれた場合は辞書・コスト変更を確認し baseline 値を更新する
+#   - コスト調整・reranker 変更時は事前に mise run accuracy-history で現状確認し、
+#     PR に before/after の結果を貼る
+#   - 新規ケースには baseline（履歴なし結果）を必ず付ける
+#
+# History fields:
+#   segments  (required) - [(reading, surface)] pairs passed to record_at
+#   repeat    (optional) - Number of times to record (default: 1)
+#
+# Case fields:
+#   reading   (required) - Kana input to convert
+#   expected  (required) - Expected top-1 surface output (with history)
+#   baseline  (optional) - Expected top-1 surface output without history
+#   category  (required) - One of: word, phrase, conjugation, regression
+#   tags      (optional) - Descriptive tags for filtering
+#   skip      (optional) - true if this is a known failure (issue required)
+#   note      (optional) - Explanation of the test case or known issue
+#   issue     (optional) - Related GitHub issue number (e.g. "#123")
+#   pr        (optional) - Related GitHub PR number (e.g. "#456")
+
+# ═══════════════════════════════════════════════════════════════════
+# History records — seeded before test execution
+# ═══════════════════════════════════════════════════════════════════
+
+[[history]]
+segments = [["かんじ", "漢字"]]
+repeat = 5
+
+[[history]]
+segments = [["きょうは", "今日は"], ["いい", "いい"], ["てんき", "天気"]]
+repeat = 3
+
+[[history]]
+segments = [["きかい", "機械"]]
+repeat = 5
+
+[[history]]
+segments = [["かい", "買い"], ["ました", "ました"]]
+repeat = 5
+
+# ═══════════════════════════════════════════════════════════════════
+# Word-level history override
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "かんじ"
+expected = "漢字"
+baseline = "感じ"
+category = "word"
+tags = ["history", "homophone"]
+note = "学習により感じ→漢字に逆転"
+
+[[cases]]
+reading = "きかい"
+expected = "機械"
+baseline = "機会"
+category = "word"
+tags = ["history", "homophone"]
+note = "学習により機会→機械に逆転"
+
+[[cases]]
+reading = "かいました"
+expected = "買いました"
+baseline = "買い増した"
+category = "conjugation"
+tags = ["history", "verb", "polite-past"]
+note = "学習により買い増した→買いました に逆転"
+
+# ═══════════════════════════════════════════════════════════════════
+# Phrase-level history
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "きょうはいいてんき"
+expected = "今日はいい天気"
+baseline = "教派いい天気"
+category = "phrase"
+tags = ["history", "particle"]
+skip = true
+issue = "history boost does not yet override Viterbi segmentation (教派 vs 今日は)"
+note = "学習により教派→今日は に改善することを期待"

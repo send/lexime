@@ -121,6 +121,19 @@ struct SnapshotEntry {
 #[derive(Debug, Deserialize)]
 struct AccuracyCorpus {
     cases: Vec<AccuracyCase>,
+    #[serde(default)]
+    history: Vec<HistoryRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryRecord {
+    segments: Vec<(String, String)>,
+    #[serde(default = "default_repeat")]
+    repeat: u32,
+}
+
+fn default_repeat() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +145,8 @@ struct AccuracyCase {
     tags: Vec<String>,
     #[serde(default)]
     skip: bool,
+    #[serde(default)]
+    baseline: Option<String>,
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
@@ -147,6 +162,10 @@ struct AccuracyResult {
     actual: String,
     status: AccuracyStatus,
     category: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_actual: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,7 +318,7 @@ fn main() {
             json,
             history,
         } => {
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, file_hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for accuracy");
 
             // Load and parse corpus
@@ -311,6 +330,26 @@ fn main() {
                 eprintln!("Failed to parse corpus TOML: {}", e);
                 process::exit(1);
             });
+
+            // Build history: corpus-embedded or CLI --history (not both)
+            let hist = if !corpus.history.is_empty() {
+                if file_hist.is_some() {
+                    eprintln!(
+                        "Error: corpus contains [[history]] entries and --history flag was also given. Use one or the other."
+                    );
+                    process::exit(1);
+                }
+                let mut h = UserHistory::new();
+                let now = lex_core::user_history::now_epoch();
+                for rec in &corpus.history {
+                    for _ in 0..rec.repeat {
+                        h.record_at(&rec.segments, now);
+                    }
+                }
+                Some(h)
+            } else {
+                file_hist
+            };
 
             // Filter cases
             let cases: Vec<&AccuracyCase> = corpus
@@ -346,6 +385,38 @@ fn main() {
                         actual: String::new(),
                         status: AccuracyStatus::Skip,
                         category: case.category.clone(),
+                        baseline: case.baseline.clone(),
+                        baseline_actual: None,
+                        note: case.note.clone(),
+                        issue: case.issue.clone(),
+                        pr: case.pr.clone(),
+                    });
+                    continue;
+                }
+
+                // If baseline is specified, first verify no-history conversion
+                let (baseline_actual, baseline_changed) =
+                    if let Some(ref expected_baseline) = case.baseline {
+                        let paths_no_hist = convert_nbest(&dict, Some(&conn), &case.reading, 1);
+                        let ba: String = paths_no_hist
+                            .first()
+                            .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                            .unwrap_or_default();
+                        let changed = ba != *expected_baseline;
+                        (Some(ba), changed)
+                    } else {
+                        (None, false)
+                    };
+
+                if baseline_changed {
+                    results.push(AccuracyResult {
+                        reading: case.reading.clone(),
+                        expected: case.expected.clone(),
+                        actual: String::new(),
+                        status: AccuracyStatus::Fail,
+                        category: case.category.clone(),
+                        baseline: case.baseline.clone(),
+                        baseline_actual: baseline_actual.clone(),
                         note: case.note.clone(),
                         issue: case.issue.clone(),
                         pr: case.pr.clone(),
@@ -374,6 +445,8 @@ fn main() {
                     actual,
                     status,
                     category: case.category.clone(),
+                    baseline: case.baseline.clone(),
+                    baseline_actual,
                     note: case.note.clone(),
                     issue: case.issue.clone(),
                     pr: case.pr.clone(),
@@ -428,10 +501,32 @@ fn main() {
                         match r.status {
                             AccuracyStatus::Pass => {
                                 if verbose {
-                                    println!("  \u{2713} {} \u{2192} {}", r.reading, r.expected);
+                                    if let Some(ref bl) = r.baseline {
+                                        println!(
+                                            "  \u{2713} {}: {} \u{2192} {}",
+                                            r.reading, bl, r.expected
+                                        );
+                                    } else {
+                                        println!(
+                                            "  \u{2713} {} \u{2192} {}",
+                                            r.reading, r.expected
+                                        );
+                                    }
                                 }
                             }
                             AccuracyStatus::Fail => {
+                                // Baseline changed?
+                                if let (Some(ref bl), Some(ref ba)) =
+                                    (&r.baseline, &r.baseline_actual)
+                                {
+                                    if ba != bl {
+                                        println!(
+                                            "  \u{2717} {}: baseline changed (expected: {}, got: {})",
+                                            r.reading, bl, ba
+                                        );
+                                        continue;
+                                    }
+                                }
                                 println!(
                                     "  \u{2717} {} \u{2192} {} (got: {})",
                                     r.reading, r.expected, r.actual

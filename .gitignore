@@ -22,9 +22,6 @@ generated/
 engine/data/*
 # Neural model files
 /data/
-# Tracked files in engine/data
-!engine/data/snapshot-readings.txt
-!engine/data/accuracy-corpus.toml
 
 # macOS
 .DS_Store

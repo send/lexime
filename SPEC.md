@@ -559,6 +559,7 @@ macOS で動作する最小限の IME を構築。
 | `snapshot` | 変換スナップショット生成 |
 | `diff-snapshot` | スナップショット差分比較 |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml） |
+| `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |
