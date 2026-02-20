@@ -200,6 +200,15 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
   data/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
 
+[tasks.accuracy]
+description = "Run conversion accuracy tests"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
+  data/lexime.dict data/lexime.conn \
+  data/accuracy-corpus.toml "$@"
+"""
+
 [tasks.diff-snapshot]
 description = "Compare current output against baseline snapshot"
 depends = ["dict", "conn"]

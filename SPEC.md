@@ -2,8 +2,7 @@
 
 ## 概要
 
-Lexime は macOS 向けの日本語予測入力システム。
-PRIME にインスパイアされた予測変換型の入力体験を、軽量・高速に提供する。
+Lexime は macOS 向けの軽量・高速な日本語予測入力システム。
 
 ## アーキテクチャ
 
@@ -559,6 +558,7 @@ macOS で動作する最小限の IME を構築。
 | `explain` | 変換パイプラインの説明出力 |
 | `snapshot` | 変換スナップショット生成 |
 | `diff-snapshot` | スナップショット差分比較 |
+| `accuracy` | 変換精度テスト（accuracy-corpus.toml） |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |

@@ -20,10 +20,11 @@ generated/
 
 # Dictionary data (downloaded / compiled)
 engine/data/*
-!engine/data/snapshot-readings.txt
-
 # Neural model files
-data/
+/data/
+# Tracked files in engine/data
+!engine/data/snapshot-readings.txt
+!engine/data/accuracy-corpus.toml
 
 # macOS
 .DS_Store
