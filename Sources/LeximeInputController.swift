@@ -199,6 +199,24 @@ class LeximeInputController: IMKInputController {
         TISSelectInputSource(source)
     }
 
+    // MARK: - Menu
+
+    override func menu() -> NSMenu! {
+        let menu = NSMenu()
+        let settingsItem = NSMenuItem(
+            title: "設定...",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        return menu
+    }
+
+    @objc private func showSettings() {
+        SettingsWindowController.shared.showWindow()
+    }
+
     // MARK: - IMKInputController Overrides
 
     override func composedString(_ sender: Any!) -> Any! {

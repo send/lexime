@@ -6,6 +6,7 @@ class AppContext {
     let engine: LexEngine?
     let historyPath: String
     let userDictPath: String
+    let supportDir: String
     let candidatePanel = CandidatePanel()
 
     private init() {
@@ -44,8 +45,10 @@ class AppContext {
             for: .applicationSupportDirectory, in: .userDomainMask).first else {
             fatalError("Lexime: Cannot find Application Support directory")
         }
-        self.historyPath = appSupport.appendingPathComponent("Lexime/user_history.lxud").path
-        self.userDictPath = appSupport.appendingPathComponent("Lexime/user_dict.lxuw").path
+        let leximeDir = appSupport.appendingPathComponent("Lexime").path
+        self.supportDir = leximeDir
+        self.historyPath = leximeDir + "/user_history.lxud"
+        self.userDictPath = leximeDir + "/user_dict.lxuw"
 
         // Initialize tracing (no-op unless built with --features trace)
         let logDir = (NSSearchPathForDirectoriesInDomains(
