@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    LexConnection, LexDictionary, LexError, LexNeuralScorer, LexSession, LexUserDictionary,
-    LexUserHistory, LexUserWord,
+    LexConnection, LexDictionary, LexError, LexSession, LexUserDictionary, LexUserHistory,
+    LexUserWord,
 };
 
 #[derive(uniffi::Object)]
@@ -10,7 +10,6 @@ pub struct LexEngine {
     dict: Arc<LexDictionary>,
     conn: Option<Arc<LexConnection>>,
     history: Option<Arc<LexUserHistory>>,
-    neural: Option<Arc<LexNeuralScorer>>,
     user_dict: Option<Arc<LexUserDictionary>>,
 }
 
@@ -21,14 +20,12 @@ impl LexEngine {
         dict: Arc<LexDictionary>,
         conn: Option<Arc<LexConnection>>,
         history: Option<Arc<LexUserHistory>>,
-        neural: Option<Arc<LexNeuralScorer>>,
         user_dict: Option<Arc<LexUserDictionary>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             dict,
             conn,
             history,
-            neural,
             user_dict,
         })
     }
@@ -38,12 +35,7 @@ impl LexEngine {
             Arc::clone(&self.dict),
             self.conn.as_ref().map(Arc::clone),
             self.history.as_ref().map(Arc::clone),
-            self.neural.as_ref().map(Arc::clone),
         )
-    }
-
-    fn has_neural(&self) -> bool {
-        self.neural.is_some()
     }
 
     fn register_word(&self, reading: String, surface: String) -> bool {

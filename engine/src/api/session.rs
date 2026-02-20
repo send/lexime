@@ -7,7 +7,6 @@ use crate::session::{InputSession, LearningRecord};
 use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::types::convert_to_events;
 use super::LexKeyResponse;
-use super::LexNeuralScorer;
 
 #[derive(uniffi::Object)]
 pub struct LexSession {
@@ -23,7 +22,6 @@ impl LexSession {
         dict: Arc<LexDictionary>,
         conn: Option<Arc<LexConnection>>,
         history: Option<Arc<LexUserHistory>>,
-        #[allow(unused_variables)] neural: Option<Arc<LexNeuralScorer>>,
     ) -> Arc<Self> {
         let session = InputSession::new(
             Arc::clone(&dict.inner),

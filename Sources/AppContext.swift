@@ -120,27 +120,10 @@ class AppContext {
             history = nil
         }
 
-        // Load neural model (optional — used for neural candidate scoring)
-        let modelPath = resourcePath + "/zenz-v3.1-Q5_K_M.gguf"
-        let neural: LexNeuralScorer?
-        if FileManager.default.fileExists(atPath: modelPath) {
-            do {
-                let n = try LexNeuralScorer.open(modelPath: modelPath)
-                NSLog("Lexime: Neural model loaded from %@", modelPath)
-                neural = n
-            } catch {
-                NSLog("Lexime: Failed to load neural model at %@: %@", modelPath, "\(error)")
-                neural = nil
-            }
-        } else {
-            NSLog("Lexime: Neural model not found at %@ (neural scoring unavailable)", modelPath)
-            neural = nil
-        }
-
         // Assemble engine (requires at least a dictionary)
         if let dict {
             self.engine = LexEngine(
-                dict: dict, conn: conn, history: history, neural: neural,
+                dict: dict, conn: conn, history: history,
                 userDict: userDict)
         } else {
             self.engine = nil

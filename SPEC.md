@@ -122,7 +122,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `LexConnection` | Object | 接続行列 |
 | `LexUserHistory` | Object | 学習履歴（WAL 付き） |
 | `LexUserDictionary` | Object | ユーザー辞書 |
-| `LexNeuralScorer` | Object | ニューラルスコアラー（feature-gated、stub 付き） |
 | `LexKeyResponse` | Record | キー入力レスポンス（consumed + events） |
 | `LexEvent` | Enum | イベント（下記参照） |
 | `LexCandidateResult` | Record | 候補生成結果（surfaces + paths） |
@@ -531,7 +530,7 @@ macOS で動作する最小限の IME を構築。
 
 ### Phase 6+ (今後)
 
-- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし、変換精度を向上
+- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし変換精度を向上（lex-core に実験モジュールあり、IME 統合は速度課題のため未定）
 
 ## ビルド・CI
 

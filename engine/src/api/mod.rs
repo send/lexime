@@ -18,64 +18,8 @@ pub use types::{
 pub use user_dict::LexUserDictionary;
 
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
-
-// ---------------------------------------------------------------------------
-// Neural scorer (behind feature flag)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "neural")]
-mod neural_api {
-    use super::*;
-    use std::sync::Mutex;
-
-    #[derive(uniffi::Object)]
-    pub struct LexNeuralScorer {
-        #[allow(dead_code)]
-        pub(crate) inner: Arc<Mutex<crate::neural::NeuralScorer>>,
-    }
-
-    #[uniffi::export]
-    impl LexNeuralScorer {
-        #[uniffi::constructor]
-        fn open(model_path: String) -> Result<Arc<Self>, LexError> {
-            let scorer = crate::neural::NeuralScorer::open(Path::new(&model_path))
-                .map_err(|e| LexError::Io { msg: e.to_string() })?;
-            Ok(Arc::new(Self {
-                inner: Arc::new(Mutex::new(scorer)),
-            }))
-        }
-    }
-}
-
-#[cfg(feature = "neural")]
-pub use neural_api::*;
-
-#[cfg(not(feature = "neural"))]
-mod neural_stub {
-    use super::*;
-
-    #[derive(uniffi::Object)]
-    pub struct LexNeuralScorer;
-
-    #[uniffi::export]
-    impl LexNeuralScorer {
-        #[uniffi::constructor]
-        fn open(model_path: String) -> Result<Arc<Self>, LexError> {
-            Err(LexError::Internal {
-                msg: format!(
-                    "neural feature not enabled, cannot load model: {}",
-                    model_path
-                ),
-            })
-        }
-    }
-}
-
-#[cfg(not(feature = "neural"))]
-pub use neural_stub::*;
 
 // ---------------------------------------------------------------------------
 // Top-level functions
