@@ -44,7 +44,7 @@ pub struct InputSession {
     /// ABC passthrough mode: all keys pass through to app, except Kana.
     abc_passthrough: bool,
 
-    // Accumulated committed text for neural context
+    // Accumulated committed text (conversion context)
     committed_context: String,
 }
 
@@ -115,7 +115,7 @@ impl InputSession {
         std::mem::take(&mut self.history_records)
     }
 
-    /// Get the accumulated committed text for use as neural context.
+    /// Get the accumulated committed text (conversion context).
     pub fn committed_context(&self) -> String {
         self.committed_context.clone()
     }

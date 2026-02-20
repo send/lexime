@@ -1,4 +1,3 @@
-mod auto_commit;
 mod basic;
 mod candidates;
 mod corpus;

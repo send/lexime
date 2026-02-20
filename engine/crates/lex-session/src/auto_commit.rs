@@ -86,7 +86,7 @@ impl InputSession {
         let prefix_text = std::mem::take(&mut c.prefix.text);
         let committed_text = format!("{}{}", prefix_text, committed_surface);
 
-        // Accumulate for neural context
+        // Accumulate committed text for context
         self.committed_context.push_str(&committed_text);
 
         let mut resp = KeyResponse::consumed();

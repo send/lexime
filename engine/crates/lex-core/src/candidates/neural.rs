@@ -14,6 +14,8 @@ use super::{generate_punctuation_candidates, punctuation_alternatives, Candidate
 /// Uses speculative decode (Viterbi draft + GPT-2 verify) as the #1 candidate,
 /// followed by standard Viterbi N-best candidates. Falls back to standard
 /// candidate generation on neural failure.
+///
+/// Not used in the IME runtime (too slow). Retained for research via `dictool neural-score`.
 pub fn generate(
     scorer: &mut NeuralScorer,
     dict: &dyn Dictionary,

@@ -3,6 +3,10 @@
 //! This module provides neural language model scoring for re-ranking
 //! Viterbi N-best candidates. It loads a GGUF quantized GPT-2 model
 //! and computes log-probabilities for candidate strings.
+//!
+//! **Note**: This module is retained for research and benchmarking only
+//! (via `dictool neural-score`). It is not integrated into the IME runtime
+//! because inference latency is too high for interactive use.
 
 mod gpt2;
 mod scoring;
