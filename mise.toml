@@ -35,12 +35,6 @@ echo "Generated Swift bindings in generated/"
 ls -la generated/
 """
 
-[tasks.fetch-dict-sudachi]
-description = "Download SudachiDict dictionary data"
-sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/sudachi.rs"]
-outputs = ["engine/data/sudachi-raw/.stamp"]
-run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source sudachi data/sudachi-raw"
-
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data"
 sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
@@ -75,27 +69,6 @@ target/release/dictool compile-conn \
   data/mozc-raw/connection_single_column.txt data/lexime.conn
 """
 
-[tasks.fetch-dict-sudachi-full]
-description = "Download SudachiDict full dictionary data (core + notcore)"
-depends = ["fetch-dict-sudachi"]
-sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/sudachi.rs"]
-outputs = ["engine/data/sudachi-full-raw/.stamp"]
-run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source sudachi --full data/sudachi-full-raw"
-
-[tasks.dict-sudachi-full]
-description = "Compile binary dictionary from SudachiDict full (remapped to Mozc POS IDs)"
-depends = ["fetch-dict-sudachi-full", "fetch-dict-mozc"]
-sources = ["engine/data/sudachi-full-raw/.stamp"]
-outputs = ["engine/data/lexime-sudachi-full.dict"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-cd engine
-cargo build --release -p lex-cli --bin dictool
-target/release/dictool compile --source sudachi --remap-ids data/mozc-raw/id.def \
-  data/sudachi-full-raw data/lexime-sudachi-full.dict
-"""
-
 [tasks.dict]
 description = "Build dictionary (Mozc only)"
 depends = ["dict-mozc"]
@@ -110,8 +83,7 @@ cp engine/data/lexime-mozc.dict engine/data/lexime.dict
 description = "Remove compiled dictionaries (forces rebuild on next dict/build)"
 run = """
 #!/usr/bin/env bash
-rm -f engine/data/lexime-mozc.dict engine/data/lexime-sudachi.dict \
-      engine/data/lexime-sudachi-full.dict engine/data/lexime.dict \
+rm -f engine/data/lexime-mozc.dict engine/data/lexime.dict \
       engine/data/lexime.conn
 echo "Removed compiled dictionaries"
 """

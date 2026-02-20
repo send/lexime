@@ -551,10 +551,7 @@ macOS で動作する最小限の IME を構築。
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
-| `fetch-dict-sudachi` | SudachiDict データのダウンロード |
-| `fetch-dict-sudachi-full` | SudachiDict Full データのダウンロード |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
-| `dict-sudachi-full` | SudachiDict Full 辞書のコンパイル |
 | `dict` | 辞書のコピー |
 | `dict-clean` | コンパイル済み辞書の削除（次回ビルドで再コンパイル） |
 | `conn` | 接続行列のコンパイル |

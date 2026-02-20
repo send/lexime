@@ -7,7 +7,6 @@ use clap::{Parser, Subcommand};
 
 use lex_cli::dict_source;
 use lex_cli::dict_source::pos_map;
-use lex_cli::dict_source::SudachiSource;
 use lex_core::converter::{
     convert, convert_nbest, convert_nbest_with_history, convert_with_history,
 };
@@ -43,9 +42,6 @@ enum Command {
         /// Dictionary source
         #[arg(long, default_value = "mozc")]
         source: String,
-        /// Fetch full dictionary (sudachi only)
-        #[arg(long)]
-        full: bool,
         /// Output directory
         output_dir: String,
     },
@@ -54,9 +50,6 @@ enum Command {
         /// Dictionary source
         #[arg(long, default_value = "mozc")]
         source: String,
-        /// Remap POS IDs using Mozc id.def
-        #[arg(long)]
-        remap_ids: Option<String>,
         /// Input directory
         input_dir: String,
         /// Output file
@@ -247,34 +240,23 @@ fn main() {
     match cli.command {
         Command::Fetch {
             source: source_name,
-            full,
             output_dir,
         } => {
             let output_dir = Path::new(&output_dir);
-            if full {
-                if source_name != "sudachi" {
-                    eprintln!("Error: --full is only supported for sudachi source");
-                    process::exit(1);
-                }
-                let src = SudachiSource;
-                die!(src.fetch_full(output_dir), "Error fetching dictionary: {}");
-            } else {
-                let dict_source = dict_source::from_name(&source_name).unwrap_or_else(|| {
-                    eprintln!("Error: unknown source '{source_name}' (available: mozc, sudachi)");
-                    process::exit(1);
-                });
-                die!(
-                    dict_source.fetch(output_dir),
-                    "Error fetching dictionary: {}"
-                );
-            }
+            let dict_source = dict_source::from_name(&source_name).unwrap_or_else(|| {
+                eprintln!("Error: unknown source '{source_name}' (available: mozc)");
+                process::exit(1);
+            });
+            die!(
+                dict_source.fetch(output_dir),
+                "Error fetching dictionary: {}"
+            );
         }
         Command::Compile {
             source: source_name,
-            remap_ids,
             input_dir,
             output_file,
-        } => compile(&source_name, remap_ids.as_deref(), &input_dir, &output_file),
+        } => compile(&source_name, &input_dir, &output_file),
         Command::CompileConn {
             input_txt,
             output_file,
@@ -358,9 +340,9 @@ fn main() {
     }
 }
 
-fn compile(source_name: &str, remap_ids: Option<&str>, input_dir: &str, output_file: &str) {
+fn compile(source_name: &str, input_dir: &str, output_file: &str) {
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: mozc, sudachi)");
+        eprintln!("Error: unknown source '{source_name}' (available: mozc)");
         process::exit(1);
     });
 
@@ -371,28 +353,10 @@ fn compile(source_name: &str, remap_ids: Option<&str>, input_dir: &str, output_f
     }
 
     eprintln!("Source: {source_name}");
-    let mut entries = die!(
+    let entries = die!(
         dict_source.parse_dir(input_path),
         "Error parsing dictionary: {}"
     );
-
-    // Apply POS ID remapping if --remap-ids is specified
-    if let Some(id_def_path) = remap_ids {
-        eprintln!("Remapping POS IDs using {id_def_path}...");
-        let mozc_ids = die!(
-            pos_map::parse_mozc_id_def(Path::new(id_def_path)),
-            "Error parsing id.def: {}"
-        );
-        eprintln!("  Loaded {} generic Mozc POS entries", mozc_ids.len());
-
-        let (remap, matched, total) = die!(
-            pos_map::build_remap_table(input_path, &mozc_ids),
-            "Error building remap table: {}"
-        );
-        eprintln!("  Remapped {matched} of {total} unique Sudachi IDs");
-
-        pos_map::remap_entries(&mut entries, &remap);
-    }
 
     let reading_count = entries.len();
     let entry_count: usize = entries.values().map(|v| v.len()).sum();

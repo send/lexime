@@ -1,6 +1,5 @@
 mod mozc;
 pub mod pos_map;
-mod sudachi;
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,7 +9,6 @@ use std::path::Path;
 use lex_core::dict::DictEntry;
 
 pub use mozc::MozcSource;
-pub use sudachi::SudachiSource;
 
 /// A pluggable dictionary source that parses raw dictionary files into entries.
 pub trait DictSource {
@@ -136,7 +134,6 @@ pub(super) fn parse_dict_files(
 pub fn from_name(name: &str) -> Option<Box<dyn DictSource>> {
     match name {
         "mozc" => Some(Box::new(MozcSource)),
-        "sudachi" => Some(Box::new(SudachiSource)),
         _ => None,
     }
 }

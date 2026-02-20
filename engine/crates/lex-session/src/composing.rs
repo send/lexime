@@ -24,11 +24,7 @@ impl InputSession {
 
         // Uppercase letter: flush pending romaji and add to kana as-is (no romaji conversion).
         // Skip auto-commit so consecutive uppercase letters stay grouped as one word.
-        if text
-            .chars()
-            .next()
-            .map_or(false, |c| c.is_ascii_uppercase())
-        {
+        if text.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             self.comp().drain_pending(true);
             self.comp().kana.push_str(text);
             self.comp().stability.reset();

@@ -113,11 +113,7 @@ impl InputSession {
         }
 
         // Uppercase letter: add to composition as-is (no romaji conversion)
-        if text
-            .chars()
-            .next()
-            .map_or(false, |c| c.is_ascii_uppercase())
-        {
+        if text.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             self.state = SessionState::Composing(Composition::new());
             self.comp().kana.push_str(text);
             self.comp().stability.reset();
