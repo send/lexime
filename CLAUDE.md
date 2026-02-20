@@ -17,7 +17,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 1. `git checkout -b <type>/<topic>` でブランチを切る
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
 3. `git push -u origin <branch>` で push する
-4. `gh pr create` で PR を作成する
+4. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 5. `gh pr merge --merge --delete-branch` でマージする
 
 ## コミット規約
