@@ -75,12 +75,6 @@ pub enum LexEvent {
     },
     HideCandidates,
     SwitchToAbc,
-    SetGhostText {
-        text: String,
-    },
-    ClearGhostText {
-        update_display: bool,
-    },
     SchedulePoll,
 }
 
@@ -97,7 +91,6 @@ pub enum LexRomajiLookup {
 // ---------------------------------------------------------------------------
 
 pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> LexKeyResponse {
-    let has_marked = resp.marked.is_some();
     let mut events = Vec::new();
 
     // 1. Commit
@@ -124,19 +117,7 @@ pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> Le
         events.push(LexEvent::SwitchToAbc);
     }
 
-    // 5. Ghost text
-    if let Some(ghost) = resp.ghost_text {
-        if ghost.is_empty() {
-            // Clear ghost. update_display = true when no marked text was set in this response
-            events.push(LexEvent::ClearGhostText {
-                update_display: !has_marked,
-            });
-        } else {
-            events.push(LexEvent::SetGhostText { text: ghost });
-        }
-    }
-
-    // 6. Schedule poll
+    // 5. Schedule poll
     if has_pending_work {
         events.push(LexEvent::SchedulePoll);
     }

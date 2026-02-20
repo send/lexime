@@ -2,8 +2,6 @@
 pub use lex_core::candidates;
 pub use lex_core::converter;
 pub use lex_core::dict;
-#[cfg(feature = "neural")]
-pub use lex_core::neural;
 pub use lex_core::romaji;
 pub use lex_core::settings;
 pub use lex_core::unicode;

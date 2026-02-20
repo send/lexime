@@ -18,7 +18,6 @@ class LeximeInputController: IMKInputController {
     }
 
     let candidateManager = CandidateManager()
-    let ghostManager = GhostTextManager()
 
     private static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
     private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
@@ -79,11 +78,6 @@ class LeximeInputController: IMKInputController {
         let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
         let flags = shift | (hasModifier << 1)
 
-        // Clear ghost text on any key except Tab (ghost accept is handled by the engine)
-        if ghostManager.text != nil && event.keyCode != 48 /* Tab */ {
-            ghostManager.clear(client: client, updateDisplay: true)
-        }
-
         // Invalidate any pending async candidate results
         candidateManager.invalidate()
 
@@ -115,10 +109,6 @@ class LeximeInputController: IMKInputController {
                 candidateManager.hide()
             case .switchToAbc:
                 selectABCInputSource()
-            case .setGhostText(let text):
-                ghostManager.set(text, client: client)
-            case .clearGhostText(let updateDisplay):
-                ghostManager.clear(client: client, updateDisplay: updateDisplay)
             case .schedulePoll:
                 schedulePollTimer(client: client)
             }
@@ -212,7 +202,6 @@ class LeximeInputController: IMKInputController {
     override func deactivateServer(_ sender: Any!) {
         cancelPollTimer()
         candidateManager.deactivate()
-        ghostManager.deactivate()
         currentDisplay = nil
         super.deactivateServer(sender)
     }

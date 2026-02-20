@@ -9,7 +9,6 @@ mod auto_commit;
 mod candidate_gen;
 mod commit;
 mod composing;
-mod ghost;
 mod key_handlers;
 mod response;
 
@@ -23,11 +22,11 @@ use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
 pub use types::{
-    AsyncCandidateRequest, AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse,
-    LearningRecord, MarkedText, SideEffects,
+    AsyncCandidateRequest, CandidateAction, ConversionMode, KeyResponse, LearningRecord,
+    MarkedText, SideEffects,
 };
 
-use types::{Composition, GhostState, SessionConfig, SessionState};
+use types::{Composition, SessionConfig, SessionState};
 
 /// Stateful IME session encapsulating all input processing logic.
 pub struct InputSession {
@@ -41,8 +40,6 @@ pub struct InputSession {
 
     // History recording buffer
     history_records: Vec<LearningRecord>,
-
-    ghost: GhostState,
 
     /// ABC passthrough mode: all keys pass through to app, except Kana.
     abc_passthrough: bool,
@@ -67,10 +64,6 @@ impl InputSession {
                 conversion_mode: ConversionMode::Standard,
             },
             history_records: Vec::new(),
-            ghost: GhostState {
-                text: None,
-                generation: 0,
-            },
             abc_passthrough: false,
             committed_context: String::new(),
         }
@@ -125,10 +118,5 @@ impl InputSession {
     /// Get the accumulated committed text for use as neural context.
     pub fn committed_context(&self) -> String {
         self.committed_context.clone()
-    }
-
-    /// Whether ghost text is currently being displayed.
-    pub fn has_ghost_text(&self) -> bool {
-        self.ghost.text.is_some()
     }
 }
