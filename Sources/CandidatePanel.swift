@@ -21,11 +21,19 @@ class CandidateListView: NSView {
         modeName != nil ? headerHeight : 0
     }
 
+    /// Whether the view is in notification-only mode (no candidates, just modeName).
+    private var isNotificationMode: Bool {
+        candidates.isEmpty && modeName != nil
+    }
+
+    private let notificationHeight: CGFloat = 28
+
     var desiredSize: NSSize {
         var maxTextWidth: CGFloat = 0
 
         if let modeName {
-            let headerAttrs: [NSAttributedString.Key: Any] = [.font: headerFont]
+            let modeFont = isNotificationMode ? font : headerFont
+            let headerAttrs: [NSAttributedString.Key: Any] = [.font: modeFont]
             let w = (modeName as NSString).size(withAttributes: headerAttrs).width
             if w > maxTextWidth { maxTextWidth = w }
         }
@@ -38,9 +46,13 @@ class CandidateListView: NSView {
 
         guard maxTextWidth > 0 else { return .zero }
         let width = horizontalPadding + maxTextWidth + horizontalPadding
-        // Add bottom padding when showing only the header (notification mode)
-        let bottomPad: CGFloat = candidates.isEmpty && modeName != nil ? 4 : 0
-        let height = headerOffset + rowHeight * CGFloat(candidates.count) + bottomPad
+
+        let height: CGFloat
+        if isNotificationMode {
+            height = notificationHeight
+        } else {
+            height = headerOffset + rowHeight * CGFloat(candidates.count)
+        }
         return NSSize(width: ceil(width), height: ceil(height))
     }
 
@@ -51,13 +63,26 @@ class CandidateListView: NSView {
 
         // Mode header
         if let modeName {
-            let headerAttrs: [NSAttributedString.Key: Any] = [
-                .font: headerFont,
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]
-            let headerRect = NSRect(x: horizontalPadding, y: 2,
-                                    width: bounds.width - horizontalPadding * 2, height: headerHeight)
-            (modeName as NSString).draw(in: headerRect, withAttributes: headerAttrs)
+            if isNotificationMode {
+                // Notification mode: larger font, vertically centered
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.labelColor,
+                ]
+                let textSize = (modeName as NSString).size(withAttributes: attrs)
+                let y = (bounds.height - textSize.height) / 2
+                let rect = NSRect(x: horizontalPadding, y: y,
+                                  width: bounds.width - horizontalPadding * 2, height: textSize.height)
+                (modeName as NSString).draw(in: rect, withAttributes: attrs)
+            } else {
+                let headerAttrs: [NSAttributedString.Key: Any] = [
+                    .font: headerFont,
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+                let headerRect = NSRect(x: horizontalPadding, y: 2,
+                                        width: bounds.width - horizontalPadding * 2, height: headerHeight)
+                (modeName as NSString).draw(in: headerRect, withAttributes: headerAttrs)
+            }
         }
 
         for (i, candidate) in candidates.enumerated() {

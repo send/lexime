@@ -272,7 +272,7 @@ impl InputSession {
             // Current segment is empty but prefix has content
             let c = self.comp();
             c.candidates.clear();
-            let display = c.display();
+            let display = c.display_kana();
             let mut resp = KeyResponse::consumed();
             resp.marked = Some(super::MarkedText { text: display });
             resp.candidates = CandidateAction::Hide;

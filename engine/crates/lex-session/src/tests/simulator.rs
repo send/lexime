@@ -136,7 +136,7 @@ fn test_headless_composing_display() {
     let dict = super::make_test_dict();
     let mut ime = HeadlessIME::new(dict, None);
     let display = ime.composing_display("kyou");
-    assert_eq!(display, "今日");
+    assert_eq!(display, "きょう");
 }
 
 #[test]
