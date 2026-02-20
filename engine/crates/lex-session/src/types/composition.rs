@@ -14,8 +14,6 @@ pub enum ConversionMode {
     Standard,
     /// Predictive: Viterbi base + bigram chaining for Copilot-like completions.
     Predictive,
-    /// GhostText: Speculative decode (composing) + GPT-2 ghost text (idle after commit).
-    GhostText,
 }
 
 impl ConversionMode {
@@ -28,9 +26,7 @@ impl ConversionMode {
         max_results: usize,
     ) -> CandidateResponse {
         match self {
-            Self::Standard | Self::GhostText => {
-                generate_candidates(dict, conn, history, reading, max_results)
-            }
+            Self::Standard => generate_candidates(dict, conn, history, reading, max_results),
             Self::Predictive => {
                 generate_prediction_candidates(dict, conn, history, reading, max_results)
             }
@@ -42,12 +38,10 @@ impl ConversionMode {
     }
 
     /// FFI dispatch tag for async candidate generation.
-    /// Swift uses this to call the correct FFI generator.
     pub fn candidate_dispatch(&self) -> u8 {
         match self {
             Self::Standard => 0,
             Self::Predictive => 1,
-            Self::GhostText => 2,
         }
     }
 }
@@ -134,11 +128,6 @@ impl Composition {
 pub(crate) struct SessionConfig {
     pub(crate) defer_candidates: bool,
     pub(crate) conversion_mode: ConversionMode,
-}
-
-pub(crate) struct GhostState {
-    pub(crate) text: Option<String>,
-    pub(crate) generation: u64,
 }
 
 // --- Sub-structures for grouping related state ---

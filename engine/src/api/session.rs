@@ -34,8 +34,6 @@ impl LexSession {
             Arc::clone(&dict.inner),
             conn.as_ref().map(|c| Arc::clone(&c.inner)),
             history.as_ref().map(|h| Arc::clone(&h.inner)),
-            #[cfg(feature = "neural")]
-            neural.as_ref().map(|n| Arc::clone(&n.inner)),
         );
         Arc::new(Self {
             history,
@@ -49,37 +47,19 @@ impl LexSession {
         self.worker.invalidate_candidates();
 
         let mut session = self.session.lock().unwrap();
-        let had_ghost = session.has_ghost_text();
         let resp = session.handle_key(key_code, &text, flags);
-
-        // Ghost was cleared by the key handler — invalidate pending ghost work
-        if had_ghost && !session.has_ghost_text() {
-            self.worker.invalidate_ghost();
-        }
 
         // Submit async candidate work internally
         let has_async = resp.async_request.is_some();
         if let Some(ref req) = resp.async_request {
-            let context = if req.candidate_dispatch == 2 {
-                session.committed_context()
-            } else {
-                String::new()
-            };
             self.worker
-                .submit_candidates(req.reading.clone(), req.candidate_dispatch, context);
-        }
-
-        // Submit ghost text work internally
-        let has_ghost_req = resp.ghost_request.is_some();
-        if let Some(ref req) = resp.ghost_request {
-            self.worker
-                .submit_ghost(req.context.clone(), req.generation);
+                .submit_candidates(req.reading.clone(), req.candidate_dispatch);
         }
 
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, has_async || has_ghost_req)
+        convert_to_events(resp, has_async)
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -92,7 +72,6 @@ impl LexSession {
     }
 
     fn poll(&self) -> Option<LexKeyResponse> {
-        // 1. Check for candidate results
         if let Some(result) = self.worker.try_recv_candidate() {
             let surfaces = result.response.surfaces;
             let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
@@ -102,34 +81,13 @@ impl LexSession {
                 // Chain: submit any new async requests from the response
                 let has_async = resp.async_request.is_some();
                 if let Some(ref req) = resp.async_request {
-                    let context = if req.candidate_dispatch == 2 {
-                        session.committed_context()
-                    } else {
-                        String::new()
-                    };
-                    self.worker.submit_candidates(
-                        req.reading.clone(),
-                        req.candidate_dispatch,
-                        context,
-                    );
-                }
-                let has_ghost_req = resp.ghost_request.is_some();
-                if let Some(ref req) = resp.ghost_request {
                     self.worker
-                        .submit_ghost(req.context.clone(), req.generation);
+                        .submit_candidates(req.reading.clone(), req.candidate_dispatch);
                 }
                 let records = session.take_history_records();
                 drop(session);
                 self.record_history(&records);
-                return Some(convert_to_events(resp, has_async || has_ghost_req));
-            }
-        }
-
-        // 2. Check for ghost results
-        if let Some(result) = self.worker.try_recv_ghost() {
-            let mut session = self.session.lock().unwrap();
-            if let Some(resp) = session.receive_ghost_text(result.generation, result.text) {
-                return Some(convert_to_events(resp, false));
+                return Some(convert_to_events(resp, has_async));
             }
         }
 
@@ -147,7 +105,6 @@ impl LexSession {
     fn set_conversion_mode(&self, mode: u8) {
         let conversion_mode = match mode {
             1 => crate::session::ConversionMode::Predictive,
-            2 => crate::session::ConversionMode::GhostText,
             _ => crate::session::ConversionMode::Standard,
         };
         self.session

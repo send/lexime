@@ -1,7 +1,4 @@
-use super::types::{
-    AsyncGhostRequest, CandidateAction, ConversionMode, KeyResponse, LearningRecord, MarkedText,
-    SessionState,
-};
+use super::types::{CandidateAction, KeyResponse, LearningRecord, MarkedText, SessionState};
 use super::InputSession;
 
 impl InputSession {
@@ -20,15 +17,6 @@ impl InputSession {
         // Accumulate committed text for neural context
         if let Some(ref committed) = resp.commit {
             self.committed_context.push_str(committed);
-        }
-
-        // GhostText mode: request ghost text generation after commit
-        if self.config.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
-            self.ghost.generation += 1;
-            resp.ghost_request = Some(AsyncGhostRequest {
-                context: self.committed_context.clone(),
-                generation: self.ghost.generation,
-            });
         }
 
         self.reset_state();
@@ -68,17 +56,6 @@ impl InputSession {
         // Accumulate committed text for neural context
         if let Some(ref committed) = resp.commit {
             self.committed_context.push_str(committed);
-        }
-
-        // GhostText mode: request ghost text generation after commit.
-        // Use full committed_context (not just the latest commit) so the
-        // neural model sees the complete preceding text.
-        if self.config.conversion_mode == ConversionMode::GhostText && resp.commit.is_some() {
-            self.ghost.generation += 1;
-            resp.ghost_request = Some(AsyncGhostRequest {
-                context: self.committed_context.clone(),
-                generation: self.ghost.generation,
-            });
         }
 
         self.reset_state();

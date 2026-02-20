@@ -56,12 +56,6 @@ pub struct SideEffects {
     pub switch_to_abc: bool,
 }
 
-/// Request for asynchronous ghost text generation (GhostText mode).
-pub struct AsyncGhostRequest {
-    pub context: String,
-    pub generation: u64,
-}
-
 /// Response from handle_key / commit, returned to the caller (Swift via FFI).
 pub struct KeyResponse {
     pub consumed: bool,
@@ -70,10 +64,6 @@ pub struct KeyResponse {
     pub candidates: CandidateAction,
     pub async_request: Option<AsyncCandidateRequest>,
     pub side_effects: SideEffects,
-    /// Ghost text: `Some("")` = clear, `Some(text)` = show, `None` = no change.
-    pub ghost_text: Option<String>,
-    /// Request for async ghost text generation.
-    pub ghost_request: Option<AsyncGhostRequest>,
 }
 
 impl KeyResponse {
@@ -85,8 +75,6 @@ impl KeyResponse {
             candidates: CandidateAction::Keep,
             async_request: None,
             side_effects: SideEffects::default(),
-            ghost_text: None,
-            ghost_request: None,
         }
     }
 

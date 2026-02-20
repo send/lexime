@@ -5,7 +5,7 @@ use lex_core::settings::settings;
 
 use super::response::{build_candidate_selection, build_marked_text_and_candidates};
 use super::types::{
-    is_romaji_input, key, CandidateAction, Composition, ConversionMode, KeyResponse, SessionState,
+    is_romaji_input, key, CandidateAction, Composition, KeyResponse, SessionState,
     FLAG_HAS_MODIFIER, FLAG_SHIFT,
 };
 use super::InputSession;
@@ -19,14 +19,8 @@ impl InputSession {
         let has_modifier = flags & FLAG_HAS_MODIFIER != 0;
         let has_shift = flags & FLAG_SHIFT != 0;
 
-        // Clear ghost text on any key except Tab (ghost accept is handled in handle_idle)
-        let had_ghost = self.ghost.text.is_some();
-        if had_ghost && key_code != key::TAB {
-            self.ghost.text = None;
-        }
-
         // Eisu key → commit if composing, enter ABC passthrough
-        let mut resp = if key_code == key::EISU {
+        let resp = if key_code == key::EISU {
             let r = if self.is_composing() {
                 self.commit_current_state()
             } else {
@@ -93,24 +87,11 @@ impl InputSession {
             }
         };
 
-        // Signal ghost clear if ghost was present and key wasn't Tab
-        if had_ghost && key_code != key::TAB {
-            resp.ghost_text = Some(String::new());
-        }
-
         resp
     }
 
     pub(super) fn handle_idle(&mut self, key_code: u16, text: &str) -> KeyResponse {
-        // Ghost text: Tab accepts ghost (GhostText mode only)
-        if key_code == key::TAB
-            && self.ghost.text.is_some()
-            && self.config.conversion_mode == ConversionMode::GhostText
-        {
-            return self.accept_ghost_text();
-        }
-
-        // Tab in idle: passthrough (no more submode toggle)
+        // Tab in idle: passthrough
         if key_code == key::TAB {
             return KeyResponse::not_consumed();
         }

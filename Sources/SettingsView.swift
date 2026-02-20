@@ -27,7 +27,6 @@ struct DeveloperSettingsView: View {
     @State private var settingsText = ""
     @State private var needsRestart = false
 
-    private let hasNeural = AppContext.shared.engine?.hasNeural() ?? false
     private let supportDir = AppContext.shared.supportDir
 
     private let editorHeight: CGFloat = 150
@@ -39,9 +38,6 @@ struct DeveloperSettingsView: View {
                     Picker("モード", selection: $conversionMode) {
                         Text("Standard").tag(0)
                         Text("Predictive").tag(1)
-                        if hasNeural {
-                            Text("GhostText").tag(2)
-                        }
                     }
                     .onChange(of: conversionMode) { newValue in
                         UserDefaults.standard.set(newValue, forKey: "conversionMode")

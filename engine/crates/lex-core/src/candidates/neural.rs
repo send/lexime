@@ -9,7 +9,7 @@ use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
 
-/// Generate candidates using neural speculative decoding (GhostText mode).
+/// Generate candidates using neural speculative decoding.
 ///
 /// Uses speculative decode (Viterbi draft + GPT-2 verify) as the #1 candidate,
 /// followed by standard Viterbi N-best candidates. Falls back to standard

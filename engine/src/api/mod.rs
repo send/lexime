@@ -33,6 +33,7 @@ mod neural_api {
 
     #[derive(uniffi::Object)]
     pub struct LexNeuralScorer {
+        #[allow(dead_code)]
         pub(crate) inner: Arc<Mutex<crate::neural::NeuralScorer>>,
     }
 

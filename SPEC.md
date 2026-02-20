@@ -16,7 +16,6 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 │  │  - LeximeInputController (イベント駆動)    │  │
 │  │  - MarkedTextManager (インライン表示)       │  │
 │  │  - CandidateManager (候補状態管理)          │  │
-│  │  - GhostTextManager (ゴースト表示)          │  │
 │  │  - CandidatePanel (候補ウィンドウ)          │  │
 │  └─────────────┬──────────────────────────────┘  │
 │                │ UniFFI (自動生成バインディング)   │
@@ -24,7 +23,7 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 │  │  Rust: 変換エンジン (lex_engine)            │  │
 │  │  ┌──────────────────────────────────────┐  │  │
 │  │  │  api/ (UniFFI エクスポート層)         │  │  │
-│  │  │  async_worker (候補・ゴースト非同期)  │  │  │
+│  │  │  async_worker (候補非同期)            │  │  │
 │  │  ├──────────────────────────────────────┤  │  │
 │  │  │  lex-session (セッション状態機械)     │  │  │
 │  │  ├──────────────────────────────────────┤  │  │
@@ -48,7 +47,6 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 | `LeximeInputController.swift` | IMKInputController サブクラス。LexSession 保持、ポールタイマー管理、イベント実行、設定メニュー |
 | `MarkedTextManager.swift` | インライン表示（未確定文字列、点線下線） |
 | `CandidateManager.swift` | 候補リスト状態管理（surfaces, selectedIndex, generation counter） |
-| `GhostTextManager.swift` | ゴーストテキスト表示・消去 |
 | `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション、VoiceOver） |
 | `SettingsWindowController.swift` | 設定ウィンドウ管理（singleton、NSHostingView、activation policy 切替） |
 | `SettingsView.swift` | SwiftUI 設定ルートビュー（TabView、developerMode 分岐、TOML エディタ） |
@@ -65,7 +63,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | モジュール | 内容 |
 |---|---|
 | `api/` | UniFFI エクスポート関数・型定義（engine, session, resources, types, user_dict） |
-| `async_worker.rs` | 候補・ゴーストテキストの非同期ワーカースレッド（mpsc, AtomicU64 staleness） |
+| `async_worker.rs` | 候補の非同期ワーカースレッド（mpsc, AtomicU64 staleness） |
 | `lib.rs` | `pub use lex_core::*; pub use lex_session as session;` + `uniffi::setup_scaffolding!()` |
 
 #### lex-core (engine/crates/lex-core/) — 計算エンジン
@@ -91,10 +89,9 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | `composing.rs` | 入力中状態管理（Composition の操作） |
 | `commit.rs` | 確定操作 |
 | `auto_commit.rs` | 自動確定ロジック（安定度トラッカー、ASCII グルーピング） |
-| `ghost.rs` | ゴーストテキスト生成リクエスト |
 | `candidate_gen.rs` | 候補生成ディスパッチ |
 | `response.rs` | レスポンスビルダー（free functions） |
-| `types/` | セッション型定義（SessionConfig, GhostState）、Composition |
+| `types/` | セッション型定義（SessionConfig）、Composition |
 
 #### lex-cli (engine/crates/lex-cli/) — CLI ツール
 
@@ -143,8 +140,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `ShowCandidates { surfaces, selected }` | 候補パネル表示 |
 | `HideCandidates` | 候補パネル非表示 |
 | `SwitchToAbc` | システム ABC 入力ソースに切替 |
-| `SetGhostText { text }` | ゴーストテキスト表示 |
-| `ClearGhostText { update_display }` | ゴーストテキストクリア |
 | `SchedulePoll` | ポールタイマー開始要求 |
 
 **トップレベル関数**:
@@ -169,7 +164,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
-| `set_conversion_mode(mode)` | 変換モード切替（0=Standard, 1=Predictive, 2=GhostText） |
+| `set_conversion_mode(mode)` | 変換モード切替（0=Standard, 1=Predictive） |
 | `set_abc_passthrough(enabled)` | ABC パススルー設定 |
 | `committed_context()` | 確定済みコンテキスト取得 |
 
@@ -264,16 +259,16 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 
 ### 変換モード
 
-`ConversionMode` enum で Standard / Predictive / GhostText を切り替える。
+`ConversionMode` enum で Standard / Predictive を切り替える。
 
-| | Standard | Predictive | GhostText |
-|---|---|---|---|
-| 候補生成 | standard | predictive (bigram chaining) | neural |
-| Tab の動作 | 確定 | 確定 | ゴースト受け入れ |
-| 自動確定 | 有効 | 無効 | 無効 |
+| | Standard | Predictive |
+|---|---|---|
+| 候補生成 | standard | predictive (bigram chaining) |
+| Tab の動作 | 確定 | 確定 |
+| 自動確定 | 有効 | 無効 |
 
 - 設定 UI（開発者タブ）で切替。変更後は Lexime の再起動が必要
-- UserDefaults `conversionMode` で永続化（0=Standard, 1=Predictive, 2=GhostText）
+- UserDefaults `conversionMode` で永続化（0=Standard, 1=Predictive）
 
 ## 変換パイプライン
 
@@ -340,13 +335,13 @@ Standard モードでのみ有効（`try_auto_commit` 内で `auto_commit_enable
 
 english サブモードで入力された連続 ASCII セグメントは、1 文字ずつではなく単語単位でまとめて自動確定する。
 
-## 非同期候補・ゴースト生成
+## 非同期候補生成
 
-候補生成とゴーストテキスト生成は Rust 側の `AsyncWorker` でバックグラウンド実行する。Swift はポーリングで結果を受け取る。
+候補生成は Rust 側の `AsyncWorker` でバックグラウンド実行する。Swift はポーリングで結果を受け取る。
 
 ### アーキテクチャ
 
-1. キー入力 → `LexSession::handle_key()` → セッションが `async_request` / `ghost_request` を返す
+1. キー入力 → `LexSession::handle_key()` → セッションが `async_request` を返す
 2. `handle_key` 内で自動的に `AsyncWorker` にサブミット
 3. レスポンスに `SchedulePoll` イベントを含めて返す
 4. Swift 側の 50ms ポールタイマーが `LexSession::poll()` を呼び出し
@@ -357,10 +352,9 @@ english サブモードで入力された連続 ASCII セグメントは、1 文
 
 | スレッド | 優先度 | 内容 |
 |---|---|---|
-| Candidate | `.userInitiated` | 候補生成（Standard / Predictive / Neural） |
-| Ghost | `.utility` | ゴーストテキスト生成（150ms デバウンス） |
+| Candidate | `.userInitiated` | 候補生成（Standard / Predictive） |
 
-- `AtomicU64` generation counters で staleness を管理
+- `AtomicU64` generation counter で staleness を管理
 - mpsc チャネルの drain-to-latest で最新リクエストのみ処理
 - ポールタイマーは 5 秒アイドルタイムアウトで自動停止
 
@@ -508,7 +502,7 @@ macOS で動作する最小限の IME を構築。
 **Predictive モード**
 
 - Viterbi base + bigram chaining による予測変換
-- `ConversionMode` enum（Standard / Predictive / GhostText）で切替可能
+- `ConversionMode` enum（Standard / Predictive）で切替可能
 - 設定 UI（開発者タブ）で切替（再起動必要）
 - Tab キーで予測候補を確定
 
@@ -516,9 +510,9 @@ macOS で動作する最小限の IME を構築。
 
 - UniFFI proc-macro バインディング（手動 C FFI 全削除）
 - ワークスペース分割（lex-core / lex-session / lex-cli）
-- 非同期内部化（AsyncWorker: 候補・ゴースト生成を Rust ワーカースレッドで実行）
+- 非同期内部化（AsyncWorker: 候補生成を Rust ワーカースレッドで実行）
 - イベント駆動 FFI（LexKeyResponse + LexEvent enum）
-- セッション責務分離（composing / commit / auto_commit / ghost / response）
+- セッション責務分離（composing / commit / auto_commit / response）
 - ローマ字・設定の TOML 外部化
 - Dictionary trait 統一 + CompositeDictionary
 - ユーザー辞書（LXUW 形式、CompositeDictionary レイヤー）
@@ -537,7 +531,7 @@ macOS で動作する最小限の IME を構築。
 
 ### Phase 6+ (今後)
 
-- ゴーストテキスト: GGUF ニューラルモデル（azooKey/Zenzai 方式）による AI 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）。長文（3 文節〜）で Viterbi N-best をニューラルリスコアする方向
+- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし、変換精度を向上
 
 ## ビルド・CI
 

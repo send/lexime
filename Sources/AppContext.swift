@@ -120,7 +120,7 @@ class AppContext {
             history = nil
         }
 
-        // Load neural model (optional — GhostText mode requires this)
+        // Load neural model (optional — used for neural candidate scoring)
         let modelPath = resourcePath + "/zenz-v3.1-Q5_K_M.gguf"
         let neural: LexNeuralScorer?
         if FileManager.default.fileExists(atPath: modelPath) {
@@ -133,7 +133,7 @@ class AppContext {
                 neural = nil
             }
         } else {
-            NSLog("Lexime: Neural model not found at %@ (GhostText mode unavailable)", modelPath)
+            NSLog("Lexime: Neural model not found at %@ (neural scoring unavailable)", modelPath)
             neural = nil
         }
 

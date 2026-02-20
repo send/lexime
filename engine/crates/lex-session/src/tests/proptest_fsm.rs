@@ -31,8 +31,6 @@ enum Action {
     TypePunctuation(char),
     /// Simulate receiving async candidates for current reading.
     ReceiveCandidates,
-    /// Switch to GhostText conversion mode.
-    SetGhostTextMode,
     /// Switch to Predictive conversion mode.
     SetPredictiveMode,
 }
@@ -73,7 +71,6 @@ fn arb_action() -> impl Strategy<Value = Action> {
         3 => prop::sample::select(vec!['.', ',', '/', '-'])
             .prop_map(Action::TypePunctuation),
         5 => Just(Action::ReceiveCandidates),
-        2 => Just(Action::SetGhostTextMode),
         2 => Just(Action::SetPredictiveMode),
     ]
 }
@@ -120,10 +117,6 @@ fn execute_action(
             let mode = session.config.conversion_mode;
             let cand = mode.generate_candidates(dict, None, None, &reading, 20);
             session.receive_candidates(&reading, cand.surfaces, cand.paths)
-        }
-        Action::SetGhostTextMode => {
-            session.set_conversion_mode(ConversionMode::GhostText);
-            None
         }
         Action::SetPredictiveMode => {
             session.set_conversion_mode(ConversionMode::Predictive);
@@ -231,21 +224,7 @@ fn assert_invariants(
         );
     }
 
-    // 8. Ghost state coherence: ghost text only visible when idle in GhostText mode
-    if session.has_ghost_text() {
-        assert!(
-            !session.is_composing(),
-            "Ghost text must not be present while composing, after {:?}",
-            action,
-        );
-        assert!(
-            session.config.conversion_mode == ConversionMode::GhostText,
-            "Ghost text must only be present in GhostText mode, after {:?}",
-            action,
-        );
-    }
-
-    // 9. Async candidate request implies composing state
+    // 8. Async candidate request implies composing state
     if resp.async_request.is_some() {
         assert!(
             session.is_composing(),
