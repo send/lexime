@@ -45,11 +45,14 @@ PRIME にインスパイアされた予測変換型の入力体験を、軽量�
 |---|---|
 | `main.swift` | エントリポイント。AppContext 初期化、IMKServer 起動 |
 | `AppContext.swift` | シングルトン: 辞書・接続行列・学習データ・ユーザー辞書の読み込み、LexEngine 管理 |
-| `LeximeInputController.swift` | IMKInputController サブクラス。LexSession 保持、ポールタイマー管理、イベント実行 |
+| `LeximeInputController.swift` | IMKInputController サブクラス。LexSession 保持、ポールタイマー管理、イベント実行、設定メニュー |
 | `MarkedTextManager.swift` | インライン表示（未確定文字列、点線下線） |
 | `CandidateManager.swift` | 候補リスト状態管理（surfaces, selectedIndex, generation counter） |
 | `GhostTextManager.swift` | ゴーストテキスト表示・消去 |
 | `CandidatePanel.swift` | 候補ウィンドウ（NSPanel、ページネーション、VoiceOver） |
+| `SettingsWindowController.swift` | 設定ウィンドウ管理（singleton、NSHostingView、activation policy 切替） |
+| `SettingsView.swift` | SwiftUI 設定ルートビュー（TabView、developerMode 分岐、TOML エディタ） |
+| `UserDictionaryView.swift` | ユーザ辞書 CRUD（List + Add/Remove、LexEngine FFI 呼び出し） |
 
 Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` の列を `applyEvents` ループで逐次適用する。
 
@@ -152,7 +155,9 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `romaji_lookup(romaji)` | ローマ字 Trie 照合（None / Prefix / Exact / ExactAndPrefix） |
 | `romaji_convert(kana, pending, force)` | ローマ字→かな変換 |
 | `romaji_load_config(path)` | カスタムローマ字設定読み込み |
+| `romaji_default_config()` | 埋め込みデフォルトローマ字 TOML 取得 |
 | `settings_load_config(path)` | カスタム設定読み込み |
+| `settings_default_config()` | 埋め込みデフォルト設定 TOML 取得 |
 | `trace_init(log_dir)` | 構造化ログ初期化 |
 
 **LexSession メソッド**:
@@ -174,8 +179,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 
 ```
 idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
-                                    │
-                                    └──(Option+Tab)──→ 変換モード切替（Standard ↔ Predictive）
 ```
 
 ### 各状態でのキー操作
@@ -201,7 +204,6 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | ↑ | 前の候補を選択 |
 | Enter | 表示中の候補を確定（変換結果 + 学習記録） |
 | Tab | 確定 |
-| Option+Tab | 変換モード切替（Standard ↔ Predictive） |
 | Backspace | 1 文字削除（空になれば idle へ） |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
@@ -267,11 +269,11 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 | | Standard | Predictive | GhostText |
 |---|---|---|---|
 | 候補生成 | standard | predictive (bigram chaining) | neural |
-| Tab の動作 | サブモード切替 | 確定 | ゴースト受け入れ |
+| Tab の動作 | 確定 | 確定 | ゴースト受け入れ |
 | 自動確定 | 有効 | 無効 | 無効 |
 
-- Option+Tab で切替（composing 中は現在の変換を確定してから切替）
-- UserDefaults `predictiveMode` で永続化
+- 設定 UI（開発者タブ）で切替。変更後は Lexime の再起動が必要
+- UserDefaults `conversionMode` で永続化（0=Standard, 1=Predictive, 2=GhostText）
 
 ## 変換パイプライン
 
@@ -507,7 +509,7 @@ macOS で動作する最小限の IME を構築。
 
 - Viterbi base + bigram chaining による予測変換
 - `ConversionMode` enum（Standard / Predictive / GhostText）で切替可能
-- Option+Tab で変換モードをトグル（UserDefaults `predictiveMode` で永続化）
+- 設定 UI（開発者タブ）で切替（再起動必要）
 - Tab キーで予測候補を確定
 
 **アーキテクチャ改善**
@@ -523,9 +525,18 @@ macOS で動作する最小限の IME を構築。
 - WAL 付き学習履歴
 - Rewriters（カタカナ / ひらがら / 数字候補追加）
 
-### Phase 5+ (今後)
+### Phase 5: 設定 UI — **完了**
 
-- 設定 UI
+ユーザーが設定を変更できる SwiftUI ベースの UI を追加。
+
+- メニューバーの Lexime アイコン右クリック → 「設定...」でアクセス
+- **ユーザ辞書タブ**: 単語の一覧・追加・削除（LexEngine FFI 経由）
+- **開発者タブ**（`UserDefaults` `developerMode` フラグで表示制御）: 変換モード切替、romaji.toml / settings.toml テキストエディタ（保存・再読み込み・デフォルトに戻す）
+- `NSHostingView` + activation policy 切替（`.accessory` on open / `.prohibited` on close）で Dock アイコンなし
+- 「Lexime を再起動」ボタンで設定変更を即座に反映（`exit(0)` → macOS 自動再起動）
+
+### Phase 6+ (今後)
+
 - ゴーストテキスト: GGUF ニューラルモデル（azooKey/Zenzai 方式）による AI 予測候補を薄く表示し Tab で受け入れ（Copilot 的 UX）。長文（3 文節〜）で Viterbi N-best をニューラルリスコアする方向
 
 ## ビルド・CI
@@ -561,8 +572,8 @@ macOS で動作する最小限の IME を構築。
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |
-| `romaji-export` | デフォルトローマ字テーブルの TOML エクスポート |
-| `settings-export` | デフォルト設定の TOML エクスポート |
+| `romaji-export` | デフォルトローマ字テーブルを `~/Library/Application Support/Lexime/romaji.toml` にエクスポート |
+| `settings-export` | デフォルト設定を `~/Library/Application Support/Lexime/settings.toml` にエクスポート |
 
 ### CI
 
