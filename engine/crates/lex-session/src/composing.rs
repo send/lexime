@@ -22,6 +22,24 @@ impl InputSession {
             }
         }
 
+        // Uppercase letter: flush pending romaji and add to kana as-is (no romaji conversion).
+        // Skip auto-commit so consecutive uppercase letters stay grouped as one word.
+        if text
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_uppercase())
+        {
+            self.comp().drain_pending(true);
+            self.comp().kana.push_str(text);
+            self.comp().stability.reset();
+            return if self.config.defer_candidates {
+                self.make_deferred_candidates_response()
+            } else {
+                self.update_candidates();
+                build_marked_text_and_candidates(self.comp())
+            };
+        }
+
         if is_romaji_input(text) {
             // If user has selected a non-default candidate, commit it first
             let c = self.comp();

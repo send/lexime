@@ -112,6 +112,23 @@ impl InputSession {
             return KeyResponse::not_consumed();
         }
 
+        // Uppercase letter: add to composition as-is (no romaji conversion)
+        if text
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_uppercase())
+        {
+            self.state = SessionState::Composing(Composition::new());
+            self.comp().kana.push_str(text);
+            self.comp().stability.reset();
+            return if self.config.defer_candidates {
+                self.make_deferred_candidates_response()
+            } else {
+                self.update_candidates();
+                build_marked_text_and_candidates(self.comp())
+            };
+        }
+
         // Romaji input
         if is_romaji_input(text) {
             self.state = SessionState::Composing(Composition::new());
