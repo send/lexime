@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use lex_core::dict::Dictionary;
 
 use super::make_test_dict;
-use crate::types::key;
+use crate::types::KeyEvent;
 use crate::{CandidateAction, ConversionMode, InputSession};
 
 // ---------------------------------------------------------------------------
@@ -85,27 +85,18 @@ fn execute_action(
     dict: &dyn Dictionary,
 ) -> Option<crate::KeyResponse> {
     match action {
-        Action::TypeRomaji(ch) => {
-            let text = ch.to_string();
-            Some(session.handle_key(0, &text, 0))
-        }
-        Action::Enter => Some(session.handle_key(key::ENTER, "", 0)),
-        Action::Space => Some(session.handle_key(key::SPACE, " ", 0)),
-        Action::Backspace => Some(session.handle_key(key::BACKSPACE, "", 0)),
-        Action::Escape => Some(session.handle_key(key::ESCAPE, "", 0)),
-        Action::Tab => Some(session.handle_key(key::TAB, "", 0)),
-        Action::ArrowDown => Some(session.handle_key(key::DOWN, "", 0)),
-        Action::ArrowUp => Some(session.handle_key(key::UP, "", 0)),
-        Action::Eisu => Some(session.handle_key(key::EISU, "", 0)),
-        Action::Kana => Some(session.handle_key(key::KANA, "", 0)),
-        Action::TypeDigit(ch) => {
-            let text = ch.to_string();
-            Some(session.handle_key(0, &text, 0))
-        }
-        Action::TypePunctuation(ch) => {
-            let text = ch.to_string();
-            Some(session.handle_key(0, &text, 0))
-        }
+        Action::TypeRomaji(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
+        Action::Enter => Some(session.handle_key(KeyEvent::Enter)),
+        Action::Space => Some(session.handle_key(KeyEvent::Space)),
+        Action::Backspace => Some(session.handle_key(KeyEvent::Backspace)),
+        Action::Escape => Some(session.handle_key(KeyEvent::Escape)),
+        Action::Tab => Some(session.handle_key(KeyEvent::Tab)),
+        Action::ArrowDown => Some(session.handle_key(KeyEvent::ArrowDown)),
+        Action::ArrowUp => Some(session.handle_key(KeyEvent::ArrowUp)),
+        Action::Eisu => Some(session.handle_key(KeyEvent::SwitchToDirectInput)),
+        Action::Kana => Some(session.handle_key(KeyEvent::SwitchToJapanese)),
+        Action::TypeDigit(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
+        Action::TypePunctuation(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
         Action::ReceiveCandidates => {
             if !session.is_composing() {
                 return None;

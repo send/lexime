@@ -74,15 +74,44 @@ class LeximeInputController: IMKInputController {
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
 
-        let shift: UInt8 = dominated.contains(.shift) ? 1 : 0
-        let hasModifier: UInt8 = !dominated.subtracting(.shift).isEmpty ? 1 : 0
-        let flags = shift | (hasModifier << 1)
+        let hasShift = dominated.contains(.shift)
+        let hasModifier = !dominated.subtracting(.shift).isEmpty
 
         // Invalidate any pending async candidate results
         candidateManager.invalidate()
 
         let text = event.characters ?? ""
-        let resp = session.handleKey(keyCode: event.keyCode, text: text, flags: flags)
+
+        // Build platform-independent key event.
+        // Eisu/Kana are always mode-switch regardless of modifiers.
+        // For all other keys, modifier → commit + passthrough (ModifiedKey).
+        let keyEvent: LexKeyEvent
+        switch event.keyCode {
+        case 102: keyEvent = .switchToDirectInput
+        case 104: keyEvent = .switchToJapanese
+        default:
+            if hasModifier {
+                keyEvent = .modifiedKey
+            } else {
+                switch event.keyCode {
+                case 36:  keyEvent = .enter
+                case 49:  keyEvent = .space
+                case 51:  keyEvent = .backspace
+                case 53:  keyEvent = .escape
+                case 48:  keyEvent = .tab
+                case 125: keyEvent = .arrowDown
+                case 126: keyEvent = .arrowUp
+                default:
+                    if let remapped = keymapGet(keyCode: event.keyCode, hasShift: hasShift) {
+                        keyEvent = .remapped(text: remapped, shift: hasShift)
+                    } else {
+                        keyEvent = .text(text: text, shift: hasShift)
+                    }
+                }
+            }
+        }
+
+        let resp = session.handleKey(event: keyEvent)
         applyEvents(resp, client: client)
         return resp.consumed
     }

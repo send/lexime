@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
-use super::types::key;
+use super::types::KeyEvent;
 use super::InputSession;
 use super::KeyResponse;
 
@@ -137,8 +137,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
 pub(super) fn type_string(session: &mut InputSession, s: &str) -> Vec<KeyResponse> {
     let mut responses = Vec::new();
     for ch in s.chars() {
-        let text = ch.to_string();
-        let resp = session.handle_key(0, &text, 0);
+        let resp = session.handle_key(KeyEvent::text(&ch.to_string()));
         responses.push(resp);
     }
     responses

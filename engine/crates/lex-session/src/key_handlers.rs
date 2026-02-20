@@ -1,12 +1,10 @@
 use tracing::debug_span;
 
 use lex_core::romaji::{RomajiTrie, TrieLookupResult};
-use lex_core::settings::settings;
 
 use super::response::{build_candidate_selection, build_marked_text_and_candidates};
 use super::types::{
-    is_romaji_input, key, CandidateAction, Composition, KeyResponse, SessionState,
-    FLAG_HAS_MODIFIER, FLAG_SHIFT,
+    is_romaji_input, CandidateAction, Composition, KeyEvent, KeyResponse, SessionState,
 };
 use super::InputSession;
 
@@ -19,90 +17,178 @@ impl InputSession {
     }
 
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
-    ///
-    /// `flags`: bit 0 = shift, bit 1 = has_modifier (Cmd/Ctrl/Opt)
-    pub fn handle_key(&mut self, key_code: u16, text: &str, flags: u8) -> KeyResponse {
-        let _span = debug_span!("handle_key", key_code, text, flags).entered();
-        let has_modifier = flags & FLAG_HAS_MODIFIER != 0;
-        let has_shift = flags & FLAG_SHIFT != 0;
+    pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
+        let _span = debug_span!("handle_key", ?event).entered();
 
-        // Eisu key → commit if composing, enter ABC passthrough
-        let resp = if key_code == key::EISU {
-            let r = if self.is_composing() {
-                self.commit_current_state()
-            } else {
-                KeyResponse::consumed()
-            };
-            self.abc_passthrough = true;
-            r
-
-        // Kana key → exit ABC passthrough
-        } else if key_code == key::KANA {
-            self.abc_passthrough = false;
-            KeyResponse::consumed()
-
-        // Keymap remap: feed remapped text through normal input path (trie, candidates, etc.)
-        // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
-        } else if let Some(remapped) = settings().keymap_get(key_code, has_shift) {
-            if self.abc_passthrough {
-                self.committed_context.push_str(remapped);
-                let mut r = KeyResponse::consumed();
-                r.commit = Some(remapped.to_string());
-                r
-            } else if self.is_composing() {
-                self.handle_composing_text(remapped)
-            } else {
-                let r = self.handle_idle(key_code, remapped);
-                if r.consumed {
-                    r
+        match event {
+            // Eisu key → commit if composing, enter ABC passthrough
+            KeyEvent::SwitchToDirectInput => {
+                let r = if self.is_composing() {
+                    self.commit_current_state()
                 } else {
-                    // Not handled by trie/romaji (e.g. \) — commit directly
-                    self.committed_context.push_str(remapped);
+                    KeyResponse::consumed()
+                };
+                self.abc_passthrough = true;
+                r
+            }
+
+            // Kana key → exit ABC passthrough
+            KeyEvent::SwitchToJapanese => {
+                self.abc_passthrough = false;
+                KeyResponse::consumed()
+            }
+
+            // Keymap remap: feed remapped text through normal input path (trie, candidates, etc.)
+            // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
+            KeyEvent::Remapped { text, .. } => {
+                if self.abc_passthrough {
+                    self.committed_context.push_str(&text);
                     let mut r = KeyResponse::consumed();
-                    r.commit = Some(remapped.to_string());
+                    r.commit = Some(text);
                     r
+                } else if self.is_composing() {
+                    self.handle_composing_text(&text)
+                } else {
+                    let r = self.handle_idle(&text);
+                    if r.consumed {
+                        r
+                    } else {
+                        // Not handled by trie/romaji (e.g. \) — commit directly
+                        self.committed_context.push_str(&text);
+                        let mut r = KeyResponse::consumed();
+                        r.commit = Some(text);
+                        r
+                    }
                 }
             }
 
-        // ABC passthrough: commit printable chars directly, pass through the rest.
-        // Consuming printable chars avoids macOS keyboard layout re-interpretation
-        // which can produce wrong characters on JIS keyboards.
-        } else if self.abc_passthrough {
-            match text.chars().next() {
+            // ABC passthrough: Space is printable but comes as KeyEvent::Space, not Text.
+            KeyEvent::Space if self.abc_passthrough => {
+                self.committed_context.push(' ');
+                let mut r = KeyResponse::consumed();
+                r.commit = Some(" ".to_string());
+                r
+            }
+
+            // ABC passthrough: commit printable chars directly, pass through the rest.
+            // Text and special keys in ABC mode.
+            KeyEvent::Text { ref text, .. } if self.abc_passthrough => match text.chars().next() {
                 Some(c) if (' '..='~').contains(&c) => {
-                    self.committed_context.push_str(text);
+                    let text = text.clone();
+                    self.committed_context.push_str(&text);
                     let mut r = KeyResponse::consumed();
-                    r.commit = Some(text.to_string());
+                    r.commit = Some(text);
                     r
                 }
                 _ => KeyResponse::not_consumed(),
+            },
+            _ if self.abc_passthrough => KeyResponse::not_consumed(),
+
+            // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
+            KeyEvent::ModifiedKey => {
+                if self.is_composing() {
+                    let mut r = self.commit_current_state();
+                    r.consumed = false;
+                    r
+                } else {
+                    KeyResponse::not_consumed()
+                }
             }
 
-        // Modifier keys (Cmd, Ctrl, etc.) — commit first, then pass through
-        } else if has_modifier {
-            if self.is_composing() {
-                let mut r = self.commit_current_state();
-                r.consumed = false;
-                r
-            } else {
-                KeyResponse::not_consumed()
+            // Composing state dispatch
+            KeyEvent::Enter if self.is_composing() => {
+                self.ensure_candidates();
+                self.commit_current_state()
             }
-        } else {
-            match &self.state {
-                SessionState::Idle => self.handle_idle(key_code, text),
-                SessionState::Composing(_) => self.handle_composing(key_code, text),
-            }
-        };
 
-        resp
+            KeyEvent::Space if self.is_composing() => {
+                self.ensure_candidates();
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
+                        c.candidates.selected = 1;
+                    } else {
+                        c.candidates.selected = super::types::cyclic_index(
+                            c.candidates.selected,
+                            1,
+                            c.candidates.surfaces.len(),
+                        );
+                    }
+                    build_candidate_selection(self.comp())
+                } else {
+                    KeyResponse::consumed()
+                }
+            }
+
+            KeyEvent::ArrowDown if self.is_composing() => {
+                self.ensure_candidates();
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    c.candidates.selected = super::types::cyclic_index(
+                        c.candidates.selected,
+                        1,
+                        c.candidates.surfaces.len(),
+                    );
+                    build_candidate_selection(self.comp())
+                } else {
+                    KeyResponse::consumed()
+                }
+            }
+
+            KeyEvent::ArrowUp if self.is_composing() => {
+                self.ensure_candidates();
+                let c = self.comp();
+                if !c.candidates.is_empty() {
+                    c.candidates.selected = super::types::cyclic_index(
+                        c.candidates.selected,
+                        -1,
+                        c.candidates.surfaces.len(),
+                    );
+                    build_candidate_selection(self.comp())
+                } else {
+                    KeyResponse::consumed()
+                }
+            }
+
+            KeyEvent::Tab if self.is_composing() => {
+                self.ensure_candidates();
+                self.commit_current_state()
+            }
+
+            KeyEvent::Backspace if self.is_composing() => self.handle_backspace(),
+
+            KeyEvent::Escape if self.is_composing() => {
+                self.comp().flush();
+                {
+                    let c = self.comp();
+                    if !c.kana.is_empty() {
+                        let kana = c.kana.clone();
+                        self.record_history(kana.clone(), kana);
+                    }
+                }
+                self.comp().candidates.clear();
+                let mut resp = KeyResponse::consumed();
+                resp.candidates = CandidateAction::Hide;
+                // Escape: IMKit will call commitComposition after.
+                // composedString() uses display() which computes from current state.
+                resp
+            }
+
+            KeyEvent::Text { ref text, .. } if self.is_composing() => {
+                self.handle_composing_text(text)
+            }
+
+            // Idle state dispatch
+            KeyEvent::Tab => KeyResponse::not_consumed(),
+
+            KeyEvent::Text { ref text, .. } => self.handle_idle(text),
+
+            // Other special keys in idle — not consumed
+            _ => KeyResponse::not_consumed(),
+        }
     }
 
-    pub(super) fn handle_idle(&mut self, key_code: u16, text: &str) -> KeyResponse {
-        // Tab in idle: passthrough
-        if key_code == key::TAB {
-            return KeyResponse::not_consumed();
-        }
-
+    pub(super) fn handle_idle(&mut self, text: &str) -> KeyResponse {
         // Uppercase letter: add to composition as-is (no romaji conversion)
         if text.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             self.state = SessionState::Composing(Composition::new());
@@ -130,90 +216,6 @@ impl InputSession {
                 self.append_and_convert(text)
             }
             _ => KeyResponse::not_consumed(),
-        }
-    }
-
-    pub(super) fn handle_composing(&mut self, key_code: u16, text: &str) -> KeyResponse {
-        match key_code {
-            key::ENTER => {
-                self.ensure_candidates();
-                self.commit_current_state()
-            }
-
-            key::SPACE => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
-                        c.candidates.selected = 1;
-                    } else {
-                        c.candidates.selected = super::types::cyclic_index(
-                            c.candidates.selected,
-                            1,
-                            c.candidates.surfaces.len(),
-                        );
-                    }
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
-
-            key::DOWN => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    c.candidates.selected = super::types::cyclic_index(
-                        c.candidates.selected,
-                        1,
-                        c.candidates.surfaces.len(),
-                    );
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
-
-            key::UP => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    c.candidates.selected = super::types::cyclic_index(
-                        c.candidates.selected,
-                        -1,
-                        c.candidates.surfaces.len(),
-                    );
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
-
-            key::TAB => {
-                self.ensure_candidates();
-                self.commit_current_state()
-            }
-
-            key::BACKSPACE => self.handle_backspace(),
-
-            key::ESCAPE => {
-                self.comp().flush();
-                {
-                    let c = self.comp();
-                    if !c.kana.is_empty() {
-                        let kana = c.kana.clone();
-                        self.record_history(kana.clone(), kana);
-                    }
-                }
-                self.comp().candidates.clear();
-                let mut resp = KeyResponse::consumed();
-                resp.candidates = CandidateAction::Hide;
-                // Escape: IMKit will call commitComposition after.
-                // composedString() uses display() which computes from current state.
-                resp
-            }
-
-            _ => self.handle_composing_text(text),
         }
     }
 

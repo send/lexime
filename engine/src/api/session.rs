@@ -6,7 +6,7 @@ use crate::session::{InputSession, LearningRecord};
 
 use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::types::convert_to_events;
-use super::LexKeyResponse;
+use super::{LexKeyEvent, LexKeyResponse};
 
 #[derive(uniffi::Object)]
 pub struct LexSession {
@@ -40,12 +40,12 @@ impl LexSession {
         })
     }
 
-    fn handle_key(&self, key_code: u16, text: String, flags: u8) -> LexKeyResponse {
+    fn handle_key(&self, event: LexKeyEvent) -> LexKeyResponse {
         // Invalidate stale candidates from previous key events
         self.worker.invalidate_candidates();
 
         let mut session = self.session.lock().unwrap();
-        let resp = session.handle_key(key_code, &text, flags);
+        let resp = session.handle_key(event.into());
 
         // Submit async candidate work internally
         let has_async = resp.async_request.is_some();
