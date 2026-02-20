@@ -1,15 +1,14 @@
 # Lexime
 
-macOS 向けの軽量な日本語予測入力システム（IME）。
-[PRIME](http://taiyaki.org/prime/) にインスパイアされた予測変換型の入力体験を提供する。
+macOS 向けの軽量な日本語入力システム（IME）。
 
 ## 特徴
 
-- リアルタイム予測候補表示
 - Viterbi アルゴリズムによる高精度変換
 - ユーザーの入力パターンに適応する学習機能
+- ユーザ辞書
 - Rust エンジンによる高速な辞書検索・変換処理
-- プログラマモード（JIS キーボードの ¥ キーで `\` を入力）
+- JIS キーボード向けキーリマップ（`settings.toml` でカスタマイズ可能）
 
 ## 必要環境
 
@@ -32,7 +31,7 @@ mise run install
 1. **ログアウト → ログイン**（macOS に入力ソースを認識させる）
 2. **システム設定 → キーボード → 入力ソース → 編集** を開く
 3. 一覧で日本語・英語**以外**の言語を一度選択してから戻す（macOS の UI キャッシュにより、これをしないと新しい入力ソースが表示されないことがある）
-4. **Lex かな**（日本語入力）と **Lex abc**（英字入力）を追加する
+4. **ひらがな (Lexime)**（日本語入力）と **英数 (Lexime)**（英字入力）を追加する
 
 ## 使い方
 
@@ -40,16 +39,15 @@ mise run install
 
 | キー | 動作 |
 |---|---|
-| ローマ字入力 | ひらがなに変換、予測候補を表示 |
-| Space | 漢字変換 |
-| Enter | 確定 |
-| Tab | 予測候補を確定 |
+| ローマ字入力 | ひらがなに変換 |
+| Space | 変換候補を切替 |
+| Enter | 変換を確定 |
+| Tab | 確定 |
 | ↑↓ | 候補を選択 |
-| F7 | カタカナに変換 |
 | Backspace | 1 文字削除 |
-| Escape | キャンセル |
-| 英数キー | Lex abc（内部英字モード）に切替 |
-| かなキー | Lex かな（日本語入力）に切替 |
+| Escape | ひらがなで確定 |
+| 英数キー | 英数 (Lexime) に切替 |
+| かなキー | ひらがな (Lexime) に切替 |
 
 ### z-sequences（Mozc 互換）
 
@@ -63,14 +61,16 @@ mise run install
 | `z/` | ・ | `z-` | 〜 |
 | `z[` | 『 | `z]` | 』 |
 
-### キーリマップ
+### 設定
 
-JIS キーボード向けのキーリマップがデフォルトで有効:
+メニューバーのアイコンを右クリック → **設定...** で設定ウィンドウを開く。
 
-- ¥ キー (keyCode 93) → `\` / `|`
-- keyCode 10 → `]` / `}`
+- **ユーザ辞書**: 単語の追加・削除
 
-`~/Library/Application Support/Lexime/settings.toml` の `[keymap]` セクションでカスタマイズ可能。
+以下のファイルを直接編集することでカスタマイズも可能:
+
+- `~/Library/Application Support/Lexime/settings.toml` — キーリマップ、変換パラメータ等
+- `~/Library/Application Support/Lexime/romaji.toml` — ローマ字テーブル
 
 ## 開発
 
@@ -97,4 +97,3 @@ MIT License。詳細は [LICENSE](LICENSE) を参照。
 本プロジェクトは以下のオープンソース辞書データを利用している:
 
 - [Mozc](https://github.com/google/mozc) — BSD 3-Clause License (Google)
-- [SudachiDict](https://github.com/WorksApplications/SudachiDict) — Apache License 2.0 (Works Applications)

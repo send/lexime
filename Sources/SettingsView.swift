@@ -103,7 +103,7 @@ struct DeveloperSettingsView: View {
     // MARK: - Components
 
     private func groupBox<Content: View>(
-        _ title: String, @ViewBuilder content: () -> Content
+        _ title: LocalizedStringKey, @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
