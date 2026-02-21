@@ -78,6 +78,12 @@ pub enum LexEvent {
 }
 
 #[derive(uniffi::Enum)]
+pub enum LexConversionMode {
+    Standard,
+    Predictive,
+}
+
+#[derive(uniffi::Enum)]
 pub enum LexRomajiLookup {
     None,
     Prefix,

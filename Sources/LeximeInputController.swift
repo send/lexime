@@ -43,8 +43,8 @@ class LeximeInputController: IMKInputController {
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
         let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
-        if convMode > 0, convMode <= UInt8.max {
-            session.setConversionMode(mode: UInt8(convMode))
+        if convMode == 1 {
+            session.setConversionMode(mode: .predictive)
         }
     }
 

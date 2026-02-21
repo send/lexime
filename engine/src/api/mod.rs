@@ -12,8 +12,8 @@ pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
 pub use types::{
-    LexCandidateResult, LexDictEntry, LexError, LexEvent, LexKeyEvent, LexKeyResponse,
-    LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
+    LexCandidateResult, LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent,
+    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 

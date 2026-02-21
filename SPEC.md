@@ -161,7 +161,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
-| `set_conversion_mode(mode)` | 変換モード切替（0=Standard, 1=Predictive） |
+| `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
 | `set_abc_passthrough(enabled)` | ABC パススルー設定 |
 | `committed_context()` | 確定済みコンテキスト取得 |
 
