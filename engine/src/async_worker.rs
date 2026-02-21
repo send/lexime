@@ -28,9 +28,10 @@ pub(crate) struct CandidateResult {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AsyncWorker {
-    candidate_tx: mpsc::Sender<CandidateWork>,
+    candidate_tx: Option<mpsc::Sender<CandidateWork>>,
     candidate_rx: Mutex<mpsc::Receiver<CandidateResult>>,
     candidate_gen: Arc<AtomicU64>,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl AsyncWorker {
@@ -44,7 +45,7 @@ impl AsyncWorker {
         // Candidate worker
         let (work_tx, work_rx) = mpsc::channel::<CandidateWork>();
         let (result_tx, result_rx) = mpsc::channel::<CandidateResult>();
-        {
+        let handle = {
             let dict = Arc::clone(&dict);
             let conn = conn.clone();
             let history = history.clone();
@@ -54,23 +55,26 @@ impl AsyncWorker {
                 .spawn(move || {
                     candidate_worker(work_rx, result_tx, gen, dict, conn, history);
                 })
-                .expect("failed to spawn candidate worker");
-        }
+                .expect("failed to spawn candidate worker")
+        };
 
         Self {
-            candidate_tx: work_tx,
+            candidate_tx: Some(work_tx),
             candidate_rx: Mutex::new(result_rx),
             candidate_gen,
+            thread_handle: Some(handle),
         }
     }
 
     pub fn submit_candidates(&self, reading: String, dispatch: u8) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        let _ = self.candidate_tx.send(CandidateWork {
-            reading,
-            dispatch,
-            generation: gen,
-        });
+        if let Some(ref tx) = self.candidate_tx {
+            let _ = tx.send(CandidateWork {
+                reading,
+                dispatch,
+                generation: gen,
+            });
+        }
     }
 
     pub fn invalidate_candidates(&self) {
@@ -80,6 +84,16 @@ impl AsyncWorker {
     pub fn try_recv_candidate(&self) -> Option<CandidateResult> {
         let rx = self.candidate_rx.lock().ok()?;
         rx.try_recv().ok()
+    }
+}
+
+impl Drop for AsyncWorker {
+    fn drop(&mut self) {
+        // Drop the sender first so the worker thread's recv() returns Err and exits.
+        self.candidate_tx.take();
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
