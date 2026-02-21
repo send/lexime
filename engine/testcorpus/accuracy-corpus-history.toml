@@ -26,7 +26,8 @@
 #   reading   (required) - Kana input to convert
 #   expected  (required) - Expected top-1 surface output (with history)
 #   baseline  (optional) - Expected top-1 surface output without history
-#   category  (required) - One of: word, phrase, conjugation, regression
+#   category  (required) - One of: word, phrase, conjugation, regression,
+#                          loanword, numeric, compound
 #   tags      (optional) - Descriptive tags for filtering
 #   skip      (optional) - true if this is a known failure (issue required)
 #   note      (optional) - Explanation of the test case or known issue
@@ -51,6 +52,14 @@ repeat = 5
 
 [[history]]
 segments = [["かい", "買い"], ["ました", "ました"]]
+repeat = 5
+
+[[history]]
+segments = [["かい", "書い"], ["て", "て"]]
+repeat = 5
+
+[[history]]
+segments = [["せんせい", "先生"], ["に", "に"], ["しつもん", "質問"], ["し", "し"], ["た", "た"]]
 repeat = 5
 
 # ═══════════════════════════════════════════════════════════════════
@@ -94,3 +103,27 @@ tags = ["history", "particle"]
 skip = true
 issue = "history boost does not yet override Viterbi segmentation (教派 vs 今日は)"
 note = "学習により教派→今日は に改善することを期待"
+
+# ═══════════════════════════════════════════════════════════════════
+# Conjugation-level history override
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "かいて"
+expected = "書いて"
+baseline = "買い手"
+category = "conjugation"
+tags = ["history", "verb", "te-form"]
+note = "学習により買い手→書いて に逆転"
+
+# ═══════════════════════════════════════════════════════════════════
+# Phrase-level history (suru-verb)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "せんせいにしつもんした"
+expected = "先生に質問した"
+baseline = "先生に質問下"
+category = "phrase"
+tags = ["history", "suru-verb"]
+note = "学習により質問下→質問した に逆転"
