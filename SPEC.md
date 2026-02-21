@@ -133,8 +133,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | バリアント | 説明 |
 |---|---|
 | `Commit { text }` | テキスト確定 |
-| `SetMarkedText { text }` | マークドテキスト設定 |
-| `ClearMarkedText` | マークドテキストクリア |
+| `SetMarkedText { text }` | マークドテキスト設定（空文字列でクリア） |
 | `ShowCandidates { surfaces, selected }` | 候補パネル表示 |
 | `HideCandidates` | 候補パネル非表示 |
 | `SwitchToAbc` | システム ABC 入力ソースに切替 |

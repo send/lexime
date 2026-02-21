@@ -126,11 +126,8 @@ class LeximeInputController: IMKInputController {
                 currentDisplay = nil
                 candidateManager.flagReposition()
             case .setMarkedText(let text):
-                currentDisplay = text
+                currentDisplay = text.isEmpty ? nil : text
                 updateMarkedText(text, client: client)
-            case .clearMarkedText:
-                currentDisplay = nil
-                updateMarkedText("", client: client)
             case .showCandidates(let surfaces, let selected):
                 candidateManager.update(surfaces: surfaces, selected: Int(selected))
                 candidateManager.show(client: client, currentDisplay: currentDisplay)

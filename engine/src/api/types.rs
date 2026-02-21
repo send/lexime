@@ -68,7 +68,6 @@ pub enum LexEvent {
     SetMarkedText {
         text: String,
     },
-    ClearMarkedText,
     ShowCandidates {
         surfaces: Vec<String>,
         selected: u32,
