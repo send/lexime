@@ -5,6 +5,7 @@ struct UserDictionaryView: View {
     @State private var words: [LexUserWord] = []
     @State private var showingAddSheet = false
     @State private var selectedIndex: Int?
+    @State private var saveError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +54,14 @@ struct UserDictionaryView: View {
                 addWord(reading: reading, surface: surface)
             }
         }
+        .alert("保存エラー", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
         .onAppear { refresh() }
     }
 
@@ -68,6 +77,7 @@ struct UserDictionaryView: View {
                 try engine.saveUserDict(path: AppContext.shared.userDictPath)
             } catch {
                 NSLog("Lexime: Failed to save user dict: %@", "\(error)")
+                saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
             }
         }
         refresh()
@@ -82,6 +92,7 @@ struct UserDictionaryView: View {
             try engine.saveUserDict(path: AppContext.shared.userDictPath)
         } catch {
             NSLog("Lexime: Failed to save user dict: %@", "\(error)")
+            saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
         }
         selectedIndex = nil
         refresh()
