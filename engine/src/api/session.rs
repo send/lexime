@@ -5,7 +5,7 @@ use crate::converter::ConvertedSegment;
 use crate::session::{InputSession, LearningRecord};
 
 use super::resources::{LexConnection, LexDictionary, LexUserHistory};
-use super::types::convert_to_events;
+use super::types::{convert_to_events, LexConversionMode};
 use super::{LexKeyEvent, LexKeyResponse};
 
 #[derive(uniffi::Object)]
@@ -100,10 +100,10 @@ impl LexSession {
         self.session.lock().unwrap().set_defer_candidates(enabled);
     }
 
-    fn set_conversion_mode(&self, mode: u8) {
+    fn set_conversion_mode(&self, mode: LexConversionMode) {
         let conversion_mode = match mode {
-            1 => crate::session::ConversionMode::Predictive,
-            _ => crate::session::ConversionMode::Standard,
+            LexConversionMode::Predictive => crate::session::ConversionMode::Predictive,
+            LexConversionMode::Standard => crate::session::ConversionMode::Standard,
         };
         self.session
             .lock()

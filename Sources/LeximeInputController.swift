@@ -43,8 +43,8 @@ class LeximeInputController: IMKInputController {
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
         let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
-        if convMode > 0, convMode <= UInt8.max {
-            session.setConversionMode(mode: UInt8(convMode))
+        if convMode == 1 {
+            session.setConversionMode(mode: .predictive)
         }
     }
 
@@ -126,11 +126,8 @@ class LeximeInputController: IMKInputController {
                 currentDisplay = nil
                 candidateManager.flagReposition()
             case .setMarkedText(let text):
-                currentDisplay = text
+                currentDisplay = text.isEmpty ? nil : text
                 updateMarkedText(text, client: client)
-            case .clearMarkedText:
-                currentDisplay = nil
-                updateMarkedText("", client: client)
             case .showCandidates(let surfaces, let selected):
                 candidateManager.update(surfaces: surfaces, selected: Int(selected))
                 candidateManager.show(client: client, currentDisplay: currentDisplay)

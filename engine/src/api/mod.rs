@@ -12,8 +12,8 @@ pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
 pub use types::{
-    LexCandidateResult, LexDictEntry, LexError, LexEvent, LexKeyEvent, LexKeyResponse,
-    LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
+    LexCandidateResult, LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent,
+    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 
@@ -27,7 +27,7 @@ use crate::romaji::{convert_romaji, RomajiTrie, TrieLookupResult};
 
 #[uniffi::export]
 fn engine_version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[uniffi::export]

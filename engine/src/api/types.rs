@@ -68,7 +68,6 @@ pub enum LexEvent {
     SetMarkedText {
         text: String,
     },
-    ClearMarkedText,
     ShowCandidates {
         surfaces: Vec<String>,
         selected: u32,
@@ -76,6 +75,12 @@ pub enum LexEvent {
     HideCandidates,
     SwitchToAbc,
     SchedulePoll,
+}
+
+#[derive(uniffi::Enum)]
+pub enum LexConversionMode {
+    Standard,
+    Predictive,
 }
 
 #[derive(uniffi::Enum)]
