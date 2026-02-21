@@ -6,9 +6,10 @@ class SettingsWindowController {
     static let shared = SettingsWindowController()
 
     private var window: NSWindow?
+    private var closeObserver: NSObjectProtocol?
 
     func showWindow() {
-        if let window, window.isVisible {
+        if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -31,7 +32,7 @@ class SettingsWindowController {
         win.center()
         win.isReleasedWhenClosed = false
 
-        NotificationCenter.default.addObserver(
+        closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: win,
             queue: .main
@@ -45,6 +46,11 @@ class SettingsWindowController {
     }
 
     private func windowDidClose() {
+        if let observer = closeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            closeObserver = nil
+        }
+        window = nil
         NSApp.setActivationPolicy(.prohibited)
     }
 }
