@@ -73,4 +73,12 @@ impl LexEngine {
             None => Ok(()),
         }
     }
+
+    /// Clear all learning history (in-memory, WAL, and checkpoint files).
+    fn clear_history(&self) -> Result<(), LexError> {
+        match &self.history {
+            Some(h) => h.clear_impl(),
+            None => Ok(()),
+        }
+    }
 }

@@ -26,6 +26,7 @@ struct DeveloperSettingsView: View {
     @State private var romajiText = ""
     @State private var settingsText = ""
     @State private var needsRestart = false
+    @State private var showResetConfirm = false
 
     private let supportDir = AppContext.shared.supportDir
 
@@ -71,6 +72,17 @@ struct DeveloperSettingsView: View {
                     )
                 }
 
+                groupBox("初期化") {
+                    Text("設定ファイル・学習履歴をすべて削除し、組み込みデフォルトに戻します。")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                    Button("すべて初期化…") {
+                        showResetConfirm = true
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundColor(.red)
+                }
+
                 if needsRestart {
                     HStack {
                         Text("変更を適用するには再起動が必要です")
@@ -92,6 +104,12 @@ struct DeveloperSettingsView: View {
         .onAppear {
             loadRomaji()
             loadSettings()
+        }
+        .alert("すべて初期化", isPresented: $showResetConfirm) {
+            Button("キャンセル", role: .cancel) {}
+            Button("初期化", role: .destructive) { resetAll() }
+        } message: {
+            Text("設定ファイル（settings.toml, romaji.toml）と学習履歴を削除して再起動します。この操作は取り消せません。")
         }
     }
 
@@ -118,6 +136,40 @@ struct DeveloperSettingsView: View {
                 .buttonStyle(.bordered)
             Button("デフォルトに戻す") { onReset() }
                 .buttonStyle(.bordered)
+        }
+    }
+
+    // MARK: - Reset
+
+    private func resetAll() {
+        NSLog("Lexime: Resetting all settings and history")
+
+        // 1. Clear learning history via engine (closes WAL handle + deletes files)
+        do {
+            try AppContext.shared.engine?.clearHistory()
+            NSLog("Lexime: History cleared")
+        } catch {
+            NSLog("Lexime: Failed to clear history: %@", "\(error)")
+        }
+
+        // 2. Delete config files
+        let fm = FileManager.default
+        for name in ["settings.toml", "romaji.toml"] {
+            let path = supportDir + "/" + name
+            if fm.fileExists(atPath: path) {
+                do {
+                    try fm.removeItem(atPath: path)
+                    NSLog("Lexime: Deleted %@", path)
+                } catch {
+                    NSLog("Lexime: Failed to delete %@: %@", path, "\(error)")
+                }
+            }
+        }
+
+        // 3. Restart
+        NSLog("Lexime: Restarting after reset")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            exit(0)
         }
     }
 

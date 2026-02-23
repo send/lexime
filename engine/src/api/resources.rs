@@ -98,9 +98,26 @@ impl LexUserHistory {
             compacting: AtomicBool::new(false),
         }))
     }
+
+    /// Clear all learning history (in-memory + WAL + checkpoint files).
+    fn clear(&self) -> Result<(), LexError> {
+        self.clear_impl()
+    }
 }
 
 impl LexUserHistory {
+    pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+        if let Ok(mut h) = self.inner.write() {
+            *h = UserHistory::new();
+        }
+        if let Ok(mut wal) = self.wal.lock() {
+            let _ = wal.truncate_wal();
+            let _ = std::fs::remove_file(wal.wal_path());
+            let _ = std::fs::remove_file(wal.checkpoint_path());
+        }
+        Ok(())
+    }
+
     /// Append a WAL entry. Does not block on compaction.
     pub(super) fn append_wal(&self, segments: &[(String, String)], timestamp: u64) {
         let mut wal = match self.wal.lock() {
