@@ -186,6 +186,88 @@ fn consume_unit_kana(s: &str, unit_val: u64) -> Option<usize> {
     None
 }
 
+/// Format a number as Japanese kanji numerals.
+///
+/// Uses traditional positional notation:
+/// - 十/百/千 omit the leading 一 (e.g. 10 → "十", not "一十")
+/// - 万/億/兆 keep the leading 一 (e.g. 10000 → "一万")
+/// - Zero is "〇"
+pub fn to_kanji(n: u64) -> String {
+    if n == 0 {
+        return "〇".to_string();
+    }
+
+    let mut result = String::new();
+
+    // 兆 (10^12)
+    let chou = n / 1_000_000_000_000;
+    let rem = n % 1_000_000_000_000;
+    if chou > 0 {
+        group_to_kanji(chou, &mut result);
+        result.push('兆');
+    }
+
+    // 億 (10^8)
+    let oku = rem / 100_000_000;
+    let rem = rem % 100_000_000;
+    if oku > 0 {
+        group_to_kanji(oku, &mut result);
+        result.push('億');
+    }
+
+    // 万 (10^4)
+    let man = rem / 10_000;
+    let rem = rem % 10_000;
+    if man > 0 {
+        group_to_kanji(man, &mut result);
+        result.push('万');
+    }
+
+    // Ones group (< 10000)
+    if rem > 0 {
+        group_to_kanji(rem, &mut result);
+    }
+
+    result
+}
+
+/// Format a group value (1–9999) as kanji, appending to `out`.
+/// Leading 一 is omitted before 十/百/千 (e.g. 10→"十", 100→"百", 1000→"千").
+fn group_to_kanji(n: u64, out: &mut String) {
+    const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+    let sen = n / 1000;
+    let rem = n % 1000;
+    if sen > 0 {
+        if sen > 1 {
+            out.push(DIGITS[sen as usize]);
+        }
+        out.push('千');
+    }
+
+    let hyaku = rem / 100;
+    let rem = rem % 100;
+    if hyaku > 0 {
+        if hyaku > 1 {
+            out.push(DIGITS[hyaku as usize]);
+        }
+        out.push('百');
+    }
+
+    let juu = rem / 10;
+    let rem = rem % 10;
+    if juu > 0 {
+        if juu > 1 {
+            out.push(DIGITS[juu as usize]);
+        }
+        out.push('十');
+    }
+
+    if rem > 0 {
+        out.push(DIGITS[rem as usize]);
+    }
+}
+
 /// Format a number as half-width Arabic digits.
 pub fn to_halfwidth(n: u64) -> String {
     n.to_string()
@@ -283,6 +365,53 @@ mod tests {
         assert_eq!(parse_japanese_number("きょう"), None);
         assert_eq!(parse_japanese_number("あ"), None);
         assert_eq!(parse_japanese_number(""), None);
+    }
+
+    #[test]
+    fn test_kanji_zero() {
+        assert_eq!(to_kanji(0), "〇");
+    }
+
+    #[test]
+    fn test_kanji_single_digits() {
+        assert_eq!(to_kanji(1), "一");
+        assert_eq!(to_kanji(2), "二");
+        assert_eq!(to_kanji(9), "九");
+    }
+
+    #[test]
+    fn test_kanji_tens() {
+        assert_eq!(to_kanji(10), "十");
+        assert_eq!(to_kanji(11), "十一");
+        assert_eq!(to_kanji(20), "二十");
+        assert_eq!(to_kanji(23), "二十三");
+        assert_eq!(to_kanji(99), "九十九");
+    }
+
+    #[test]
+    fn test_kanji_hundreds() {
+        assert_eq!(to_kanji(100), "百");
+        assert_eq!(to_kanji(200), "二百");
+        assert_eq!(to_kanji(345), "三百四十五");
+        assert_eq!(to_kanji(999), "九百九十九");
+    }
+
+    #[test]
+    fn test_kanji_thousands() {
+        assert_eq!(to_kanji(1000), "千");
+        assert_eq!(to_kanji(3000), "三千");
+        assert_eq!(to_kanji(1234), "千二百三十四");
+    }
+
+    #[test]
+    fn test_kanji_large_units() {
+        // 万以上は一を省略しない
+        assert_eq!(to_kanji(10_000), "一万");
+        assert_eq!(to_kanji(12_345), "一万二千三百四十五");
+        assert_eq!(to_kanji(100_000_000), "一億");
+        assert_eq!(to_kanji(1_000_000_000_000), "一兆");
+        assert_eq!(to_kanji(20_000), "二万");
+        assert_eq!(to_kanji(100_000), "十万");
     }
 
     #[test]

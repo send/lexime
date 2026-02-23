@@ -293,8 +293,6 @@ reading = "にじゅうさん"
 expected = "二十三"
 category = "numeric"
 tags = ["compound"]
-skip = true
-issue = "compound numeric にじゅうさん splits as に+十三 instead of 二十三"
 
 [[cases]]
 reading = "ひゃく"
