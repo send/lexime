@@ -299,6 +299,7 @@ reading = "ひゃく"
 expected = "百"
 category = "numeric"
 tags = ["kanji"]
+note = "辞書エントリ 百(ひゃく) が Viterbi top-1。NumericRewriter の単漢字候補(低優先度)とは別"
 
 [[cases]]
 reading = "いちまん"
