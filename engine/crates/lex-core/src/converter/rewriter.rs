@@ -115,9 +115,35 @@ impl Rewriter for NumericRewriter {
         let Some(n) = numeric::parse_japanese_number(reading) else {
             return;
         };
+        let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
         let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
         let base_cost = worst_cost.saturating_add(5000);
 
+        // Kanji candidate
+        let kanji = numeric::to_kanji(n);
+        let is_compound = kanji.chars().count() > 1;
+        if !paths.iter().any(|p| p.surface_key() == kanji) {
+            let kanji_cost = if is_compound { best_cost } else { base_cost };
+            let kanji_path = ScoredPath {
+                segments: vec![RichSegment {
+                    reading: reading.to_string(),
+                    surface: kanji,
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                }],
+                viterbi_cost: kanji_cost,
+            };
+            if is_compound {
+                // Compound kanji (二十三, 三百) → insert at top
+                paths.insert(0, kanji_path);
+            } else {
+                // Single-char kanji (十, 百) → low priority, let dictionary entries win
+                paths.push(kanji_path);
+            }
+        }
+
+        // Half-width Arabic digits
         let halfwidth = numeric::to_halfwidth(n);
         if !paths.iter().any(|p| p.surface_key() == halfwidth) {
             paths.push(ScoredPath {
@@ -132,6 +158,7 @@ impl Rewriter for NumericRewriter {
             });
         }
 
+        // Full-width Arabic digits
         let fullwidth = numeric::to_fullwidth(n);
         if !paths.iter().any(|p| p.surface_key() == fullwidth) {
             paths.push(ScoredPath {
@@ -235,6 +262,34 @@ mod tests {
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
                 reading: "にじゅうさん".into(),
+                surface: "に十三".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 3000,
+        }];
+
+        rw.rewrite(&mut paths, "にじゅうさん");
+
+        // Compound kanji inserted at position 0 with best_cost
+        assert_eq!(paths.len(), 4);
+        assert_eq!(paths[0].surface_key(), "二十三");
+        assert_eq!(paths[0].viterbi_cost, 3000);
+        assert_eq!(paths[1].surface_key(), "に十三");
+        assert_eq!(paths[2].surface_key(), "23");
+        assert_eq!(paths[2].viterbi_cost, 3000 + 5000);
+        assert_eq!(paths[3].surface_key(), "２３");
+        assert_eq!(paths[3].viterbi_cost, 3000 + 5001);
+    }
+
+    #[test]
+    fn test_numeric_rewriter_kanji_duplicate_skip() {
+        // When kanji candidate already exists in Viterbi paths, skip it
+        let rw = NumericRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "にじゅうさん".into(),
                 surface: "二十三".into(),
                 left_id: 10,
                 right_id: 10,
@@ -245,11 +300,34 @@ mod tests {
 
         rw.rewrite(&mut paths, "にじゅうさん");
 
+        // Kanji already exists, only halfwidth + fullwidth added
         assert_eq!(paths.len(), 3);
+        assert_eq!(paths[0].surface_key(), "二十三");
         assert_eq!(paths[1].surface_key(), "23");
-        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
         assert_eq!(paths[2].surface_key(), "２３");
-        assert_eq!(paths[2].viterbi_cost, 3000 + 5001);
+    }
+
+    #[test]
+    fn test_numeric_rewriter_single_char_kanji_low_priority() {
+        // Single-char kanji like 十 should be low priority
+        let rw = NumericRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "じゅう".into(),
+                surface: "中".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 3000,
+        }];
+
+        rw.rewrite(&mut paths, "じゅう");
+
+        // 十 is single-char → pushed at end with base_cost
+        assert_eq!(paths[0].surface_key(), "中");
+        assert_eq!(paths[1].surface_key(), "十");
+        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
     }
 
     #[test]
@@ -291,9 +369,11 @@ mod tests {
 
         rw.rewrite(&mut paths, "いち");
 
-        // Half-width "1" already exists, only full-width should be added
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[1].surface_key(), "１");
+        // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
+        assert_eq!(paths.len(), 3);
+        assert_eq!(paths[1].surface_key(), "一");
+        assert_eq!(paths[1].viterbi_cost, 1000 + 5000); // single-char → low priority
+        assert_eq!(paths[2].surface_key(), "１");
     }
 
     #[test]

@@ -23,7 +23,8 @@
 # Fields:
 #   reading   (required) - Kana input to convert
 #   expected  (required) - Expected top-1 surface output
-#   category  (required) - One of: word, phrase, conjugation, regression
+#   category  (required) - One of: word, phrase, conjugation, regression,
+#                          loanword, numeric, compound
 #   tags      (optional) - Descriptive tags for filtering
 #   skip      (optional) - true if this is a known failure (issue required)
 #   note      (optional) - Explanation of the test case or known issue
@@ -241,3 +242,184 @@ category = "regression"
 tags = ["length-variance", "particle"]
 pr = "#146"
 note = "2-segment paths were incorrectly penalized by length variance"
+
+# ═══════════════════════════════════════════════════════════════════
+# Katakana loanwords (dictionary entry vs KatakanaRewriter)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "こんぴゅーたー"
+expected = "コンピューター"
+category = "loanword"
+tags = ["katakana", "long-vowel"]
+
+[[cases]]
+reading = "いんたーねっと"
+expected = "インターネット"
+category = "loanword"
+tags = ["katakana", "geminate", "long-vowel"]
+
+[[cases]]
+reading = "てれび"
+expected = "テレビ"
+category = "loanword"
+tags = ["katakana", "short"]
+
+[[cases]]
+reading = "あるばいと"
+expected = "アルバイト"
+category = "loanword"
+tags = ["katakana", "german"]
+
+[[cases]]
+reading = "ぷろぐらむ"
+expected = "プログラム"
+category = "loanword"
+tags = ["katakana", "it"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Numeric expressions (NumericRewriter + dictionary)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "じゅう"
+expected = "中"
+category = "numeric"
+tags = ["kanji", "homophone"]
+note = "辞書の 中(じゅう) が 十 より上位"
+
+[[cases]]
+reading = "にじゅうさん"
+expected = "二十三"
+category = "numeric"
+tags = ["compound"]
+
+[[cases]]
+reading = "ひゃく"
+expected = "百"
+category = "numeric"
+tags = ["kanji"]
+note = "辞書エントリ 百(ひゃく) が Viterbi top-1。NumericRewriter の単漢字候補(低優先度)とは別"
+
+[[cases]]
+reading = "いちまん"
+expected = "一万"
+category = "numeric"
+tags = ["kanji", "large"]
+
+[[cases]]
+reading = "さんぜんえん"
+expected = "三千円"
+category = "numeric"
+tags = ["counter"]
+skip = true
+issue = "さんぜんえん parsed as 産前園 — numeric+counter not in dictionary"
+
+# ═══════════════════════════════════════════════════════════════════
+# Compound nouns (segmentation + POS)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "けいざいがく"
+expected = "経済学"
+category = "compound"
+tags = ["suffix"]
+
+[[cases]]
+reading = "こくさいかんけい"
+expected = "国際関係"
+category = "compound"
+tags = ["four-kanji"]
+
+[[cases]]
+reading = "じょうほうぎじゅつ"
+expected = "情報技術"
+category = "compound"
+tags = ["it"]
+
+[[cases]]
+reading = "かんきょうもんだい"
+expected = "環境問題"
+category = "compound"
+tags = ["abstract"]
+
+[[cases]]
+reading = "だいがくせい"
+expected = "大学生"
+category = "compound"
+tags = ["prefix"]
+
+# ═══════════════════════════════════════════════════════════════════
+# Long sentences (10+ chars, multi-segment Viterbi)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "きのうともだちとえいがをみた"
+expected = "昨日友だちと映画を見た"
+category = "phrase"
+tags = ["long", "multi-particle"]
+skip = true
+issue = "きのう→機能, みた→満た — multiple segmentation errors in long input"
+
+[[cases]]
+reading = "らいねんにほんにいきたい"
+expected = "来年日本に行きたい"
+category = "phrase"
+tags = ["long", "desire"]
+skip = true
+issue = "にほん→二本 — homophone error in sentence context"
+
+[[cases]]
+reading = "このほんはとてもおもしろい"
+expected = "この本はとても面白い"
+category = "phrase"
+tags = ["long", "adjective"]
+
+[[cases]]
+reading = "あたらしいくるまをかった"
+expected = "新しい車を買った"
+category = "phrase"
+tags = ["long", "adjective", "verb"]
+
+[[cases]]
+reading = "せんせいにしつもんした"
+expected = "先生に質問した"
+category = "phrase"
+tags = ["long", "suru-verb"]
+skip = true
+issue = "質問下 が top-1 になり 質問した に変換できない"
+
+# ═══════════════════════════════════════════════════════════════════
+# Additional verb conjugations (negative, passive, causative, te-form)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "たべない"
+expected = "食べない"
+category = "conjugation"
+tags = ["verb", "ichidan", "negative"]
+
+[[cases]]
+reading = "いかなかった"
+expected = "行かなかった"
+category = "conjugation"
+tags = ["verb", "godan", "negative-past"]
+
+[[cases]]
+reading = "よまれる"
+expected = "読まれる"
+category = "conjugation"
+tags = ["verb", "godan", "passive"]
+
+[[cases]]
+reading = "たべさせる"
+expected = "食べさせる"
+category = "conjugation"
+tags = ["verb", "ichidan", "causative"]
+
+[[cases]]
+reading = "かいて"
+expected = "買い手"
+category = "conjugation"
+tags = ["verb", "te-form", "ambiguous"]
+note = "買い手(名詞) が top-1; 書いて(て形) is #2"
