@@ -192,7 +192,14 @@ fn consume_unit_kana(s: &str, unit_val: u64) -> Option<usize> {
 /// - 十/百/千 omit the leading 一 (e.g. 10 → "十", not "一十")
 /// - 万/億/兆 keep the leading 一 (e.g. 10000 → "一万")
 /// - Zero is "〇"
+///
+/// Supports values up to 9999兆 (9,999,999,999,999,999).
+/// Values exceeding this range are returned as half-width Arabic digits.
 pub fn to_kanji(n: u64) -> String {
+    // Max supported: 9999兆9999億9999万9999
+    if n > 9_999_999_999_999_999 {
+        return to_halfwidth(n);
+    }
     if n == 0 {
         return "〇".to_string();
     }
@@ -235,9 +242,9 @@ pub fn to_kanji(n: u64) -> String {
 /// Leading 一 is omitted before 十/百/千 (e.g. 10→"十", 100→"百", 1000→"千").
 ///
 /// # Panics
-/// Panics in debug mode if `n > 9999`.
+/// Panics if `n > 9999`.
 fn group_to_kanji(n: u64, out: &mut String) {
-    debug_assert!(n <= 9999, "group_to_kanji: n={n} exceeds 9999");
+    assert!(n <= 9999, "group_to_kanji: n={n} exceeds 9999");
     const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
     let sen = n / 1000;
@@ -416,6 +423,14 @@ mod tests {
         assert_eq!(to_kanji(1_000_000_000_000), "一兆");
         assert_eq!(to_kanji(20_000), "二万");
         assert_eq!(to_kanji(100_000), "十万");
+        // Max supported value
+        assert_eq!(
+            to_kanji(9_999_999_999_999_999),
+            "九千九百九十九兆九千九百九十九億九千九百九十九万九千九百九十九"
+        );
+        // Over max → fallback to Arabic digits
+        assert_eq!(to_kanji(10_000_000_000_000_000), "10000000000000000");
+        assert_eq!(to_kanji(u64::MAX), u64::MAX.to_string());
     }
 
     #[test]
