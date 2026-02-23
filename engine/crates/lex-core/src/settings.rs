@@ -94,6 +94,7 @@ pub struct CostSettings {
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
     pub structure_cost_filter: i64,
+    pub non_independent_kanji_penalty: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +171,7 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
 
     check_non_negative!(reranker.length_variance_weight);
     check_non_negative!(reranker.structure_cost_filter);
+    check_non_negative!(reranker.non_independent_kanji_penalty);
 
     check_non_negative!(history.boost_per_use);
     check_non_negative!(history.max_boost);
@@ -205,6 +207,7 @@ mod tests {
         assert_eq!(s.cost.unknown_word_cost, 10000);
         assert_eq!(s.reranker.length_variance_weight, 2000);
         assert_eq!(s.reranker.structure_cost_filter, 4000);
+        assert_eq!(s.reranker.non_independent_kanji_penalty, 3000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);
         assert!((s.history.half_life_hours - 168.0).abs() < f64::EPSILON);
@@ -234,6 +237,7 @@ unknown_word_cost = 5000
 [reranker]
 length_variance_weight = 1000
 structure_cost_filter = 2000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 1500
@@ -265,6 +269,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 4000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 3000
@@ -296,6 +301,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 4000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 3000
@@ -326,6 +332,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 4000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 3000
@@ -356,6 +363,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 4000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 3000
@@ -387,6 +395,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 4000
+non_independent_kanji_penalty = 3000
 
 [history]
 boost_per_use = 3000

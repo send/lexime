@@ -26,7 +26,7 @@ impl ConnectionMatrix {
     /// Create a new owned ConnectionMatrix (V3 format).
     ///
     /// `roles` is padded with zeros to `num_ids` length if shorter.
-    pub(super) fn new_owned(
+    pub(crate) fn new_owned(
         num_ids: u16,
         fw_min: u16,
         fw_max: u16,
@@ -96,5 +96,10 @@ impl ConnectionMatrix {
     /// Check whether a POS ID is a prefix (接頭詞, role == 3).
     pub fn is_prefix(&self, id: u16) -> bool {
         self.role(id) == 3
+    }
+
+    /// Check whether a POS ID is non-independent (非自立, role == 4).
+    pub fn is_non_independent(&self, id: u16) -> bool {
+        self.role(id) == 4
     }
 }

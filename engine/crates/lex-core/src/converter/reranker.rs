@@ -2,6 +2,7 @@ use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::settings::settings;
+use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
 use super::cost::{conn_cost, script_cost};
@@ -89,6 +90,17 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
         // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.
         let total_script: i64 = path.segments.iter().map(|s| script_cost(&s.surface)).sum();
         path.viterbi_cost += total_script;
+
+        // Non-independent kanji penalty: penalise kanji surfaces for 非自立
+        // morphemes (形式名詞 like 事/物/所, 補助動詞 like 下さい/頂く).
+        if let Some(conn) = conn {
+            let penalty = settings().reranker.non_independent_kanji_penalty;
+            for seg in &path.segments {
+                if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
+                    path.viterbi_cost += penalty;
+                }
+            }
+        }
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
@@ -133,4 +145,79 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::converter::viterbi::RichSegment;
+    use crate::dict::connection::ConnectionMatrix;
+
+    /// Build a minimal ConnectionMatrix with the given roles vector.
+    fn conn_with_roles(roles: Vec<u8>) -> ConnectionMatrix {
+        let num_ids = roles.len() as u16;
+        let costs = vec![0i16; num_ids as usize * num_ids as usize];
+        ConnectionMatrix::new_owned(num_ids, 0, 0, roles, costs)
+    }
+
+    fn seg(reading: &str, surface: &str, left_id: u16) -> RichSegment {
+        RichSegment {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            left_id,
+            right_id: left_id,
+            word_cost: 0,
+        }
+    }
+
+    fn path(segments: Vec<RichSegment>, cost: i64) -> ScoredPath {
+        ScoredPath {
+            segments,
+            viterbi_cost: cost,
+        }
+    }
+
+    #[test]
+    fn non_independent_kanji_penalty_applied() {
+        // ID 2 = non-independent (role 4), ID 1 = content word (role 0)
+        let roles = vec![0u8, 0, 4];
+        let conn = conn_with_roles(roles);
+
+        // Path A: こと (hiragana, non-independent) — no penalty
+        // Path B: 事 (kanji, non-independent) — penalty applied
+        let mut paths = vec![
+            path(vec![seg("こと", "事", 2)], 100),
+            path(vec![seg("こと", "こと", 2)], 100),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        // The hiragana path should rank lower (lower cost)
+        assert_eq!(paths[0].segments[0].surface, "こと");
+        assert_eq!(paths[1].segments[0].surface, "事");
+        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
+    }
+
+    #[test]
+    fn non_independent_kanji_penalty_not_applied_to_content_words() {
+        // ID 1 = content word (role 0)
+        let roles = vec![0u8, 0];
+        let conn = conn_with_roles(roles);
+
+        // Both paths use content word IDs — no non-independent penalty
+        let mut paths = vec![
+            path(vec![seg("こと", "事", 1)], 100),
+            path(vec![seg("こと", "こと", 1)], 100),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        // Costs should differ only by script cost, not by non-independent penalty
+        let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
+        assert!(
+            cost_diff < 3000,
+            "no non-independent penalty should be applied: diff = {}",
+            cost_diff
+        );
+    }
 }
