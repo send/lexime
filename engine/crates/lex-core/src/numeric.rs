@@ -233,7 +233,11 @@ pub fn to_kanji(n: u64) -> String {
 
 /// Format a group value (1–9999) as kanji, appending to `out`.
 /// Leading 一 is omitted before 十/百/千 (e.g. 10→"十", 100→"百", 1000→"千").
+///
+/// # Panics
+/// Panics in debug mode if `n > 9999`.
 fn group_to_kanji(n: u64, out: &mut String) {
+    debug_assert!(n <= 9999, "group_to_kanji: n={n} exceeds 9999");
     const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
     let sen = n / 1000;

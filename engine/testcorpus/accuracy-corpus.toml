@@ -382,10 +382,11 @@ tags = ["long", "adjective", "verb"]
 
 [[cases]]
 reading = "せんせいにしつもんした"
-expected = "先生に質問下"
+expected = "先生に質問した"
 category = "phrase"
 tags = ["long", "suru-verb"]
-note = "質問した is #4; 質問下 wins in top-1"
+skip = true
+issue = "質問下 が top-1 になり 質問した に変換できない"
 
 # ═══════════════════════════════════════════════════════════════════
 # Additional verb conjugations (negative, passive, causative, te-form)
