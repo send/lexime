@@ -98,9 +98,36 @@ impl LexUserHistory {
             compacting: AtomicBool::new(false),
         }))
     }
+
+    /// Clear all learning history (in-memory + WAL + checkpoint files).
+    fn clear(&self) -> Result<(), LexError> {
+        self.clear_impl()
+    }
 }
 
 impl LexUserHistory {
+    pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+        {
+            let mut h = self.inner.write().map_err(|e| LexError::Io {
+                msg: format!("history write lock poisoned: {e}"),
+            })?;
+            *h = UserHistory::new();
+        }
+        let mut wal = self.wal.lock().map_err(|e| LexError::Io {
+            msg: format!("WAL lock poisoned: {e}"),
+        })?;
+        wal.truncate_wal()
+            .map_err(|e| LexError::Io { msg: e.to_string() })?;
+        for path in [wal.wal_path(), wal.checkpoint_path()] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(LexError::Io { msg: e.to_string() }),
+            }
+        }
+        Ok(())
+    }
+
     /// Append a WAL entry. Does not block on compaction.
     pub(super) fn append_wal(&self, segments: &[(String, String)], timestamp: u64) {
         let mut wal = match self.wal.lock() {
@@ -161,5 +188,54 @@ impl LexUserHistory {
                 warn!("WAL truncate failed: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clear_resets_history_and_removes_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+
+        // Open, record some entries, and trigger a checkpoint write
+        let hist = LexUserHistory::open(cp.display().to_string()).unwrap();
+        hist.append_wal(&[("きょう".into(), "今日".into())], 1000);
+        hist.inner
+            .write()
+            .unwrap()
+            .record_at(&[("きょう".to_string(), "今日".to_string())], 1000);
+        // Force checkpoint so files exist on disk
+        hist.run_compact();
+
+        let wal_path = hist.wal.lock().unwrap().wal_path().to_path_buf();
+        let cp_path = hist.wal.lock().unwrap().checkpoint_path().to_path_buf();
+        assert!(cp_path.exists(), "checkpoint should exist before clear");
+
+        // Clear and verify
+        hist.clear_impl().unwrap();
+
+        // In-memory history should be empty
+        let h = hist.inner.read().unwrap();
+        assert!(
+            h.learned_surfaces("きょう", 2000).is_empty(),
+            "in-memory history should be empty after clear"
+        );
+        drop(h);
+
+        // Files should be removed
+        assert!(!cp_path.exists(), "checkpoint file should be deleted");
+        assert!(!wal_path.exists(), "WAL file should be deleted");
+
+        // Re-opening from the same path should yield empty history
+        drop(hist);
+        let hist2 = LexUserHistory::open(cp.display().to_string()).unwrap();
+        let h2 = hist2.inner.read().unwrap();
+        assert!(
+            h2.learned_surfaces("きょう", 2000).is_empty(),
+            "reopened history should be empty"
+        );
     }
 }
