@@ -82,6 +82,7 @@ pub const ROLE_CONTENT_WORD: u8 = 0;
 pub const ROLE_FUNCTION_WORD: u8 = 1;
 pub const ROLE_SUFFIX: u8 = 2;
 pub const ROLE_PREFIX: u8 = 3;
+pub const ROLE_NON_INDEPENDENT: u8 = 4;
 
 /// Parse Mozc `id.def` and classify each POS ID into a morpheme role.
 ///
@@ -90,6 +91,7 @@ pub const ROLE_PREFIX: u8 = 3;
 /// - `1` (FunctionWord): 助詞 or 助動詞
 /// - `2` (Suffix): second POS field is 接尾 (e.g., 名詞,接尾 / 動詞,接尾 / 形容詞,接尾)
 /// - `3` (Prefix): first POS field is 接頭詞
+/// - `4` (NonIndependent): 非自立 (e.g., 名詞,非自立 / 動詞,非自立 / 形容詞,非自立)
 pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
     let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
     let mut max_id: u16 = 0;
@@ -115,6 +117,8 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
                 ROLE_PREFIX
             } else if fields[1] == "接尾" {
                 ROLE_SUFFIX
+            } else if fields[1] == "非自立" {
+                ROLE_NON_INDEPENDENT
             } else {
                 ROLE_CONTENT_WORD
             }
@@ -234,6 +238,8 @@ mod tests {
                 "2600 接頭詞,名詞接続,*,*,*,*,*",
                 "2641 接頭詞,数接続,*,*,*,*,*",
                 "680 動詞,自立,*,*,一段,基本形,*",
+                "690 名詞,非自立,一般,*,*,*,*",
+                "700 動詞,非自立,*,*,一段,基本形,*",
             ]),
         )
         .unwrap();
@@ -250,6 +256,8 @@ mod tests {
         assert_eq!(roles[2600], ROLE_PREFIX); // 接頭詞
         assert_eq!(roles[2641], ROLE_PREFIX); // 接頭詞
         assert_eq!(roles[680], ROLE_CONTENT_WORD); // 動詞,自立
+        assert_eq!(roles[690], ROLE_NON_INDEPENDENT); // 名詞,非自立
+        assert_eq!(roles[700], ROLE_NON_INDEPENDENT); // 動詞,非自立
 
         fs::remove_dir_all(&dir).ok();
     }
