@@ -145,11 +145,15 @@ struct DeveloperSettingsView: View {
         NSLog("Lexime: Resetting all settings and history")
 
         // 1. Clear learning history via engine (closes WAL handle + deletes files)
-        do {
-            try AppContext.shared.engine?.clearHistory()
-            NSLog("Lexime: History cleared")
-        } catch {
-            NSLog("Lexime: Failed to clear history: %@", "\(error)")
+        if let engine = AppContext.shared.engine {
+            do {
+                try engine.clearHistory()
+                NSLog("Lexime: History cleared")
+            } catch {
+                NSLog("Lexime: Failed to clear history: %@", "\(error)")
+            }
+        } else {
+            NSLog("Lexime: Engine not available; skipping history clear")
         }
 
         // 2. Delete config files
