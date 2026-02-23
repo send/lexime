@@ -94,7 +94,12 @@ pub struct CostSettings {
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
     pub structure_cost_filter: i64,
+    #[serde(default = "default_non_independent_kanji_penalty")]
     pub non_independent_kanji_penalty: i64,
+}
+
+fn default_non_independent_kanji_penalty() -> i64 {
+    3000
 }
 
 #[derive(Debug, Clone, Deserialize)]

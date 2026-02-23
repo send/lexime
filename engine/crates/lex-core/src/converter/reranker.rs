@@ -192,7 +192,7 @@ mod tests {
 
         rerank(&mut paths, Some(&conn));
 
-        // The hiragana path should rank lower (lower cost)
+        // The hiragana path should rank higher (lower cost)
         assert_eq!(paths[0].segments[0].surface, "こと");
         assert_eq!(paths[1].segments[0].surface, "事");
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
@@ -213,9 +213,10 @@ mod tests {
         rerank(&mut paths, Some(&conn));
 
         // Costs should differ only by script cost, not by non-independent penalty
+        let penalty = settings().reranker.non_independent_kanji_penalty;
         let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
         assert!(
-            cost_diff < 3000,
+            cost_diff < penalty,
             "no non-independent penalty should be applied: diff = {}",
             cost_diff
         );
