@@ -105,7 +105,7 @@ tags = ["place"]
 
 [[cases]]
 reading = "きょうはいいてんき"
-expected = "教派いい天気"
+expected = "今日はいい天気"
 category = "phrase"
 tags = ["basic", "particle"]
 
