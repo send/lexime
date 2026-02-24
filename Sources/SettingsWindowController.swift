@@ -19,10 +19,10 @@ class SettingsWindowController {
 
         let settingsView = SettingsView()
         let hostingView = NSHostingView(rootView: settingsView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 540, height: 600)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 540, height: 700)
 
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 700),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
