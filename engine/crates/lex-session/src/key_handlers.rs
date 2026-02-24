@@ -16,6 +16,27 @@ impl InputSession {
         }
     }
 
+    /// Move candidate selection by `delta` (1=next, -1=prev).
+    /// If `skip_current` is true and selected==0, jump directly to 1.
+    fn navigate_candidates(&mut self, delta: i32, skip_current: bool) -> KeyResponse {
+        self.ensure_candidates();
+        let c = self.comp();
+        if !c.candidates.is_empty() {
+            if skip_current && c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
+                c.candidates.selected = 1;
+            } else {
+                c.candidates.selected = super::types::cyclic_index(
+                    c.candidates.selected,
+                    delta,
+                    c.candidates.surfaces.len(),
+                );
+            }
+            build_candidate_selection(self.comp())
+        } else {
+            KeyResponse::consumed()
+        }
+    }
+
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let _span = debug_span!("handle_key", ?event).entered();
@@ -101,54 +122,11 @@ impl InputSession {
                 self.commit_current_state()
             }
 
-            KeyEvent::Space if self.is_composing() => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    if c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
-                        c.candidates.selected = 1;
-                    } else {
-                        c.candidates.selected = super::types::cyclic_index(
-                            c.candidates.selected,
-                            1,
-                            c.candidates.surfaces.len(),
-                        );
-                    }
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
+            KeyEvent::Space if self.is_composing() => self.navigate_candidates(1, true),
 
-            KeyEvent::ArrowDown if self.is_composing() => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    c.candidates.selected = super::types::cyclic_index(
-                        c.candidates.selected,
-                        1,
-                        c.candidates.surfaces.len(),
-                    );
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
+            KeyEvent::ArrowDown if self.is_composing() => self.navigate_candidates(1, false),
 
-            KeyEvent::ArrowUp if self.is_composing() => {
-                self.ensure_candidates();
-                let c = self.comp();
-                if !c.candidates.is_empty() {
-                    c.candidates.selected = super::types::cyclic_index(
-                        c.candidates.selected,
-                        -1,
-                        c.candidates.surfaces.len(),
-                    );
-                    build_candidate_selection(self.comp())
-                } else {
-                    KeyResponse::consumed()
-                }
-            }
+            KeyEvent::ArrowUp if self.is_composing() => self.navigate_candidates(-1, false),
 
             KeyEvent::Tab if self.is_composing() => {
                 self.ensure_candidates();
