@@ -23,7 +23,7 @@ const MAX_RESEG_PATHS: usize = 10;
 /// For each segment in `paths[0]`, tries splitting it at every internal
 /// character boundary using nodes present in the lattice. Only splits
 /// where at least one half is a function word are kept.
-pub(crate) fn resegment(
+pub(super) fn resegment(
     paths: &[ScoredPath],
     lattice: &Lattice,
     conn: Option<&ConnectionMatrix>,
@@ -46,6 +46,7 @@ pub(crate) fn resegment(
     }
 
     let mut new_paths: Vec<ScoredPath> = Vec::new();
+    let mut new_keys: HashSet<String> = HashSet::new();
 
     for (seg_idx, &(seg_start, seg_end)) in seg_boundaries.iter().enumerate() {
         if seg_end - seg_start < 2 {
@@ -125,10 +126,7 @@ pub(crate) fn resegment(
 
                     // Dedup against existing paths and already-generated candidates
                     let key = candidate.surface_key();
-                    if existing_keys.contains(&key) {
-                        continue;
-                    }
-                    if new_paths.iter().any(|p| p.surface_key() == key) {
+                    if existing_keys.contains(&key) || !new_keys.insert(key) {
                         continue;
                     }
 
@@ -184,34 +182,102 @@ mod tests {
     use crate::converter::lattice::build_lattice;
     use crate::converter::testutil::{test_dict, zero_conn_with_fw};
     use crate::converter::viterbi::viterbi_nbest;
+    use crate::dict::{DictEntry, TrieDictionary};
 
     /// Helper: build lattice + viterbi paths for a kana string.
     fn build_paths(
+        dict: &dyn crate::dict::Dictionary,
         kana: &str,
         conn: Option<&ConnectionMatrix>,
         n: usize,
     ) -> (Lattice, Vec<ScoredPath>) {
-        let dict = test_dict();
-        let lattice = build_lattice(&dict, kana);
+        let lattice = build_lattice(dict, kana);
         let cost_fn = DefaultCostFunction::new(conn);
         let paths = viterbi_nbest(&lattice, &cost_fn, n);
         (lattice, paths)
     }
 
+    /// Test dictionary that includes "きょうは"→教派 as a compound entry.
+    ///
+    /// With conn (FW half-penalty), 教派 (cost 4000 + seg_penalty) is cheaper
+    /// than 今日+は (3000+seg + 2000+seg/2), so Viterbi picks 教派 as a single
+    /// segment. Resegment should then split it into 今日+は.
+    fn dict_with_compound() -> TrieDictionary {
+        let entries = vec![
+            (
+                "きょう".to_string(),
+                vec![DictEntry {
+                    surface: "今日".to_string(),
+                    cost: 3000,
+                    left_id: 100,
+                    right_id: 100,
+                }],
+            ),
+            (
+                "きょうは".to_string(),
+                vec![DictEntry {
+                    surface: "教派".to_string(),
+                    cost: 4000,
+                    left_id: 102,
+                    right_id: 102,
+                }],
+            ),
+            (
+                "は".to_string(),
+                vec![DictEntry {
+                    surface: "は".to_string(),
+                    cost: 2000,
+                    left_id: 200,
+                    right_id: 200,
+                }],
+            ),
+            (
+                "いい".to_string(),
+                vec![DictEntry {
+                    surface: "良い".to_string(),
+                    cost: 3500,
+                    left_id: 300,
+                    right_id: 300,
+                }],
+            ),
+            (
+                "てんき".to_string(),
+                vec![DictEntry {
+                    surface: "天気".to_string(),
+                    cost: 4000,
+                    left_id: 400,
+                    right_id: 400,
+                }],
+            ),
+        ];
+        TrieDictionary::from_entries(entries)
+    }
+
     #[test]
     fn test_resegment_splits_compound_with_fw() {
-        // "きょうは" has node "きょうは" (if it exists as compound)
-        // but also "きょう"(今日) + "は"(particle).
-        // The test dict has "きょう"→今日 and "は"→は(FW).
-        // We need a conn where は(left_id=200) is a function word.
+        // dict_with_compound has "きょうは"→教派 (compound) plus "きょう"→今日 + "は"→は(FW).
+        // With FW half-penalty, Viterbi picks 教派 as one segment; resegment
+        // should split it into 今日+は.
         let conn = zero_conn_with_fw(1200, 200, 200);
-        let (lattice, paths) = build_paths("きょうはいいてんき", Some(&conn), 5);
+        let dict = dict_with_compound();
+        // n=1: only the best Viterbi path (教派) so the 今日+は split is novel
+        let (lattice, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 1);
+
+        // Verify best path actually contains 教派 as a single segment
+        assert!(
+            paths[0].segments.iter().any(|s| s.surface == "教派"),
+            "Viterbi best should contain 教派 compound for this test to be meaningful"
+        );
 
         let new_paths = resegment(&paths, &lattice, Some(&conn));
 
-        // Should produce at least one resegmented path
-        // that splits differently from the Viterbi paths
-        // Check that we got some new candidates
+        // Must produce at least one resegmented candidate
+        assert!(
+            !new_paths.is_empty(),
+            "resegment should produce at least one alternative path"
+        );
+
+        // No duplicates with existing Viterbi paths
         let existing_keys: HashSet<String> = paths.iter().map(|p| p.surface_key()).collect();
         for p in &new_paths {
             assert!(
@@ -220,13 +286,25 @@ mod tests {
                 p.surface_key()
             );
         }
+
+        // At least one resegmented path should contain 今日+は split
+        let has_kyou_ha = new_paths.iter().any(|p| {
+            p.segments
+                .windows(2)
+                .any(|w| w[0].surface == "今日" && w[1].surface == "は")
+        });
+        assert!(
+            has_kyou_ha,
+            "resegment should produce a path with 今日+は split"
+        );
     }
 
     #[test]
     fn test_resegment_no_split_without_fw() {
         // With no function words defined (fw_min=0, fw_max=0), no splits should occur
         let conn = zero_conn_with_fw(1200, 0, 0);
-        let (lattice, paths) = build_paths("きょうはいいてんき", Some(&conn), 5);
+        let dict = dict_with_compound();
+        let (lattice, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 5);
 
         let new_paths = resegment(&paths, &lattice, Some(&conn));
         assert!(
@@ -239,7 +317,8 @@ mod tests {
     #[test]
     fn test_resegment_dedup_existing() {
         let conn = zero_conn_with_fw(1200, 200, 200);
-        let (lattice, paths) = build_paths("きょうはいいてんき", Some(&conn), 20);
+        let dict = dict_with_compound();
+        let (lattice, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 20);
 
         let new_paths = resegment(&paths, &lattice, Some(&conn));
 
@@ -268,7 +347,8 @@ mod tests {
     fn test_score_path_matches_viterbi() {
         // For a path that Viterbi also produces, score_path should match.
         let conn = zero_conn_with_fw(1200, 200, 200);
-        let (_, paths) = build_paths("きょうはいいてんき", Some(&conn), 5);
+        let dict = test_dict();
+        let (_, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 5);
 
         if let Some(best) = paths.first() {
             let rescored = score_path(&best.segments, Some(&conn));
