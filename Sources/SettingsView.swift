@@ -92,6 +92,7 @@ struct DeveloperSettingsView: View {
                         Button("Lexime を再起動") {
                             NSLog("Lexime: Restarting via settings UI")
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                // IME processes are managed by launchd; exit(0) triggers automatic restart.
                                 exit(0)
                             }
                         }
@@ -173,6 +174,7 @@ struct DeveloperSettingsView: View {
         // 3. Restart
         NSLog("Lexime: Restarting after reset")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            // IME processes are managed by launchd; exit(0) triggers automatic restart.
             exit(0)
         }
     }
