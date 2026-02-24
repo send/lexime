@@ -243,6 +243,14 @@ tags = ["length-variance", "particle"]
 pr = "#146"
 note = "2-segment paths were incorrectly penalized by length variance"
 
+[[cases]]
+reading = "よんでみる"
+expected = "読んでみる"
+category = "regression"
+tags = ["te-form", "auxiliary-verb"]
+issue = "#173"
+note = "読んで見る が mixed_script_bonus で top-1 になる問題"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════

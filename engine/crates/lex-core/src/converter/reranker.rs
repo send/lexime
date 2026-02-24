@@ -101,6 +101,23 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
                 }
             }
         }
+
+        // Te-form kanji penalty: penalise kanji surfaces following て/で
+        // conjunctive particles to prefer hiragana auxiliary verbs
+        // (e.g., 読んでみる over 読んで見る).
+        if let Some(conn) = conn {
+            let te_penalty = settings().reranker.te_form_kanji_penalty;
+            for pair in path.segments.windows(2) {
+                let prev = &pair[0];
+                let curr = &pair[1];
+                if conn.is_function_word(prev.left_id)
+                    && (prev.surface == "て" || prev.surface == "で")
+                    && curr.surface.chars().any(is_kanji)
+                {
+                    path.viterbi_cost += te_penalty;
+                }
+            }
+        }
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);
@@ -198,6 +215,14 @@ mod tests {
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
     }
 
+    /// Build a minimal ConnectionMatrix with the given roles vector and
+    /// function-word ID range.
+    fn conn_with_roles_and_fw(roles: Vec<u8>, fw_min: u16, fw_max: u16) -> ConnectionMatrix {
+        let num_ids = roles.len() as u16;
+        let costs = vec![0i16; num_ids as usize * num_ids as usize];
+        ConnectionMatrix::new_owned(num_ids, fw_min, fw_max, roles, costs)
+    }
+
     #[test]
     fn non_independent_kanji_penalty_not_applied_to_content_words() {
         // ID 1 = content word (role 0)
@@ -218,6 +243,47 @@ mod tests {
         assert!(
             cost_diff < penalty,
             "no non-independent penalty should be applied: diff = {}",
+            cost_diff
+        );
+    }
+
+    #[test]
+    fn te_form_kanji_penalty_applied() {
+        // ID 2 = function word (fw_min=2, fw_max=2), ID 1 = content word
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+
+        // Path A: で + 見る (kanji after て/で FW) — penalty applied
+        // Path B: で + みる (hiragana after て/で FW) — no penalty
+        let mut paths = vec![
+            path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100),
+            path(vec![seg("で", "で", 2), seg("みる", "みる", 1)], 100),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        assert_eq!(paths[0].segments[1].surface, "みる");
+        assert_eq!(paths[1].segments[1].surface, "見る");
+        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
+    }
+
+    #[test]
+    fn te_form_kanji_penalty_not_applied_to_non_te_function_word() {
+        // ID 2 = function word (fw_min=2, fw_max=2), ID 1 = content word
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+
+        // "は" is a function word but not て/で — no te-form penalty
+        let mut paths = vec![
+            path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
+            path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 100),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        let te_penalty = settings().reranker.te_form_kanji_penalty;
+        let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
+        assert!(
+            cost_diff < te_penalty,
+            "no te-form penalty should be applied for non-te FW: diff = {}",
             cost_diff
         );
     }
