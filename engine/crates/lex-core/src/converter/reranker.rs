@@ -68,23 +68,31 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
         // "long content word + short particle" is natural Japanese.
         // Computed as sum-of-squared-deviations from the mean, scaled
         // by LENGTH_VARIANCE_WEIGHT / N.
+        //
+        // Function-word segments (particles like は, が) are excluded from
+        // the variance calculation — they are naturally short (1 char) and
+        // should not penalise an otherwise uniform segmentation.
         let n = path.segments.len();
         if n >= 3 {
             let lengths: Vec<i64> = path
                 .segments
                 .iter()
+                .filter(|s| !conn.is_some_and(|c| c.is_function_word(s.left_id)))
                 .map(|s| s.reading.chars().count() as i64)
                 .collect();
-            let sum: i64 = lengths.iter().sum();
-            // sum_sq_dev = Σ (len_i - mean)² × N  (multiplied through to stay in integers)
-            //            = N × Σ len_i² - (Σ len_i)²
-            let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
-            let n_i64 = n as i64;
-            let sum_sq_dev = n_i64 * sum_sq - sum * sum;
-            // Divide by N² to get the true variance-based penalty:
-            // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
-            path.viterbi_cost +=
-                sum_sq_dev * settings().reranker.length_variance_weight / (n_i64 * n_i64);
+            let n_var = lengths.len();
+            if n_var >= 2 {
+                let sum: i64 = lengths.iter().sum();
+                // sum_sq_dev = Σ (len_i - mean)² × N  (multiplied through to stay in integers)
+                //            = N × Σ len_i² - (Σ len_i)²
+                let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
+                let n_i64 = n_var as i64;
+                let sum_sq_dev = n_i64 * sum_sq - sum * sum;
+                // Divide by N² to get the true variance-based penalty:
+                // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
+                path.viterbi_cost +=
+                    sum_sq_dev * settings().reranker.length_variance_weight / (n_i64 * n_i64);
+            }
         }
 
         // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.
@@ -264,6 +272,50 @@ mod tests {
         assert_eq!(paths[0].segments[1].surface, "みる");
         assert_eq!(paths[1].segments[1].surface, "見る");
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
+    }
+
+    #[test]
+    fn length_variance_excludes_fw_segments() {
+        // Two paths with identical starting costs. The FW path has a 1-char
+        // function-word segment that would inflate variance if not excluded.
+        //   Path A (FW): [3, 1(FW), 3, 3] → FW excluded → variance of [3,3,3] = 0
+        //   Path B (CW): [3, 1(CW), 3, 3] → all included → variance of [3,1,3,3] > 0
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+
+        let mut paths = vec![
+            // Path A: "は" is FW (id=2)
+            path(
+                vec![
+                    seg("きょう", "今日", 1),
+                    seg("は", "は", 2), // FW
+                    seg("いいい", "良い", 1),
+                    seg("てんき", "天気", 1),
+                ],
+                100,
+            ),
+            // Path B: "は" is CW (id=1) — same reading/surface, different POS
+            path(
+                vec![
+                    seg("きょう", "今日", 1),
+                    seg("は", "は", 1), // content word
+                    seg("いいい", "良い", 1),
+                    seg("てんき", "天気", 1),
+                ],
+                100,
+            ),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        // The FW path should rank first (lower cost) because its 1-char
+        // particle is excluded from the variance calculation.
+        assert_eq!(paths[0].segments[1].left_id, 2, "FW path should rank first");
+        assert!(
+            paths[0].viterbi_cost < paths[1].viterbi_cost,
+            "FW path cost ({}) should be less than CW path cost ({}) due to excluded FW variance",
+            paths[0].viterbi_cost,
+            paths[1].viterbi_cost
+        );
     }
 
     #[test]

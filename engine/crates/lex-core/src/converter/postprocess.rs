@@ -3,19 +3,28 @@ use tracing::debug_span;
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::UserHistory;
 
+use super::lattice::Lattice;
 use super::reranker;
+use super::resegment;
 use super::rewriter;
 use super::viterbi::{ConvertedSegment, RichSegment, ScoredPath};
 
-/// Shared post-processing pipeline: rerank → hiragana_rewrite → history_rerank → take(n) → rewrite → group.
+/// Shared post-processing pipeline: resegment → rerank → hiragana_rewrite → history_rerank → take(n) → rewrite → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
+    lattice: &Lattice,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
     let _span = debug_span!("postprocess", n, paths_in = paths.len()).entered();
+
+    // Generate alternative segmentations from the lattice before reranking,
+    // so the reranker can compare them on equal footing with Viterbi paths.
+    let reseg_paths = resegment::resegment(paths, lattice, conn);
+    paths.extend(reseg_paths);
+
     reranker::rerank(paths, conn);
 
     // Hiragana variant must run BEFORE history_rerank so that whole-path

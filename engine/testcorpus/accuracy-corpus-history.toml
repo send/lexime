@@ -97,12 +97,10 @@ note = "学習により買い増した→買いました に逆転"
 [[cases]]
 reading = "きょうはいいてんき"
 expected = "今日はいい天気"
-baseline = "教派いい天気"
+baseline = "今日はいい天気"
 category = "phrase"
 tags = ["history", "particle"]
-skip = true
-issue = "history boost does not yet override Viterbi segmentation (教派 vs 今日は)"
-note = "学習により教派→今日は に改善することを期待"
+note = "resegmentation + FW length variance exclusion で Viterbi top-1 が今日はいい天気に改善"
 
 # ═══════════════════════════════════════════════════════════════════
 # Conjugation-level history override

@@ -11,6 +11,7 @@ pub mod explain;
 mod lattice;
 mod postprocess;
 pub(crate) mod reranker;
+mod resegment;
 pub(crate) mod rewriter;
 pub(crate) mod testutil;
 mod viterbi;
@@ -70,7 +71,7 @@ pub fn convert(
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 10);
-    postprocess(&mut paths, conn, None, kana, 1)
+    postprocess(&mut paths, &lattice, conn, None, kana, 1)
         .into_iter()
         .next()
         .unwrap_or_default()
@@ -93,7 +94,7 @@ pub fn convert_nbest(
     let lattice = build_lattice(dict, kana);
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, conn, None, kana, n)
+    postprocess(&mut paths, &lattice, conn, None, kana, n)
 }
 
 /// 1-best conversion with history-aware reranking.
@@ -114,7 +115,7 @@ pub fn convert_with_history(
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 30);
-    postprocess(&mut paths, conn, Some(history), kana, 1)
+    postprocess(&mut paths, &lattice, conn, Some(history), kana, 1)
         .into_iter()
         .next()
         .unwrap_or_default()
@@ -140,5 +141,5 @@ pub fn convert_nbest_with_history(
     let lattice = build_lattice(dict, kana);
     let oversample = (n * 3).max(50);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, conn, Some(history), kana, n)
+    postprocess(&mut paths, &lattice, conn, Some(history), kana, n)
 }
