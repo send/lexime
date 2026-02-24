@@ -19,7 +19,7 @@ max_unigrams = 10000
 max_bigrams = 10000
 
 [candidates]
-nbest = 5
+nbest = 20
 max_results = 20
 
 [keymap]
