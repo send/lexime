@@ -218,7 +218,7 @@ mod tests {
         assert!((s.history.half_life_hours - 168.0).abs() < f64::EPSILON);
         assert_eq!(s.history.max_unigrams, 10000);
         assert_eq!(s.history.max_bigrams, 10000);
-        assert_eq!(s.candidates.nbest, 5);
+        assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
         // Keymap defaults
         assert_eq!(s.keymap_get(10, false), Some("]"));
