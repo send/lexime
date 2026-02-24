@@ -1,11 +1,16 @@
 use crate::numeric;
 use crate::unicode::{hiragana_to_katakana, is_katakana};
 
-use super::viterbi::{RichSegment, ScoredPath};
+use super::viterbi::ScoredPath;
 
 /// A rewriter that can add or modify candidates in the N-best list.
 pub(crate) trait Rewriter {
     fn rewrite(&self, paths: &mut Vec<ScoredPath>, reading: &str);
+}
+
+/// Worst (highest) Viterbi cost among paths, or 0 if empty.
+fn worst_cost(paths: &[ScoredPath]) -> i64 {
+    paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0)
 }
 
 /// Run all rewriters in sequence on the N-best path list.
@@ -35,18 +40,13 @@ impl Rewriter for KatakanaRewriter {
         }
 
         // Cost: worst path + 10000 (always lower priority than Viterbi paths)
-        let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
+        let wc = worst_cost(paths);
 
-        paths.push(ScoredPath {
-            segments: vec![RichSegment {
-                reading: reading.to_string(),
-                surface: katakana,
-                left_id: 0,
-                right_id: 0,
-                word_cost: 0,
-            }],
-            viterbi_cost: worst_cost.saturating_add(10000),
-        });
+        paths.push(ScoredPath::single(
+            reading.to_string(),
+            katakana,
+            wc.saturating_add(10000),
+        ));
     }
 }
 
@@ -91,18 +91,13 @@ impl Rewriter for HiraganaVariantRewriter {
             return;
         }
 
-        let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
+        let wc = worst_cost(paths);
 
-        paths.push(ScoredPath {
-            segments: vec![RichSegment {
-                reading: combined_reading,
-                surface: combined_surface,
-                left_id: 0,
-                right_id: 0,
-                word_cost: 0,
-            }],
-            viterbi_cost: worst_cost.saturating_add(5000),
-        });
+        paths.push(ScoredPath::single(
+            combined_reading,
+            combined_surface,
+            wc.saturating_add(5000),
+        ));
     }
 }
 
@@ -116,24 +111,14 @@ impl Rewriter for NumericRewriter {
             return;
         };
         let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
-        let worst_cost = paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0);
-        let base_cost = worst_cost.saturating_add(5000);
+        let base_cost = worst_cost(paths).saturating_add(5000);
 
         // Kanji candidate
         let kanji = numeric::to_kanji(n);
         let is_compound = kanji.chars().count() > 1;
         if !paths.iter().any(|p| p.surface_key() == kanji) {
             let kanji_cost = if is_compound { best_cost } else { base_cost };
-            let kanji_path = ScoredPath {
-                segments: vec![RichSegment {
-                    reading: reading.to_string(),
-                    surface: kanji,
-                    left_id: 0,
-                    right_id: 0,
-                    word_cost: 0,
-                }],
-                viterbi_cost: kanji_cost,
-            };
+            let kanji_path = ScoredPath::single(reading.to_string(), kanji, kanji_cost);
             if is_compound {
                 // Compound kanji (二十三, 三百) → insert at top
                 paths.insert(0, kanji_path);
@@ -146,37 +131,28 @@ impl Rewriter for NumericRewriter {
         // Half-width Arabic digits
         let halfwidth = numeric::to_halfwidth(n);
         if !paths.iter().any(|p| p.surface_key() == halfwidth) {
-            paths.push(ScoredPath {
-                segments: vec![RichSegment {
-                    reading: reading.to_string(),
-                    surface: halfwidth,
-                    left_id: 0,
-                    right_id: 0,
-                    word_cost: 0,
-                }],
-                viterbi_cost: base_cost,
-            });
+            paths.push(ScoredPath::single(
+                reading.to_string(),
+                halfwidth,
+                base_cost,
+            ));
         }
 
         // Full-width Arabic digits
         let fullwidth = numeric::to_fullwidth(n);
         if !paths.iter().any(|p| p.surface_key() == fullwidth) {
-            paths.push(ScoredPath {
-                segments: vec![RichSegment {
-                    reading: reading.to_string(),
-                    surface: fullwidth,
-                    left_id: 0,
-                    right_id: 0,
-                    word_cost: 0,
-                }],
-                viterbi_cost: base_cost.saturating_add(1),
-            });
+            paths.push(ScoredPath::single(
+                reading.to_string(),
+                fullwidth,
+                base_cost.saturating_add(1),
+            ));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::viterbi::RichSegment;
     use super::*;
 
     #[test]

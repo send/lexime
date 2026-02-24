@@ -30,6 +30,20 @@ pub(crate) struct ScoredPath {
 }
 
 impl ScoredPath {
+    /// Create a single-segment path with no POS metadata (for rewriter-generated candidates).
+    pub fn single(reading: String, surface: String, cost: i64) -> Self {
+        Self {
+            segments: vec![RichSegment {
+                reading,
+                surface,
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            }],
+            viterbi_cost: cost,
+        }
+    }
+
     /// Convert to public ConvertedSegment, dropping POS metadata.
     pub fn into_segments(self) -> Vec<ConvertedSegment> {
         self.segments
