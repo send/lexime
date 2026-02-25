@@ -454,3 +454,51 @@ fn test_wal_roundtrip_with_bigrams() {
     assert!(h.bigram_boost("今日", "は", "は", now + 1) > 0);
     assert!(h.bigram_boost("は", "いい", "良い", now + 1) > 0);
 }
+
+// ---------------------------------------------------------------------------
+// remove_entries tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_remove_entries_unigram() {
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into())]);
+    assert!(h.unigram_boost("きょう", "今日", now_epoch()) > 0);
+
+    let removed = h.remove_entries(&[("きょう".into(), "今日".into())]);
+    assert!(removed);
+    assert_eq!(h.unigram_boost("きょう", "今日", now_epoch()), 0);
+    // The outer key should also be removed when inner map is empty
+    assert!(!h.unigrams.contains_key("きょう"));
+}
+
+#[test]
+fn test_remove_entries_bigram() {
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
+    assert!(h.bigram_boost("今日", "は", "は", now_epoch()) > 0);
+
+    let removed = h.remove_entries(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
+    assert!(removed);
+    assert_eq!(h.bigram_boost("今日", "は", "は", now_epoch()), 0);
+}
+
+#[test]
+fn test_remove_entries_nonexistent() {
+    let mut h = UserHistory::new();
+    let removed = h.remove_entries(&[("きょう".into(), "今日".into())]);
+    assert!(!removed);
+}
+
+#[test]
+fn test_remove_entries_preserves_other_entries() {
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into())]);
+    h.record(&[("きょう".into(), "京".into())]);
+
+    let removed = h.remove_entries(&[("きょう".into(), "今日".into())]);
+    assert!(removed);
+    assert_eq!(h.unigram_boost("きょう", "今日", now_epoch()), 0);
+    // "京" should still exist
+    assert!(h.unigram_boost("きょう", "京", now_epoch()) > 0);
+}

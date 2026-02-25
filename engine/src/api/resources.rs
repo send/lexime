@@ -162,6 +162,11 @@ impl LexUserHistory {
         });
     }
 
+    /// Force an immediate compaction (used after history deletion to persist changes).
+    pub(super) fn force_compact(&self) {
+        self.run_compact();
+    }
+
     fn run_compact(&self) {
         // 1. Clone history under read lock (brief)
         let snapshot = match self.inner.read() {

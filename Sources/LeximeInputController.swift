@@ -99,6 +99,7 @@ class LeximeInputController: IMKInputController {
                 case 51:  keyEvent = .backspace
                 case 53:  keyEvent = .escape
                 case 48:  keyEvent = .tab
+                case 117: keyEvent = .forwardDelete
                 case 125: keyEvent = .arrowDown
                 case 126: keyEvent = .arrowUp
                 default:

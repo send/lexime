@@ -242,6 +242,36 @@ impl UserHistory {
         with_boost.iter().map(|(_, _, e)| (*e).clone()).collect()
     }
 
+    /// Remove history entries for the given segments.
+    /// Returns true if any entries were actually removed.
+    pub fn remove_entries(&mut self, segments: &[(String, String)]) -> bool {
+        let mut removed = false;
+        for (reading, surface) in segments {
+            if let Some(inner) = self.unigrams.get_mut(reading) {
+                if inner.remove(surface).is_some() {
+                    removed = true;
+                }
+                if inner.is_empty() {
+                    self.unigrams.remove(reading);
+                }
+            }
+        }
+        for pair in segments.windows(2) {
+            let (_, prev_surface) = &pair[0];
+            let (next_reading, next_surface) = &pair[1];
+            let key = (next_reading.clone(), next_surface.clone());
+            if let Some(inner) = self.bigrams.get_mut(prev_surface) {
+                if inner.remove(&key).is_some() {
+                    removed = true;
+                }
+                if inner.is_empty() {
+                    self.bigrams.remove(prev_surface);
+                }
+            }
+        }
+        removed
+    }
+
     /// Evict lowest-score entries when exceeding capacity.
     fn evict(&mut self) {
         let s = settings();

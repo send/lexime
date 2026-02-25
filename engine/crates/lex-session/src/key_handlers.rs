@@ -4,7 +4,8 @@ use lex_core::romaji::{RomajiTrie, TrieLookupResult};
 
 use super::response::{build_candidate_selection, build_marked_text_and_candidates};
 use super::types::{
-    is_romaji_input, CandidateAction, Composition, KeyEvent, KeyResponse, SessionState,
+    is_romaji_input, CandidateAction, Composition, KeyEvent, KeyResponse, LearningRecord,
+    SessionState,
 };
 use super::InputSession;
 
@@ -133,6 +134,8 @@ impl InputSession {
                 self.commit_current_state()
             }
 
+            KeyEvent::ForwardDelete if self.is_composing() => self.handle_forward_delete(),
+
             KeyEvent::Backspace if self.is_composing() => self.handle_backspace(),
 
             KeyEvent::Escape if self.is_composing() => {
@@ -195,6 +198,55 @@ impl InputSession {
             }
             _ => KeyResponse::not_consumed(),
         }
+    }
+
+    fn handle_forward_delete(&mut self) -> KeyResponse {
+        self.ensure_candidates();
+        let c = self.comp();
+        if c.candidates.is_empty() {
+            return KeyResponse::consumed();
+        }
+
+        let selected = c.candidates.selected;
+        let surface = c.candidates.surfaces[selected].clone();
+        let reading = c.kana.clone();
+
+        // Collect segments for the selected path (for bigram deletion)
+        let segments = c.find_matching_path(&surface);
+
+        // Build deletion segments: whole-reading→surface + sub-segments if multi-segment
+        let mut all_segments = vec![(reading, surface)];
+        if let Some(sub) = segments {
+            all_segments.extend(sub);
+        }
+
+        // Buffer deletion record
+        if self.history.is_some() {
+            self.history_records.push(LearningRecord::Deletion {
+                segments: all_segments,
+            });
+        }
+
+        // Remove from candidate list
+        let c = self.comp();
+        c.candidates.surfaces.remove(selected);
+        if selected < c.candidates.paths.len() {
+            c.candidates.paths.remove(selected);
+        }
+
+        if c.candidates.surfaces.is_empty() {
+            c.candidates.selected = 0;
+            let mut resp = KeyResponse::consumed();
+            resp.candidates = CandidateAction::Hide;
+            return resp;
+        }
+
+        // Adjust selection
+        if selected >= c.candidates.surfaces.len() {
+            c.candidates.selected = c.candidates.surfaces.len() - 1;
+        }
+
+        build_candidate_selection(self.comp())
     }
 
     pub(super) fn handle_backspace(&mut self) -> KeyResponse {

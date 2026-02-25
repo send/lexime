@@ -421,6 +421,7 @@ fn test_history_recorded_on_escape() {
             assert_eq!(reading, "きょう");
             assert_eq!(surface, "きょう");
         }
+        other => panic!("expected Committed, got {:?}", other),
     }
 }
 
@@ -509,4 +510,90 @@ fn test_z_sequence() {
     // "z" is a prefix in the romaji trie, "zh" → "←"
     type_string(&mut session, "zh");
     assert_eq!(session.comp().kana, "←");
+}
+
+// --- ForwardDelete ---
+
+#[test]
+fn test_forward_delete_removes_candidate_and_records_deletion() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    let initial_count = session.comp().candidates.surfaces.len();
+    assert!(initial_count >= 2, "need at least 2 candidates");
+
+    let first_surface = session.comp().candidates.surfaces[0].clone();
+
+    let resp = session.handle_key(KeyEvent::ForwardDelete);
+    assert!(resp.consumed);
+    // Candidate should be removed
+    assert_eq!(session.comp().candidates.surfaces.len(), initial_count - 1);
+    assert!(!session.comp().candidates.surfaces.contains(&first_surface));
+    // Should show updated candidate list
+    assert!(matches!(resp.candidates, CandidateAction::Show { .. }));
+
+    // Deletion record should be generated
+    let records = session.take_history_records();
+    assert_eq!(records.len(), 1);
+    assert!(matches!(&records[0], LearningRecord::Deletion { .. }));
+}
+
+#[test]
+fn test_forward_delete_no_candidates() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    // Type something that has no dictionary match
+    type_string(&mut session, "zzz");
+    assert!(session.is_composing());
+
+    let resp = session.handle_key(KeyEvent::ForwardDelete);
+    assert!(resp.consumed);
+}
+
+#[test]
+fn test_forward_delete_last_candidate_hides_panel() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "ha");
+    // Remove all candidates one by one
+    let count = session.comp().candidates.surfaces.len();
+    assert!(count >= 1);
+
+    for _ in 0..count - 1 {
+        let resp = session.handle_key(KeyEvent::ForwardDelete);
+        assert!(resp.consumed);
+        assert!(matches!(resp.candidates, CandidateAction::Show { .. }));
+    }
+
+    // Delete the last candidate → should hide panel
+    let resp = session.handle_key(KeyEvent::ForwardDelete);
+    assert!(resp.consumed);
+    assert!(matches!(resp.candidates, CandidateAction::Hide));
+    assert!(session.comp().candidates.surfaces.is_empty());
+}
+
+#[test]
+fn test_forward_delete_idle_not_consumed() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let resp = session.handle_key(KeyEvent::ForwardDelete);
+    assert!(!resp.consumed);
+}
+
+#[test]
+fn test_forward_delete_no_history_no_record() {
+    let dict = make_test_dict();
+    // No history passed — deletion record should not be generated
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    session.handle_key(KeyEvent::ForwardDelete);
+
+    let records = session.take_history_records();
+    assert!(records.is_empty());
 }
