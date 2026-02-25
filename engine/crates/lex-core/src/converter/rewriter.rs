@@ -126,10 +126,19 @@ impl Rewriter for PartialHiraganaRewriter {
                     continue;
                 }
 
-                let mut new_segments = path.segments.clone();
-                new_segments[seg_idx].surface = new_segments[seg_idx].reading.clone();
-
-                let surface: String = new_segments.iter().map(|s| s.surface.as_str()).collect();
+                // Compute surface without cloning segments
+                let surface: String = path
+                    .segments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        if i == seg_idx {
+                            s.reading.as_str()
+                        } else {
+                            s.surface.as_str()
+                        }
+                    })
+                    .collect();
 
                 // Dedup against existing paths and new paths
                 if paths.iter().any(|p| p.surface_key() == surface)
@@ -139,6 +148,10 @@ impl Rewriter for PartialHiraganaRewriter {
                 {
                     continue;
                 }
+
+                // Clone only after dedup confirms uniqueness
+                let mut new_segments = path.segments.clone();
+                new_segments[seg_idx].surface = new_segments[seg_idx].reading.clone();
 
                 new_paths.push(ScoredPath {
                     segments: new_segments,
