@@ -1,11 +1,16 @@
+use std::collections::HashSet;
+
 use crate::numeric;
 use crate::unicode::{hiragana_to_katakana, is_katakana};
 
 use super::viterbi::ScoredPath;
 
-/// A rewriter that can add or modify candidates in the N-best list.
+/// A rewriter that generates new candidates from the N-best list.
+///
+/// Implementations return new candidates without mutating the input.
+/// Deduplication and cost-ordered insertion are handled by `run_rewriters`.
 pub(crate) trait Rewriter {
-    fn rewrite(&self, paths: &mut Vec<ScoredPath>, reading: &str);
+    fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath>;
 }
 
 /// Worst (highest) Viterbi cost among paths, or 0 if empty.
@@ -13,14 +18,21 @@ fn worst_cost(paths: &[ScoredPath]) -> i64 {
     paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0)
 }
 
-/// Run all rewriters in sequence on the N-best path list.
+/// Run all rewriters in sequence, deduplicating and inserting in cost order.
 pub(crate) fn run_rewriters(
     rewriters: &[&dyn Rewriter],
     paths: &mut Vec<ScoredPath>,
     reading: &str,
 ) {
+    let mut seen: HashSet<String> = paths.iter().map(|p| p.surface_key()).collect();
     for rw in rewriters {
-        rw.rewrite(paths, reading);
+        let candidates = rw.generate(paths, reading);
+        for candidate in candidates {
+            if seen.insert(candidate.surface_key()) {
+                let pos = paths.partition_point(|p| p.viterbi_cost < candidate.viterbi_cost);
+                paths.insert(pos, candidate);
+            }
+        }
     }
 }
 
@@ -31,22 +43,14 @@ pub(crate) fn run_rewriters(
 pub(crate) struct KatakanaRewriter;
 
 impl Rewriter for KatakanaRewriter {
-    fn rewrite(&self, paths: &mut Vec<ScoredPath>, reading: &str) {
+    fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
         let katakana = hiragana_to_katakana(reading);
-
-        // Skip if katakana candidate already exists in paths
-        if paths.iter().any(|p| p.surface_key() == katakana) {
-            return;
-        }
-
-        // Cost: worst path + 10000 (always lower priority than Viterbi paths)
         let wc = worst_cost(paths);
-
-        paths.push(ScoredPath::single(
+        vec![ScoredPath::single(
             reading.to_string(),
             katakana,
             wc.saturating_add(10000),
-        ));
+        )]
     }
 }
 
@@ -57,9 +61,9 @@ impl Rewriter for KatakanaRewriter {
 pub(crate) struct HiraganaVariantRewriter;
 
 impl Rewriter for HiraganaVariantRewriter {
-    fn rewrite(&self, paths: &mut Vec<ScoredPath>, _reading: &str) {
+    fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
         let Some(best) = paths.first() else {
-            return;
+            return Vec::new();
         };
 
         let mut any_replaced = false;
@@ -67,37 +71,63 @@ impl Rewriter for HiraganaVariantRewriter {
         let mut combined_surface = String::new();
 
         for seg in &best.segments {
-            if seg.surface.chars().all(is_katakana) {
-                // Katakana → keep as-is
-                combined_reading.push_str(&seg.reading);
-                combined_surface.push_str(&seg.surface);
-            } else if seg.surface == seg.reading {
-                // Already hiragana → keep
-                combined_reading.push_str(&seg.reading);
+            combined_reading.push_str(&seg.reading);
+            if seg.surface.chars().all(is_katakana) || seg.surface == seg.reading {
+                // Katakana or already hiragana → keep as-is
                 combined_surface.push_str(&seg.surface);
             } else {
                 // Kanji → replace with reading
-                combined_reading.push_str(&seg.reading);
                 combined_surface.push_str(&seg.reading);
                 any_replaced = true;
             }
         }
 
         if !any_replaced {
-            return;
-        }
-
-        if paths.iter().any(|p| p.surface_key() == combined_surface) {
-            return;
+            return Vec::new();
         }
 
         let wc = worst_cost(paths);
-
-        paths.push(ScoredPath::single(
+        vec![ScoredPath::single(
             combined_reading,
             combined_surface,
             wc.saturating_add(5000),
-        ));
+        )]
+    }
+}
+
+/// For each top-N Viterbi path, generate variants where individual kanji
+/// segments are replaced with their hiragana readings.
+///
+/// Example: `下|方|が|良い` → `した|方|が|良い`
+pub(crate) struct PartialHiraganaRewriter;
+
+impl Rewriter for PartialHiraganaRewriter {
+    fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
+        let source_count = paths.len().min(5);
+        let mut new_paths = Vec::new();
+
+        for path in paths.iter().take(source_count) {
+            if path.segments.len() <= 1 {
+                continue;
+            }
+
+            for seg_idx in 0..path.segments.len() {
+                let seg = &path.segments[seg_idx];
+                if seg.surface == seg.reading || seg.surface.chars().all(is_katakana) {
+                    continue;
+                }
+
+                let mut new_segments = path.segments.clone();
+                new_segments[seg_idx].surface = new_segments[seg_idx].reading.clone();
+
+                new_paths.push(ScoredPath {
+                    segments: new_segments,
+                    viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                });
+            }
+        }
+
+        new_paths
     }
 }
 
@@ -106,47 +136,38 @@ impl Rewriter for HiraganaVariantRewriter {
 pub(crate) struct NumericRewriter;
 
 impl Rewriter for NumericRewriter {
-    fn rewrite(&self, paths: &mut Vec<ScoredPath>, reading: &str) {
+    fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
         let Some(n) = numeric::parse_japanese_number(reading) else {
-            return;
+            return Vec::new();
         };
         let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
         let base_cost = worst_cost(paths).saturating_add(5000);
 
+        let mut candidates = Vec::new();
+
         // Kanji candidate
         let kanji = numeric::to_kanji(n);
         let is_compound = kanji.chars().count() > 1;
-        if !paths.iter().any(|p| p.surface_key() == kanji) {
-            let kanji_cost = if is_compound { best_cost } else { base_cost };
-            let kanji_path = ScoredPath::single(reading.to_string(), kanji, kanji_cost);
-            if is_compound {
-                // Compound kanji (二十三, 三百) → insert at top
-                paths.insert(0, kanji_path);
-            } else {
-                // Single-char kanji (十, 百) → low priority, let dictionary entries win
-                paths.push(kanji_path);
-            }
-        }
+        let kanji_cost = if is_compound { best_cost } else { base_cost };
+        candidates.push(ScoredPath::single(reading.to_string(), kanji, kanji_cost));
 
         // Half-width Arabic digits
         let halfwidth = numeric::to_halfwidth(n);
-        if !paths.iter().any(|p| p.surface_key() == halfwidth) {
-            paths.push(ScoredPath::single(
-                reading.to_string(),
-                halfwidth,
-                base_cost,
-            ));
-        }
+        candidates.push(ScoredPath::single(
+            reading.to_string(),
+            halfwidth,
+            base_cost,
+        ));
 
         // Full-width Arabic digits
         let fullwidth = numeric::to_fullwidth(n);
-        if !paths.iter().any(|p| p.surface_key() == fullwidth) {
-            paths.push(ScoredPath::single(
-                reading.to_string(),
-                fullwidth,
-                base_cost.saturating_add(1),
-            ));
-        }
+        candidates.push(ScoredPath::single(
+            reading.to_string(),
+            fullwidth,
+            base_cost.saturating_add(1),
+        ));
+
+        candidates
     }
 }
 
@@ -156,9 +177,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_katakana_rewriter_adds_candidate() {
+    fn test_katakana_rewriter_generates_candidate() {
         let rw = KatakanaRewriter;
-        let mut paths = vec![ScoredPath {
+        let paths = vec![ScoredPath {
             segments: vec![RichSegment {
                 reading: "きょう".into(),
                 surface: "今日".into(),
@@ -169,15 +190,15 @@ mod tests {
             viterbi_cost: 3000,
         }];
 
-        rw.rewrite(&mut paths, "きょう");
+        let result = rw.generate(&paths, "きょう");
 
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[1].surface_key(), "キョウ");
-        assert_eq!(paths[1].viterbi_cost, 3000 + 10000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface_key(), "キョウ");
+        assert_eq!(result[0].viterbi_cost, 3000 + 10000);
     }
 
     #[test]
-    fn test_katakana_rewriter_skips_duplicate() {
+    fn test_katakana_dedup_via_run_rewriters() {
         let rw = KatakanaRewriter;
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
@@ -190,7 +211,7 @@ mod tests {
             viterbi_cost: 5000,
         }];
 
-        rw.rewrite(&mut paths, "きょう");
+        run_rewriters(&[&rw], &mut paths, "きょう");
 
         assert_eq!(
             paths.len(),
@@ -202,19 +223,18 @@ mod tests {
     #[test]
     fn test_katakana_rewriter_empty_paths() {
         let rw = KatakanaRewriter;
-        let mut paths: Vec<ScoredPath> = Vec::new();
+        let paths: Vec<ScoredPath> = Vec::new();
 
-        rw.rewrite(&mut paths, "てすと");
+        let result = rw.generate(&paths, "てすと");
 
-        assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].surface_key(), "テスト");
-        assert_eq!(paths[0].viterbi_cost, 10000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface_key(), "テスト");
+        assert_eq!(result[0].viterbi_cost, 10000);
     }
 
     #[test]
     fn test_run_rewriters_applies_all() {
         let rw = KatakanaRewriter;
-        let rewriters: Vec<&dyn Rewriter> = vec![&rw];
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
                 reading: "あ".into(),
@@ -226,14 +246,53 @@ mod tests {
             viterbi_cost: 1000,
         }];
 
-        run_rewriters(&rewriters, &mut paths, "あ");
+        run_rewriters(&[&rw], &mut paths, "あ");
 
         assert_eq!(paths.len(), 2);
+        // Katakana has higher cost, so inserted after 亜
+        assert_eq!(paths[0].surface_key(), "亜");
         assert_eq!(paths[1].surface_key(), "ア");
     }
 
     #[test]
-    fn test_numeric_rewriter_adds_candidates() {
+    fn test_run_rewriters_dedup_across_rewriters() {
+        // HiraganaVariant and PartialHiragana could produce the same surface;
+        // run_rewriters should keep only the first one.
+        let hiragana_rw = HiraganaVariantRewriter;
+        let partial_rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "され".into(),
+                    surface: "去れ".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ます".into(),
+                    surface: "ます".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        run_rewriters(&[&hiragana_rw, &partial_rw], &mut paths, "されます");
+
+        // Both would generate "されます", but only one copy should exist
+        let count = paths
+            .iter()
+            .filter(|p| p.surface_key() == "されます")
+            .count();
+        assert_eq!(count, 1, "dedup should prevent duplicate across rewriters");
+    }
+
+    #[test]
+    fn test_run_rewriters_cost_ordered_insertion() {
+        // Compound kanji (best_cost) should be inserted at position 0
         let rw = NumericRewriter;
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
@@ -246,22 +305,40 @@ mod tests {
             viterbi_cost: 3000,
         }];
 
-        rw.rewrite(&mut paths, "にじゅうさん");
+        run_rewriters(&[&rw], &mut paths, "にじゅうさん");
 
-        // Compound kanji inserted at position 0 with best_cost
-        assert_eq!(paths.len(), 4);
         assert_eq!(paths[0].surface_key(), "二十三");
-        assert_eq!(paths[0].viterbi_cost, 3000);
+        assert_eq!(paths[0].viterbi_cost, 3000); // best_cost = 3000
         assert_eq!(paths[1].surface_key(), "に十三");
-        assert_eq!(paths[2].surface_key(), "23");
-        assert_eq!(paths[2].viterbi_cost, 3000 + 5000);
-        assert_eq!(paths[3].surface_key(), "２３");
-        assert_eq!(paths[3].viterbi_cost, 3000 + 5001);
+    }
+
+    #[test]
+    fn test_numeric_rewriter_generates_candidates() {
+        let rw = NumericRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "にじゅうさん".into(),
+                surface: "に十三".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 3000,
+        }];
+
+        let result = rw.generate(&paths, "にじゅうさん");
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].surface_key(), "二十三");
+        assert_eq!(result[0].viterbi_cost, 3000); // compound → best_cost
+        assert_eq!(result[1].surface_key(), "23");
+        assert_eq!(result[1].viterbi_cost, 3000 + 5000);
+        assert_eq!(result[2].surface_key(), "２３");
+        assert_eq!(result[2].viterbi_cost, 3000 + 5001);
     }
 
     #[test]
     fn test_numeric_rewriter_kanji_duplicate_skip() {
-        // When kanji candidate already exists in Viterbi paths, skip it
         let rw = NumericRewriter;
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
@@ -274,7 +351,7 @@ mod tests {
             viterbi_cost: 3000,
         }];
 
-        rw.rewrite(&mut paths, "にじゅうさん");
+        run_rewriters(&[&rw], &mut paths, "にじゅうさん");
 
         // Kanji already exists, only halfwidth + fullwidth added
         assert_eq!(paths.len(), 3);
@@ -285,7 +362,6 @@ mod tests {
 
     #[test]
     fn test_numeric_rewriter_single_char_kanji_low_priority() {
-        // Single-char kanji like 十 should be low priority
         let rw = NumericRewriter;
         let mut paths = vec![ScoredPath {
             segments: vec![RichSegment {
@@ -298,18 +374,18 @@ mod tests {
             viterbi_cost: 3000,
         }];
 
-        rw.rewrite(&mut paths, "じゅう");
+        run_rewriters(&[&rw], &mut paths, "じゅう");
 
-        // 十 is single-char → pushed at end with base_cost
+        // 十 is single-char → base_cost (not best_cost), all after 中
         assert_eq!(paths[0].surface_key(), "中");
-        assert_eq!(paths[1].surface_key(), "十");
-        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
+        let kanji = paths.iter().find(|p| p.surface_key() == "十").unwrap();
+        assert_eq!(kanji.viterbi_cost, 3000 + 5000);
     }
 
     #[test]
     fn test_numeric_rewriter_skips_non_numeric() {
         let rw = NumericRewriter;
-        let mut paths = vec![ScoredPath {
+        let paths = vec![ScoredPath {
             segments: vec![RichSegment {
                 reading: "きょう".into(),
                 surface: "今日".into(),
@@ -320,12 +396,11 @@ mod tests {
             viterbi_cost: 1000,
         }];
 
-        rw.rewrite(&mut paths, "きょう");
+        let result = rw.generate(&paths, "きょう");
 
-        assert_eq!(
-            paths.len(),
-            1,
-            "should not add numeric candidates for non-numeric input"
+        assert!(
+            result.is_empty(),
+            "should not generate numeric candidates for non-numeric input"
         );
     }
 
@@ -343,19 +418,20 @@ mod tests {
             viterbi_cost: 1000,
         }];
 
-        rw.rewrite(&mut paths, "いち");
+        run_rewriters(&[&rw], &mut paths, "いち");
 
         // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
         assert_eq!(paths.len(), 3);
-        assert_eq!(paths[1].surface_key(), "一");
-        assert_eq!(paths[1].viterbi_cost, 1000 + 5000); // single-char → low priority
-        assert_eq!(paths[2].surface_key(), "１");
+        // All have high cost, so they come after "1"
+        assert_eq!(paths[0].surface_key(), "1");
+        assert!(paths.iter().any(|p| p.surface_key() == "一"));
+        assert!(paths.iter().any(|p| p.surface_key() == "１"));
     }
 
     #[test]
     fn test_hiragana_variant_replaces_kanji() {
         let rw = HiraganaVariantRewriter;
-        let mut paths = vec![ScoredPath {
+        let paths = vec![ScoredPath {
             segments: vec![
                 RichSegment {
                     reading: "りだいれくと".into(),
@@ -389,17 +465,17 @@ mod tests {
             viterbi_cost: 3000,
         }];
 
-        rw.rewrite(&mut paths, "りだいれくとされますか");
+        let result = rw.generate(&paths, "りだいれくとされますか");
 
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[1].surface_key(), "リダイレクトされますか");
-        assert_eq!(paths[1].viterbi_cost, 3000 + 5000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface_key(), "リダイレクトされますか");
+        assert_eq!(result[0].viterbi_cost, 3000 + 5000);
     }
 
     #[test]
     fn test_hiragana_variant_skips_all_hiragana() {
         let rw = HiraganaVariantRewriter;
-        let mut paths = vec![ScoredPath {
+        let paths = vec![ScoredPath {
             segments: vec![
                 RichSegment {
                     reading: "され".into(),
@@ -419,17 +495,16 @@ mod tests {
             viterbi_cost: 1000,
         }];
 
-        rw.rewrite(&mut paths, "されます");
+        let result = rw.generate(&paths, "されます");
 
-        assert_eq!(
-            paths.len(),
-            1,
+        assert!(
+            result.is_empty(),
             "should not add variant when all segments are already hiragana"
         );
     }
 
     #[test]
-    fn test_hiragana_variant_skips_duplicate() {
+    fn test_hiragana_variant_dedup_via_run_rewriters() {
         let rw = HiraganaVariantRewriter;
         let mut paths = vec![
             ScoredPath {
@@ -454,7 +529,7 @@ mod tests {
             },
         ];
 
-        rw.rewrite(&mut paths, "され");
+        run_rewriters(&[&rw], &mut paths, "され");
 
         assert_eq!(paths.len(), 2, "should not add duplicate hiragana variant");
     }
@@ -462,7 +537,7 @@ mod tests {
     #[test]
     fn test_hiragana_variant_keeps_katakana() {
         let rw = HiraganaVariantRewriter;
-        let mut paths = vec![ScoredPath {
+        let paths = vec![ScoredPath {
             segments: vec![
                 RichSegment {
                     reading: "てすと".into(),
@@ -482,10 +557,213 @@ mod tests {
             viterbi_cost: 2000,
         }];
 
-        rw.rewrite(&mut paths, "てすとちゅう");
+        let result = rw.generate(&paths, "てすとちゅう");
 
-        assert_eq!(paths.len(), 2);
-        // Katakana "テスト" kept, kanji "中" replaced with "ちゅう"
-        assert_eq!(paths[1].surface_key(), "テストちゅう");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface_key(), "テストちゅう");
+    }
+
+    // ── PartialHiraganaRewriter tests ──────────────────────────────
+
+    #[test]
+    fn test_partial_hiragana_basic() {
+        let rw = PartialHiraganaRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "下".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "方".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 3000,
+        }];
+
+        let result = rw.generate(&paths, "したほう");
+
+        // Should produce 2 variants: した|方 and 下|ほう
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.surface_key() == "した方"));
+        assert!(result.iter().any(|p| p.surface_key() == "下ほう"));
+        assert!(result.iter().all(|p| p.viterbi_cost == 5000));
+    }
+
+    #[test]
+    fn test_partial_hiragana_multiple_kanji() {
+        let rw = PartialHiraganaRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "舌".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "法".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "が".into(),
+                    surface: "が".into(),
+                    left_id: 30,
+                    right_id: 30,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        let result = rw.generate(&paths, "したほうが");
+
+        // Two kanji segments → 2 variants: した|法|が and 舌|ほう|が
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.surface_key() == "した法が"));
+        assert!(result.iter().any(|p| p.surface_key() == "舌ほうが"));
+    }
+
+    #[test]
+    fn test_partial_hiragana_dedup_via_run_rewriters() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "した".into(),
+                        surface: "下".into(),
+                        left_id: 10,
+                        right_id: 10,
+                        word_cost: 0,
+                    },
+                    RichSegment {
+                        reading: "ほう".into(),
+                        surface: "方".into(),
+                        left_id: 20,
+                        right_id: 20,
+                        word_cost: 0,
+                    },
+                ],
+                viterbi_cost: 3000,
+            },
+            // This path already has the surface "した方"
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "した".into(),
+                        surface: "した".into(),
+                        left_id: 0,
+                        right_id: 0,
+                        word_cost: 0,
+                    },
+                    RichSegment {
+                        reading: "ほう".into(),
+                        surface: "方".into(),
+                        left_id: 20,
+                        right_id: 20,
+                        word_cost: 0,
+                    },
+                ],
+                viterbi_cost: 5000,
+            },
+        ];
+
+        run_rewriters(&[&rw], &mut paths, "したほう");
+
+        // "した方" already exists in paths, should not be duplicated
+        let count = paths.iter().filter(|p| p.surface_key() == "した方").count();
+        assert_eq!(count, 1, "should not add duplicate した方");
+    }
+
+    #[test]
+    fn test_partial_hiragana_all_hiragana_no_variants() {
+        let rw = PartialHiraganaRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "した".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "ほう".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        let result = rw.generate(&paths, "したほう");
+
+        assert!(
+            result.is_empty(),
+            "all-hiragana path should produce no variants"
+        );
+    }
+
+    #[test]
+    fn test_partial_hiragana_keeps_katakana() {
+        let rw = PartialHiraganaRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "てすと".into(),
+                    surface: "テスト".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ちゅう".into(),
+                    surface: "中".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 2000,
+        }];
+
+        let result = rw.generate(&paths, "てすとちゅう");
+
+        // Only 中→ちゅう variant, katakana テスト should NOT be replaced
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].surface_key(), "テストちゅう");
+    }
+
+    #[test]
+    fn test_partial_hiragana_single_segment_skip() {
+        let rw = PartialHiraganaRewriter;
+        let paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "した".into(),
+                surface: "下".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 1000,
+        }];
+
+        let result = rw.generate(&paths, "した");
+
+        assert!(result.is_empty(), "single-segment path should be skipped");
     }
 }

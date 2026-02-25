@@ -30,7 +30,8 @@ pub(super) fn postprocess(
     // Hiragana variant must run BEFORE history_rerank so that whole-path
     // unigram boosts (×5) can promote a previously-selected hiragana variant.
     let hiragana_rw = rewriter::HiraganaVariantRewriter;
-    rewriter::run_rewriters(&[&hiragana_rw], paths, kana);
+    let partial_rw = rewriter::PartialHiraganaRewriter;
+    rewriter::run_rewriters(&[&hiragana_rw, &partial_rw], paths, kana);
 
     // Remember the pure-Viterbi best surface before history reranking.
     // History boosts per-segment unigrams (e.g. き→機 from past "機械") which can
@@ -64,8 +65,7 @@ pub(super) fn postprocess(
     top.truncate(n);
     let numeric_rw = rewriter::NumericRewriter;
     let katakana_rw = rewriter::KatakanaRewriter;
-    let rewriters: Vec<&dyn rewriter::Rewriter> = vec![&numeric_rw, &katakana_rw];
-    rewriter::run_rewriters(&rewriters, &mut top, kana);
+    rewriter::run_rewriters(&[&numeric_rw, &katakana_rw], &mut top, kana);
     if let Some(c) = conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);
