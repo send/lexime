@@ -53,6 +53,7 @@ mise run install
 | Tab | 確定 |
 | ↑↓ | 候補を選択 |
 | Backspace | 1 文字削除 |
+| Fn+Delete | 選択中の候補の学習履歴を削除 |
 | Escape | ひらがなで確定 |
 | 英数キー | 英数 (Lexime) に切替 |
 | かなキー | ひらがな (Lexime) に切替 |
