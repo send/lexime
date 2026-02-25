@@ -119,7 +119,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `LexSession` | Object | 入力セッション。handle_key / commit / poll |
 | `LexDictionary` | Object | 辞書リソース（open / open_with_user_dict） |
 | `LexConnection` | Object | 接続行列 |
-| `LexUserHistory` | Object | 学習履歴（WAL 付き） |
+| `LexUserHistory` | Object | 学習履歴（WAL 付き、`clear()` で全消去） |
 | `LexUserDictionary` | Object | ユーザー辞書 |
 | `LexKeyResponse` | Record | キー入力レスポンス（consumed + events） |
 | `LexEvent` | Enum | イベント（下記参照） |
@@ -150,20 +150,20 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `romaji_default_config()` | 埋め込みデフォルトローマ字 TOML 取得 |
 | `settings_load_config(path)` | カスタム設定読み込み |
 | `settings_default_config()` | 埋め込みデフォルト設定 TOML 取得 |
+| `keymap_get(key_code, has_shift)` | キーリマップ照合（`Option<String>`） |
 | `trace_init(log_dir)` | 構造化ログ初期化 |
 
 **LexSession メソッド**:
 
 | メソッド | 説明 |
 |---|---|
-| `handle_key(key_code, text, flags)` | キー入力処理 → `LexKeyResponse` |
+| `handle_key(event)` | キー入力処理（`LexKeyEvent`）→ `LexKeyResponse` |
 | `commit()` | 現在の入力を確定 → `LexKeyResponse` |
 | `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
 | `set_abc_passthrough(enabled)` | ABC パススルー設定 |
-| `committed_context()` | 確定済みコンテキスト取得 |
 
 ## 入力モデル
 
@@ -197,6 +197,7 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Enter | 表示中の候補を確定（変換結果 + 学習記録） |
 | Tab | 確定 |
 | Backspace | 1 文字削除（空になれば idle へ） |
+| Fn+Delete | 選択中の候補の学習履歴を削除し、候補リストから除外 |
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 | その他の文字 | composedKana に追加（Backspace で削除可能） |
@@ -381,7 +382,14 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 ### LearningRecord
 
-`LearningRecord::Committed { reading, surface, segments }` — セッション側で確定時に生成。FFI 層（`LexSession::record_history`）が enum を解釈して `UserHistory::record_at()` を呼び出す。whole-reading + sub-segments の 2 段階記録。
+| バリアント | 説明 |
+|---|---|
+| `Committed { reading, surface, segments }` | 確定時に生成。FFI 層が `UserHistory::record_at()` で whole-reading + sub-segments の 2 段階記録 |
+| `Deletion { segments }` | ForwardDelete 時に生成。FFI 層が `UserHistory::remove_entries()` でユニグラム・バイグラムを削除し、`force_compact()` で即座に永続化 |
+
+### 個別削除
+
+候補選択中に Fn+Delete を押すと、選択中の候補に対応する学習エントリ（ユニグラム + バイグラム）を削除する。削除後は `force_compact()` で即座にチェックポイントを書き出し、WAL リプレイによる復活を防ぐ。`force_compact()` はバックグラウンドコンパクションとの競合を `compacting` ガードで直列化する。
 
 ### 保存（WAL + Checkpoint）
 
