@@ -105,6 +105,7 @@ pub enum LexKeyEvent {
     ArrowUp,
     SwitchToDirectInput,
     SwitchToJapanese,
+    ForwardDelete,
     ModifiedKey,
 }
 
@@ -122,6 +123,7 @@ impl From<LexKeyEvent> for KeyEvent {
             LexKeyEvent::ArrowUp => KeyEvent::ArrowUp,
             LexKeyEvent::SwitchToDirectInput => KeyEvent::SwitchToDirectInput,
             LexKeyEvent::SwitchToJapanese => KeyEvent::SwitchToJapanese,
+            LexKeyEvent::ForwardDelete => KeyEvent::ForwardDelete,
             LexKeyEvent::ModifiedKey => KeyEvent::ModifiedKey,
         }
     }

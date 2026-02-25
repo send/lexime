@@ -30,6 +30,8 @@ pub enum KeyEvent {
     SwitchToDirectInput,
     /// かなキー (macOS) / Fcitx5 activate
     SwitchToJapanese,
+    /// Forward Delete (Fn+Delete on macOS) — delete history for selected candidate
+    ForwardDelete,
     /// Cmd/Ctrl/Alt 付きキー — composing 中なら確定してパススルー
     ModifiedKey,
 }
@@ -162,6 +164,8 @@ pub enum LearningRecord {
         /// Used for sub-phrase unigram + bigram learning.
         segments: Option<Vec<(String, String)>>,
     },
+    /// User requested deletion of history for this reading→surface.
+    Deletion { segments: Vec<(String, String)> },
 }
 
 pub(super) fn cyclic_index(current: usize, delta: i32, count: usize) -> usize {

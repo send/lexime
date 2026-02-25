@@ -128,6 +128,7 @@ impl LexSession {
         // Phase 1: in-memory update (write lock)
         let now = crate::user_history::now_epoch();
         let mut wal_entries: Vec<Vec<(String, String)>> = Vec::new();
+        let mut needs_compact = false;
         if let Ok(mut hist) = h.inner.write() {
             for r in records {
                 match r {
@@ -144,6 +145,11 @@ impl LexSession {
                             wal_entries.push(sub_segs.clone());
                         }
                     }
+                    LearningRecord::Deletion { segments } => {
+                        if hist.remove_entries(segments) {
+                            needs_compact = true;
+                        }
+                    }
                 }
             }
         }
@@ -153,7 +159,11 @@ impl LexSession {
             h.append_wal(segments, now);
         }
 
-        // Phase 3: background compaction if threshold reached
-        h.maybe_compact();
+        // Phase 3: persist deletion immediately, or background compaction
+        if needs_compact {
+            h.force_compact();
+        } else {
+            h.maybe_compact();
+        }
     }
 }

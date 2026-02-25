@@ -29,6 +29,7 @@ enum Action {
     Kana,
     TypeDigit(char),
     TypePunctuation(char),
+    ForwardDelete,
     /// Simulate receiving async candidates for current reading.
     ReceiveCandidates,
     /// Switch to Predictive conversion mode.
@@ -70,6 +71,7 @@ fn arb_action() -> impl Strategy<Value = Action> {
             .prop_map(Action::TypeDigit),
         3 => prop::sample::select(vec!['.', ',', '/', '-'])
             .prop_map(Action::TypePunctuation),
+        3 => Just(Action::ForwardDelete),
         5 => Just(Action::ReceiveCandidates),
         2 => Just(Action::SetPredictiveMode),
     ]
@@ -97,6 +99,7 @@ fn execute_action(
         Action::Kana => Some(session.handle_key(KeyEvent::SwitchToJapanese)),
         Action::TypeDigit(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
         Action::TypePunctuation(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
+        Action::ForwardDelete => Some(session.handle_key(KeyEvent::ForwardDelete)),
         Action::ReceiveCandidates => {
             if !session.is_composing() {
                 return None;
