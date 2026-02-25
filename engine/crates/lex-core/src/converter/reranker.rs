@@ -328,7 +328,7 @@ mod tests {
         // Single-char reading segments (verb inflections like し, き) should
         // be excluded from variance even when their POS is not FW.
         //   Path A: [4, 1(CW), 1(FW)] → exclude both 1-char → only [4] → no variance
-        //   Path B: [4, 1(CW), 3]      → exclude 1-char CW  → [4, 3] → small variance
+        //   Path B: [4, 1(CW), 2]      → exclude 1-char CW  → [4, 2] → small variance
         // Without single-char exclusion, Path A would get a large penalty from [4,1].
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
 
