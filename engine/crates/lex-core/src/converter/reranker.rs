@@ -79,11 +79,14 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
             let lengths: Vec<i64> = path
                 .segments
                 .iter()
-                .filter(|s| {
-                    s.reading.chars().count() > 1
-                        && !conn.is_some_and(|c| c.is_function_word(s.left_id))
+                .filter_map(|s| {
+                    let len = s.reading.chars().count() as i64;
+                    if len > 1 && !conn.is_some_and(|c| c.is_function_word(s.left_id)) {
+                        Some(len)
+                    } else {
+                        None
+                    }
                 })
-                .map(|s| s.reading.chars().count() as i64)
                 .collect();
             let n_var = lengths.len();
             if n_var >= 2 {
@@ -359,7 +362,7 @@ mod tests {
         // leaving no variance. Path B has [4, 2] with nonzero variance.
         assert_eq!(
             paths[0].segments[2].surface, "て",
-            "path with only 1-char non-FW should rank first (no variance penalty)"
+            "path where single-char reading segments are excluded from length variance should rank first (no variance penalty)"
         );
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
     }
