@@ -146,8 +146,9 @@ impl LexSession {
                         }
                     }
                     LearningRecord::Deletion { segments } => {
-                        hist.remove_entries(segments);
-                        needs_compact = true;
+                        if hist.remove_entries(segments) {
+                            needs_compact = true;
+                        }
                     }
                 }
             }

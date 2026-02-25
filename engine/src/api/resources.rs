@@ -163,7 +163,14 @@ impl LexUserHistory {
     }
 
     /// Force an immediate compaction (used after history deletion to persist changes).
+    /// Waits for any in-flight background compaction to finish, then runs another
+    /// compaction to ensure the post-deletion snapshot is persisted.
     pub(super) fn force_compact(&self) {
+        // Spin-wait for any in-flight background compaction to finish.
+        // Compaction is fast (snapshot clone + single file write), so this is brief.
+        while self.compacting.load(Ordering::Relaxed) {
+            std::thread::yield_now();
+        }
         self.run_compact();
     }
 
