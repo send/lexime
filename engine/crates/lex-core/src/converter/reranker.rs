@@ -69,16 +69,24 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
         // Computed as sum-of-squared-deviations from the mean, scaled
         // by LENGTH_VARIANCE_WEIGHT / N.
         //
-        // Function-word segments (particles like は, が) are excluded from
-        // the variance calculation — they are naturally short (1 char) and
-        // should not penalise an otherwise uniform segmentation.
+        // Function-word segments (particles like は, が) and single-char
+        // reading segments are excluded from the variance calculation —
+        // they are naturally short and should not penalise an otherwise
+        // uniform segmentation.  Single-char readings cover verb inflection
+        // pieces (し, き, け …) whose POS IDs may fall outside the FW range.
         let n = path.segments.len();
         if n >= 3 {
             let lengths: Vec<i64> = path
                 .segments
                 .iter()
-                .filter(|s| !conn.is_some_and(|c| c.is_function_word(s.left_id)))
-                .map(|s| s.reading.chars().count() as i64)
+                .filter_map(|s| {
+                    let len = s.reading.chars().count() as i64;
+                    if len > 1 && !conn.is_some_and(|c| c.is_function_word(s.left_id)) {
+                        Some(len)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             let n_var = lengths.len();
             if n_var >= 2 {
@@ -276,28 +284,28 @@ mod tests {
 
     #[test]
     fn length_variance_excludes_fw_segments() {
-        // Two paths with identical starting costs. The FW path has a 1-char
-        // function-word segment that would inflate variance if not excluded.
-        //   Path A (FW): [3, 1(FW), 3, 3] → FW excluded → variance of [3,3,3] = 0
-        //   Path B (CW): [3, 1(CW), 3, 3] → all included → variance of [3,1,3,3] > 0
+        // Two paths with identical starting costs. Path A has a 2-char FW
+        // segment that should be excluded; Path B has the same segment as CW.
+        //   Path A (FW): [3, 2(FW), 3, 3] → FW excluded → variance of [3,3,3] = 0
+        //   Path B (CW): [3, 2(CW), 3, 3] → all included → variance of [3,2,3,3] > 0
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
 
         let mut paths = vec![
-            // Path A: "は" is FW (id=2)
+            // Path A: "から" is FW (id=2)
             path(
                 vec![
                     seg("きょう", "今日", 1),
-                    seg("は", "は", 2), // FW
+                    seg("から", "から", 2), // FW
                     seg("いいい", "良い", 1),
                     seg("てんき", "天気", 1),
                 ],
                 100,
             ),
-            // Path B: "は" is CW (id=1) — same reading/surface, different POS
+            // Path B: "から" is CW (id=1)
             path(
                 vec![
                     seg("きょう", "今日", 1),
-                    seg("は", "は", 1), // content word
+                    seg("から", "から", 1), // content word
                     seg("いいい", "良い", 1),
                     seg("てんき", "天気", 1),
                 ],
@@ -307,7 +315,7 @@ mod tests {
 
         rerank(&mut paths, Some(&conn));
 
-        // The FW path should rank first (lower cost) because its 1-char
+        // The FW path should rank first (lower cost) because its 2-char
         // particle is excluded from the variance calculation.
         assert_eq!(paths[0].segments[1].left_id, 2, "FW path should rank first");
         assert!(
@@ -316,6 +324,47 @@ mod tests {
             paths[0].viterbi_cost,
             paths[1].viterbi_cost
         );
+    }
+
+    #[test]
+    fn length_variance_excludes_single_char_segments() {
+        // Single-char reading segments (verb inflections like し, き) should
+        // be excluded from variance even when their POS is not FW.
+        //   Path A: [4, 1(CW), 1(FW)] → exclude both 1-char → only [4] → no variance
+        //   Path B: [4, 1(CW), 2]      → exclude 1-char CW  → [4, 2] → small variance
+        // Without single-char exclusion, Path A would get a large penalty from [4,1].
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+
+        let mut paths = vec![
+            // Path A: "し" is 1-char CW — should be excluded from variance
+            path(
+                vec![
+                    seg("せつめい", "説明", 1),
+                    seg("し", "し", 1), // 1-char CW (する連用形)
+                    seg("て", "て", 2), // FW
+                ],
+                100,
+            ),
+            // Path B: "ある" is 2-char CW — included in variance
+            path(
+                vec![
+                    seg("せつめい", "説明", 1),
+                    seg("し", "し", 1), // 1-char CW
+                    seg("ある", "ある", 1),
+                ],
+                100,
+            ),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        // Path A should rank better: its 1-char segments are all excluded,
+        // leaving no variance. Path B has [4, 2] with nonzero variance.
+        assert_eq!(
+            paths[0].segments[2].surface, "て",
+            "path where single-char reading segments are excluded from length variance should rank first (no variance penalty)"
+        );
+        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
     }
 
     #[test]
