@@ -121,7 +121,7 @@ note = "学習により買い手→書いて に逆転"
 [[cases]]
 reading = "せんせいにしつもんした"
 expected = "先生に質問した"
-baseline = "先生に質問下"
+baseline = "先生に質問した"
 category = "phrase"
 tags = ["history", "suru-verb"]
-note = "学習により質問下→質問した に逆転"
+note = "1-char variance exclusion により baseline が質問した に改善; 履歴なしでも正しい"

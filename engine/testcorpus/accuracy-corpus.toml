@@ -251,6 +251,21 @@ tags = ["te-form", "auxiliary-verb"]
 issue = "#173"
 note = "読んで見る が mixed_script_bonus で top-1 になる問題"
 
+[[cases]]
+reading = "せつめいして"
+expected = "説明して"
+category = "regression"
+tags = ["suru-verb", "te-form"]
+pr = "#181"
+note = "説明仕手 が length variance で top-1 になる問題"
+
+[[cases]]
+reading = "かくにんして"
+expected = "確認して"
+category = "regression"
+tags = ["suru-verb", "te-form"]
+pr = "#181"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════
@@ -394,8 +409,7 @@ reading = "せんせいにしつもんした"
 expected = "先生に質問した"
 category = "phrase"
 tags = ["long", "suru-verb"]
-skip = true
-issue = "質問下 が top-1 になり 質問した に変換できない"
+pr = "#181"
 
 # ═══════════════════════════════════════════════════════════════════
 # Additional verb conjugations (negative, passive, causative, te-form)
