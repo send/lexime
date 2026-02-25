@@ -152,26 +152,29 @@ impl LexUserHistory {
             return;
         }
         // Prevent concurrent compactions
-        if self.compacting.swap(true, Ordering::Relaxed) {
+        if self.compacting.swap(true, Ordering::Acquire) {
             return;
         }
         let this = Arc::clone(self);
         std::thread::spawn(move || {
             this.run_compact();
-            this.compacting.store(false, Ordering::Relaxed);
+            this.compacting.store(false, Ordering::Release);
         });
     }
 
     /// Force an immediate compaction (used after history deletion to persist changes).
-    /// Waits for any in-flight background compaction to finish, then runs another
-    /// compaction to ensure the post-deletion snapshot is persisted.
+    /// Acquires the compacting guard to serialize with background compaction.
     pub(super) fn force_compact(&self) {
-        // Spin-wait for any in-flight background compaction to finish.
-        // Compaction is fast (snapshot clone + single file write), so this is brief.
-        while self.compacting.load(Ordering::Relaxed) {
+        // Acquire the compacting flag, spinning if a background compaction is in flight.
+        while self
+            .compacting
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             std::thread::yield_now();
         }
         self.run_compact();
+        self.compacting.store(false, Ordering::Release);
     }
 
     fn run_compact(&self) {
