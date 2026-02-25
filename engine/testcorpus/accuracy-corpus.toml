@@ -266,6 +266,13 @@ category = "regression"
 tags = ["suru-verb", "te-form"]
 pr = "#181"
 
+[[cases]]
+reading = "したほうがいい"
+expected = "したほうが良い"
+category = "regression"
+tags = ["partial-hiragana"]
+note = "した方がいい は PartialHiraganaRewriter で生成されるが history boost なしでは top-1 にならない"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════

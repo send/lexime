@@ -101,6 +101,56 @@ impl Rewriter for HiraganaVariantRewriter {
     }
 }
 
+/// For each top-N Viterbi path, generate variants where individual kanji
+/// segments are replaced with their hiragana readings.
+///
+/// Example: `下|方|が|良い` → `した|方|が|良い`
+pub(crate) struct PartialHiraganaRewriter;
+
+impl Rewriter for PartialHiraganaRewriter {
+    fn rewrite(&self, paths: &mut Vec<ScoredPath>, _reading: &str) {
+        let source_count = paths.len().min(5);
+        let mut new_paths = Vec::new();
+
+        for i in 0..source_count {
+            let path = &paths[i];
+            // Single-segment paths are handled elsewhere
+            if path.segments.len() <= 1 {
+                continue;
+            }
+
+            for seg_idx in 0..path.segments.len() {
+                let seg = &path.segments[seg_idx];
+                // Skip if already hiragana or katakana
+                if seg.surface == seg.reading || seg.surface.chars().all(is_katakana) {
+                    continue;
+                }
+
+                let mut new_segments = path.segments.clone();
+                new_segments[seg_idx].surface = new_segments[seg_idx].reading.clone();
+
+                let surface: String = new_segments.iter().map(|s| s.surface.as_str()).collect();
+
+                // Dedup against existing paths and new paths
+                if paths.iter().any(|p| p.surface_key() == surface)
+                    || new_paths
+                        .iter()
+                        .any(|p: &ScoredPath| p.surface_key() == surface)
+                {
+                    continue;
+                }
+
+                new_paths.push(ScoredPath {
+                    segments: new_segments,
+                    viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                });
+            }
+        }
+
+        paths.extend(new_paths);
+    }
+}
+
 /// Adds numeric candidates (half-width and full-width) when the reading is a
 /// Japanese number expression.
 pub(crate) struct NumericRewriter;
@@ -487,5 +537,211 @@ mod tests {
         assert_eq!(paths.len(), 2);
         // Katakana "テスト" kept, kanji "中" replaced with "ちゅう"
         assert_eq!(paths[1].surface_key(), "テストちゅう");
+    }
+
+    // ── PartialHiraganaRewriter tests ──────────────────────────────
+
+    #[test]
+    fn test_partial_hiragana_basic() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "下".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "方".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 3000,
+        }];
+
+        rw.rewrite(&mut paths, "したほう");
+
+        // Should produce 2 variants: した|方 and 下|ほう
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().any(|p| p.surface_key() == "した方"));
+        assert!(paths.iter().any(|p| p.surface_key() == "下ほう"));
+        // Cost should be original + 2000
+        assert_eq!(paths[1].viterbi_cost, 5000);
+    }
+
+    #[test]
+    fn test_partial_hiragana_multiple_kanji() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "舌".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "法".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "が".into(),
+                    surface: "が".into(),
+                    left_id: 30,
+                    right_id: 30,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "したほうが");
+
+        // Two kanji segments → 2 variants: した|法|が and 舌|ほう|が
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().any(|p| p.surface_key() == "した法が"));
+        assert!(paths.iter().any(|p| p.surface_key() == "舌ほうが"));
+    }
+
+    #[test]
+    fn test_partial_hiragana_dedup() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "した".into(),
+                        surface: "下".into(),
+                        left_id: 10,
+                        right_id: 10,
+                        word_cost: 0,
+                    },
+                    RichSegment {
+                        reading: "ほう".into(),
+                        surface: "方".into(),
+                        left_id: 20,
+                        right_id: 20,
+                        word_cost: 0,
+                    },
+                ],
+                viterbi_cost: 3000,
+            },
+            // This path already has the surface "した方"
+            ScoredPath {
+                segments: vec![
+                    RichSegment {
+                        reading: "した".into(),
+                        surface: "した".into(),
+                        left_id: 0,
+                        right_id: 0,
+                        word_cost: 0,
+                    },
+                    RichSegment {
+                        reading: "ほう".into(),
+                        surface: "方".into(),
+                        left_id: 20,
+                        right_id: 20,
+                        word_cost: 0,
+                    },
+                ],
+                viterbi_cost: 5000,
+            },
+        ];
+
+        rw.rewrite(&mut paths, "したほう");
+
+        // "した方" already exists in paths, should not be duplicated
+        let count = paths.iter().filter(|p| p.surface_key() == "した方").count();
+        assert_eq!(count, 1, "should not add duplicate した方");
+    }
+
+    #[test]
+    fn test_partial_hiragana_all_hiragana_no_variants() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "した".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "ほう".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "したほう");
+
+        assert_eq!(
+            paths.len(),
+            1,
+            "all-hiragana path should produce no variants"
+        );
+    }
+
+    #[test]
+    fn test_partial_hiragana_keeps_katakana() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "てすと".into(),
+                    surface: "テスト".into(),
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ちゅう".into(),
+                    surface: "中".into(),
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 2000,
+        }];
+
+        rw.rewrite(&mut paths, "てすとちゅう");
+
+        // Only 中→ちゅう variant, katakana テスト should NOT be replaced
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[1].surface_key(), "テストちゅう");
+    }
+
+    #[test]
+    fn test_partial_hiragana_single_segment_skip() {
+        let rw = PartialHiraganaRewriter;
+        let mut paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "した".into(),
+                surface: "下".into(),
+                left_id: 10,
+                right_id: 10,
+                word_cost: 0,
+            }],
+            viterbi_cost: 1000,
+        }];
+
+        rw.rewrite(&mut paths, "した");
+
+        assert_eq!(paths.len(), 1, "single-segment path should be skipped");
     }
 }
