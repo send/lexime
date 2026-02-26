@@ -400,10 +400,16 @@ mod tests {
         rerank(&mut paths, Some(&conn));
 
         // The pronoun path should rank higher (lower cost) after bonus
-        assert_eq!(paths[0].segments[0].left_id, 2, "pronoun path should rank first");
+        assert_eq!(
+            paths[0].segments[0].left_id, 2,
+            "pronoun path should rank first"
+        );
         let bonus = settings().reranker.pronoun_cost_bonus;
         let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
-        assert_eq!(diff, bonus, "cost difference should equal pronoun_cost_bonus");
+        assert_eq!(
+            diff, bonus,
+            "cost difference should equal pronoun_cost_bonus"
+        );
     }
 
     #[test]
