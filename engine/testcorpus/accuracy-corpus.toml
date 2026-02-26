@@ -285,9 +285,7 @@ reading = "どれぐらい"
 expected = "どれぐらい"
 category = "regression"
 tags = ["pronoun", "mixed-script-bonus"]
-skip = true
-issue = "#187"
-note = "取れぐらい が top-1 — word_cost + connection cost の差が大きく script scaling だけでは不足"
+note = "代名詞 reranker bonus (#187) で修正"
 
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)

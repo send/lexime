@@ -83,6 +83,7 @@ pub const ROLE_FUNCTION_WORD: u8 = 1;
 pub const ROLE_SUFFIX: u8 = 2;
 pub const ROLE_PREFIX: u8 = 3;
 pub const ROLE_NON_INDEPENDENT: u8 = 4;
+pub const ROLE_PRONOUN: u8 = 5;
 
 /// Parse Mozc `id.def` and classify each POS ID into a morpheme role.
 ///
@@ -119,6 +120,8 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
                 ROLE_SUFFIX
             } else if fields[1] == "非自立" {
                 ROLE_NON_INDEPENDENT
+            } else if fields[1] == "代名詞" {
+                ROLE_PRONOUN
             } else {
                 ROLE_CONTENT_WORD
             }
@@ -240,6 +243,7 @@ mod tests {
                 "680 動詞,自立,*,*,一段,基本形,*",
                 "690 名詞,非自立,一般,*,*,*,*",
                 "700 動詞,非自立,*,*,一段,基本形,*",
+                "1900 名詞,代名詞,一般,*,*,*,*",
             ]),
         )
         .unwrap();
@@ -258,6 +262,7 @@ mod tests {
         assert_eq!(roles[680], ROLE_CONTENT_WORD); // 動詞,自立
         assert_eq!(roles[690], ROLE_NON_INDEPENDENT); // 名詞,非自立
         assert_eq!(roles[700], ROLE_NON_INDEPENDENT); // 動詞,非自立
+        assert_eq!(roles[1900], ROLE_PRONOUN); // 名詞,代名詞
 
         fs::remove_dir_all(&dir).ok();
     }
