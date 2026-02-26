@@ -102,4 +102,9 @@ impl ConnectionMatrix {
     pub fn is_non_independent(&self, id: u16) -> bool {
         self.role(id) == 4
     }
+
+    /// Check whether a POS ID is a pronoun (代名詞, role == 5).
+    pub fn is_pronoun(&self, id: u16) -> bool {
+        self.role(id) == 5
+    }
 }

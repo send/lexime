@@ -75,6 +75,8 @@ pub struct ExplainSegment {
     pub script_cost: i64,
     /// Connection cost from BOS or previous segment.
     pub connection_cost: i64,
+    /// Pronoun cost bonus applied (positive value, subtracted from cost).
+    pub pronoun_bonus: i64,
     pub left_id: u16,
     pub right_id: u16,
 }
@@ -103,6 +105,11 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 let prev = &scored.segments[i - 1];
                 conn_cost(conn, prev.right_id, seg.left_id)
             };
+            let pronoun_bonus = if conn.is_some_and(|c| c.is_pronoun(seg.left_id)) {
+                settings().reranker.pronoun_cost_bonus
+            } else {
+                0
+            };
             ExplainSegment {
                 reading: seg.reading.clone(),
                 surface: seg.surface.clone(),
@@ -110,6 +117,7 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 segment_penalty: settings().cost.segment_penalty,
                 script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
+                pronoun_bonus,
                 left_id: seg.left_id,
                 right_id: seg.right_id,
             }
@@ -258,8 +266,13 @@ pub fn format_text(result: &ExplainResult) -> String {
                 seg_label
             };
             let conn_label = if j == 0 { "BOS->" } else { "conn=" };
+            let pronoun_str = if seg.pronoun_bonus > 0 {
+                format!(" pronoun={:<+6}", -(seg.pronoun_bonus))
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}\n",
+                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}\n",
                 j,
                 padded,
                 seg.word_cost,
@@ -267,6 +280,7 @@ pub fn format_text(result: &ExplainResult) -> String {
                 seg.script_cost,
                 conn_label,
                 seg.connection_cost,
+                pronoun_str,
             ));
         }
 

@@ -122,6 +122,18 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
             }
         }
 
+        // Pronoun cost bonus: reduce cost for pronoun (代名詞) segments.
+        // Dictionary costs for infrequent pronouns (どれ, あれ) are too high
+        // relative to homophonous verb forms (取れ), causing misranking.
+        if let Some(conn) = conn {
+            let bonus = settings().reranker.pronoun_cost_bonus;
+            for seg in &path.segments {
+                if conn.is_pronoun(seg.left_id) {
+                    path.viterbi_cost -= bonus;
+                }
+            }
+        }
+
         // Te-form kanji penalty: penalise kanji surfaces following て/で
         // conjunctive particles to prefer hiragana auxiliary verbs
         // (e.g., 読んでみる over 読んで見る).
@@ -369,6 +381,35 @@ mod tests {
             "path where single-char reading segments are excluded from length variance should rank first (no variance penalty)"
         );
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
+    }
+
+    #[test]
+    fn pronoun_bonus_applied() {
+        // ID 2 = pronoun (role 5), ID 1 = content word (role 0)
+        let roles = vec![0u8, 0, 5];
+        let conn = conn_with_roles(roles);
+
+        // Both paths have the same surface (hiragana) to isolate pronoun bonus.
+        // Path A: pronoun POS (id=2) — bonus applied
+        // Path B: content word POS (id=1) — no bonus
+        let mut paths = vec![
+            path(vec![seg("どれ", "どれ", 2)], 1000),
+            path(vec![seg("どれ", "どれ", 1)], 1000),
+        ];
+
+        rerank(&mut paths, Some(&conn));
+
+        // The pronoun path should rank higher (lower cost) after bonus
+        assert_eq!(
+            paths[0].segments[0].left_id, 2,
+            "pronoun path should rank first"
+        );
+        let bonus = settings().reranker.pronoun_cost_bonus;
+        let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
+        assert_eq!(
+            diff, bonus,
+            "cost difference should equal pronoun_cost_bonus"
+        );
     }
 
     #[test]
