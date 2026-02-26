@@ -273,6 +273,22 @@ category = "regression"
 tags = ["partial-hiragana"]
 note = "した方がいい は PartialHiraganaRewriter で生成されるが history boost なしでは top-1 にならない"
 
+[[cases]]
+reading = "どれ"
+expected = "どれ"
+category = "regression"
+tags = ["pronoun", "mixed-script-bonus"]
+note = "取れ が mixed_script_bonus で top-1 になっていた — reading長スケーリングで修正"
+
+[[cases]]
+reading = "どれぐらい"
+expected = "どれぐらい"
+category = "regression"
+tags = ["pronoun", "mixed-script-bonus"]
+skip = true
+issue = "#187"
+note = "取れぐらい が top-1 — word_cost + connection cost の差が大きく script scaling だけでは不足"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════

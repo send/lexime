@@ -108,7 +108,7 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 surface: seg.surface.clone(),
                 word_cost: seg.word_cost as i64,
                 segment_penalty: settings().cost.segment_penalty,
-                script_cost: script_cost(&seg.surface),
+                script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
                 left_id: seg.left_id,
                 right_id: seg.right_id,

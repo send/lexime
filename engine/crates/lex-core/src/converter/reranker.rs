@@ -104,7 +104,11 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
         }
 
         // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.
-        let total_script: i64 = path.segments.iter().map(|s| script_cost(&s.surface)).sum();
+        let total_script: i64 = path
+            .segments
+            .iter()
+            .map(|s| script_cost(&s.surface, s.reading.chars().count()))
+            .sum();
         path.viterbi_cost += total_script;
 
         // Non-independent kanji penalty: penalise kanji surfaces for 非自立

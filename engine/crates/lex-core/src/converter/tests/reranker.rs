@@ -95,11 +95,11 @@ fn test_rerank_no_conn_no_structure_penalty() {
         },
     ];
 
-    // Without conn, structure cost is 0; "木の" gets script_cost -3000
-    // (mixed kanji+kana bonus) so it reranks to first.
+    // Without conn, structure cost is 0; "木の" (reading "きの" = 2 chars)
+    // gets script_cost -3000 * 2/3 = -2000 (mixed kanji+kana bonus scaled).
     rerank(&mut paths, None);
     assert_eq!(paths[0].segments[0].surface, "木の");
-    assert_eq!(paths[0].viterbi_cost, 2000 - 3000);
+    assert_eq!(paths[0].viterbi_cost, 2000 - 2000);
 }
 
 #[test]
@@ -176,14 +176,16 @@ fn test_rerank_penalizes_uneven_segments() {
 
     rerank(&mut paths, None);
 
-    // script_cost: "来たり" is mixed (kanji+kana) → -3000; "出来" is pure kanji → -1000
+    // script_cost (scaled by reading length):
+    //   "来たり" (reading "きたり" = 3 chars) → mixed bonus -3000 * 3/3 = -3000
+    //   "出来" (reading "でき" = 2 chars) → pure_kanji bonus -1000 * 2/3 = -666
     // Uneven: 5000 + variance(0, exempt) + script("で"=0 + "来たり"=-3000) = 2000
-    // Even:   6500 + variance(0, exempt) + script("出来"=-1000 + "たり"=0) = 5500
+    // Even:   6500 + variance(0, exempt) + script("出来"=-666 + "たり"=0) = 5834
     // Uneven path wins due to mixed-script bonus on "来たり"
     assert_eq!(paths[0].segments[0].surface, "で");
     assert_eq!(paths[0].viterbi_cost, 2000);
     assert_eq!(paths[1].segments[0].surface, "出来");
-    assert_eq!(paths[1].viterbi_cost, 5500);
+    assert_eq!(paths[1].viterbi_cost, 5834);
 }
 
 #[test]
