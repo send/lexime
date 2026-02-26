@@ -93,6 +93,7 @@ pub const ROLE_PRONOUN: u8 = 5;
 /// - `2` (Suffix): second POS field is 接尾 (e.g., 名詞,接尾 / 動詞,接尾 / 形容詞,接尾)
 /// - `3` (Prefix): first POS field is 接頭詞
 /// - `4` (NonIndependent): 非自立 (e.g., 名詞,非自立 / 動詞,非自立 / 形容詞,非自立)
+/// - `5` (Pronoun): 代名詞 (e.g., 名詞,代名詞)
 pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
     let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
     let mut max_id: u16 = 0;

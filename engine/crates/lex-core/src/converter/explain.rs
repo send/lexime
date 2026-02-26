@@ -75,7 +75,7 @@ pub struct ExplainSegment {
     pub script_cost: i64,
     /// Connection cost from BOS or previous segment.
     pub connection_cost: i64,
-    /// Pronoun cost bonus (negative = cost reduction).
+    /// Pronoun cost bonus applied (positive value, subtracted from cost).
     pub pronoun_bonus: i64,
     pub left_id: u16,
     pub right_id: u16,
