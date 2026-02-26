@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 99314a9c323e2124bccc594c41f1bd256e2e98cc83d0f62f2f2475b7f8c4bcdb # shrinks to actions = [TypeRomaji('i'), Space, ForwardDelete, ArrowDown, ForwardDelete]
+cc 0c54128754227aeba88b35bac442655c1bdef4ca08d396d3781176c75d758335 # shrinks to actions = [TypePunctuation('.'), ForwardDelete, ForwardDelete]
