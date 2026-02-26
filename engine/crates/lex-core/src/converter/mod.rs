@@ -51,7 +51,7 @@ pub(crate) fn convert_nbest_constrained(
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
     // Apply reranking but not grouping (speculative decode needs raw segments)
-    reranker::rerank(&mut paths, conn);
+    reranker::rerank(&mut paths, conn, Some(dict));
     paths.truncate(n);
     paths
 }
@@ -71,7 +71,7 @@ pub fn convert(
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 10);
-    postprocess(&mut paths, &lattice, conn, None, kana, 1)
+    postprocess(&mut paths, &lattice, conn, Some(dict), None, kana, 1)
         .into_iter()
         .next()
         .unwrap_or_default()
@@ -94,7 +94,7 @@ pub fn convert_nbest(
     let lattice = build_lattice(dict, kana);
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, &lattice, conn, None, kana, n)
+    postprocess(&mut paths, &lattice, conn, Some(dict), None, kana, n)
 }
 
 /// 1-best conversion with history-aware reranking.
@@ -115,10 +115,18 @@ pub fn convert_with_history(
     let cost_fn = DefaultCostFunction::new(conn);
     let lattice = build_lattice(dict, kana);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, 30);
-    postprocess(&mut paths, &lattice, conn, Some(history), kana, 1)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
+    postprocess(
+        &mut paths,
+        &lattice,
+        conn,
+        Some(dict),
+        Some(history),
+        kana,
+        1,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default()
 }
 
 /// N-best conversion with history-aware reranking.
@@ -141,5 +149,13 @@ pub fn convert_nbest_with_history(
     let lattice = build_lattice(dict, kana);
     let oversample = (n * 3).max(50);
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    postprocess(&mut paths, &lattice, conn, Some(history), kana, n)
+    postprocess(
+        &mut paths,
+        &lattice,
+        conn,
+        Some(dict),
+        Some(history),
+        kana,
+        n,
+    )
 }

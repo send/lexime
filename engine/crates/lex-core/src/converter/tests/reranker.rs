@@ -55,7 +55,7 @@ fn test_rerank_penalizes_fragmented_path() {
         },
     ];
 
-    rerank(&mut paths, Some(&conn));
+    rerank(&mut paths, Some(&conn), None);
 
     // Fragmented: 1000 + 50 = 1050 > Single: 1040 + 0 = 1040
     assert_eq!(paths[0].segments[0].surface, "木の葉");
@@ -97,7 +97,7 @@ fn test_rerank_no_conn_no_structure_penalty() {
 
     // Without conn, structure cost is 0; "木の" (reading "きの" = 2 chars)
     // gets script_cost -3000 * 2/3 = -2000 (mixed kanji+kana bonus scaled).
-    rerank(&mut paths, None);
+    rerank(&mut paths, None, None);
     assert_eq!(paths[0].segments[0].surface, "木の");
     assert_eq!(paths[0].viterbi_cost, 2000 - 2000);
 }
@@ -115,7 +115,7 @@ fn test_rerank_single_path_noop() {
         viterbi_cost: 1000,
     }];
 
-    rerank(&mut paths, None);
+    rerank(&mut paths, None, None);
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "亜");
 }
@@ -123,7 +123,7 @@ fn test_rerank_single_path_noop() {
 #[test]
 fn test_rerank_empty_noop() {
     let mut paths: Vec<ScoredPath> = Vec::new();
-    rerank(&mut paths, None);
+    rerank(&mut paths, None, None);
     assert!(paths.is_empty());
 }
 
@@ -174,7 +174,7 @@ fn test_rerank_penalizes_uneven_segments() {
         },
     ];
 
-    rerank(&mut paths, None);
+    rerank(&mut paths, None, None);
 
     // script_cost (scaled by reading length):
     //   "来たり" (reading "きたり" = 3 chars) → mixed bonus -3000 * 3/3 = -3000
@@ -216,7 +216,7 @@ fn test_rerank_applies_script_cost() {
         },
     ];
 
-    rerank(&mut paths, None);
+    rerank(&mut paths, None, None);
 
     // Katakana: 3000 + 5000 = 8000
     // Hiragana: 7000 + 0    = 7000
@@ -453,7 +453,7 @@ fn test_filter_drops_fragmented_paths() {
         },
     ];
 
-    rerank(&mut paths, Some(&conn));
+    rerank(&mut paths, Some(&conn), None);
 
     // Path C should have been filtered out
     assert_eq!(paths.len(), 2);
@@ -502,7 +502,7 @@ fn test_filter_keeps_all_when_all_exceed() {
         },
     ];
 
-    rerank(&mut paths, Some(&conn));
+    rerank(&mut paths, Some(&conn), None);
 
     // Both have identical structure_cost, so neither is filtered
     assert_eq!(paths.len(), 2);
@@ -561,7 +561,7 @@ fn test_filter_preserves_minimum_path() {
         },
     ];
 
-    rerank(&mut paths, Some(&conn));
+    rerank(&mut paths, Some(&conn), None);
 
     // Only the single-segment path (sc=0) should survive
     assert_eq!(paths.len(), 1);
