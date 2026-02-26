@@ -7,7 +7,82 @@ use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
 use super::cost::{conn_cost, script_cost};
-use super::viterbi::ScoredPath;
+use super::viterbi::{RichSegment, ScoredPath};
+
+/// Non-independent kanji penalty for a segment.
+/// Returns penalty (> 0) if the segment is non-independent (形式名詞/補助動詞) with kanji surface.
+pub(super) fn non_independent_kanji_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
+    if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
+        settings().reranker.non_independent_kanji_penalty
+    } else {
+        0
+    }
+}
+
+/// Pronoun cost bonus for a segment (positive value = cost reduction).
+pub(super) fn pronoun_bonus(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
+    if conn.is_pronoun(seg.left_id) {
+        settings().reranker.pronoun_cost_bonus
+    } else {
+        0
+    }
+}
+
+/// Te-form kanji penalty for a segment that follows て/で.
+/// `prev` is the preceding segment (None for the first segment).
+pub(super) fn te_form_kanji_penalty(
+    prev: Option<&RichSegment>,
+    curr: &RichSegment,
+    conn: &ConnectionMatrix,
+) -> i64 {
+    if let Some(prev) = prev {
+        if conn.is_function_word(prev.left_id)
+            && (prev.surface == "て" || prev.surface == "で")
+            && curr.surface.chars().any(is_kanji)
+        {
+            return settings().reranker.te_form_kanji_penalty;
+        }
+    }
+    0
+}
+
+/// Single-char kanji noun penalty with dictionary compound exemption.
+pub(super) fn single_char_kanji_penalty(
+    seg: &RichSegment,
+    idx: usize,
+    segments: &[RichSegment],
+    conn: &ConnectionMatrix,
+    dict: Option<&dyn Dictionary>,
+) -> i64 {
+    if seg.reading.chars().count() != 1
+        || !seg.surface.chars().any(is_kanji)
+        || conn.role(seg.left_id) != 0
+    {
+        return 0;
+    }
+    let exempt = dict.is_some_and(|d| {
+        if idx > 0 {
+            let prev = &segments[idx - 1];
+            let combined = format!("{}{}", prev.reading, seg.reading);
+            if !d.lookup(&combined).is_empty() {
+                return true;
+            }
+        }
+        if idx + 1 < segments.len() {
+            let next = &segments[idx + 1];
+            let combined = format!("{}{}", seg.reading, next.reading);
+            if !d.lookup(&combined).is_empty() {
+                return true;
+            }
+        }
+        false
+    });
+    if exempt {
+        0
+    } else {
+        settings().reranker.single_char_kanji_penalty
+    }
+}
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
@@ -116,81 +191,19 @@ pub fn rerank(
             .sum();
         path.viterbi_cost += total_script;
 
-        // Non-independent kanji penalty: penalise kanji surfaces for 非自立
-        // morphemes (形式名詞 like 事/物/所, 補助動詞 like 下さい/頂く).
+        // Per-segment penalties: non-independent kanji, pronoun bonus,
+        // te-form kanji, single-char kanji noun.
         if let Some(conn) = conn {
-            let penalty = settings().reranker.non_independent_kanji_penalty;
-            for seg in &path.segments {
-                if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
-                    path.viterbi_cost += penalty;
-                }
-            }
-        }
-
-        // Pronoun cost bonus: reduce cost for pronoun (代名詞) segments.
-        // Dictionary costs for infrequent pronouns (どれ, あれ) are too high
-        // relative to homophonous verb forms (取れ), causing misranking.
-        if let Some(conn) = conn {
-            let bonus = settings().reranker.pronoun_cost_bonus;
-            for seg in &path.segments {
-                if conn.is_pronoun(seg.left_id) {
-                    path.viterbi_cost -= bonus;
-                }
-            }
-        }
-
-        // Te-form kanji penalty: penalise kanji surfaces following て/で
-        // conjunctive particles to prefer hiragana auxiliary verbs
-        // (e.g., 読んでみる over 読んで見る).
-        if let Some(conn) = conn {
-            let te_penalty = settings().reranker.te_form_kanji_penalty;
-            for pair in path.segments.windows(2) {
-                let prev = &pair[0];
-                let curr = &pair[1];
-                if conn.is_function_word(prev.left_id)
-                    && (prev.surface == "て" || prev.surface == "で")
-                    && curr.surface.chars().any(is_kanji)
-                {
-                    path.viterbi_cost += te_penalty;
-                }
-            }
-        }
-
-        // Single-char kanji noun penalty: penalise single-reading-char kanji
-        // nouns (値, 根, 園, 炎 …) that appear as isolated segments.
-        // These get moderate word_cost + pure_kanji_bonus and incorrectly
-        // outrank particles/inflection endings. Exempt when the segment
-        // forms a dictionary compound with an adjacent segment.
-        if let Some(conn) = conn {
-            let penalty = settings().reranker.single_char_kanji_penalty;
-            for i in 0..path.segments.len() {
-                let seg = &path.segments[i];
-                if seg.reading.chars().count() != 1
-                    || !seg.surface.chars().any(is_kanji)
-                    || conn.role(seg.left_id) != 0
-                {
-                    continue;
-                }
-                let exempt = dict.is_some_and(|d| {
-                    if i > 0 {
-                        let prev = &path.segments[i - 1];
-                        let combined = format!("{}{}", prev.reading, seg.reading);
-                        if !d.lookup(&combined).is_empty() {
-                            return true;
-                        }
-                    }
-                    if i + 1 < path.segments.len() {
-                        let next = &path.segments[i + 1];
-                        let combined = format!("{}{}", seg.reading, next.reading);
-                        if !d.lookup(&combined).is_empty() {
-                            return true;
-                        }
-                    }
-                    false
-                });
-                if !exempt {
-                    path.viterbi_cost += penalty;
-                }
+            for (i, seg) in path.segments.iter().enumerate() {
+                let prev = if i > 0 {
+                    Some(&path.segments[i - 1])
+                } else {
+                    None
+                };
+                path.viterbi_cost += non_independent_kanji_penalty(seg, conn);
+                path.viterbi_cost -= pronoun_bonus(seg, conn);
+                path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
+                path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
             }
         }
     }
