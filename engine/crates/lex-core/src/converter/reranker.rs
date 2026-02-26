@@ -629,8 +629,14 @@ mod tests {
 
         rerank(&mut paths, Some(&conn), None);
 
-        let multi = paths.iter().find(|p| p.segments[0].reading == "ねこ").unwrap();
-        let single = paths.iter().find(|p| p.segments[0].reading == "ね").unwrap();
+        let multi = paths
+            .iter()
+            .find(|p| p.segments[0].reading == "ねこ")
+            .unwrap();
+        let single = paths
+            .iter()
+            .find(|p| p.segments[0].reading == "ね")
+            .unwrap();
         let penalty = settings().reranker.single_char_kanji_penalty;
         assert!(
             single.viterbi_cost - multi.viterbi_cost >= penalty,
