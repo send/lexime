@@ -621,20 +621,22 @@ mod tests {
         let roles = vec![0u8, 0];
         let conn = conn_with_roles(roles);
 
-        // "ねこ" → "猫" has 2-char reading, should not get penalty
+        // Compare multi-char reading (no penalty) vs single-char reading (penalty)
         let mut paths = vec![
-            path(vec![seg("ねこ", "猫", 1)], 100),
-            path(vec![seg("ねこ", "猫", 1)], 100),
+            path(vec![seg("ねこ", "猫", 1)], 100), // 2-char reading
+            path(vec![seg("ね", "根", 1)], 100),   // 1-char reading
         ];
 
-        let cost_before = paths[0].viterbi_cost;
         rerank(&mut paths, Some(&conn), None);
 
-        // Cost should not include single_char_kanji_penalty
+        let multi = paths.iter().find(|p| p.segments[0].reading == "ねこ").unwrap();
+        let single = paths.iter().find(|p| p.segments[0].reading == "ね").unwrap();
         let penalty = settings().reranker.single_char_kanji_penalty;
         assert!(
-            paths[0].viterbi_cost - cost_before < penalty,
-            "multi-char reading should not get single-char kanji penalty"
+            single.viterbi_cost - multi.viterbi_cost >= penalty,
+            "only single-char reading should get penalty: multi={}, single={}",
+            multi.viterbi_cost,
+            single.viterbi_cost,
         );
     }
 
