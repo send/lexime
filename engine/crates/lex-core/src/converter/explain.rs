@@ -75,8 +75,14 @@ pub struct ExplainSegment {
     pub script_cost: i64,
     /// Connection cost from BOS or previous segment.
     pub connection_cost: i64,
+    /// Non-independent kanji penalty applied.
+    pub non_independent_kanji_penalty: i64,
     /// Pronoun cost bonus applied (positive value, subtracted from cost).
     pub pronoun_bonus: i64,
+    /// Te-form kanji penalty applied.
+    pub te_form_kanji_penalty: i64,
+    /// Single-char kanji content-word penalty applied.
+    pub single_char_kanji_penalty: i64,
     pub left_id: u16,
     pub right_id: u16,
 }
@@ -93,7 +99,11 @@ fn path_key(path: &ScoredPath) -> String {
 }
 
 /// Build per-segment cost breakdown from a ScoredPath.
-fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec<ExplainSegment> {
+fn explain_segments(
+    scored: &ScoredPath,
+    conn: Option<&ConnectionMatrix>,
+    dict: &dyn Dictionary,
+) -> Vec<ExplainSegment> {
     scored
         .segments
         .iter()
@@ -105,10 +115,20 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 let prev = &scored.segments[i - 1];
                 conn_cost(conn, prev.right_id, seg.left_id)
             };
-            let pronoun_bonus = if conn.is_some_and(|c| c.is_pronoun(seg.left_id)) {
-                settings().reranker.pronoun_cost_bonus
+            let prev_seg = if i > 0 {
+                Some(&scored.segments[i - 1])
             } else {
-                0
+                None
+            };
+            let (ni_penalty, p_bonus, te_penalty, sc_penalty) = if let Some(c) = conn {
+                (
+                    reranker::non_independent_kanji_penalty(seg, c),
+                    reranker::pronoun_bonus(seg, c),
+                    reranker::te_form_kanji_penalty(prev_seg, seg, c),
+                    reranker::single_char_kanji_penalty(seg, i, &scored.segments, c, Some(dict)),
+                )
+            } else {
+                (0, 0, 0, 0)
             };
             ExplainSegment {
                 reading: seg.reading.clone(),
@@ -117,7 +137,10 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
                 segment_penalty: settings().cost.segment_penalty,
                 script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
-                pronoun_bonus,
+                non_independent_kanji_penalty: ni_penalty,
+                pronoun_bonus: p_bonus,
+                te_form_kanji_penalty: te_penalty,
+                single_char_kanji_penalty: sc_penalty,
                 left_id: seg.left_id,
                 right_id: seg.right_id,
             }
@@ -149,7 +172,7 @@ pub fn explain(
         .collect();
 
     // 2. Apply real reranker (structure cost + length variance + script cost)
-    reranker::rerank(&mut raw_paths, conn);
+    reranker::rerank(&mut raw_paths, conn, Some(dict));
 
     // 3. Record post-rerank costs
     let post_rerank_costs: HashMap<String, i64> = raw_paths
@@ -178,7 +201,7 @@ pub fn explain(
             let rerank_delta = post_rerank - original;
             let history_boost = post_rerank - scored.viterbi_cost;
             ExplainPath {
-                segments: explain_segments(scored, conn),
+                segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
                 rerank_delta,
                 history_boost,
@@ -266,13 +289,28 @@ pub fn format_text(result: &ExplainResult) -> String {
                 seg_label
             };
             let conn_label = if j == 0 { "BOS->" } else { "conn=" };
+            let ni_str = if seg.non_independent_kanji_penalty > 0 {
+                format!(" ni_kanji={:<+6}", seg.non_independent_kanji_penalty)
+            } else {
+                String::new()
+            };
             let pronoun_str = if seg.pronoun_bonus > 0 {
                 format!(" pronoun={:<+6}", -(seg.pronoun_bonus))
             } else {
                 String::new()
             };
+            let te_str = if seg.te_form_kanji_penalty > 0 {
+                format!(" teK={:<+6}", seg.te_form_kanji_penalty)
+            } else {
+                String::new()
+            };
+            let single_char_str = if seg.single_char_kanji_penalty > 0 {
+                format!(" 1charK={:<+6}", seg.single_char_kanji_penalty)
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}\n",
+                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}{}{}{}\n",
                 j,
                 padded,
                 seg.word_cost,
@@ -280,7 +318,10 @@ pub fn format_text(result: &ExplainResult) -> String {
                 seg.script_cost,
                 conn_label,
                 seg.connection_cost,
+                ni_str,
                 pronoun_str,
+                te_str,
+                single_char_str,
             ));
         }
 

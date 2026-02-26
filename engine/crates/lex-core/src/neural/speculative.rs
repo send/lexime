@@ -81,7 +81,7 @@ pub fn speculative_decode(
     let lattice = build_lattice(dict, kana);
     let mut initial_paths =
         crate::converter::viterbi_nbest(&lattice, &cost_fn, config.nbest_per_pass * 3);
-    crate::converter::reranker::rerank(&mut initial_paths, conn);
+    crate::converter::reranker::rerank(&mut initial_paths, conn, Some(dict));
     initial_paths.truncate(config.nbest_per_pass);
     viterbi_latency += viterbi_start.elapsed();
 

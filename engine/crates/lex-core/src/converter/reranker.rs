@@ -1,12 +1,88 @@
 use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
+use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
 use super::cost::{conn_cost, script_cost};
-use super::viterbi::ScoredPath;
+use super::viterbi::{RichSegment, ScoredPath};
+
+/// Non-independent kanji penalty for a segment.
+/// Returns penalty (> 0) if the segment is non-independent (形式名詞/補助動詞) with kanji surface.
+pub(super) fn non_independent_kanji_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
+    if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
+        settings().reranker.non_independent_kanji_penalty
+    } else {
+        0
+    }
+}
+
+/// Pronoun cost bonus for a segment (positive value = cost reduction).
+pub(super) fn pronoun_bonus(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
+    if conn.is_pronoun(seg.left_id) {
+        settings().reranker.pronoun_cost_bonus
+    } else {
+        0
+    }
+}
+
+/// Te-form kanji penalty for a segment that follows て/で.
+/// `prev` is the preceding segment (None for the first segment).
+pub(super) fn te_form_kanji_penalty(
+    prev: Option<&RichSegment>,
+    curr: &RichSegment,
+    conn: &ConnectionMatrix,
+) -> i64 {
+    if let Some(prev) = prev {
+        if conn.is_function_word(prev.left_id)
+            && (prev.surface == "て" || prev.surface == "で")
+            && curr.surface.chars().any(is_kanji)
+        {
+            return settings().reranker.te_form_kanji_penalty;
+        }
+    }
+    0
+}
+
+/// Single-char kanji content-word penalty with dictionary compound exemption.
+pub(super) fn single_char_kanji_penalty(
+    seg: &RichSegment,
+    idx: usize,
+    segments: &[RichSegment],
+    conn: &ConnectionMatrix,
+    dict: Option<&dyn Dictionary>,
+) -> i64 {
+    if seg.reading.chars().count() != 1
+        || !seg.surface.chars().any(is_kanji)
+        || conn.role(seg.left_id) != 0
+    {
+        return 0;
+    }
+    let exempt = dict.is_some_and(|d| {
+        if idx > 0 {
+            let prev = &segments[idx - 1];
+            let combined = format!("{}{}", prev.reading, seg.reading);
+            if d.contains_reading(&combined) {
+                return true;
+            }
+        }
+        if idx + 1 < segments.len() {
+            let next = &segments[idx + 1];
+            let combined = format!("{}{}", seg.reading, next.reading);
+            if d.contains_reading(&combined) {
+                return true;
+            }
+        }
+        false
+    });
+    if exempt {
+        0
+    } else {
+        settings().reranker.single_char_kanji_penalty
+    }
+}
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
@@ -20,7 +96,11 @@ use super::viterbi::ScoredPath;
 ///   segmentations are preferred when Viterbi costs are close
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
-pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
+pub fn rerank(
+    paths: &mut Vec<ScoredPath>,
+    conn: Option<&ConnectionMatrix>,
+    dict: Option<&dyn Dictionary>,
+) {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
         return;
@@ -111,43 +191,19 @@ pub fn rerank(paths: &mut Vec<ScoredPath>, conn: Option<&ConnectionMatrix>) {
             .sum();
         path.viterbi_cost += total_script;
 
-        // Non-independent kanji penalty: penalise kanji surfaces for 非自立
-        // morphemes (形式名詞 like 事/物/所, 補助動詞 like 下さい/頂く).
+        // Per-segment penalties: non-independent kanji, pronoun bonus,
+        // te-form kanji, single-char kanji content-word.
         if let Some(conn) = conn {
-            let penalty = settings().reranker.non_independent_kanji_penalty;
-            for seg in &path.segments {
-                if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
-                    path.viterbi_cost += penalty;
-                }
-            }
-        }
-
-        // Pronoun cost bonus: reduce cost for pronoun (代名詞) segments.
-        // Dictionary costs for infrequent pronouns (どれ, あれ) are too high
-        // relative to homophonous verb forms (取れ), causing misranking.
-        if let Some(conn) = conn {
-            let bonus = settings().reranker.pronoun_cost_bonus;
-            for seg in &path.segments {
-                if conn.is_pronoun(seg.left_id) {
-                    path.viterbi_cost -= bonus;
-                }
-            }
-        }
-
-        // Te-form kanji penalty: penalise kanji surfaces following て/で
-        // conjunctive particles to prefer hiragana auxiliary verbs
-        // (e.g., 読んでみる over 読んで見る).
-        if let Some(conn) = conn {
-            let te_penalty = settings().reranker.te_form_kanji_penalty;
-            for pair in path.segments.windows(2) {
-                let prev = &pair[0];
-                let curr = &pair[1];
-                if conn.is_function_word(prev.left_id)
-                    && (prev.surface == "て" || prev.surface == "で")
-                    && curr.surface.chars().any(is_kanji)
-                {
-                    path.viterbi_cost += te_penalty;
-                }
+            for (i, seg) in path.segments.iter().enumerate() {
+                let prev = if i > 0 {
+                    Some(&path.segments[i - 1])
+                } else {
+                    None
+                };
+                path.viterbi_cost += non_independent_kanji_penalty(seg, conn);
+                path.viterbi_cost -= pronoun_bonus(seg, conn);
+                path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
+                path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
             }
         }
     }
@@ -201,6 +257,7 @@ mod tests {
     use super::*;
     use crate::converter::viterbi::RichSegment;
     use crate::dict::connection::ConnectionMatrix;
+    use crate::dict::{DictEntry, Dictionary, SearchResult};
 
     /// Build a minimal ConnectionMatrix with the given roles vector.
     fn conn_with_roles(roles: Vec<u8>) -> ConnectionMatrix {
@@ -239,7 +296,7 @@ mod tests {
             path(vec![seg("こと", "こと", 2)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         // The hiragana path should rank higher (lower cost)
         assert_eq!(paths[0].segments[0].surface, "こと");
@@ -267,7 +324,7 @@ mod tests {
             path(vec![seg("こと", "こと", 1)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         // Costs should differ only by script cost, not by non-independent penalty
         let penalty = settings().reranker.non_independent_kanji_penalty;
@@ -291,7 +348,7 @@ mod tests {
             path(vec![seg("で", "で", 2), seg("みる", "みる", 1)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         assert_eq!(paths[0].segments[1].surface, "みる");
         assert_eq!(paths[1].segments[1].surface, "見る");
@@ -329,7 +386,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         // The FW path should rank first (lower cost) because its 2-char
         // particle is excluded from the variance calculation.
@@ -372,7 +429,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         // Path A should rank better: its 1-char segments are all excluded,
         // leaving no variance. Path B has [4, 2] with nonzero variance.
@@ -397,7 +454,7 @@ mod tests {
             path(vec![seg("どれ", "どれ", 1)], 1000),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         // The pronoun path should rank higher (lower cost) after bonus
         assert_eq!(
@@ -412,6 +469,183 @@ mod tests {
         );
     }
 
+    /// A minimal dictionary for testing compound exemption.
+    struct MockDict {
+        entries: Vec<(String, Vec<DictEntry>)>,
+    }
+
+    impl MockDict {
+        fn new(readings: &[&str]) -> Self {
+            Self {
+                entries: readings
+                    .iter()
+                    .map(|&r| {
+                        (
+                            r.to_string(),
+                            vec![DictEntry {
+                                surface: r.to_string(),
+                                cost: 5000,
+                                left_id: 1,
+                                right_id: 1,
+                            }],
+                        )
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl Dictionary for MockDict {
+        fn lookup(&self, reading: &str) -> Vec<DictEntry> {
+            self.entries
+                .iter()
+                .find(|(r, _)| r == reading)
+                .map(|(_, e)| e.clone())
+                .unwrap_or_default()
+        }
+        fn predict(&self, _prefix: &str, _max_results: usize) -> Vec<SearchResult> {
+            Vec::new()
+        }
+        fn common_prefix_search(&self, _query: &str) -> Vec<SearchResult> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_applied() {
+        // ID 1 = content word (role 0)
+        let roles = vec![0u8, 0];
+        let conn = conn_with_roles(roles);
+
+        // Path A: single-char kanji content word "ね" → "根" — penalty applied
+        // Path B: multi-char content word "ねこ" → "猫" — no penalty
+        let mut paths = vec![
+            path(vec![seg("かくにん", "確認", 1), seg("ね", "根", 1)], 100),
+            path(vec![seg("かくにんね", "確認ね", 1)], 100),
+        ];
+
+        rerank(&mut paths, Some(&conn), None);
+
+        // The path with 根 should have penalty applied
+        let root_path = paths
+            .iter()
+            .find(|p| p.segments.len() == 2 && p.segments[1].surface == "根")
+            .unwrap();
+        let other_path = paths.iter().find(|p| p.segments.len() == 1).unwrap();
+        assert!(
+            root_path.viterbi_cost > other_path.viterbi_cost,
+            "single-char kanji content-word should be penalized: root={}, other={}",
+            root_path.viterbi_cost,
+            other_path.viterbi_cost
+        );
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_exempt_with_dict_compound() {
+        // ID 1 = content word (role 0)
+        let roles = vec![0u8, 0];
+        let conn = conn_with_roles(roles);
+
+        // Dictionary has "きょうと" compound reading
+        let dict = MockDict::new(&["きょうと"]);
+
+        // "と" → "都" is single-char kanji CW, but "きょう" + "と" = "きょうと"
+        // exists in dictionary, so it should be exempt.
+        // Need 2+ paths so rerank doesn't short-circuit.
+        let dummy = path(vec![seg("きょうと", "京都", 1)], 99999);
+
+        let cost_with_dict = {
+            let mut p = vec![
+                path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
+                dummy.clone(),
+            ];
+            rerank(&mut p, Some(&conn), Some(&dict));
+            p.iter()
+                .find(|pp| pp.segments.len() == 2)
+                .unwrap()
+                .viterbi_cost
+        };
+
+        // Without dict: penalty applied
+        let cost_without_dict = {
+            let mut p = vec![
+                path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
+                dummy.clone(),
+            ];
+            rerank(&mut p, Some(&conn), None);
+            p.iter()
+                .find(|pp| pp.segments.len() == 2)
+                .unwrap()
+                .viterbi_cost
+        };
+
+        let penalty = settings().reranker.single_char_kanji_penalty;
+        assert_eq!(
+            cost_without_dict - cost_with_dict,
+            penalty,
+            "compound exemption should save exactly the penalty amount"
+        );
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_not_applied_to_function_word() {
+        // ID 1 = content word (role 0), ID 2 = function word
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+
+        // "は" (hiragana) with FW POS — no penalty even if it were kanji
+        // "ね" (hiragana) with CW POS — would get penalty if kanji
+        let mut paths = vec![
+            path(vec![seg("ね", "根", 1)], 100), // CW, kanji → penalty
+            path(vec![seg("ね", "ね", 2)], 100), // FW → no penalty
+        ];
+
+        rerank(&mut paths, Some(&conn), None);
+
+        let fw_path = paths
+            .iter()
+            .find(|p| p.segments[0].surface == "ね")
+            .unwrap();
+        let cw_path = paths
+            .iter()
+            .find(|p| p.segments[0].surface == "根")
+            .unwrap();
+        assert!(
+            cw_path.viterbi_cost > fw_path.viterbi_cost,
+            "function word should not get single-char kanji penalty"
+        );
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_not_applied_to_multi_char_reading() {
+        // ID 1 = content word (role 0)
+        let roles = vec![0u8, 0];
+        let conn = conn_with_roles(roles);
+
+        // Compare multi-char reading (no penalty) vs single-char reading (penalty)
+        let mut paths = vec![
+            path(vec![seg("ねこ", "猫", 1)], 100), // 2-char reading
+            path(vec![seg("ね", "根", 1)], 100),   // 1-char reading
+        ];
+
+        rerank(&mut paths, Some(&conn), None);
+
+        let multi = paths
+            .iter()
+            .find(|p| p.segments[0].reading == "ねこ")
+            .unwrap();
+        let single = paths
+            .iter()
+            .find(|p| p.segments[0].reading == "ね")
+            .unwrap();
+        let penalty = settings().reranker.single_char_kanji_penalty;
+        assert!(
+            single.viterbi_cost - multi.viterbi_cost >= penalty,
+            "only single-char reading should get penalty: multi={}, single={}",
+            multi.viterbi_cost,
+            single.viterbi_cost,
+        );
+    }
+
     #[test]
     fn te_form_kanji_penalty_not_applied_to_non_te_function_word() {
         // ID 2 = function word (fw_min=2, fw_max=2), ID 1 = content word
@@ -423,7 +657,7 @@ mod tests {
             path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn));
+        rerank(&mut paths, Some(&conn), None);
 
         let te_penalty = settings().reranker.te_form_kanji_penalty;
         let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();

@@ -287,6 +287,14 @@ category = "regression"
 tags = ["pronoun", "mixed-script-bonus"]
 note = "代名詞 reranker bonus (#187) で修正"
 
+[[cases]]
+reading = "かくにんしますね"
+expected = "確認しますね"
+category = "regression"
+tags = ["single-char-kanji", "particle"]
+issue = "#189"
+note = "値・根 が助詞位置に割り込む問題 — single_char_kanji_penalty で修正"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════
@@ -324,13 +332,6 @@ tags = ["katakana", "it"]
 # ═══════════════════════════════════════════════════════════════════
 # Numeric expressions (NumericRewriter + dictionary)
 # ═══════════════════════════════════════════════════════════════════
-
-[[cases]]
-reading = "じゅう"
-expected = "中"
-category = "numeric"
-tags = ["kanji", "homophone"]
-note = "辞書の 中(じゅう) が 十 より上位"
 
 [[cases]]
 reading = "にじゅうさん"

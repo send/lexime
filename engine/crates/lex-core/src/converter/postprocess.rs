@@ -1,6 +1,7 @@
 use tracing::debug_span;
 
 use crate::dict::connection::ConnectionMatrix;
+use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 use super::lattice::Lattice;
@@ -14,6 +15,7 @@ pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
     conn: Option<&ConnectionMatrix>,
+    dict: Option<&dyn Dictionary>,
     history: Option<&UserHistory>,
     kana: &str,
     n: usize,
@@ -25,7 +27,7 @@ pub(super) fn postprocess(
     let reseg_paths = resegment::resegment(paths, lattice, conn);
     paths.extend(reseg_paths);
 
-    reranker::rerank(paths, conn);
+    reranker::rerank(paths, conn, dict);
 
     // Hiragana variant must run BEFORE history_rerank so that whole-path
     // unigram boosts (×5) can promote a previously-selected hiragana variant.
