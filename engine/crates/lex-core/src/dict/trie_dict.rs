@@ -208,6 +208,10 @@ impl Dictionary for TrieDictionary {
         })
     }
 
+    fn contains_reading(&self, reading: &str) -> bool {
+        with_trie!(self, |t| t.exact_match(reading.as_bytes()).is_some())
+    }
+
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
         with_trie!(self, |t| {
             t.predictive_search(prefix.as_bytes())

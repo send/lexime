@@ -68,6 +68,15 @@ pub trait Dictionary: Send + Sync {
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult>;
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult>;
 
+    /// Check whether any entry exists for the given reading.
+    ///
+    /// Default implementation delegates to `lookup().is_empty()`. Implementors
+    /// can override this to avoid allocating entry vectors (e.g. using a trie
+    /// `exact_match` check).
+    fn contains_reading(&self, reading: &str) -> bool {
+        !self.lookup(reading).is_empty()
+    }
+
     /// Prediction candidates ranked by cost, deduplicated by surface.
     ///
     /// Scans up to `scan_limit` readings from predictive search, flattens all

@@ -81,7 +81,7 @@ pub struct ExplainSegment {
     pub pronoun_bonus: i64,
     /// Te-form kanji penalty applied.
     pub te_form_kanji_penalty: i64,
-    /// Single-char kanji noun penalty applied.
+    /// Single-char kanji content-word penalty applied.
     pub single_char_kanji_penalty: i64,
     pub left_id: u16,
     pub right_id: u16,

@@ -46,7 +46,7 @@ pub(super) fn te_form_kanji_penalty(
     0
 }
 
-/// Single-char kanji noun penalty with dictionary compound exemption.
+/// Single-char kanji content-word penalty with dictionary compound exemption.
 pub(super) fn single_char_kanji_penalty(
     seg: &RichSegment,
     idx: usize,
@@ -64,14 +64,14 @@ pub(super) fn single_char_kanji_penalty(
         if idx > 0 {
             let prev = &segments[idx - 1];
             let combined = format!("{}{}", prev.reading, seg.reading);
-            if !d.lookup(&combined).is_empty() {
+            if d.contains_reading(&combined) {
                 return true;
             }
         }
         if idx + 1 < segments.len() {
             let next = &segments[idx + 1];
             let combined = format!("{}{}", seg.reading, next.reading);
-            if !d.lookup(&combined).is_empty() {
+            if d.contains_reading(&combined) {
                 return true;
             }
         }
@@ -192,7 +192,7 @@ pub fn rerank(
         path.viterbi_cost += total_script;
 
         // Per-segment penalties: non-independent kanji, pronoun bonus,
-        // te-form kanji, single-char kanji noun.
+        // te-form kanji, single-char kanji content-word.
         if let Some(conn) = conn {
             for (i, seg) in path.segments.iter().enumerate() {
                 let prev = if i > 0 {
@@ -534,7 +534,7 @@ mod tests {
         let other_path = paths.iter().find(|p| p.segments.len() == 1).unwrap();
         assert!(
             root_path.viterbi_cost > other_path.viterbi_cost,
-            "single-char kanji noun should be penalized: root={}, other={}",
+            "single-char kanji content-word should be penalized: root={}, other={}",
             root_path.viterbi_cost,
             other_path.viterbi_cost
         );
