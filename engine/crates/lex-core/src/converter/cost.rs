@@ -10,7 +10,7 @@ use super::lattice::LatticeNode;
 /// - Contains Latin/ASCII (e.g. death, tie, thai): heavy penalty
 /// - All-katakana (e.g. タラ, オッ): penalty (positive)
 /// - Otherwise (pure hiragana, etc.): no adjustment
-pub fn script_cost(surface: &str) -> i64 {
+pub fn script_cost(surface: &str, reading_chars: usize) -> i64 {
     let s = settings();
     let mut has_kanji = false;
     let mut has_kana = false;
@@ -29,10 +29,11 @@ pub fn script_cost(surface: &str) -> i64 {
             all_katakana = false;
         }
     }
+    let scale = reading_chars.min(3) as i64;
     if has_kanji && has_kana {
-        -s.cost.mixed_script_bonus
+        -s.cost.mixed_script_bonus * scale / 3
     } else if has_kanji {
-        -s.cost.pure_kanji_bonus
+        -s.cost.pure_kanji_bonus * scale / 3
     } else if all_katakana {
         s.cost.katakana_penalty
     } else {
