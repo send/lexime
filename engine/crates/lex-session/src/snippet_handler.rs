@@ -161,7 +161,7 @@ fn build_snippet_response(s: &SnippetState) -> KeyResponse {
     } else {
         resp.candidates = CandidateAction::Show {
             surfaces,
-            selected: s.selected as u32,
+            selected: u32::try_from(s.selected).unwrap_or(0),
         };
     }
     resp

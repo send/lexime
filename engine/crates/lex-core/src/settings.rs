@@ -168,6 +168,11 @@ pub struct TriggerKey {
 
 /// Parse a trigger string like "ctrl+;" into a TriggerKey.
 /// Format: optional modifiers separated by '+', final segment is the character.
+///
+/// The character is matched against `NSEvent.charactersIgnoringModifiers` on the
+/// frontend, so it must correspond to the **base** (unshifted) key on the active
+/// keyboard layout.  For example, on JIS keyboards `@` is a dedicated key, but on
+/// US keyboards `@` requires Shift+2 and the base character is `2`.
 fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
     if s.is_empty() {
         return None;
