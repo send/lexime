@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{CandidateAction, KeyEvent};
+use crate::types::{CandidateAction, CandidateDispatch, KeyEvent};
 use crate::ConversionMode;
 
 #[test]
@@ -75,10 +75,11 @@ fn test_predictive_mode_deferred_dispatch() {
     // Type "ka" to trigger deferred candidate generation
     session.handle_key(KeyEvent::text("k"));
     let resp = session.handle_key(KeyEvent::text("a"));
-    // Predictive mode uses prediction-specific generation (dispatch=1)
+    // Predictive mode uses prediction-specific generation
     if let Some(req) = resp.async_request {
         assert_eq!(
-            req.candidate_dispatch, 1,
+            req.candidate_dispatch,
+            CandidateDispatch::Predictive,
             "predictive uses prediction_only generation"
         );
     }
@@ -95,7 +96,11 @@ fn test_standard_mode_deferred_dispatch() {
     session.handle_key(KeyEvent::text("k"));
     let resp = session.handle_key(KeyEvent::text("a"));
     if let Some(req) = resp.async_request {
-        assert_eq!(req.candidate_dispatch, 0, "standard dispatch should be 0");
+        assert_eq!(
+            req.candidate_dispatch,
+            CandidateDispatch::Standard,
+            "standard dispatch should be Standard"
+        );
     }
 }
 

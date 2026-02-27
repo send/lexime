@@ -1,4 +1,4 @@
-use super::types::{CandidateAction, KeyResponse, LearningRecord, MarkedText, SessionState};
+use super::types::{KeyResponse, LearningRecord, MarkedText, SessionState};
 use super::InputSession;
 
 impl InputSession {
@@ -28,8 +28,7 @@ impl InputSession {
             return KeyResponse::consumed();
         };
 
-        let mut resp = KeyResponse::consumed();
-        resp.candidates = CandidateAction::Hide;
+        let mut resp = KeyResponse::consumed().with_hide_candidates();
         c.flush();
 
         let prefix_text = std::mem::take(&mut c.prefix.text);

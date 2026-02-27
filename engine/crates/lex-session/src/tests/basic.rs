@@ -403,7 +403,7 @@ fn test_history_recorded_on_commit() {
 }
 
 #[test]
-fn test_history_recorded_on_escape() {
+fn test_history_not_recorded_on_escape() {
     let dict = make_test_dict();
     let history = UserHistory::new();
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
@@ -411,18 +411,9 @@ fn test_history_recorded_on_escape() {
     type_string(&mut session, "kyou");
     session.handle_key(KeyEvent::Escape);
 
+    // Escape cancels conversion/candidate selection — unconfirmed input should not be learned
     let records = session.take_history_records();
-    assert!(!records.is_empty());
-    // Should record kana → kana
-    match &records[0] {
-        LearningRecord::Committed {
-            reading, surface, ..
-        } => {
-            assert_eq!(reading, "きょう");
-            assert_eq!(surface, "きょう");
-        }
-        other => panic!("expected Committed, got {:?}", other),
-    }
+    assert!(records.is_empty());
 }
 
 // --- Cyclic index ---

@@ -65,13 +65,10 @@ impl LexEngine {
     }
 
     fn save_user_dict(&self, path: String) -> Result<(), LexError> {
-        match &self.user_dict {
-            Some(ud) => ud
-                .inner
-                .save(std::path::Path::new(&path))
-                .map_err(|e| LexError::Io { msg: e.to_string() }),
-            None => Ok(()),
+        if let Some(ud) = &self.user_dict {
+            ud.inner.save(std::path::Path::new(&path))?;
         }
+        Ok(())
     }
 
     /// Clear all learning history (in-memory, WAL, and checkpoint files).

@@ -101,20 +101,8 @@ pub(super) fn resegment(
                     let mut new_segs: Vec<RichSegment> =
                         Vec::with_capacity(best.segments.len() + 1);
                     new_segs.extend_from_slice(&best.segments[..seg_idx]);
-                    new_segs.push(RichSegment {
-                        reading: left_node.reading.clone(),
-                        surface: left_node.surface.clone(),
-                        left_id: left_node.left_id,
-                        right_id: left_node.right_id,
-                        word_cost: left_node.cost,
-                    });
-                    new_segs.push(RichSegment {
-                        reading: right_node.reading.clone(),
-                        surface: right_node.surface.clone(),
-                        left_id: right_node.left_id,
-                        right_id: right_node.right_id,
-                        word_cost: right_node.cost,
-                    });
+                    new_segs.push(RichSegment::from(left_node));
+                    new_segs.push(RichSegment::from(right_node));
                     new_segs.extend_from_slice(&best.segments[(seg_idx + 1)..]);
 
                     let cost = score_path(&new_segs, conn);

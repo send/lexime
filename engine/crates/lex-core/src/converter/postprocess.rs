@@ -52,10 +52,10 @@ pub(super) fn postprocess(
     let mut top: Vec<ScoredPath> = paths.drain(..n.min(paths.len())).collect();
 
     // If the Viterbi #1 was pushed out of the top-n by history boosts, pull it
-    // back in at position 1 (after the history-preferred #1).
+    // back in (after the history-preferred #1, or at 0 if top is empty).
     if let Some(ref best_key) = viterbi_best_key {
-        if !top.iter().any(|p| p.surface_key() == *best_key) {
-            if let Some(pos) = paths.iter().position(|p| p.surface_key() == *best_key) {
+        if !top.iter().any(|p| p.surface_key_eq(best_key)) {
+            if let Some(pos) = paths.iter().position(|p| p.surface_key_eq(best_key)) {
                 let best = paths.remove(pos);
                 let insert_at = 1.min(top.len());
                 top.insert(insert_at, best);

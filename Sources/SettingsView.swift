@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
 
-    @State private var developerMode = UserDefaults.standard.bool(forKey: "developerMode")
+    @State private var developerMode = UserDefaults.standard.bool(forKey: DefaultsKey.developerMode)
 
     var body: some View {
         TabView {
@@ -22,7 +22,7 @@ struct SettingsView: View {
 
 struct DeveloperSettingsView: View {
 
-    @State private var conversionMode = UserDefaults.standard.integer(forKey: "conversionMode")
+    @State private var conversionMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
     @State private var romajiText = ""
     @State private var settingsText = ""
     @State private var needsRestart = false
@@ -41,7 +41,7 @@ struct DeveloperSettingsView: View {
                         Text("Predictive").tag(1)
                     }
                     .onChange(of: conversionMode) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "conversionMode")
+                        UserDefaults.standard.set(newValue, forKey: DefaultsKey.conversionMode)
                         needsRestart = true
                     }
                 }
@@ -160,7 +160,7 @@ struct DeveloperSettingsView: View {
         // 2. Delete config files
         let fm = FileManager.default
         for name in ["settings.toml", "romaji.toml"] {
-            let path = supportDir + "/" + name
+            let path = (supportDir as NSString).appendingPathComponent(name)
             if fm.fileExists(atPath: path) {
                 do {
                     try fm.removeItem(atPath: path)
@@ -182,19 +182,19 @@ struct DeveloperSettingsView: View {
     // MARK: - File I/O
 
     private func loadRomaji() {
-        let path = supportDir + "/romaji.toml"
+        let path = (supportDir as NSString).appendingPathComponent("romaji.toml")
         romajiText = (try? String(contentsOfFile: path, encoding: .utf8))
             ?? "# romaji.toml が見つかりません\n# mise run romaji-export で生成できます"
     }
 
     private func loadSettings() {
-        let path = supportDir + "/settings.toml"
+        let path = (supportDir as NSString).appendingPathComponent("settings.toml")
         settingsText = (try? String(contentsOfFile: path, encoding: .utf8))
             ?? "# settings.toml が見つかりません\n# mise run settings-export で生成できます"
     }
 
     private func saveFile(name: String, content: String) {
-        let path = supportDir + "/" + name
+        let path = (supportDir as NSString).appendingPathComponent(name)
         do {
             try FileManager.default.createDirectory(
                 atPath: supportDir, withIntermediateDirectories: true)

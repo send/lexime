@@ -8,6 +8,14 @@ use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::types::{convert_to_events, LexConversionMode};
 use super::{LexKeyEvent, LexKeyResponse};
 
+/// IME session exposed to the Swift frontend via UniFFI.
+///
+/// `self.session.lock().unwrap()` is used intentionally throughout this struct.
+/// If the Mutex is poisoned (a panic occurred in a prior lock holder), the
+/// session state is unrecoverable. For an IME, panicking is the correct
+/// response — macOS automatically restarts the input method process, so
+/// the user experiences only a momentary input interruption rather than
+/// a silently corrupted session.
 #[derive(uniffi::Object)]
 pub struct LexSession {
     history: Option<Arc<LexUserHistory>>,
@@ -45,19 +53,19 @@ impl LexSession {
         self.worker.invalidate_candidates();
 
         let mut session = self.session.lock().unwrap();
-        let resp = session.handle_key(event.into());
+        let mut resp = session.handle_key(event.into());
 
         // Submit async candidate work internally
-        let has_async = resp.async_request.is_some();
-        if let Some(ref req) = resp.async_request {
+        let has_pending_work = resp.async_request.is_some();
+        if let Some(req) = resp.async_request.take() {
             self.worker
-                .submit_candidates(req.reading.clone(), req.candidate_dispatch);
+                .submit_candidates(req.reading, req.candidate_dispatch);
         }
 
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, has_async)
+        convert_to_events(resp, has_pending_work)
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -75,17 +83,17 @@ impl LexSession {
             let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
 
             let mut session = self.session.lock().unwrap();
-            if let Some(resp) = session.receive_candidates(&result.reading, surfaces, paths) {
+            if let Some(mut resp) = session.receive_candidates(&result.reading, surfaces, paths) {
                 // Chain: submit any new async requests from the response
-                let has_async = resp.async_request.is_some();
-                if let Some(ref req) = resp.async_request {
+                let has_pending_work = resp.async_request.is_some();
+                if let Some(req) = resp.async_request.take() {
                     self.worker
-                        .submit_candidates(req.reading.clone(), req.candidate_dispatch);
+                        .submit_candidates(req.reading, req.candidate_dispatch);
                 }
                 let records = session.take_history_records();
                 drop(session);
                 self.record_history(&records);
-                return Some(convert_to_events(resp, has_async));
+                return Some(convert_to_events(resp, has_pending_work));
             }
         }
 

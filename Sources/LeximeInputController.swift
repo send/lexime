@@ -42,7 +42,7 @@ class LeximeInputController: IMKInputController {
         session = engine.createSession()
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
-        let convMode = UserDefaults.standard.integer(forKey: "conversionMode")
+        let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
         if convMode == 1 {
             session.setConversionMode(mode: .predictive)
         }

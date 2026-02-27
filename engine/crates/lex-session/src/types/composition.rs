@@ -37,11 +37,11 @@ impl ConversionMode {
         matches!(self, Self::Standard)
     }
 
-    /// FFI dispatch tag for async candidate generation.
-    pub fn candidate_dispatch(&self) -> u8 {
+    /// Dispatch tag for async candidate generation.
+    pub fn candidate_dispatch(&self) -> super::CandidateDispatch {
         match self {
-            Self::Standard => 0,
-            Self::Predictive => 1,
+            Self::Standard => super::CandidateDispatch::Standard,
+            Self::Predictive => super::CandidateDispatch::Predictive,
         }
     }
 }

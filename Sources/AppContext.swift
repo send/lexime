@@ -1,5 +1,12 @@
 import Foundation
 
+// MARK: - UserDefaults Keys
+
+enum DefaultsKey {
+    static let conversionMode = "conversionMode"
+    static let developerMode = "developerMode"
+}
+
 class AppContext {
     static let shared = AppContext()
 
@@ -15,7 +22,7 @@ class AppContext {
         }
 
         // Load dictionary
-        let dictPath = resourcePath + "/lexime.dict"
+        let dictPath = (resourcePath as NSString).appendingPathComponent("lexime.dict")
         var dict: LexDictionary?
         do {
             let d = try LexDictionary.open(path: dictPath)
@@ -29,7 +36,7 @@ class AppContext {
         }
 
         // Load connection matrix (optional — falls back to unigram if not found)
-        let connPath = resourcePath + "/lexime.conn"
+        let connPath = (resourcePath as NSString).appendingPathComponent("lexime.conn")
         let conn: LexConnection?
         do {
             let c = try LexConnection.open(path: connPath)
@@ -47,12 +54,14 @@ class AppContext {
         }
         let leximeDir = appSupport.appendingPathComponent("Lexime").path
         self.supportDir = leximeDir
-        self.historyPath = leximeDir + "/user_history.lxud"
-        self.userDictPath = leximeDir + "/user_dict.lxuw"
+        self.historyPath = (leximeDir as NSString).appendingPathComponent("user_history.lxud")
+        self.userDictPath = (leximeDir as NSString).appendingPathComponent("user_dict.lxuw")
 
         // Initialize tracing (no-op unless built with --features trace)
-        let logDir = (NSSearchPathForDirectoriesInDomains(
-            .libraryDirectory, .userDomainMask, true).first ?? "/tmp") + "/Logs/Lexime"
+        let libraryDir = NSSearchPathForDirectoriesInDomains(
+            .libraryDirectory, .userDomainMask, true).first ?? "/tmp"
+        let logDir = ((libraryDir as NSString).appendingPathComponent("Logs") as NSString)
+            .appendingPathComponent("Lexime")
         try? FileManager.default.createDirectory(
             atPath: logDir, withIntermediateDirectories: true)
         traceInit(logDir: logDir)

@@ -14,6 +14,25 @@ pub enum LexError {
     Internal { msg: String },
 }
 
+impl From<std::io::Error> for LexError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io { msg: e.to_string() }
+    }
+}
+
+impl From<crate::dict::DictError> for LexError {
+    fn from(e: crate::dict::DictError) -> Self {
+        match e {
+            crate::dict::DictError::Io(io_err) => Self::Io {
+                msg: io_err.to_string(),
+            },
+            other => Self::InvalidData {
+                msg: other.to_string(),
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Records (value types, copied across FFI boundary)
 // ---------------------------------------------------------------------------

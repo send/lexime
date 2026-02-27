@@ -20,8 +20,7 @@ pub struct LexDictionary {
 impl LexDictionary {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
-        let dict = TrieDictionary::open(Path::new(&path))
-            .map_err(|e: crate::dict::DictError| LexError::Io { msg: e.to_string() })?;
+        let dict = TrieDictionary::open(Path::new(&path))?;
         Ok(Arc::new(Self {
             inner: Arc::new(dict),
         }))
@@ -32,8 +31,7 @@ impl LexDictionary {
         path: String,
         user_dict: Option<Arc<LexUserDictionary>>,
     ) -> Result<Arc<Self>, LexError> {
-        let trie = TrieDictionary::open(Path::new(&path))
-            .map_err(|e: crate::dict::DictError| LexError::Io { msg: e.to_string() })?;
+        let trie = TrieDictionary::open(Path::new(&path))?;
 
         let inner: Arc<dyn Dictionary> = match user_dict {
             Some(ud) => {
@@ -70,8 +68,7 @@ pub struct LexConnection {
 impl LexConnection {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
-        let conn = ConnectionMatrix::open(Path::new(&path))
-            .map_err(|e: crate::dict::DictError| LexError::Io { msg: e.to_string() })?;
+        let conn = ConnectionMatrix::open(Path::new(&path))?;
         Ok(Arc::new(Self {
             inner: Arc::new(conn),
         }))
@@ -90,8 +87,7 @@ impl LexUserHistory {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
         let cp = Path::new(&path);
-        let (history, wal) = crate::user_history::wal::open_with_wal(cp)
-            .map_err(|e: std::io::Error| LexError::Io { msg: e.to_string() })?;
+        let (history, wal) = crate::user_history::wal::open_with_wal(cp)?;
         Ok(Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
@@ -116,13 +112,12 @@ impl LexUserHistory {
         let mut wal = self.wal.lock().map_err(|e| LexError::Io {
             msg: format!("WAL lock poisoned: {e}"),
         })?;
-        wal.truncate_wal()
-            .map_err(|e| LexError::Io { msg: e.to_string() })?;
+        wal.truncate_wal()?;
         for path in [wal.wal_path(), wal.checkpoint_path()] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(LexError::Io { msg: e.to_string() }),
+                Err(e) => return Err(e.into()),
             }
         }
         Ok(())

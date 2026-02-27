@@ -1,7 +1,7 @@
 use tracing::{debug, debug_span};
 
 use super::cost::CostFunction;
-use super::lattice::Lattice;
+use super::lattice::{Lattice, LatticeNode};
 
 /// A segment in the conversion result.
 #[derive(Debug, Clone)]
@@ -20,6 +20,18 @@ pub(crate) struct RichSegment {
     pub left_id: u16,
     pub right_id: u16,
     pub word_cost: i16,
+}
+
+impl From<&LatticeNode> for RichSegment {
+    fn from(n: &LatticeNode) -> Self {
+        Self {
+            reading: n.reading.clone(),
+            surface: n.surface.clone(),
+            left_id: n.left_id,
+            right_id: n.right_id,
+            word_cost: n.cost,
+        }
+    }
 }
 
 /// A scored path from N-best Viterbi, carrying enough info for reranking.
@@ -55,9 +67,27 @@ impl ScoredPath {
             .collect()
     }
 
+    /// Concatenated reading of all segments.
+    pub fn full_reading(&self) -> String {
+        self.segments.iter().map(|s| s.reading.as_str()).collect()
+    }
+
     /// Surface key for deduplication.
     pub fn surface_key(&self) -> String {
         self.segments.iter().map(|s| s.surface.as_str()).collect()
+    }
+
+    /// Compare surface key without allocating a String.
+    pub fn surface_key_eq(&self, key: &str) -> bool {
+        let mut remaining = key;
+        for seg in &self.segments {
+            if let Some(rest) = remaining.strip_prefix(seg.surface.as_str()) {
+                remaining = rest;
+            } else {
+                return false;
+            }
+        }
+        remaining.is_empty()
     }
 }
 
@@ -214,15 +244,6 @@ fn backtrace_nbest(
 
     path_indices
         .iter()
-        .map(|&idx| {
-            let node = &lattice.nodes[idx];
-            RichSegment {
-                reading: node.reading.clone(),
-                surface: node.surface.clone(),
-                left_id: node.left_id,
-                right_id: node.right_id,
-                word_cost: node.cost,
-            }
-        })
+        .map(|&idx| RichSegment::from(&lattice.nodes[idx]))
         .collect()
 }

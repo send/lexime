@@ -19,6 +19,9 @@ impl InputSession {
         let mode = self.config.conversion_mode;
         let reading = self.comp().kana.clone();
         let CandidateResponse { surfaces, paths } = {
+            // read().ok() intentionally ignores RwLock poison — if another thread
+            // panicked, we degrade gracefully to history-less conversion rather
+            // than cascading the panic. macOS will restart the IME if needed.
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
             let history_ref = h_guard.as_deref();
             mode.generate_candidates(
@@ -45,6 +48,7 @@ impl InputSession {
         if !reading.is_empty() {
             // Quick sync 1-best for interim display (~1-2ms)
             let segments = {
+                // See update_candidates for rationale on read().ok()
                 let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
                 match h_guard.as_deref() {
                     Some(h) => convert_with_history(&*self.dict, self.conn.as_deref(), h, &reading),

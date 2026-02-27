@@ -22,8 +22,8 @@ use lex_core::dict::Dictionary;
 use lex_core::user_history::UserHistory;
 
 pub use types::{
-    AsyncCandidateRequest, CandidateAction, ConversionMode, KeyEvent, KeyResponse, LearningRecord,
-    MarkedText, SideEffects,
+    AsyncCandidateRequest, CandidateAction, CandidateDispatch, ConversionMode, KeyEvent,
+    KeyResponse, LearningRecord, MarkedText, SideEffects,
 };
 
 use types::{Composition, SessionConfig, SessionState};
