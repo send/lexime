@@ -192,6 +192,28 @@ fn test_snippet_trigger_commits_composing_first() {
 }
 
 #[test]
+fn test_snippet_navigate_then_filter_resets_selected() {
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+
+    // All 4 candidates visible. Navigate to index 3.
+    session.handle_key(KeyEvent::ArrowDown); // 1
+    session.handle_key(KeyEvent::ArrowDown); // 2
+    session.handle_key(KeyEvent::ArrowDown); // 3
+
+    // Type "g" → narrows to 2 candidates (gh, gmail).
+    // Selected should reset to 0, not stay at 3 (out of bounds).
+    let resp = session.handle_key(KeyEvent::text("g"));
+    match resp.candidates {
+        CandidateAction::Show { surfaces, selected } => {
+            assert_eq!(surfaces.len(), 2);
+            assert_eq!(selected, 0);
+        }
+        _ => panic!("expected Show candidates"),
+    }
+}
+
+#[test]
 fn test_snippet_no_match_shows_no_candidates() {
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);

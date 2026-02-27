@@ -44,7 +44,9 @@ impl InputSession {
     /// Handle a key event while in snippet mode.
     pub(super) fn handle_snippet_key(&mut self, event: KeyEvent) -> KeyResponse {
         match event {
-            KeyEvent::Text { ref text, .. } => self.snippet_filter_append(text),
+            KeyEvent::Text { ref text, .. } | KeyEvent::Remapped { ref text, .. } => {
+                self.snippet_filter_append(text)
+            }
 
             KeyEvent::Backspace => self.snippet_filter_pop(),
 

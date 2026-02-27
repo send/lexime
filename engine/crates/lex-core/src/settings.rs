@@ -525,6 +525,59 @@ abc = ["]", "}"]
     }
 
     #[test]
+    fn parse_trigger_basic() {
+        let t = parse_trigger_string("ctrl+;").unwrap();
+        assert_eq!(t.char, ";");
+        assert!(t.ctrl);
+        assert!(!t.shift);
+        assert!(!t.alt);
+        assert!(!t.cmd);
+    }
+
+    #[test]
+    fn parse_trigger_multiple_modifiers() {
+        let t = parse_trigger_string("ctrl+shift+@").unwrap();
+        assert_eq!(t.char, "@");
+        assert!(t.ctrl);
+        assert!(t.shift);
+    }
+
+    #[test]
+    fn parse_trigger_single_char() {
+        let t = parse_trigger_string(";").unwrap();
+        assert_eq!(t.char, ";");
+        assert!(!t.ctrl);
+        assert!(!t.shift);
+        assert!(!t.alt);
+        assert!(!t.cmd);
+    }
+
+    #[test]
+    fn parse_trigger_alias_modifiers() {
+        let t = parse_trigger_string("option+command+a").unwrap();
+        assert_eq!(t.char, "a");
+        assert!(t.alt);
+        assert!(t.cmd);
+        assert!(!t.ctrl);
+    }
+
+    #[test]
+    fn parse_trigger_empty_returns_none() {
+        assert!(parse_trigger_string("").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_trailing_plus_returns_none() {
+        // "ctrl+" splits into ["ctrl", ""] — empty char part
+        assert!(parse_trigger_string("ctrl+").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_unknown_modifier_returns_none() {
+        assert!(parse_trigger_string("meta+;").is_none());
+    }
+
+    #[test]
     fn error_invalid_toml() {
         let err = parse_settings_toml("not valid toml {{{").unwrap_err();
         assert!(matches!(err, SettingsError::Parse(_)));

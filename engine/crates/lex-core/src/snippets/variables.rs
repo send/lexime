@@ -89,6 +89,18 @@ fn builtin_defaults() -> HashMap<String, SnippetVariable> {
         },
     );
     m.insert(
+        "wareki_ym".to_string(),
+        SnippetVariable::Date {
+            format: "%G%gy年%m月".to_string(),
+        },
+    );
+    m.insert(
+        "wareki_y".to_string(),
+        SnippetVariable::Date {
+            format: "%G%gy年".to_string(),
+        },
+    );
+    m.insert(
         "year".to_string(),
         SnippetVariable::Date {
             format: "%Y".to_string(),
@@ -129,8 +141,23 @@ impl VariableResolver {
                 Some('{') => {
                     // ${name}
                     chars.next(); // consume '{'
-                    let name: String = chars.by_ref().take_while(|c| *c != '}').collect();
-                    result.push_str(&self.resolve_var(&name));
+                    let mut name = String::new();
+                    let mut found_closing = false;
+                    for c in chars.by_ref() {
+                        if c == '}' {
+                            found_closing = true;
+                            break;
+                        }
+                        name.push(c);
+                    }
+                    if found_closing {
+                        result.push_str(&self.resolve_var(&name));
+                    } else {
+                        // Malformed ${... → preserve as literal
+                        result.push('$');
+                        result.push('{');
+                        result.push_str(&name);
+                    }
                 }
                 Some(c) if c.is_ascii_alphanumeric() || *c == '_' => {
                     // $name
@@ -166,41 +193,61 @@ impl VariableResolver {
 
 fn format_date(fmt: &str) -> String {
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let (era_name, era_year) = current_era(&now);
 
-    // Pre-process custom era placeholders before passing to time
-    let fmt = expand_era_placeholders(fmt, &now);
-
-    // Map common strftime-style format specifiers to time's format_description
     let mut result = String::with_capacity(fmt.len());
     let mut chars = fmt.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch == '%' {
-            match chars.next() {
+            match chars.peek() {
                 Some('Y') => {
+                    chars.next();
                     result.push_str(&format!("{:04}", now.year()));
                 }
                 Some('m') => {
+                    chars.next();
                     result.push_str(&format!("{:02}", now.month() as u8));
                 }
                 Some('d') => {
+                    chars.next();
                     result.push_str(&format!("{:02}", now.day()));
                 }
                 Some('H') => {
+                    chars.next();
                     result.push_str(&format!("{:02}", now.hour()));
                 }
                 Some('M') => {
+                    chars.next();
                     result.push_str(&format!("{:02}", now.minute()));
                 }
                 Some('S') => {
+                    chars.next();
                     result.push_str(&format!("{:02}", now.second()));
                 }
+                Some('G') => {
+                    chars.next();
+                    result.push_str(era_name);
+                }
+                Some('g') => {
+                    chars.next();
+                    // %gy = era year
+                    if chars.peek() == Some(&'y') {
+                        chars.next();
+                        result.push_str(&era_year.to_string());
+                    } else {
+                        result.push('%');
+                        result.push('g');
+                    }
+                }
                 Some('%') => {
+                    chars.next();
                     result.push('%');
                 }
-                Some(other) => {
+                Some(_) => {
+                    // Unknown specifier — preserve as-is
                     result.push('%');
-                    result.push(other);
+                    result.push(chars.next().unwrap());
                 }
                 None => {
                     result.push('%');
@@ -212,13 +259,6 @@ fn format_date(fmt: &str) -> String {
     }
 
     result
-}
-
-fn expand_era_placeholders(fmt: &str, now: &OffsetDateTime) -> String {
-    let (era_name, era_year) = current_era(now);
-    // Replace %gy before %G to avoid %G matching the prefix of %gy
-    fmt.replace("%gy", &era_year.to_string())
-        .replace("%G", era_name)
 }
 
 fn current_era(now: &OffsetDateTime) -> (&'static str, i32) {
@@ -321,6 +361,8 @@ mod tests {
         assert!(names.contains(&"time".to_string()));
         assert!(names.contains(&"datetime".to_string()));
         assert!(names.contains(&"wareki".to_string()));
+        assert!(names.contains(&"wareki_ym".to_string()));
+        assert!(names.contains(&"wareki_y".to_string()));
         assert!(names.contains(&"year".to_string()));
         assert!(names.contains(&"date_jp".to_string()));
     }
@@ -342,6 +384,13 @@ mod tests {
                 .collect();
             assert!(!year_part.is_empty());
         }
+    }
+
+    #[test]
+    fn test_unclosed_brace_preserved_as_literal() {
+        let resolver = VariableResolver::new(HashMap::new());
+        assert_eq!(resolver.expand("${unclosed"), "${unclosed");
+        assert_eq!(resolver.expand("before ${unclosed"), "before ${unclosed");
     }
 
     #[test]
