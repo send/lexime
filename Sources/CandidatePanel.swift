@@ -9,6 +9,12 @@ class CandidateListView: NSView {
 
     override var isFlipped: Bool { true }
 
+    // MARK: - Accessibility
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .list }
+    override func accessibilityLabel() -> String? { "変換候補" }
+
     private let font = NSFont.systemFont(ofSize: 14)
     private let rowHeight: CGFloat = 24
     private let horizontalPadding: CGFloat = 8

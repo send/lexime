@@ -110,10 +110,11 @@ pub fn rerank(
         })
         .collect();
 
-    // Step 2: Hard filter — drop paths exceeding min + threshold
+    // Step 2: Hard filter — drop paths exceeding min + threshold.
+    // min_sc is guaranteed to be <= threshold, so at least one path always survives.
     let min_sc = *structure_costs.iter().min().unwrap();
     let threshold = min_sc + settings().reranker.structure_cost_filter;
-    if structure_costs.iter().any(|&sc| sc <= threshold) {
+    {
         let mut i = 0;
         let mut kept_costs = Vec::new();
         paths.retain(|_| {
@@ -126,7 +127,6 @@ pub fn rerank(
         });
         structure_costs = kept_costs;
     }
-    // else: all paths exceed threshold → keep all (don't drop everything)
 
     // Step 3: Soft penalty + length variance + script cost
     // Reuse pre-computed structure costs (aligned with paths after filter).

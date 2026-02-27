@@ -109,12 +109,28 @@ struct AddWordSheet: View {
 
     let onAdd: (String, String) -> Void
 
+    private var isReadingValid: Bool {
+        !reading.isEmpty && reading.allSatisfy { c in
+            // ひらがな (U+3040..U+309F) + 長音 (ー)
+            (c >= "\u{3040}" && c <= "\u{309F}") || c == "ー"
+        }
+    }
+
+    private var canAdd: Bool {
+        isReadingValid && !surface.isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             Text("単語を追加")
                 .font(.headline)
             Form {
                 TextField("読み（ひらがな）", text: $reading)
+                if !reading.isEmpty && !isReadingValid {
+                    Text("読みはひらがなで入力してください")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
                 TextField("表層（漢字など）", text: $surface)
             }
             HStack {
@@ -125,7 +141,7 @@ struct AddWordSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(reading.isEmpty || surface.isEmpty)
+                .disabled(!canAdd)
             }
         }
         .padding()
