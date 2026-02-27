@@ -5,15 +5,17 @@
 mod engine;
 mod resources;
 mod session;
+mod snippet_store;
 mod types;
 mod user_dict;
 
 pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
+pub use snippet_store::LexSnippetStore;
 pub use types::{
     LexCandidateResult, LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent,
-    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexUserWord,
+    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexTriggerKey, LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 
@@ -89,4 +91,35 @@ fn keymap_get(key_code: u16, has_shift: bool) -> Option<String> {
 #[uniffi::export]
 fn trace_init(log_dir: String) {
     crate::trace_init::init_tracing(Path::new(&log_dir));
+}
+
+#[uniffi::export]
+fn snippet_trigger_key() -> Option<LexTriggerKey> {
+    crate::settings::settings()
+        .snippet_trigger()
+        .map(|t| LexTriggerKey {
+            char_: t.char,
+            ctrl: t.ctrl,
+            shift: t.shift,
+            alt: t.alt,
+            cmd: t.cmd,
+        })
+}
+
+#[uniffi::export]
+fn snippets_load(path: String) -> Result<std::sync::Arc<LexSnippetStore>, LexError> {
+    use lex_core::snippets::{parse_snippets_toml, SnippetStore, VariableResolver};
+
+    let content = std::fs::read_to_string(&path).map_err(|e| LexError::Io {
+        msg: format!("{path}: {e}"),
+    })?;
+
+    let settings = crate::settings::settings();
+    let resolver = VariableResolver::new(settings.snippets.variables.clone());
+    let known = resolver.known_names();
+    let entries = parse_snippets_toml(&content, &known)
+        .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
+
+    let store = SnippetStore::new(entries, resolver);
+    Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
 }

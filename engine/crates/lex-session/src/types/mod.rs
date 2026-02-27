@@ -34,6 +34,8 @@ pub enum KeyEvent {
     ForwardDelete,
     /// Cmd/Ctrl/Alt 付きキー — composing 中なら確定してパススルー
     ModifiedKey,
+    /// Snippet trigger key — enter snippet expansion mode
+    SnippetTrigger,
 }
 
 impl KeyEvent {

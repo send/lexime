@@ -3,6 +3,7 @@ mod candidates;
 mod corpus;
 mod proptest_fsm;
 mod simulator;
+mod snippets;
 
 use std::sync::Arc;
 

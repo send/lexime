@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::snippets::SnippetVariable;
+
 pub const DEFAULT_SETTINGS_TOML: &str = include_str!("default_settings.toml");
 
 static CUSTOM_TOML: OnceLock<String> = OnceLock::new();
@@ -55,6 +57,8 @@ pub struct Settings {
     pub history: HistorySettings,
     pub candidates: CandidateSettings,
     #[serde(default)]
+    pub snippets: SnippetSettings,
+    #[serde(default)]
     keymap: HashMap<String, Vec<String>>,
     /// Parsed keymap: key_code → (normal, shifted).
     #[serde(skip)]
@@ -77,6 +81,11 @@ impl Settings {
                     None
                 }
             })
+    }
+
+    /// Parse the snippet trigger string into a structured key descriptor.
+    pub fn snippet_trigger(&self) -> Option<TriggerKey> {
+        parse_trigger_string(&self.snippets.trigger)
     }
 }
 
@@ -133,6 +142,69 @@ pub struct HistorySettings {
 pub struct CandidateSettings {
     pub nbest: usize,
     pub max_results: usize,
+}
+
+fn default_snippet_trigger() -> String {
+    "ctrl+;".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SnippetSettings {
+    #[serde(default = "default_snippet_trigger")]
+    pub trigger: String,
+    #[serde(default)]
+    pub variables: HashMap<String, SnippetVariable>,
+}
+
+/// Parsed trigger key descriptor for character-based matching.
+#[derive(Debug, Clone)]
+pub struct TriggerKey {
+    pub char: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub cmd: bool,
+}
+
+/// Parse a trigger string like "ctrl+;" into a TriggerKey.
+/// Format: optional modifiers separated by '+', final segment is the character.
+fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
+    if s.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = s.split('+').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let char_part = parts.last()?.to_string();
+    if char_part.is_empty() {
+        return None;
+    }
+
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut alt = false;
+    let mut cmd = false;
+
+    for &part in &parts[..parts.len() - 1] {
+        match part.to_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "shift" => shift = true,
+            "alt" | "option" | "opt" => alt = true,
+            "cmd" | "command" | "super" => cmd = true,
+            _ => return None, // unknown modifier
+        }
+    }
+
+    Some(TriggerKey {
+        char: char_part,
+        ctrl,
+        shift,
+        alt,
+        cmd,
+    })
 }
 
 pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
@@ -244,6 +316,14 @@ mod tests {
         assert_eq!(s.history.max_bigrams, 10000);
         assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
+        // Snippet defaults
+        assert_eq!(s.snippets.trigger, "ctrl+;");
+        let trigger = s.snippet_trigger().unwrap();
+        assert_eq!(trigger.char, ";");
+        assert!(trigger.ctrl);
+        assert!(!trigger.shift);
+        assert!(!trigger.alt);
+        assert!(!trigger.cmd);
         // Keymap defaults
         assert_eq!(s.keymap_get(10, false), Some("]"));
         assert_eq!(s.keymap_get(10, true), Some("}"));

@@ -126,6 +126,18 @@ pub enum LexKeyEvent {
     SwitchToJapanese,
     ForwardDelete,
     ModifiedKey,
+    SnippetTrigger,
+}
+
+/// Trigger key descriptor for snippet expansion (character-based matching).
+#[derive(uniffi::Record)]
+pub struct LexTriggerKey {
+    /// The character to match (e.g. ";"). Named char_ because `char` is a Rust keyword.
+    pub char_: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub cmd: bool,
 }
 
 impl From<LexKeyEvent> for KeyEvent {
@@ -144,6 +156,7 @@ impl From<LexKeyEvent> for KeyEvent {
             LexKeyEvent::SwitchToJapanese => KeyEvent::SwitchToJapanese,
             LexKeyEvent::ForwardDelete => KeyEvent::ForwardDelete,
             LexKeyEvent::ModifiedKey => KeyEvent::ModifiedKey,
+            LexKeyEvent::SnippetTrigger => KeyEvent::SnippetTrigger,
         }
     }
 }
