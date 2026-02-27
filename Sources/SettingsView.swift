@@ -9,6 +9,9 @@ struct SettingsView: View {
             UserDictionaryView()
                 .tabItem { Label("ユーザ辞書", systemImage: "book") }
 
+            SnippetView()
+                .tabItem { Label("スニペット", systemImage: "text.snippet") }
+
             if developerMode {
                 DeveloperSettingsView()
                     .tabItem { Label("開発者", systemImage: "wrench") }

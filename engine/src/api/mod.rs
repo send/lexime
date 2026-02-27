@@ -15,7 +15,8 @@ pub use session::LexSession;
 pub use snippet_store::LexSnippetStore;
 pub use types::{
     LexCandidateResult, LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent,
-    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexTriggerKey, LexUserWord,
+    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexSnippetEntry, LexTriggerKey,
+    LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 
@@ -104,6 +105,33 @@ fn snippet_trigger_key() -> Option<LexTriggerKey> {
             alt: t.alt,
             cmd: t.cmd,
         })
+}
+
+#[uniffi::export]
+fn snippets_parse(content: String) -> Result<Vec<LexSnippetEntry>, LexError> {
+    let table: std::collections::HashMap<String, String> =
+        toml::from_str(&content).map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
+    let mut entries: Vec<LexSnippetEntry> = table
+        .into_iter()
+        .map(|(key, body)| LexSnippetEntry { key, body })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
+}
+
+#[uniffi::export]
+fn snippets_serialize(entries: Vec<LexSnippetEntry>) -> String {
+    let mut sorted = entries;
+    sorted.sort_by(|a, b| a.key.cmp(&b.key));
+    let mut out = String::new();
+    for entry in &sorted {
+        out.push_str(&format!(
+            "{} = {}\n",
+            entry.key,
+            toml::Value::String(entry.body.clone())
+        ));
+    }
+    out
 }
 
 #[uniffi::export]

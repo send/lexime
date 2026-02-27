@@ -63,6 +63,12 @@ pub struct LexUserWord {
 }
 
 #[derive(uniffi::Record)]
+pub struct LexSnippetEntry {
+    pub key: String,
+    pub body: String,
+}
+
+#[derive(uniffi::Record)]
 pub struct LexRomajiConvert {
     pub composed_kana: String,
     pub pending_romaji: String,

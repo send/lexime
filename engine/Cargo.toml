@@ -35,6 +35,7 @@ lex-core = { path = "crates/lex-core" }
 lex-session = { path = "crates/lex-session" }
 uniffi = "0.29"
 thiserror = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [dependencies.tracing-subscriber]

@@ -11,7 +11,7 @@ class AppContext {
     static let shared = AppContext()
 
     let engine: LexEngine?
-    let snippetStore: LexSnippetStore?
+    private(set) var snippetStore: LexSnippetStore?
     let historyPath: String
     let userDictPath: String
     let supportDir: String
@@ -151,6 +151,22 @@ class AppContext {
                 NSLog("Lexime: snippets config error at %@: %@",
                       snippetsPath, "\(error)")
                 self.snippetStore = nil
+            }
+        } else {
+            self.snippetStore = nil
+        }
+    }
+
+    func reloadSnippets() {
+        let snippetsPath = (supportDir as NSString).appendingPathComponent("snippets.toml")
+        if FileManager.default.fileExists(atPath: snippetsPath) {
+            do {
+                let store = try snippetsLoad(path: snippetsPath)
+                NSLog("Lexime: Snippets reloaded from %@", snippetsPath)
+                self.snippetStore = store
+            } catch {
+                NSLog("Lexime: snippets reload error at %@: %@",
+                      snippetsPath, "\(error)")
             }
         } else {
             self.snippetStore = nil
