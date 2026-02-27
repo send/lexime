@@ -145,20 +145,22 @@ class AppContext {
 
         // Load snippets (optional)
         self.snippetStore = nil
-        reloadSnippets()
+        do {
+            try reloadSnippets()
+        } catch {
+            NSLog("Lexime: snippets load error: %@", "\(error)")
+        }
     }
 
-    func reloadSnippets() {
+    /// Reload snippets from disk. Throws if the file exists but fails to load.
+    /// On success or missing file, updates `snippetStore` and posts notification.
+    @discardableResult
+    func reloadSnippets() throws {
         let snippetsPath = (supportDir as NSString).appendingPathComponent("snippets.toml")
         if FileManager.default.fileExists(atPath: snippetsPath) {
-            do {
-                let store = try snippetsLoad(path: snippetsPath)
-                NSLog("Lexime: Snippets reloaded from %@", snippetsPath)
-                self.snippetStore = store
-            } catch {
-                NSLog("Lexime: snippets reload error at %@: %@",
-                      snippetsPath, "\(error)")
-            }
+            let store = try snippetsLoad(path: snippetsPath)
+            NSLog("Lexime: Snippets reloaded from %@", snippetsPath)
+            self.snippetStore = store
         } else {
             self.snippetStore = nil
         }

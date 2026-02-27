@@ -138,7 +138,7 @@ pub enum LexKeyEvent {
 /// Trigger key descriptor for snippet expansion (character-based matching).
 #[derive(uniffi::Record)]
 pub struct LexTriggerKey {
-    /// The character to match (e.g. ";"). Named char_ because `char` is a Rust keyword.
+    /// The character to match (e.g. ";"). Named `char_` to avoid conflicts in generated bindings.
     pub char_: String,
     pub ctrl: bool,
     pub shift: bool,

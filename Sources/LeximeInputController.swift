@@ -55,6 +55,10 @@ class LeximeInputController: IMKInputController {
             name: .snippetsDidReload, object: nil)
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .snippetsDidReload, object: nil)
+    }
+
     @objc private func snippetsDidReload() {
         session?.setSnippetStore(store: AppContext.shared.snippetStore)
     }
