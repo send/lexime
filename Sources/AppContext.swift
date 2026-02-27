@@ -154,7 +154,6 @@ class AppContext {
 
     /// Reload snippets from disk. Throws if the file exists but fails to load.
     /// On success or missing file, updates `snippetStore` and posts notification.
-    @discardableResult
     func reloadSnippets() throws {
         let snippetsPath = (supportDir as NSString).appendingPathComponent("snippets.toml")
         if FileManager.default.fileExists(atPath: snippetsPath) {
