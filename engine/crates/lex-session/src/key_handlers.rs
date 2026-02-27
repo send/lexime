@@ -200,7 +200,9 @@ impl InputSession {
 
         let selected = c.candidates.selected;
         let Some(surface) = c.candidates.surfaces.get(selected).cloned() else {
-            return KeyResponse::consumed();
+            // Repair out-of-bounds selection
+            c.candidates.selected = c.candidates.surfaces.len().saturating_sub(1);
+            return build_candidate_selection(self.comp());
         };
         let reading = c.kana.clone();
 

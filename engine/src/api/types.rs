@@ -22,7 +22,14 @@ impl From<std::io::Error> for LexError {
 
 impl From<crate::dict::DictError> for LexError {
     fn from(e: crate::dict::DictError) -> Self {
-        Self::Io { msg: e.to_string() }
+        match e {
+            crate::dict::DictError::Io(io_err) => Self::Io {
+                msg: io_err.to_string(),
+            },
+            other => Self::InvalidData {
+                msg: other.to_string(),
+            },
+        }
     }
 }
 
