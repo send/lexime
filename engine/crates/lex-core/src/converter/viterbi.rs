@@ -59,6 +59,19 @@ impl ScoredPath {
     pub fn surface_key(&self) -> String {
         self.segments.iter().map(|s| s.surface.as_str()).collect()
     }
+
+    /// Compare surface key without allocating a String.
+    pub fn surface_key_eq(&self, key: &str) -> bool {
+        let mut remaining = key;
+        for seg in &self.segments {
+            if let Some(rest) = remaining.strip_prefix(seg.surface.as_str()) {
+                remaining = rest;
+            } else {
+                return false;
+            }
+        }
+        remaining.is_empty()
+    }
 }
 
 /// A single entry in the top-K list for a node: (accumulated cost, previous node index, rank at

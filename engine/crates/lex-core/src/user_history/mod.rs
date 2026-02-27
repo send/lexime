@@ -88,7 +88,7 @@ fn evict_map<K: Clone + Eq + std::hash::Hash>(
     if count <= max {
         return;
     }
-    let mut all: Vec<(String, K, f64)> = Vec::new();
+    let mut all: Vec<(String, K, f64)> = Vec::with_capacity(count);
     for (outer_key, inner) in map.iter() {
         for (inner_key, entry) in inner {
             let score = entry.frequency as f64 * decay(entry.last_used, now);

@@ -140,13 +140,7 @@ impl InputSession {
 
             KeyEvent::Escape if self.is_composing() => {
                 self.comp().flush();
-                {
-                    let c = self.comp();
-                    if !c.kana.is_empty() {
-                        let kana = c.kana.clone();
-                        self.record_history(kana.clone(), kana);
-                    }
-                }
+                // Escape cancels composition — do not record history for unconfirmed input.
                 self.comp().candidates.clear();
                 let mut resp = KeyResponse::consumed();
                 resp.candidates = CandidateAction::Hide;
@@ -208,7 +202,9 @@ impl InputSession {
         }
 
         let selected = c.candidates.selected;
-        let surface = c.candidates.surfaces[selected].clone();
+        let Some(surface) = c.candidates.surfaces.get(selected).cloned() else {
+            return KeyResponse::consumed();
+        };
         let reading = c.kana.clone();
 
         // Collect segments for the selected path (for bigram deletion)
@@ -227,7 +223,9 @@ impl InputSession {
             });
         }
 
-        // Remove from candidate list
+        // Remove from candidate list.
+        // surfaces can have more entries than paths (predictions, history,
+        // lookup entries don't always have corresponding path data).
         let c = self.comp();
         c.candidates.surfaces.remove(selected);
         if selected < c.candidates.paths.len() {

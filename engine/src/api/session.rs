@@ -8,6 +8,14 @@ use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::types::{convert_to_events, LexConversionMode};
 use super::{LexKeyEvent, LexKeyResponse};
 
+/// IME session exposed to the Swift frontend via UniFFI.
+///
+/// `session.lock().unwrap()` is used intentionally throughout this struct.
+/// If the Mutex is poisoned (a panic occurred in a prior lock holder), the
+/// session state is unrecoverable. For an IME, panicking is the correct
+/// response — macOS automatically restarts the input method process, so
+/// the user experiences only a momentary input interruption rather than
+/// a silently corrupted session.
 #[derive(uniffi::Object)]
 pub struct LexSession {
     history: Option<Arc<LexUserHistory>>,
