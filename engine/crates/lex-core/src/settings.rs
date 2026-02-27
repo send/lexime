@@ -145,7 +145,7 @@ pub struct CandidateSettings {
 }
 
 fn default_snippet_trigger() -> String {
-    "ctrl+;".to_string()
+    "ctrl+shift+@".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -317,11 +317,11 @@ mod tests {
         assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
         // Snippet defaults
-        assert_eq!(s.snippets.trigger, "ctrl+;");
+        assert_eq!(s.snippets.trigger, "ctrl+shift+@");
         let trigger = s.snippet_trigger().unwrap();
-        assert_eq!(trigger.char, ";");
+        assert_eq!(trigger.char, "@");
         assert!(trigger.ctrl);
-        assert!(!trigger.shift);
+        assert!(trigger.shift);
         assert!(!trigger.alt);
         assert!(!trigger.cmd);
         // Keymap defaults

@@ -185,7 +185,7 @@ class LeximeInputController: IMKInputController {
 
     private func isSnippetTrigger(event: NSEvent, dominated: NSEvent.ModifierFlags) -> Bool {
         guard let trigger = cachedTrigger else { return false }
-        guard event.characters == trigger.char else { return false }
+        guard event.charactersIgnoringModifiers == trigger.char else { return false }
         return dominated.contains(.control) == trigger.ctrl
             && dominated.contains(.shift) == trigger.shift
             && dominated.contains(.option) == trigger.alt
