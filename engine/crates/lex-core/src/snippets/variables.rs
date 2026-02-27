@@ -216,8 +216,9 @@ fn format_date(fmt: &str) -> String {
 
 fn expand_era_placeholders(fmt: &str, now: &OffsetDateTime) -> String {
     let (era_name, era_year) = current_era(now);
-    fmt.replace("%G", era_name)
-        .replace("%gy", &era_year.to_string())
+    // Replace %gy before %G to avoid %G matching the prefix of %gy
+    fmt.replace("%gy", &era_year.to_string())
+        .replace("%G", era_name)
 }
 
 fn current_era(now: &OffsetDateTime) -> (&'static str, i32) {
@@ -322,6 +323,25 @@ mod tests {
         assert!(names.contains(&"wareki".to_string()));
         assert!(names.contains(&"year".to_string()));
         assert!(names.contains(&"date_jp".to_string()));
+    }
+
+    #[test]
+    fn test_era_placeholder_order() {
+        // %gy must be replaced before %G to avoid partial match
+        let now = time::OffsetDateTime::now_utc();
+        if now.year() >= 2019 {
+            let result = format_date("%G%gy年");
+            assert!(result.starts_with("令和"));
+            // Should NOT contain "%G" or "令和令和"
+            assert!(!result.contains("令和令和"));
+            // Era year should follow era name
+            let after_era = &result["令和".len()..];
+            let year_part: String = after_era
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            assert!(!year_part.is_empty());
+        }
     }
 
     #[test]
