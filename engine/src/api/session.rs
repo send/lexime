@@ -56,16 +56,16 @@ impl LexSession {
         let mut resp = session.handle_key(event.into());
 
         // Submit async candidate work internally
-        let async_req = resp.async_request.take();
-        if let Some(req) = &async_req {
+        let has_pending_work = resp.async_request.is_some();
+        if let Some(req) = resp.async_request.take() {
             self.worker
-                .submit_candidates(req.reading.clone(), req.candidate_dispatch);
+                .submit_candidates(req.reading, req.candidate_dispatch);
         }
 
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, async_req.is_some())
+        convert_to_events(resp, has_pending_work)
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -85,15 +85,15 @@ impl LexSession {
             let mut session = self.session.lock().unwrap();
             if let Some(mut resp) = session.receive_candidates(&result.reading, surfaces, paths) {
                 // Chain: submit any new async requests from the response
-                let async_req = resp.async_request.take();
-                if let Some(req) = &async_req {
+                let has_pending_work = resp.async_request.is_some();
+                if let Some(req) = resp.async_request.take() {
                     self.worker
-                        .submit_candidates(req.reading.clone(), req.candidate_dispatch);
+                        .submit_candidates(req.reading, req.candidate_dispatch);
                 }
                 let records = session.take_history_records();
                 drop(session);
                 self.record_history(&records);
-                return Some(convert_to_events(resp, async_req.is_some()));
+                return Some(convert_to_events(resp, has_pending_work));
             }
         }
 
