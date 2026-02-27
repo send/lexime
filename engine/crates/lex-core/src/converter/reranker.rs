@@ -63,9 +63,6 @@ pub(super) fn single_char_kanji_penalty(
     let exempt = dict.is_some_and(|d| {
         let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
             let reading = format!("{}{}", a.reading, b.reading);
-            if !d.contains_reading(&reading) {
-                return false;
-            }
             let surface = format!("{}{}", a.surface, b.surface);
             d.lookup(&reading).iter().any(|e| e.surface == surface)
         };
