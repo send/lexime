@@ -61,29 +61,16 @@ pub(super) fn single_char_kanji_penalty(
         return 0;
     }
     let exempt = dict.is_some_and(|d| {
-        if idx > 0 {
-            let prev = &segments[idx - 1];
-            let combined_reading = format!("{}{}", prev.reading, seg.reading);
-            let combined_surface = format!("{}{}", prev.surface, seg.surface);
-            if d.lookup(&combined_reading)
-                .iter()
-                .any(|e| e.surface == combined_surface)
-            {
-                return true;
+        let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
+            let reading = format!("{}{}", a.reading, b.reading);
+            if !d.contains_reading(&reading) {
+                return false;
             }
-        }
-        if idx + 1 < segments.len() {
-            let next = &segments[idx + 1];
-            let combined_reading = format!("{}{}", seg.reading, next.reading);
-            let combined_surface = format!("{}{}", seg.surface, next.surface);
-            if d.lookup(&combined_reading)
-                .iter()
-                .any(|e| e.surface == combined_surface)
-            {
-                return true;
-            }
-        }
-        false
+            let surface = format!("{}{}", a.surface, b.surface);
+            d.lookup(&reading).iter().any(|e| e.surface == surface)
+        };
+        (idx > 0 && has_compound(&segments[idx - 1], seg))
+            || (idx + 1 < segments.len() && has_compound(seg, &segments[idx + 1]))
     });
     if exempt {
         0
