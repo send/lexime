@@ -125,9 +125,19 @@ fn snippets_serialize(entries: Vec<LexSnippetEntry>) -> String {
     sorted.sort_by(|a, b| a.key.cmp(&b.key));
     let mut out = String::new();
     for entry in &sorted {
+        let key = if entry
+            .key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !entry.key.is_empty()
+        {
+            entry.key.clone()
+        } else {
+            format!("{}", toml::Value::String(entry.key.clone()))
+        };
         out.push_str(&format!(
             "{} = {}\n",
-            entry.key,
+            key,
             toml::Value::String(entry.body.clone())
         ));
     }

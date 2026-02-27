@@ -140,21 +140,8 @@ class AppContext {
         }
 
         // Load snippets (optional)
-        let snippetsPath = appSupport
-            .appendingPathComponent("Lexime/snippets.toml").path
-        if FileManager.default.fileExists(atPath: snippetsPath) {
-            do {
-                let store = try snippetsLoad(path: snippetsPath)
-                NSLog("Lexime: Snippets loaded from %@", snippetsPath)
-                self.snippetStore = store
-            } catch {
-                NSLog("Lexime: snippets config error at %@: %@",
-                      snippetsPath, "\(error)")
-                self.snippetStore = nil
-            }
-        } else {
-            self.snippetStore = nil
-        }
+        self.snippetStore = nil
+        reloadSnippets()
     }
 
     func reloadSnippets() {
