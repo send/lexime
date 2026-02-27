@@ -61,21 +61,13 @@ pub(super) fn single_char_kanji_penalty(
         return 0;
     }
     let exempt = dict.is_some_and(|d| {
-        if idx > 0 {
-            let prev = &segments[idx - 1];
-            let combined = format!("{}{}", prev.reading, seg.reading);
-            if d.contains_reading(&combined) {
-                return true;
-            }
-        }
-        if idx + 1 < segments.len() {
-            let next = &segments[idx + 1];
-            let combined = format!("{}{}", seg.reading, next.reading);
-            if d.contains_reading(&combined) {
-                return true;
-            }
-        }
-        false
+        let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
+            let reading = format!("{}{}", a.reading, b.reading);
+            let surface = format!("{}{}", a.surface, b.surface);
+            d.lookup(&reading).iter().any(|e| e.surface == surface)
+        };
+        (idx > 0 && has_compound(&segments[idx - 1], seg))
+            || (idx + 1 < segments.len() && has_compound(seg, &segments[idx + 1]))
     });
     if exempt {
         0
@@ -475,15 +467,15 @@ mod tests {
     }
 
     impl MockDict {
-        fn new(readings: &[&str]) -> Self {
+        fn new(pairs: &[(&str, &str)]) -> Self {
             Self {
-                entries: readings
+                entries: pairs
                     .iter()
-                    .map(|&r| {
+                    .map(|&(reading, surface)| {
                         (
-                            r.to_string(),
+                            reading.to_string(),
                             vec![DictEntry {
-                                surface: r.to_string(),
+                                surface: surface.to_string(),
                                 cost: 5000,
                                 left_id: 1,
                                 right_id: 1,
@@ -546,8 +538,8 @@ mod tests {
         let roles = vec![0u8, 0];
         let conn = conn_with_roles(roles);
 
-        // Dictionary has "きょうと" compound reading
-        let dict = MockDict::new(&["きょうと"]);
+        // Dictionary has "きょうと" → "京都" compound
+        let dict = MockDict::new(&[("きょうと", "京都")]);
 
         // "と" → "都" is single-char kanji CW, but "きょう" + "と" = "きょうと"
         // exists in dictionary, so it should be exempt.
@@ -584,6 +576,48 @@ mod tests {
             cost_without_dict - cost_with_dict,
             penalty,
             "compound exemption should save exactly the penalty amount"
+        );
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_not_exempt_when_surface_mismatches() {
+        // ID 1 = content word (role 0)
+        let roles = vec![0u8, 0];
+        let conn = conn_with_roles(roles);
+
+        // Dictionary has "ますね" → "増根" but segments are ます + 根,
+        // so combined_surface = "ます根" ≠ "増根" — should NOT be exempt.
+        let dict = MockDict::new(&[("ますね", "増根")]);
+
+        let dummy = path(vec![seg("ますね", "ますね", 1)], 99999);
+
+        let cost_with_dict = {
+            let mut p = vec![
+                path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
+                dummy.clone(),
+            ];
+            rerank(&mut p, Some(&conn), Some(&dict));
+            p.iter()
+                .find(|pp| pp.segments.len() == 2)
+                .unwrap()
+                .viterbi_cost
+        };
+
+        let cost_without_dict = {
+            let mut p = vec![
+                path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
+                dummy.clone(),
+            ];
+            rerank(&mut p, Some(&conn), None);
+            p.iter()
+                .find(|pp| pp.segments.len() == 2)
+                .unwrap()
+                .viterbi_cost
+        };
+
+        assert_eq!(
+            cost_with_dict, cost_without_dict,
+            "surface mismatch should not grant exemption"
         );
     }
 
