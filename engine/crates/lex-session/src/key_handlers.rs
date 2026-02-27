@@ -140,7 +140,7 @@ impl InputSession {
 
             KeyEvent::Escape if self.is_composing() => {
                 self.comp().flush();
-                // Escape cancels composition — do not record history for unconfirmed input.
+                // Escape cancels conversion/candidate selection — do not record history for unconfirmed input.
                 self.comp().candidates.clear();
                 let mut resp = KeyResponse::consumed();
                 resp.candidates = CandidateAction::Hide;

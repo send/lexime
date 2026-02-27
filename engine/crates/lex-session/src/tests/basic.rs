@@ -411,7 +411,7 @@ fn test_history_not_recorded_on_escape() {
     type_string(&mut session, "kyou");
     session.handle_key(KeyEvent::Escape);
 
-    // Escape cancels composition — unconfirmed input should not be learned
+    // Escape cancels conversion/candidate selection — unconfirmed input should not be learned
     let records = session.take_history_records();
     assert!(records.is_empty());
 }

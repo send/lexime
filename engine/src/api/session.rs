@@ -10,7 +10,7 @@ use super::{LexKeyEvent, LexKeyResponse};
 
 /// IME session exposed to the Swift frontend via UniFFI.
 ///
-/// `session.lock().unwrap()` is used intentionally throughout this struct.
+/// `self.session.lock().unwrap()` is used intentionally throughout this struct.
 /// If the Mutex is poisoned (a panic occurred in a prior lock holder), the
 /// session state is unrecoverable. For an IME, panicking is the correct
 /// response — macOS automatically restarts the input method process, so
