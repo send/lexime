@@ -179,7 +179,7 @@ fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
     }
 
     let char_part = parts.last()?.to_string();
-    if char_part.is_empty() {
+    if char_part.is_empty() || char_part.chars().count() != 1 {
         return None;
     }
 
@@ -575,6 +575,12 @@ abc = ["]", "}"]
     #[test]
     fn parse_trigger_unknown_modifier_returns_none() {
         assert!(parse_trigger_string("meta+;").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_multi_char_returns_none() {
+        assert!(parse_trigger_string("ctrl+enter").is_none());
+        assert!(parse_trigger_string("ab").is_none());
     }
 
     #[test]

@@ -44,9 +44,7 @@ class LeximeInputController: IMKInputController {
         session = engine.createSession()
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
-        if let snippetStore = AppContext.shared.snippetStore {
-            session.setSnippetStore(store: snippetStore)
-        }
+        session.setSnippetStore(store: AppContext.shared.snippetStore)
         let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
         if convMode == 1 {
             session.setConversionMode(mode: .predictive)
@@ -58,9 +56,7 @@ class LeximeInputController: IMKInputController {
     }
 
     @objc private func snippetsDidReload() {
-        if let store = AppContext.shared.snippetStore {
-            session?.setSnippetStore(store: store)
-        }
+        session?.setSnippetStore(store: AppContext.shared.snippetStore)
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {

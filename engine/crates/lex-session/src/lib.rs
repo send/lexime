@@ -89,8 +89,8 @@ impl InputSession {
         )
     }
 
-    pub fn set_snippet_store(&mut self, store: Arc<SnippetStore>) {
-        self.snippet_store = Some(store);
+    pub fn set_snippet_store(&mut self, store: Option<Arc<SnippetStore>>) {
+        self.snippet_store = store;
     }
 
     pub fn is_abc_passthrough(&self) -> bool {

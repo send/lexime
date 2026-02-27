@@ -4,7 +4,7 @@ struct SnippetView: View {
 
     @State private var entries: [LexSnippetEntry] = []
     @State private var showingAddSheet = false
-    @State private var selectedIndex: Int?
+    @State private var selectedKey: String?
     @State private var saveError: String?
 
     private let supportDir = AppContext.shared.supportDir
@@ -17,8 +17,8 @@ struct SnippetView: View {
                     .foregroundColor(.secondary)
                 Spacer()
             } else {
-                List(selection: $selectedIndex) {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                List(selection: $selectedKey) {
+                    ForEach(entries, id: \.key) { entry in
                         HStack {
                             Text(entry.key)
                                 .fontWeight(.medium)
@@ -28,7 +28,7 @@ struct SnippetView: View {
                                 .lineLimit(1)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .tag(index)
+                        .tag(entry.key)
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel("\(entry.key)、\(entry.body)")
                     }
@@ -46,7 +46,7 @@ struct SnippetView: View {
                     Image(systemName: "minus")
                 }
                 .accessibilityLabel("選択したスニペットを削除")
-                .disabled(selectedIndex == nil)
+                .disabled(selectedKey == nil)
                 Spacer()
                 Text("\(entries.count) 件")
                     .foregroundColor(.secondary)
@@ -93,9 +93,9 @@ struct SnippetView: View {
     }
 
     private func removeSelected() {
-        guard let index = selectedIndex, index < entries.count else { return }
-        entries.remove(at: index)
-        selectedIndex = nil
+        guard let key = selectedKey else { return }
+        entries.removeAll { $0.key == key }
+        selectedKey = nil
         save()
     }
 
@@ -126,7 +126,7 @@ struct AddSnippetSheet: View {
     let onAdd: (String, String) -> Void
 
     private var isKeyValid: Bool {
-        !key.isEmpty && key.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+        !key.isEmpty && key.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
     }
 
     private var canAdd: Bool {
@@ -138,9 +138,9 @@ struct AddSnippetSheet: View {
             Text("スニペットを追加")
                 .font(.headline)
             Form {
-                TextField("キー（英数字・アンダースコア）", text: $key)
+                TextField("キー（英数字・ハイフン・アンダースコア）", text: $key)
                 if !key.isEmpty && !isKeyValid {
-                    Text("キーは英数字とアンダースコアのみ使用できます")
+                    Text("キーは英数字とハイフン・アンダースコアのみ使用できます")
                         .font(.caption)
                         .foregroundColor(.red)
                 }

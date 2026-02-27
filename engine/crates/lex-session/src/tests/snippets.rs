@@ -27,7 +27,7 @@ fn make_snippet_store() -> Arc<SnippetStore> {
 fn make_session_with_snippets() -> InputSession {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    session.set_snippet_store(make_snippet_store());
+    session.set_snippet_store(Some(make_snippet_store()));
     session
 }
 

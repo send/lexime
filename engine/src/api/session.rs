@@ -124,11 +124,11 @@ impl LexSession {
         self.session.lock().unwrap().set_abc_passthrough(enabled);
     }
 
-    fn set_snippet_store(&self, store: Arc<LexSnippetStore>) {
+    fn set_snippet_store(&self, store: Option<Arc<LexSnippetStore>>) {
         self.session
             .lock()
             .unwrap()
-            .set_snippet_store(Arc::clone(&store.inner));
+            .set_snippet_store(store.map(|s| Arc::clone(&s.inner)));
     }
 }
 
