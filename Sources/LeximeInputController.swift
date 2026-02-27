@@ -51,6 +51,16 @@ class LeximeInputController: IMKInputController {
         if convMode == 1 {
             session.setConversionMode(mode: .predictive)
         }
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(snippetsDidReload),
+            name: .snippetsDidReload, object: nil)
+    }
+
+    @objc private func snippetsDidReload() {
+        if let store = AppContext.shared.snippetStore {
+            session?.setSnippetStore(store: store)
+        }
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {

@@ -7,6 +7,10 @@ enum DefaultsKey {
     static let developerMode = "developerMode"
 }
 
+extension Notification.Name {
+    static let snippetsDidReload = Notification.Name("LeximeSnippetsDidReload")
+}
+
 class AppContext {
     static let shared = AppContext()
 
@@ -158,5 +162,6 @@ class AppContext {
         } else {
             self.snippetStore = nil
         }
+        NotificationCenter.default.post(name: .snippetsDidReload, object: nil)
     }
 }

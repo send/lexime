@@ -76,7 +76,12 @@ struct SnippetView: View {
             entries = []
             return
         }
-        entries = (try? snippetsParse(content: content)) ?? []
+        do {
+            entries = try snippetsParse(content: content)
+        } catch {
+            NSLog("Lexime: Failed to parse snippets.toml: %@", "\(error)")
+            saveError = "スニペットの読み込みに失敗しました: \(error.localizedDescription)"
+        }
     }
 
     private func addEntry(key: String, body: String) {

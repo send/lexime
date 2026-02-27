@@ -49,8 +49,16 @@ fn extract_variable_names(template: &str) -> Vec<String> {
             }
             Some('{') => {
                 chars.next(); // consume '{'
-                let name: String = chars.by_ref().take_while(|c| *c != '}').collect();
-                if !name.is_empty() {
+                let mut name = String::new();
+                let mut found_closing = false;
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        found_closing = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if found_closing && !name.is_empty() {
                     names.push(name);
                 }
             }
