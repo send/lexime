@@ -53,11 +53,11 @@ impl LexSession {
         self.worker.invalidate_candidates();
 
         let mut session = self.session.lock().unwrap();
-        let resp = session.handle_key(event.into());
+        let mut resp = session.handle_key(event.into());
 
         // Submit async candidate work internally
-        let has_async = resp.async_request.is_some();
-        if let Some(ref req) = resp.async_request {
+        let async_req = resp.async_request.take();
+        if let Some(req) = &async_req {
             self.worker
                 .submit_candidates(req.reading.clone(), req.candidate_dispatch);
         }
@@ -65,7 +65,7 @@ impl LexSession {
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, has_async)
+        convert_to_events(resp, async_req.is_some())
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -83,17 +83,17 @@ impl LexSession {
             let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
 
             let mut session = self.session.lock().unwrap();
-            if let Some(resp) = session.receive_candidates(&result.reading, surfaces, paths) {
+            if let Some(mut resp) = session.receive_candidates(&result.reading, surfaces, paths) {
                 // Chain: submit any new async requests from the response
-                let has_async = resp.async_request.is_some();
-                if let Some(ref req) = resp.async_request {
+                let async_req = resp.async_request.take();
+                if let Some(req) = &async_req {
                     self.worker
                         .submit_candidates(req.reading.clone(), req.candidate_dispatch);
                 }
                 let records = session.take_history_records();
                 drop(session);
                 self.record_history(&records);
-                return Some(convert_to_events(resp, has_async));
+                return Some(convert_to_events(resp, async_req.is_some()));
             }
         }
 

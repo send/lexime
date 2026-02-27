@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
 
-    @State private var developerMode = UserDefaults.standard.bool(forKey: "developerMode")
+    @State private var developerMode = UserDefaults.standard.bool(forKey: DefaultsKey.developerMode)
 
     var body: some View {
         TabView {
@@ -22,7 +22,7 @@ struct SettingsView: View {
 
 struct DeveloperSettingsView: View {
 
-    @State private var conversionMode = UserDefaults.standard.integer(forKey: "conversionMode")
+    @State private var conversionMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
     @State private var romajiText = ""
     @State private var settingsText = ""
     @State private var needsRestart = false
@@ -41,7 +41,7 @@ struct DeveloperSettingsView: View {
                         Text("Predictive").tag(1)
                     }
                     .onChange(of: conversionMode) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "conversionMode")
+                        UserDefaults.standard.set(newValue, forKey: DefaultsKey.conversionMode)
                         needsRestart = true
                     }
                 }

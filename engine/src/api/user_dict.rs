@@ -14,8 +14,7 @@ pub struct LexUserDictionary {
 impl LexUserDictionary {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
-        let dict = UserDictionary::open(Path::new(&path))
-            .map_err(|e| LexError::Io { msg: e.to_string() })?;
+        let dict = UserDictionary::open(Path::new(&path))?;
         Ok(Arc::new(Self {
             inner: Arc::new(dict),
         }))
@@ -38,8 +37,7 @@ impl LexUserDictionary {
     }
 
     fn save(&self, path: String) -> Result<(), LexError> {
-        self.inner
-            .save(Path::new(&path))
-            .map_err(|e| LexError::Io { msg: e.to_string() })
+        self.inner.save(Path::new(&path))?;
+        Ok(())
     }
 }

@@ -5,6 +5,7 @@ use std::thread;
 use crate::candidates::CandidateResponse;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
+use crate::session::CandidateDispatch;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
@@ -14,7 +15,7 @@ use crate::user_history::UserHistory;
 
 pub(crate) struct CandidateWork {
     pub reading: String,
-    pub dispatch: u8,
+    pub dispatch: CandidateDispatch,
     pub generation: u64,
 }
 
@@ -66,7 +67,7 @@ impl AsyncWorker {
         }
     }
 
-    pub fn submit_candidates(&self, reading: String, dispatch: u8) {
+    pub fn submit_candidates(&self, reading: String, dispatch: CandidateDispatch) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(ref tx) = self.candidate_tx {
             let _ = tx.send(CandidateWork {
@@ -127,14 +128,14 @@ fn candidate_worker(
 
         let max_results = settings().candidates.max_results;
         let response = match latest.dispatch {
-            1 => crate::candidates::generate_prediction_candidates(
+            CandidateDispatch::Predictive => crate::candidates::generate_prediction_candidates(
                 &*dict,
                 conn_ref,
                 hist_ref,
                 &latest.reading,
                 max_results,
             ),
-            _ => crate::candidates::generate_candidates(
+            CandidateDispatch::Standard => crate::candidates::generate_candidates(
                 &*dict,
                 conn_ref,
                 hist_ref,

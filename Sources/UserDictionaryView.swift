@@ -72,14 +72,7 @@ struct UserDictionaryView: View {
     private func addWord(reading: String, surface: String) {
         guard let engine = AppContext.shared.engine else { return }
         let added = engine.registerWord(reading: reading, surface: surface)
-        if added {
-            do {
-                try engine.saveUserDict(path: AppContext.shared.userDictPath)
-            } catch {
-                NSLog("Lexime: Failed to save user dict: %@", "\(error)")
-                saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
-            }
-        }
+        if added { saveUserDict() }
         refresh()
     }
 
@@ -88,14 +81,19 @@ struct UserDictionaryView: View {
               let index = selectedIndex, index < words.count else { return }
         let word = words[index]
         _ = engine.unregisterWord(reading: word.reading, surface: word.surface)
+        saveUserDict()
+        selectedIndex = nil
+        refresh()
+    }
+
+    private func saveUserDict() {
+        guard let engine = AppContext.shared.engine else { return }
         do {
             try engine.saveUserDict(path: AppContext.shared.userDictPath)
         } catch {
             NSLog("Lexime: Failed to save user dict: %@", "\(error)")
             saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
         }
-        selectedIndex = nil
-        refresh()
     }
 }
 

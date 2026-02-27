@@ -235,8 +235,8 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
         // Whole-path boost (not normalized): reward paths whose full reading→surface
         // has been explicitly selected. This is the strongest learning signal and is
         // not subject to cross-reading contamination.
-        let full_reading: String = path.segments.iter().map(|s| s.reading.as_str()).collect();
-        let full_surface: String = path.segments.iter().map(|s| s.surface.as_str()).collect();
+        let full_reading = path.full_reading();
+        let full_surface = path.surface_key();
         boost += history.unigram_boost(&full_reading, &full_surface, now) * 5;
         path.viterbi_cost -= boost;
     }

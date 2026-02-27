@@ -89,13 +89,19 @@ pub enum CandidateAction {
     Hide,
 }
 
+/// Dispatch mode for candidate generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateDispatch {
+    Standard,
+    Predictive,
+}
+
 /// Request for asynchronous candidate generation.
 /// Bundles `needs_candidates` and `candidate_reading` so that
 /// a request without a reading is structurally impossible.
 pub struct AsyncCandidateRequest {
     pub reading: String,
-    /// 0 = standard, 1 = prediction_only
-    pub candidate_dispatch: u8,
+    pub candidate_dispatch: CandidateDispatch,
 }
 
 /// Orthogonal side-effects that accompany a response.
@@ -131,6 +137,16 @@ impl KeyResponse {
             consumed: true,
             ..Self::not_consumed()
         }
+    }
+
+    pub(super) fn with_marked(mut self, text: String) -> Self {
+        self.marked = Some(MarkedText { text });
+        self
+    }
+
+    pub(super) fn with_hide_candidates(mut self) -> Self {
+        self.candidates = CandidateAction::Hide;
+        self
     }
 
     /// Merge: keep commit/side_effects from self, take display-related fields from `other`.

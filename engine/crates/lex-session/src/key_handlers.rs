@@ -4,8 +4,7 @@ use lex_core::romaji::{RomajiTrie, TrieLookupResult};
 
 use super::response::{build_candidate_selection, build_marked_text_and_candidates};
 use super::types::{
-    is_romaji_input, CandidateAction, Composition, KeyEvent, KeyResponse, LearningRecord,
-    SessionState,
+    is_romaji_input, Composition, KeyEvent, KeyResponse, LearningRecord, SessionState,
 };
 use super::InputSession;
 
@@ -142,11 +141,9 @@ impl InputSession {
                 self.comp().flush();
                 // Escape cancels conversion/candidate selection — do not record history for unconfirmed input.
                 self.comp().candidates.clear();
-                let mut resp = KeyResponse::consumed();
-                resp.candidates = CandidateAction::Hide;
                 // Escape: IMKit will call commitComposition after.
                 // composedString() uses display() which computes from current state.
-                resp
+                KeyResponse::consumed().with_hide_candidates()
             }
 
             KeyEvent::Text { ref text, .. } if self.is_composing() => {
@@ -234,9 +231,7 @@ impl InputSession {
 
         if c.candidates.surfaces.is_empty() {
             c.candidates.selected = 0;
-            let mut resp = KeyResponse::consumed();
-            resp.candidates = CandidateAction::Hide;
-            return resp;
+            return KeyResponse::consumed().with_hide_candidates();
         }
 
         // Adjust selection
@@ -263,22 +258,18 @@ impl InputSession {
         let all_empty = c.kana.is_empty() && c.pending.is_empty() && c.prefix.is_empty();
 
         if all_empty {
-            let mut resp = KeyResponse::consumed();
-            resp.candidates = CandidateAction::Hide;
-            resp.marked = Some(super::MarkedText {
-                text: String::new(),
-            });
             self.reset_state();
-            resp
+            KeyResponse::consumed()
+                .with_marked(String::new())
+                .with_hide_candidates()
         } else if self.comp().kana.is_empty() && self.comp().pending.is_empty() {
             // Current segment is empty but prefix has content
             let c = self.comp();
             c.candidates.clear();
             let display = c.display_kana();
-            let mut resp = KeyResponse::consumed();
-            resp.marked = Some(super::MarkedText { text: display });
-            resp.candidates = CandidateAction::Hide;
-            resp
+            KeyResponse::consumed()
+                .with_marked(display)
+                .with_hide_candidates()
         } else if self.config.defer_candidates {
             self.make_deferred_candidates_response()
         } else {
