@@ -69,6 +69,18 @@ impl InputSession {
 
             KeyEvent::Escape => self.snippet_cancel(),
 
+            // Mode-switch keys: cancel snippet mode and apply mode switch
+            KeyEvent::SwitchToDirectInput => {
+                let resp = self.snippet_cancel();
+                self.abc_passthrough = true;
+                resp
+            }
+            KeyEvent::SwitchToJapanese => {
+                let resp = self.snippet_cancel();
+                self.abc_passthrough = false;
+                resp
+            }
+
             // Any other key: cancel snippet mode, don't consume
             _ => self.snippet_cancel_passthrough(),
         }
