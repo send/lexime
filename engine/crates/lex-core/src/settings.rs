@@ -144,6 +144,8 @@ pub struct CandidateSettings {
     pub max_results: usize,
 }
 
+/// Default trigger assumes JIS keyboard layout where `@` is a dedicated key.
+/// Users on other layouts should override this in settings.toml.
 fn default_snippet_trigger() -> String {
     "ctrl+shift+@".to_string()
 }

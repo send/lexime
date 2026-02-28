@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_era_placeholder_order() {
-        // %gy must be replaced before %G to avoid partial match
+        // Verify that %G (era name) and %gy (era year) are both supported and don't duplicate
         let now = time::OffsetDateTime::now_utc();
         if now.year() >= 2019 {
             let result = format_date("%G%gy年");
