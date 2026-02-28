@@ -8,7 +8,15 @@ impl InputSession {
     pub(super) fn enter_snippet_mode(&mut self) -> KeyResponse {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
-            None => return KeyResponse::not_consumed(),
+            None => {
+                // Mirror ModifiedKey: commit composing state but don't consume
+                if matches!(self.state, SessionState::Composing(_)) {
+                    let mut resp = self.commit_current_state();
+                    resp.consumed = false;
+                    return resp;
+                }
+                return KeyResponse::not_consumed();
+            }
         };
 
         // If composing, commit first
