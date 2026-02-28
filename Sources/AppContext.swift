@@ -7,10 +7,15 @@ enum DefaultsKey {
     static let developerMode = "developerMode"
 }
 
+extension Notification.Name {
+    static let snippetsDidReload = Notification.Name("LeximeSnippetsDidReload")
+}
+
 class AppContext {
     static let shared = AppContext()
 
     let engine: LexEngine?
+    private(set) var snippetStore: LexSnippetStore?
     let historyPath: String
     let userDictPath: String
     let supportDir: String
@@ -137,5 +142,27 @@ class AppContext {
         } else {
             self.engine = nil
         }
+
+        // Load snippets (optional)
+        self.snippetStore = nil
+        do {
+            try reloadSnippets()
+        } catch {
+            NSLog("Lexime: snippets load error: %@", "\(error)")
+        }
+    }
+
+    /// Reload snippets from disk. Throws if the file exists but fails to load.
+    /// On success or missing file, updates `snippetStore` and posts notification.
+    func reloadSnippets() throws {
+        let snippetsPath = (supportDir as NSString).appendingPathComponent("snippets.toml")
+        if FileManager.default.fileExists(atPath: snippetsPath) {
+            let store = try snippetsLoad(path: snippetsPath)
+            NSLog("Lexime: Snippets reloaded from %@", snippetsPath)
+            self.snippetStore = store
+        } else {
+            self.snippetStore = nil
+        }
+        NotificationCenter.default.post(name: .snippetsDidReload, object: nil)
     }
 }

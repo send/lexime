@@ -49,6 +49,13 @@ impl ConversionMode {
 pub(crate) enum SessionState {
     Idle,
     Composing(Composition),
+    Snippet(SnippetState),
+}
+
+pub(crate) struct SnippetState {
+    pub(crate) filter: String,
+    pub(crate) matches: Vec<(String, String)>,
+    pub(crate) selected: usize,
 }
 
 pub(crate) struct Composition {

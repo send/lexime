@@ -26,6 +26,8 @@ class LeximeInputController: IMKInputController {
 
     private var pollTimer: Timer?
 
+    private lazy var cachedTrigger: LexTriggerKey? = snippetTriggerKey()
+
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = engineVersion()
@@ -42,10 +44,23 @@ class LeximeInputController: IMKInputController {
         session = engine.createSession()
         guard let session else { return }
         session.setDeferCandidates(enabled: true)
+        session.setSnippetStore(store: AppContext.shared.snippetStore)
         let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
         if convMode == 1 {
             session.setConversionMode(mode: .predictive)
         }
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(snippetsDidReload),
+            name: .snippetsDidReload, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .snippetsDidReload, object: nil)
+    }
+
+    @objc private func snippetsDidReload() {
+        session?.setSnippetStore(store: AppContext.shared.snippetStore)
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
@@ -90,7 +105,9 @@ class LeximeInputController: IMKInputController {
         case 102: keyEvent = .switchToDirectInput
         case 104: keyEvent = .switchToJapanese
         default:
-            if hasModifier {
+            if isSnippetTrigger(event: event, dominated: dominated) {
+                keyEvent = .snippetTrigger
+            } else if hasModifier {
                 keyEvent = .modifiedKey
             } else {
                 switch event.keyCode {
@@ -172,6 +189,17 @@ class LeximeInputController: IMKInputController {
     private func cancelPollTimer() {
         pollTimer?.invalidate()
         pollTimer = nil
+    }
+
+    // MARK: - Snippet Trigger
+
+    private func isSnippetTrigger(event: NSEvent, dominated: NSEvent.ModifierFlags) -> Bool {
+        guard let trigger = cachedTrigger else { return false }
+        guard event.charactersIgnoringModifiers == trigger.char else { return false }
+        return dominated.contains(.control) == trigger.ctrl
+            && dominated.contains(.shift) == trigger.shift
+            && dominated.contains(.option) == trigger.alt
+            && dominated.contains(.command) == trigger.cmd
     }
 
     // MARK: - Helpers

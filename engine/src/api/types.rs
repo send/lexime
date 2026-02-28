@@ -63,6 +63,12 @@ pub struct LexUserWord {
 }
 
 #[derive(uniffi::Record)]
+pub struct LexSnippetEntry {
+    pub key: String,
+    pub body: String,
+}
+
+#[derive(uniffi::Record)]
 pub struct LexRomajiConvert {
     pub composed_kana: String,
     pub pending_romaji: String,
@@ -126,6 +132,18 @@ pub enum LexKeyEvent {
     SwitchToJapanese,
     ForwardDelete,
     ModifiedKey,
+    SnippetTrigger,
+}
+
+/// Trigger key descriptor for snippet expansion (character-based matching).
+#[derive(uniffi::Record)]
+pub struct LexTriggerKey {
+    /// The character to match (e.g. ";"). Named `char_` to avoid conflicts in generated bindings.
+    pub char_: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub cmd: bool,
 }
 
 impl From<LexKeyEvent> for KeyEvent {
@@ -144,6 +162,7 @@ impl From<LexKeyEvent> for KeyEvent {
             LexKeyEvent::SwitchToJapanese => KeyEvent::SwitchToJapanese,
             LexKeyEvent::ForwardDelete => KeyEvent::ForwardDelete,
             LexKeyEvent::ModifiedKey => KeyEvent::ModifiedKey,
+            LexKeyEvent::SnippetTrigger => KeyEvent::SnippetTrigger,
         }
     }
 }

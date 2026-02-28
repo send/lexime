@@ -11,6 +11,7 @@ mod commit;
 mod composing;
 mod key_handlers;
 mod response;
+mod snippet_handler;
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ use std::sync::{Arc, RwLock};
 
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
+use lex_core::snippets::SnippetStore;
 use lex_core::user_history::UserHistory;
 
 pub use types::{
@@ -46,6 +48,8 @@ pub struct InputSession {
 
     // Accumulated committed text (conversion context)
     committed_context: String,
+
+    snippet_store: Option<Arc<SnippetStore>>,
 }
 
 impl InputSession {
@@ -66,6 +70,7 @@ impl InputSession {
             history_records: Vec::new(),
             abc_passthrough: false,
             committed_context: String::new(),
+            snippet_store: None,
         }
     }
 
@@ -78,7 +83,14 @@ impl InputSession {
     }
 
     pub fn is_composing(&self) -> bool {
-        matches!(self.state, SessionState::Composing(_))
+        matches!(
+            self.state,
+            SessionState::Composing(_) | SessionState::Snippet(_)
+        )
+    }
+
+    pub fn set_snippet_store(&mut self, store: Option<Arc<SnippetStore>>) {
+        self.snippet_store = store;
     }
 
     pub fn is_abc_passthrough(&self) -> bool {
@@ -89,23 +101,31 @@ impl InputSession {
         self.abc_passthrough = enabled;
     }
 
-    /// Mutable reference to the composing state. Panics if Idle.
+    /// Mutable reference to the composing state. Panics if not Composing.
     fn comp(&mut self) -> &mut Composition {
         match &mut self.state {
             SessionState::Composing(ref mut c) => c,
-            SessionState::Idle => unreachable!("comp() called in Idle state"),
+            _ => unreachable!("comp() called in non-Composing state"),
         }
     }
 
     pub fn composed_string(&self) -> String {
         match &self.state {
             SessionState::Composing(c) => c.display_kana(),
+            SessionState::Snippet(s) => s.filter.clone(),
             SessionState::Idle => String::new(),
         }
     }
 
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
+        if matches!(self.state, SessionState::Snippet(_)) {
+            // Snippet mode: cancel and go back to idle
+            self.reset_state();
+            return KeyResponse::consumed()
+                .with_marked(String::new())
+                .with_hide_candidates();
+        }
         self.commit_current_state()
     }
 

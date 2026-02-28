@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::snippets::SnippetVariable;
+
 pub const DEFAULT_SETTINGS_TOML: &str = include_str!("default_settings.toml");
 
 static CUSTOM_TOML: OnceLock<String> = OnceLock::new();
@@ -55,6 +57,8 @@ pub struct Settings {
     pub history: HistorySettings,
     pub candidates: CandidateSettings,
     #[serde(default)]
+    pub snippets: SnippetSettings,
+    #[serde(default)]
     keymap: HashMap<String, Vec<String>>,
     /// Parsed keymap: key_code → (normal, shifted).
     #[serde(skip)]
@@ -77,6 +81,11 @@ impl Settings {
                     None
                 }
             })
+    }
+
+    /// Parse the snippet trigger string into a structured key descriptor.
+    pub fn snippet_trigger(&self) -> Option<TriggerKey> {
+        parse_trigger_string(&self.snippets.trigger)
     }
 }
 
@@ -133,6 +142,74 @@ pub struct HistorySettings {
 pub struct CandidateSettings {
     pub nbest: usize,
     pub max_results: usize,
+}
+
+fn default_snippet_trigger() -> String {
+    "ctrl+shift+;".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SnippetSettings {
+    #[serde(default = "default_snippet_trigger")]
+    pub trigger: String,
+    #[serde(default)]
+    pub variables: HashMap<String, SnippetVariable>,
+}
+
+/// Parsed trigger key descriptor for character-based matching.
+#[derive(Debug, Clone)]
+pub struct TriggerKey {
+    pub char: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub cmd: bool,
+}
+
+/// Parse a trigger string like "ctrl+;" into a TriggerKey.
+/// Format: optional modifiers separated by '+', final segment is the character.
+///
+/// The character is matched against `NSEvent.charactersIgnoringModifiers` on the
+/// frontend, so it must correspond to the **base** (unshifted) key on the active
+/// keyboard layout.  For example, on JIS keyboards `@` is a dedicated key, but on
+/// US keyboards `@` requires Shift+2 and the base character is `2`.
+fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
+    if s.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = s.split('+').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let char_part = parts.last()?.to_string();
+    if char_part.is_empty() || char_part.chars().count() != 1 {
+        return None;
+    }
+
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut alt = false;
+    let mut cmd = false;
+
+    for &part in &parts[..parts.len() - 1] {
+        match part.to_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "shift" => shift = true,
+            "alt" | "option" | "opt" => alt = true,
+            "cmd" | "command" | "super" => cmd = true,
+            _ => return None, // unknown modifier
+        }
+    }
+
+    Some(TriggerKey {
+        char: char_part,
+        ctrl,
+        shift,
+        alt,
+        cmd,
+    })
 }
 
 pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
@@ -215,6 +292,14 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
 
     // i16 range check for unknown_word_cost is enforced by the type itself
 
+    // Validate snippet trigger (empty string intentionally disables)
+    if !s.snippets.trigger.is_empty() && parse_trigger_string(&s.snippets.trigger).is_none() {
+        return Err(SettingsError::InvalidValue {
+            field: "snippets.trigger".to_string(),
+            reason: "invalid trigger format (expected: [modifier+]...char)".to_string(),
+        });
+    }
+
     Ok(())
 }
 
@@ -244,6 +329,14 @@ mod tests {
         assert_eq!(s.history.max_bigrams, 10000);
         assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
+        // Snippet defaults
+        assert_eq!(s.snippets.trigger, "ctrl+shift+;");
+        let trigger = s.snippet_trigger().unwrap();
+        assert_eq!(trigger.char, ";");
+        assert!(trigger.ctrl);
+        assert!(trigger.shift);
+        assert!(!trigger.alt);
+        assert!(!trigger.cmd);
         // Keymap defaults
         assert_eq!(s.keymap_get(10, false), Some("]"));
         assert_eq!(s.keymap_get(10, true), Some("}"));
@@ -442,6 +535,65 @@ abc = ["]", "}"]
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(err.to_string().contains("keymap.abc"));
+    }
+
+    #[test]
+    fn parse_trigger_basic() {
+        let t = parse_trigger_string("ctrl+;").unwrap();
+        assert_eq!(t.char, ";");
+        assert!(t.ctrl);
+        assert!(!t.shift);
+        assert!(!t.alt);
+        assert!(!t.cmd);
+    }
+
+    #[test]
+    fn parse_trigger_multiple_modifiers() {
+        let t = parse_trigger_string("ctrl+shift+@").unwrap();
+        assert_eq!(t.char, "@");
+        assert!(t.ctrl);
+        assert!(t.shift);
+    }
+
+    #[test]
+    fn parse_trigger_single_char() {
+        let t = parse_trigger_string(";").unwrap();
+        assert_eq!(t.char, ";");
+        assert!(!t.ctrl);
+        assert!(!t.shift);
+        assert!(!t.alt);
+        assert!(!t.cmd);
+    }
+
+    #[test]
+    fn parse_trigger_alias_modifiers() {
+        let t = parse_trigger_string("option+command+a").unwrap();
+        assert_eq!(t.char, "a");
+        assert!(t.alt);
+        assert!(t.cmd);
+        assert!(!t.ctrl);
+    }
+
+    #[test]
+    fn parse_trigger_empty_returns_none() {
+        assert!(parse_trigger_string("").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_trailing_plus_returns_none() {
+        // "ctrl+" splits into ["ctrl", ""] — empty char part
+        assert!(parse_trigger_string("ctrl+").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_unknown_modifier_returns_none() {
+        assert!(parse_trigger_string("meta+;").is_none());
+    }
+
+    #[test]
+    fn parse_trigger_multi_char_returns_none() {
+        assert!(parse_trigger_string("ctrl+enter").is_none());
+        assert!(parse_trigger_string("ab").is_none());
     }
 
     #[test]

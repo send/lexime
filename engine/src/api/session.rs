@@ -5,6 +5,7 @@ use crate::converter::ConvertedSegment;
 use crate::session::{InputSession, LearningRecord};
 
 use super::resources::{LexConnection, LexDictionary, LexUserHistory};
+use super::snippet_store::LexSnippetStore;
 use super::types::{convert_to_events, LexConversionMode};
 use super::{LexKeyEvent, LexKeyResponse};
 
@@ -121,6 +122,13 @@ impl LexSession {
 
     fn set_abc_passthrough(&self, enabled: bool) {
         self.session.lock().unwrap().set_abc_passthrough(enabled);
+    }
+
+    fn set_snippet_store(&self, store: Option<Arc<LexSnippetStore>>) {
+        self.session
+            .lock()
+            .unwrap()
+            .set_snippet_store(store.map(|s| Arc::clone(&s.inner)));
     }
 }
 

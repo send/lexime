@@ -9,6 +9,7 @@ pub mod neural;
 pub(crate) mod numeric;
 pub mod romaji;
 pub mod settings;
+pub mod snippets;
 pub mod unicode;
 pub mod user_dict;
 pub mod user_history;

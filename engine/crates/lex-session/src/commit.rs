@@ -24,8 +24,11 @@ impl InputSession {
     }
 
     pub(super) fn commit_current_state(&mut self) -> KeyResponse {
-        let SessionState::Composing(ref mut c) = self.state else {
+        if !matches!(self.state, SessionState::Composing(_)) {
             return KeyResponse::consumed();
+        }
+        let SessionState::Composing(ref mut c) = self.state else {
+            unreachable!();
         };
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();

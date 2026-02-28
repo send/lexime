@@ -41,6 +41,16 @@ impl InputSession {
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let _span = debug_span!("handle_key", ?event).entered();
 
+        // Snippet trigger: enter snippet mode (commit composing first if needed)
+        if matches!(event, KeyEvent::SnippetTrigger) {
+            return self.enter_snippet_mode();
+        }
+
+        // Snippet state: delegate all keys to snippet handler
+        if matches!(self.state, SessionState::Snippet(_)) {
+            return self.handle_snippet_key(event);
+        }
+
         match event {
             // Eisu key → commit if composing, enter ABC passthrough
             KeyEvent::SwitchToDirectInput => {

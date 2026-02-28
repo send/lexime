@@ -25,6 +25,9 @@ max_bigrams = 10000
 nbest = 20
 max_results = 20
 
+[snippets]
+trigger = "ctrl+shift+;"
+
 [keymap]
 # key_code = ["normal", "shifted"]
 # macOS bug: keyCode 10 returns § instead of ] on JIS keyboards
