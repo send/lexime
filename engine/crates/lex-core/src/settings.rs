@@ -144,10 +144,8 @@ pub struct CandidateSettings {
     pub max_results: usize,
 }
 
-/// Default trigger assumes JIS keyboard layout where `@` is a dedicated key.
-/// Users on other layouts should override this in settings.toml.
 fn default_snippet_trigger() -> String {
-    "ctrl+shift+@".to_string()
+    "ctrl+shift+;".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -324,9 +322,9 @@ mod tests {
         assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
         // Snippet defaults
-        assert_eq!(s.snippets.trigger, "ctrl+shift+@");
+        assert_eq!(s.snippets.trigger, "ctrl+shift+;");
         let trigger = s.snippet_trigger().unwrap();
-        assert_eq!(trigger.char, "@");
+        assert_eq!(trigger.char, ";");
         assert!(trigger.ctrl);
         assert!(trigger.shift);
         assert!(!trigger.alt);
