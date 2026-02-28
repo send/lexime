@@ -292,6 +292,14 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
 
     // i16 range check for unknown_word_cost is enforced by the type itself
 
+    // Validate snippet trigger (empty string intentionally disables)
+    if !s.snippets.trigger.is_empty() && parse_trigger_string(&s.snippets.trigger).is_none() {
+        return Err(SettingsError::InvalidValue {
+            field: "snippets.trigger".to_string(),
+            reason: "invalid trigger format (expected: [modifier+]...char)".to_string(),
+        });
+    }
+
     Ok(())
 }
 

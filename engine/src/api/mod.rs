@@ -107,6 +107,14 @@ fn snippet_trigger_key() -> Option<LexTriggerKey> {
         })
 }
 
+/// Parse snippets.toml into a flat list for UI display.
+///
+/// This intentionally performs only TOML syntax parsing without variable
+/// validation.  Variable references are validated at load time by
+/// `snippets_load()`, which is called on save via `reloadSnippets()`.
+/// Keeping this function lightweight lets the settings UI display raw
+/// entries (including those with invalid variable references) so users
+/// can see and fix them.
 #[uniffi::export]
 fn snippets_parse(content: String) -> Result<Vec<LexSnippetEntry>, LexError> {
     let table: std::collections::HashMap<String, String> =
