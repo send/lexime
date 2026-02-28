@@ -123,8 +123,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `LexUserDictionary` | Object | ユーザー辞書 |
 | `LexKeyResponse` | Record | キー入力レスポンス（consumed + events） |
 | `LexEvent` | Enum | イベント（下記参照） |
-| `LexCandidateResult` | Record | 候補生成結果（surfaces + paths） |
-| `LexSegment` | Record | 変換セグメント（reading + surface） |
 | `LexDictEntry` | Record | 辞書エントリ |
 | `LexUserWord` | Record | ユーザー辞書ワード |
 
