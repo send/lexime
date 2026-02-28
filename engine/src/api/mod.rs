@@ -14,9 +14,8 @@ pub use resources::{LexConnection, LexDictionary, LexUserHistory};
 pub use session::LexSession;
 pub use snippet_store::LexSnippetStore;
 pub use types::{
-    LexCandidateResult, LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent,
-    LexKeyResponse, LexRomajiConvert, LexRomajiLookup, LexSegment, LexSnippetEntry, LexTriggerKey,
-    LexUserWord,
+    LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent, LexKeyResponse,
+    LexRomajiConvert, LexRomajiLookup, LexSnippetEntry, LexTriggerKey, LexUserWord,
 };
 pub use user_dict::LexUserDictionary;
 

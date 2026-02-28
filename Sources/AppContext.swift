@@ -16,7 +16,6 @@ class AppContext {
 
     let engine: LexEngine?
     private(set) var snippetStore: LexSnippetStore?
-    let historyPath: String
     let userDictPath: String
     let supportDir: String
     let candidatePanel = CandidatePanel()
@@ -59,7 +58,7 @@ class AppContext {
         }
         let leximeDir = appSupport.appendingPathComponent("Lexime").path
         self.supportDir = leximeDir
-        self.historyPath = (leximeDir as NSString).appendingPathComponent("user_history.lxud")
+        let historyPath = (leximeDir as NSString).appendingPathComponent("user_history.lxud")
         self.userDictPath = (leximeDir as NSString).appendingPathComponent("user_dict.lxuw")
 
         // Initialize tracing (no-op unless built with --features trace)
@@ -126,11 +125,11 @@ class AppContext {
 
         let history: LexUserHistory?
         do {
-            let h = try LexUserHistory.open(path: self.historyPath)
-            NSLog("Lexime: User history loaded from %@", self.historyPath)
+            let h = try LexUserHistory.open(path: historyPath)
+            NSLog("Lexime: User history loaded from %@", historyPath)
             history = h
         } catch {
-            NSLog("Lexime: Failed to open user history at %@: %@", self.historyPath, "\(error)")
+            NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")
             history = nil
         }
 

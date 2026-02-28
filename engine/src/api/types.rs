@@ -37,23 +37,11 @@ impl From<crate::dict::DictError> for LexError {
 // Records (value types, copied across FFI boundary)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, uniffi::Record)]
-pub struct LexSegment {
-    pub reading: String,
-    pub surface: String,
-}
-
 #[derive(uniffi::Record)]
 pub struct LexDictEntry {
     pub reading: String,
     pub surface: String,
     pub cost: i16,
-}
-
-#[derive(Clone, uniffi::Record)]
-pub struct LexCandidateResult {
-    pub surfaces: Vec<String>,
-    pub paths: Vec<Vec<LexSegment>>,
 }
 
 #[derive(uniffi::Record)]
