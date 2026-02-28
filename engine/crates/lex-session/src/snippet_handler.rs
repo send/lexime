@@ -81,7 +81,16 @@ impl InputSession {
     fn snippet_filter_append(&mut self, text: &str) -> KeyResponse {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
-            None => return self.snippet_cancel(),
+            None => {
+                // Store cleared mid-session: cancel but don't consume the key
+                self.snippet_cancel();
+                let mut r = KeyResponse::not_consumed();
+                r.marked = Some(MarkedText {
+                    text: String::new(),
+                });
+                r.candidates = CandidateAction::Hide;
+                return r;
+            }
         };
 
         let SessionState::Snippet(ref mut s) = self.state else {
@@ -97,7 +106,15 @@ impl InputSession {
     fn snippet_filter_pop(&mut self) -> KeyResponse {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
-            None => return self.snippet_cancel(),
+            None => {
+                self.snippet_cancel();
+                let mut r = KeyResponse::not_consumed();
+                r.marked = Some(MarkedText {
+                    text: String::new(),
+                });
+                r.candidates = CandidateAction::Hide;
+                return r;
+            }
         };
 
         let SessionState::Snippet(ref mut s) = self.state else {
