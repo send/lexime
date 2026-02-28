@@ -9,6 +9,10 @@ impl InputSession {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
             None => {
+                // Cancel stale snippet mode if active
+                if matches!(self.state, SessionState::Snippet(_)) {
+                    return self.snippet_cancel_passthrough();
+                }
                 // Mirror ModifiedKey: commit composing state but don't consume
                 if matches!(self.state, SessionState::Composing(_)) {
                     let mut resp = self.commit_current_state();
@@ -66,31 +70,14 @@ impl InputSession {
             KeyEvent::Escape => self.snippet_cancel(),
 
             // Any other key: cancel snippet mode, don't consume
-            _ => {
-                self.snippet_cancel();
-                let mut r = KeyResponse::not_consumed();
-                r.marked = Some(MarkedText {
-                    text: String::new(),
-                });
-                r.candidates = CandidateAction::Hide;
-                r
-            }
+            _ => self.snippet_cancel_passthrough(),
         }
     }
 
     fn snippet_filter_append(&mut self, text: &str) -> KeyResponse {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
-            None => {
-                // Store cleared mid-session: cancel but don't consume the key
-                self.snippet_cancel();
-                let mut r = KeyResponse::not_consumed();
-                r.marked = Some(MarkedText {
-                    text: String::new(),
-                });
-                r.candidates = CandidateAction::Hide;
-                return r;
-            }
+            None => return self.snippet_cancel_passthrough(),
         };
 
         let SessionState::Snippet(ref mut s) = self.state else {
@@ -106,15 +93,7 @@ impl InputSession {
     fn snippet_filter_pop(&mut self) -> KeyResponse {
         let store = match &self.snippet_store {
             Some(s) => s.clone(),
-            None => {
-                self.snippet_cancel();
-                let mut r = KeyResponse::not_consumed();
-                r.marked = Some(MarkedText {
-                    text: String::new(),
-                });
-                r.candidates = CandidateAction::Hide;
-                return r;
-            }
+            None => return self.snippet_cancel_passthrough(),
         };
 
         let SessionState::Snippet(ref mut s) = self.state else {
@@ -134,6 +113,10 @@ impl InputSession {
     }
 
     fn snippet_confirm(&mut self) -> KeyResponse {
+        if self.snippet_store.is_none() {
+            return self.snippet_cancel_passthrough();
+        }
+
         let SessionState::Snippet(ref s) = self.state else {
             unreachable!();
         };
@@ -156,6 +139,10 @@ impl InputSession {
     }
 
     fn snippet_navigate(&mut self, delta: i32) -> KeyResponse {
+        if self.snippet_store.is_none() {
+            return self.snippet_cancel_passthrough();
+        }
+
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
@@ -174,6 +161,17 @@ impl InputSession {
         KeyResponse::consumed()
             .with_marked(String::new())
             .with_hide_candidates()
+    }
+
+    /// Cancel snippet mode and pass through the key to the client.
+    fn snippet_cancel_passthrough(&mut self) -> KeyResponse {
+        self.reset_state();
+        let mut r = KeyResponse::not_consumed();
+        r.marked = Some(MarkedText {
+            text: String::new(),
+        });
+        r.candidates = CandidateAction::Hide;
+        r
     }
 }
 

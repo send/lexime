@@ -107,10 +107,16 @@ struct SnippetView: View {
                 atPath: supportDir, withIntermediateDirectories: true)
             try toml.write(toFile: path, atomically: true, encoding: .utf8)
             NSLog("Lexime: Saved snippets.toml")
+        } catch {
+            NSLog("Lexime: Failed to save snippets.toml: %@", "\(error)")
+            saveError = "スニペットの保存に失敗しました: \(error.localizedDescription)"
+            return
+        }
+        do {
             try AppContext.shared.reloadSnippets()
         } catch {
-            NSLog("Lexime: Failed to save/reload snippets.toml: %@", "\(error)")
-            saveError = "スニペットの保存に失敗しました: \(error.localizedDescription)"
+            NSLog("Lexime: Failed to reload snippets.toml: %@", "\(error)")
+            saveError = "保存は成功しましたが、再読み込みに失敗しました: \(error.localizedDescription)"
         }
     }
 }
