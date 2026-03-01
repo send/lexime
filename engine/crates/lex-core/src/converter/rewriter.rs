@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::numeric;
-use crate::unicode::{hiragana_to_katakana, is_katakana};
+use crate::unicode::{hiragana_to_katakana, is_hiragana, is_kanji, is_katakana};
 
 use super::lattice::Lattice;
 use super::viterbi::ScoredPath;
@@ -165,15 +165,15 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                 let seg_end = char_pos + seg_char_len;
                 char_pos = seg_end;
 
-                // Only process 2-char hiragana segments (surface == reading,
-                // not katakana). Single-char segments are skipped because they
-                // are almost always function morphemes (し, た, な, が) where
-                // kanji replacements would be incorrect. Segments of 3+ chars
-                // are skipped because they often come from resegmentation with
-                // incorrect morpheme boundaries (e.g. たほう → 他方).
+                // Only process 2-char hiragana segments. Single-char segments
+                // are skipped because they are almost always function morphemes
+                // (し, た, な, が) where kanji replacements would be incorrect.
+                // Segments of 3+ chars are skipped because they often come from
+                // resegmentation with incorrect morpheme boundaries
+                // (e.g. たほう → 他方).
                 if seg_char_len != 2
                     || seg.surface != seg.reading
-                    || seg.surface.chars().all(is_katakana)
+                    || !seg.surface.chars().all(is_hiragana)
                 {
                     continue;
                 }
@@ -187,11 +187,7 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                 let mut kanji_nodes: Vec<_> = node_indices
                     .iter()
                     .map(|&idx| &self.lattice.nodes[idx])
-                    .filter(|node| {
-                        node.end == seg_end
-                            && node.surface != node.reading
-                            && !node.surface.chars().all(is_katakana)
-                    })
+                    .filter(|node| node.end == seg_end && node.surface.chars().any(is_kanji))
                     .collect();
                 kanji_nodes.sort_by_key(|n| n.cost);
                 kanji_nodes.truncate(MAX_KANJI_PER_SEGMENT);
@@ -886,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_kanji_variant_replaces_2char_hiragana() {
-        // Lattice has ほう → 方 (cost=733) at position [2,4]
+        // Lattice has ほう → 方 (cost=733) at position [3,5)
         let lattice = make_lattice(
             "あったほうが",
             vec![
@@ -1030,10 +1026,7 @@ mod tests {
     #[test]
     fn test_kanji_variant_skips_3char_segments() {
         // 3-char hiragana segments should not be replaced
-        let lattice = make_lattice(
-            "したほうが",
-            vec![lattice_node(0, 3, "たほう", "他方", 5290)],
-        );
+        let lattice = make_lattice("たほうが", vec![lattice_node(0, 3, "たほう", "他方", 5290)]);
         let rw = KanjiVariantRewriter { lattice: &lattice };
 
         let paths = vec![ScoredPath {
