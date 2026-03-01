@@ -149,14 +149,12 @@ const MAX_KANJI_PER_SEGMENT: usize = 3;
 
 impl Rewriter for KanjiVariantRewriter<'_> {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
-        let source_count = paths.len().min(5);
         let mut new_paths = Vec::new();
 
-        for path in paths.iter().take(source_count) {
-            if path.segments.len() <= 1 {
-                continue;
-            }
-
+        // Consider up to 5 eligible source paths (with more than one segment),
+        // so that single-segment candidates added by earlier rewriters do not
+        // consume this rewriter's processing budget.
+        for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
             let mut char_pos = 0usize;
             for seg_idx in 0..path.segments.len() {
                 let seg = &path.segments[seg_idx];
