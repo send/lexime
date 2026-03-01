@@ -47,7 +47,7 @@ pub(super) fn te_form_kanji_penalty(
 }
 
 /// Person name penalty for a segment.
-/// Returns penalty (> 0) if the segment is a person name (姓/名/人名, role == 6).
+/// Returns penalty (> 0) if the segment is a person name (人名: 一般/姓/名; role == 6).
 pub(super) fn person_name_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
     if conn.is_person_name(seg.left_id) {
         settings().reranker.person_name_penalty
