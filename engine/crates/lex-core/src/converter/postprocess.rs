@@ -67,7 +67,8 @@ pub(super) fn postprocess(
     top.truncate(n);
     let numeric_rw = rewriter::NumericRewriter;
     let katakana_rw = rewriter::KatakanaRewriter;
-    rewriter::run_rewriters(&[&numeric_rw, &katakana_rw], &mut top, kana);
+    let kanji_rw = rewriter::KanjiVariantRewriter { lattice };
+    rewriter::run_rewriters(&[&numeric_rw, &katakana_rw, &kanji_rw], &mut top, kana);
     if let Some(c) = conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);

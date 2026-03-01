@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::numeric;
 use crate::unicode::{hiragana_to_katakana, is_katakana};
 
+use super::lattice::Lattice;
 use super::viterbi::ScoredPath;
 
 /// A rewriter that generates new candidates from the N-best list.
@@ -124,6 +125,85 @@ impl Rewriter for PartialHiraganaRewriter {
                     segments: new_segments,
                     viterbi_cost: path.viterbi_cost.saturating_add(2000),
                 });
+            }
+        }
+
+        new_paths
+    }
+}
+
+/// For each top-N Viterbi path, generate variants where individual hiragana
+/// segments are replaced with kanji alternatives from the lattice.
+///
+/// This is the reverse of `PartialHiraganaRewriter`: instead of softening
+/// kanji → hiragana, it surfaces kanji alternatives that the Viterbi
+/// may have skipped due to higher word cost.
+///
+/// Example: `あった|ほう|が` → `あった|方|が`
+pub(crate) struct KanjiVariantRewriter<'a> {
+    pub lattice: &'a Lattice,
+}
+
+/// Maximum number of kanji alternatives per hiragana segment.
+const MAX_KANJI_PER_SEGMENT: usize = 3;
+
+impl Rewriter for KanjiVariantRewriter<'_> {
+    fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
+        let source_count = paths.len().min(5);
+        let mut new_paths = Vec::new();
+
+        for path in paths.iter().take(source_count) {
+            if path.segments.len() <= 1 {
+                continue;
+            }
+
+            let mut char_pos = 0usize;
+            for seg_idx in 0..path.segments.len() {
+                let seg = &path.segments[seg_idx];
+                let seg_char_len = seg.reading.chars().count();
+                let seg_start = char_pos;
+                let seg_end = char_pos + seg_char_len;
+                char_pos = seg_end;
+
+                // Only process 2-char hiragana segments (surface == reading,
+                // not katakana). Single-char segments are skipped because they
+                // are almost always function morphemes (し, た, な, が) where
+                // kanji replacements would be incorrect. Segments of 3+ chars
+                // are skipped because they often come from resegmentation with
+                // incorrect morpheme boundaries (e.g. たほう → 他方).
+                if seg_char_len != 2
+                    || seg.surface != seg.reading
+                    || seg.surface.chars().all(is_katakana)
+                {
+                    continue;
+                }
+
+                // Find kanji nodes at the same [start, end) span in the lattice
+                let node_indices = match self.lattice.nodes_by_start.get(seg_start) {
+                    Some(indices) => indices,
+                    None => continue,
+                };
+
+                let mut kanji_nodes: Vec<_> = node_indices
+                    .iter()
+                    .map(|&idx| &self.lattice.nodes[idx])
+                    .filter(|node| {
+                        node.end == seg_end
+                            && node.surface != node.reading
+                            && !node.surface.chars().all(is_katakana)
+                    })
+                    .collect();
+                kanji_nodes.sort_by_key(|n| n.cost);
+                kanji_nodes.truncate(MAX_KANJI_PER_SEGMENT);
+
+                for node in kanji_nodes {
+                    let mut new_segments = path.segments.clone();
+                    new_segments[seg_idx] = super::viterbi::RichSegment::from(node);
+                    new_paths.push(ScoredPath {
+                        segments: new_segments,
+                        viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                    });
+                }
             }
         }
 
@@ -765,5 +845,222 @@ mod tests {
         let result = rw.generate(&paths, "した");
 
         assert!(result.is_empty(), "single-segment path should be skipped");
+    }
+
+    // ── KanjiVariantRewriter tests ────────────────────────────────────
+
+    fn make_lattice(input: &str, nodes: Vec<super::super::lattice::LatticeNode>) -> Lattice {
+        let char_count = input.chars().count();
+        let mut nodes_by_start: Vec<Vec<usize>> = vec![Vec::new(); char_count];
+        let mut nodes_by_end: Vec<Vec<usize>> = vec![Vec::new(); char_count + 1];
+        for (i, node) in nodes.iter().enumerate() {
+            nodes_by_start[node.start].push(i);
+            nodes_by_end[node.end].push(i);
+        }
+        Lattice {
+            input: input.to_string(),
+            nodes,
+            nodes_by_start,
+            nodes_by_end,
+            char_count,
+        }
+    }
+
+    fn lattice_node(
+        start: usize,
+        end: usize,
+        reading: &str,
+        surface: &str,
+        cost: i16,
+    ) -> super::super::lattice::LatticeNode {
+        super::super::lattice::LatticeNode {
+            start,
+            end,
+            reading: reading.into(),
+            surface: surface.into(),
+            cost,
+            left_id: 0,
+            right_id: 0,
+        }
+    }
+
+    #[test]
+    fn test_kanji_variant_replaces_2char_hiragana() {
+        // Lattice has ほう → 方 (cost=733) at position [2,4]
+        let lattice = make_lattice(
+            "あったほうが",
+            vec![
+                lattice_node(3, 5, "ほう", "ほう", 0),
+                lattice_node(3, 5, "ほう", "方", 733),
+                lattice_node(3, 5, "ほう", "法", 2181),
+            ],
+        );
+        let rw = KanjiVariantRewriter { lattice: &lattice };
+
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "あっ".into(),
+                    surface: "あっ".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "た".into(),
+                    surface: "た".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "ほう".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "が".into(),
+                    surface: "が".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 20000,
+        }];
+
+        let result = rw.generate(&paths, "あったほうが");
+
+        // Should produce variants for 方 and 法 (top 3, but only 2 kanji available)
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.surface_key() == "あった方が"));
+        assert!(result.iter().any(|p| p.surface_key() == "あった法が"));
+        // All variants should have +2000 penalty
+        assert!(result.iter().all(|p| p.viterbi_cost == 22000));
+    }
+
+    #[test]
+    fn test_kanji_variant_skips_single_char() {
+        // Single-char hiragana (し) should NOT be replaced
+        let lattice = make_lattice("した", vec![lattice_node(0, 1, "し", "死", 500)]);
+        let rw = KanjiVariantRewriter { lattice: &lattice };
+
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "し".into(),
+                    surface: "し".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "た".into(),
+                    surface: "た".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 1000,
+        }];
+
+        let result = rw.generate(&paths, "した");
+
+        assert!(result.is_empty(), "single-char hiragana should be skipped");
+    }
+
+    #[test]
+    fn test_kanji_variant_skips_single_segment() {
+        let lattice = make_lattice("ほう", vec![lattice_node(0, 2, "ほう", "方", 733)]);
+        let rw = KanjiVariantRewriter { lattice: &lattice };
+
+        let paths = vec![ScoredPath {
+            segments: vec![RichSegment {
+                reading: "ほう".into(),
+                surface: "ほう".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            }],
+            viterbi_cost: 1000,
+        }];
+
+        let result = rw.generate(&paths, "ほう");
+
+        assert!(result.is_empty(), "single-segment path should be skipped");
+    }
+
+    #[test]
+    fn test_kanji_variant_skips_kanji_segments() {
+        // Segments already containing kanji should not be processed
+        let lattice = make_lattice("したほう", vec![lattice_node(2, 4, "ほう", "方", 733)]);
+        let rw = KanjiVariantRewriter { lattice: &lattice };
+
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "した".into(),
+                    surface: "下".into(), // kanji — should skip
+                    left_id: 10,
+                    right_id: 10,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ほう".into(),
+                    surface: "方".into(), // kanji — should skip
+                    left_id: 20,
+                    right_id: 20,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 3000,
+        }];
+
+        let result = rw.generate(&paths, "したほう");
+
+        assert!(
+            result.is_empty(),
+            "kanji segments should not produce variants"
+        );
+    }
+
+    #[test]
+    fn test_kanji_variant_skips_3char_segments() {
+        // 3-char hiragana segments should not be replaced
+        let lattice = make_lattice(
+            "したほうが",
+            vec![lattice_node(0, 3, "たほう", "他方", 5290)],
+        );
+        let rw = KanjiVariantRewriter { lattice: &lattice };
+
+        let paths = vec![ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "たほう".into(),
+                    surface: "たほう".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "が".into(),
+                    surface: "が".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 5000,
+        }];
+
+        let result = rw.generate(&paths, "たほうが");
+
+        assert!(
+            result.is_empty(),
+            "3-char hiragana segment should be skipped"
+        );
     }
 }
