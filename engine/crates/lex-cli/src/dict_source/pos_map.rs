@@ -95,6 +95,7 @@ pub const ROLE_PERSON_NAME: u8 = 6;
 /// - `3` (Prefix): first POS field is 接頭詞
 /// - `4` (NonIndependent): 非自立 (e.g., 名詞,非自立 / 動詞,非自立 / 形容詞,非自立)
 /// - `5` (Pronoun): 代名詞 (e.g., 名詞,代名詞)
+/// - `6` (PersonName): 人名 (e.g., 名詞,固有名詞,人名,姓 / 名詞,固有名詞,人名,名)
 pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
     let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
     let mut max_id: u16 = 0;
