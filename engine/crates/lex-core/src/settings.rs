@@ -111,6 +111,8 @@ pub struct RerankerSettings {
     pub pronoun_cost_bonus: i64,
     #[serde(default = "default_single_char_kanji_penalty")]
     pub single_char_kanji_penalty: i64,
+    #[serde(default = "default_person_name_penalty")]
+    pub person_name_penalty: i64,
 }
 
 fn default_non_independent_kanji_penalty() -> i64 {
@@ -127,6 +129,10 @@ fn default_pronoun_cost_bonus() -> i64 {
 
 fn default_single_char_kanji_penalty() -> i64 {
     4000
+}
+
+fn default_person_name_penalty() -> i64 {
+    2000
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -275,6 +281,7 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
     check_non_negative!(reranker.te_form_kanji_penalty);
     check_non_negative!(reranker.pronoun_cost_bonus);
     check_non_negative!(reranker.single_char_kanji_penalty);
+    check_non_negative!(reranker.person_name_penalty);
 
     check_non_negative!(history.boost_per_use);
     check_non_negative!(history.max_boost);
@@ -322,6 +329,7 @@ mod tests {
         assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
         assert_eq!(s.reranker.pronoun_cost_bonus, 3500);
         assert_eq!(s.reranker.single_char_kanji_penalty, 4000);
+        assert_eq!(s.reranker.person_name_penalty, 2000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);
         assert!((s.history.half_life_hours - 168.0).abs() < f64::EPSILON);

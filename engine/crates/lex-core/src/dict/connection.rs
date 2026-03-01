@@ -107,4 +107,9 @@ impl ConnectionMatrix {
     pub fn is_pronoun(&self, id: u16) -> bool {
         self.role(id) == 5
     }
+
+    /// Check whether a POS ID is a person name (人名, role == 6).
+    pub fn is_person_name(&self, id: u16) -> bool {
+        self.role(id) == 6
+    }
 }

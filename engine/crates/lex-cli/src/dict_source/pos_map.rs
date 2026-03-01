@@ -84,6 +84,7 @@ pub const ROLE_SUFFIX: u8 = 2;
 pub const ROLE_PREFIX: u8 = 3;
 pub const ROLE_NON_INDEPENDENT: u8 = 4;
 pub const ROLE_PRONOUN: u8 = 5;
+pub const ROLE_PERSON_NAME: u8 = 6;
 
 /// Parse Mozc `id.def` and classify each POS ID into a morpheme role.
 ///
@@ -123,6 +124,8 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
                 ROLE_NON_INDEPENDENT
             } else if fields[1] == "代名詞" {
                 ROLE_PRONOUN
+            } else if fields.len() >= 3 && fields[2] == "人名" {
+                ROLE_PERSON_NAME
             } else {
                 ROLE_CONTENT_WORD
             }
@@ -245,6 +248,9 @@ mod tests {
                 "690 名詞,非自立,一般,*,*,*,*",
                 "700 動詞,非自立,*,*,一段,基本形,*",
                 "1900 名詞,代名詞,一般,*,*,*,*",
+                "1922 名詞,固有名詞,人名,一般,*,*,*",
+                "1923 名詞,固有名詞,人名,姓,*,*,*",
+                "1924 名詞,固有名詞,人名,名,*,*,*",
             ]),
         )
         .unwrap();
@@ -264,6 +270,9 @@ mod tests {
         assert_eq!(roles[690], ROLE_NON_INDEPENDENT); // 名詞,非自立
         assert_eq!(roles[700], ROLE_NON_INDEPENDENT); // 動詞,非自立
         assert_eq!(roles[1900], ROLE_PRONOUN); // 名詞,代名詞
+        assert_eq!(roles[1922], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,一般
+        assert_eq!(roles[1923], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,姓
+        assert_eq!(roles[1924], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,名
 
         fs::remove_dir_all(&dir).ok();
     }
