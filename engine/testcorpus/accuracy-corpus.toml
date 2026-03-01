@@ -295,6 +295,14 @@ tags = ["single-char-kanji", "particle"]
 issue = "#189"
 note = "値・根 が助詞位置に割り込む問題 — single_char_kanji_penalty で修正"
 
+[[cases]]
+reading = "あったほうが"
+expected = "あった方が"
+category = "regression"
+tags = ["kanji-variant"]
+skip = true
+issue = "あった邦画 が top-1 — KanjiVariantRewriter で方は候補に出るが top-1 にはならない"
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════
