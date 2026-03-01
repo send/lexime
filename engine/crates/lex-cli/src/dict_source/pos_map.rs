@@ -125,7 +125,11 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
                 ROLE_NON_INDEPENDENT
             } else if fields[1] == "代名詞" {
                 ROLE_PRONOUN
-            } else if fields.len() >= 3 && fields[2] == "人名" {
+            } else if fields[0] == "名詞"
+                && fields[1] == "固有名詞"
+                && fields.len() >= 3
+                && fields[2] == "人名"
+            {
                 ROLE_PERSON_NAME
             } else {
                 ROLE_CONTENT_WORD
