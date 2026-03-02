@@ -13,6 +13,7 @@ non_independent_kanji_penalty = 3000
 te_form_kanji_penalty = 3500
 pronoun_cost_bonus = 3500
 single_char_kanji_penalty = 4000
+person_name_penalty = 2000
 
 [history]
 boost_per_use = 3000

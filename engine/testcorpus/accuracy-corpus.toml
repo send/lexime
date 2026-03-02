@@ -296,6 +296,13 @@ issue = "#189"
 note = "値・根 が助詞位置に割り込む問題 — single_char_kanji_penalty で修正"
 
 [[cases]]
+reading = "してからにしましょう"
+expected = "してからにしましょう"
+category = "regression"
+tags = ["person-name-penalty"]
+note = "人名候補（西間翔等）が助詞後に割り込む問題"
+
+[[cases]]
 reading = "あったほうが"
 expected = "あった方が"
 category = "regression"
