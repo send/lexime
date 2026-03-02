@@ -27,7 +27,7 @@ nbest = 20
 max_results = 20
 
 [snippets]
-trigger = "ctrl+shift+;"
+trigger = "ctrl+shift+/"
 
 [keymap]
 # key_code = ["normal", "shifted"]
