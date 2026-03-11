@@ -109,12 +109,13 @@ pub fn rerank(
     }
 
     // Step 1: Compute structure_cost for each path
+    let cap = settings().reranker.structure_cost_transition_cap;
     let mut structure_costs: Vec<i64> = paths
         .iter()
         .map(|p| {
             let mut sc: i64 = 0;
             for i in 1..p.segments.len() {
-                sc += conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id);
+                sc += conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id).min(cap);
             }
             sc
         })

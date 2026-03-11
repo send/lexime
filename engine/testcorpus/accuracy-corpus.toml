@@ -303,6 +303,13 @@ tags = ["person-name-penalty"]
 note = "人名候補（西間翔等）が助詞後に割り込む問題"
 
 [[cases]]
+reading = "ひつようあれば"
+expected = "必要あれば"
+category = "regression"
+tags = ["copula-omission", "structure-cost-cap"]
+note = "形容動詞語幹→ある仮定形の接続コスト(7025)がstructure_cost_filterで除外される問題"
+
+[[cases]]
 reading = "あったほうが"
 expected = "あった方が"
 category = "regression"
