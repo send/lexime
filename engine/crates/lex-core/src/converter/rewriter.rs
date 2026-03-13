@@ -251,61 +251,58 @@ impl KanjiVariantRewriter<'_> {
         seg_end: usize,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        // Try each internal split point
-        for mid in (seg_start + 2)..seg_end {
-            let left_len = mid - seg_start;
-            // Only consider 2-char kanji prefixes to avoid incorrect boundaries
-            // (e.g. たほう → 他方)
-            if left_len != 2 {
-                continue;
-            }
+        // Split at the 2-char boundary only (to avoid incorrect boundaries
+        // like たほう → 他方).
+        let mid = seg_start + 2;
+        if mid >= seg_end {
+            return;
+        }
 
-            // Find kanji nodes for the left part [seg_start, mid)
-            let left_indices = match self.lattice.nodes_by_start.get(seg_start) {
-                Some(indices) => indices,
-                None => continue,
-            };
-            let mut kanji_nodes: Vec<_> = left_indices
-                .iter()
-                .map(|&idx| &self.lattice.nodes[idx])
-                .filter(|node| node.end == mid && node.surface.chars().any(is_kanji))
-                .collect();
-            kanji_nodes.sort_by_key(|n| n.cost);
-            kanji_nodes.truncate(MAX_KANJI_PER_SEGMENT);
+        // Find kanji nodes for the left part [seg_start, mid)
+        let left_indices = match self.lattice.nodes_by_start.get(seg_start) {
+            Some(indices) => indices,
+            None => return,
+        };
+        let mut kanji_nodes: Vec<_> = left_indices
+            .iter()
+            .map(|&idx| &self.lattice.nodes[idx])
+            .filter(|node| node.end == mid && node.surface.chars().any(is_kanji))
+            .collect();
+        kanji_nodes.sort_by_key(|n| n.cost);
+        kanji_nodes.truncate(MAX_KANJI_PER_SEGMENT);
 
-            if kanji_nodes.is_empty() {
-                continue;
-            }
+        if kanji_nodes.is_empty() {
+            return;
+        }
 
-            // Find a hiragana node for the right part [mid, seg_end)
-            let right_indices = match self.lattice.nodes_by_start.get(mid) {
-                Some(indices) => indices,
-                None => continue,
-            };
-            // Pick the lowest-cost hiragana node for the remainder
-            let right_node = right_indices
-                .iter()
-                .map(|&idx| &self.lattice.nodes[idx])
-                .filter(|node| {
-                    node.end == seg_end
-                        && node.surface == node.reading
-                        && node.surface.chars().all(is_hiragana)
-                })
-                .min_by_key(|n| n.cost);
-            let Some(right_node) = right_node else {
-                continue;
-            };
+        // Find a hiragana node for the right part [mid, seg_end)
+        let right_indices = match self.lattice.nodes_by_start.get(mid) {
+            Some(indices) => indices,
+            None => return,
+        };
+        // Pick the lowest-cost hiragana node for the remainder
+        let right_node = right_indices
+            .iter()
+            .map(|&idx| &self.lattice.nodes[idx])
+            .filter(|node| {
+                node.end == seg_end
+                    && node.surface == node.reading
+                    && node.surface.chars().all(is_hiragana)
+            })
+            .min_by_key(|n| n.cost);
+        let Some(right_node) = right_node else {
+            return;
+        };
 
-            for kanji_node in kanji_nodes {
-                let mut new_segments = path.segments.clone();
-                let right_seg = super::viterbi::RichSegment::from(right_node);
-                new_segments[seg_idx] = super::viterbi::RichSegment::from(kanji_node);
-                new_segments.insert(seg_idx + 1, right_seg);
-                new_paths.push(ScoredPath {
-                    segments: new_segments,
-                    viterbi_cost: path.viterbi_cost.saturating_add(2000),
-                });
-            }
+        for kanji_node in kanji_nodes {
+            let mut new_segments = path.segments.clone();
+            let right_seg = super::viterbi::RichSegment::from(right_node);
+            new_segments[seg_idx] = super::viterbi::RichSegment::from(kanji_node);
+            new_segments.insert(seg_idx + 1, right_seg);
+            new_paths.push(ScoredPath {
+                segments: new_segments,
+                viterbi_cost: path.viterbi_cost.saturating_add(2000),
+            });
         }
     }
 
@@ -329,17 +326,11 @@ impl KanjiVariantRewriter<'_> {
             return;
         }
 
-        for pos in 0..char_count.saturating_sub(1) {
+        // Start at pos=1 (skip pos=0 — no prefix) and stop when end would
+        // reach char_count (no suffix). This also ensures prefix/suffix are
+        // at least 1-char each.
+        for pos in 1..char_count.saturating_sub(2) {
             let end = pos + 2;
-            if end > char_count {
-                break;
-            }
-
-            // Skip positions at the start or end (single-char prefix/suffix
-            // would be a function morpheme — let segment-based rewriter handle those)
-            if pos == 0 || end == char_count {
-                continue;
-            }
 
             let node_indices = match self.lattice.nodes_by_start.get(pos) {
                 Some(indices) => indices,
