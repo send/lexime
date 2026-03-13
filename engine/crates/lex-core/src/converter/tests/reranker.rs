@@ -611,8 +611,7 @@ fn test_prefix_floor_prevents_low_baseline() {
     }
     // ID 0 = prefix (role 3), IDs 1-3 = content (role 0)
     let roles = vec![3u8, 0, 0, 0];
-    let conn =
-        ConnectionMatrix::from_text_with_roles(&text, 0, num_ids - 1, roles).unwrap();
+    let conn = ConnectionMatrix::from_text_with_roles(&text, 0, num_ids - 1, roles).unwrap();
 
     // Verify prefix is recognized
     assert!(conn.is_prefix(0));
