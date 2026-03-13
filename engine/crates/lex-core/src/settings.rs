@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(s.cost.latin_penalty, 20000);
         assert_eq!(s.cost.unknown_word_cost, 10000);
         assert_eq!(s.reranker.length_variance_weight, 2000);
-        assert_eq!(s.reranker.structure_cost_filter, 4000);
+        assert_eq!(s.reranker.structure_cost_filter, 6000);
         assert_eq!(s.reranker.non_independent_kanji_penalty, 3000);
         assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
         assert_eq!(s.reranker.pronoun_cost_bonus, 3500);
@@ -406,7 +406,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 
 [history]
@@ -438,7 +438,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 
 [history]
@@ -469,7 +469,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 
 [history]
@@ -500,7 +500,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 
 [history]
@@ -532,7 +532,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 
 [history]

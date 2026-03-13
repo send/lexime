@@ -310,6 +310,13 @@ tags = ["copula-omission", "structure-cost-cap"]
 note = "形容動詞語幹→ある仮定形の接続コスト(7025)がstructure_cost_filterで除外される問題"
 
 [[cases]]
+reading = "いまですね"
+expected = "今ですね"
+category = "regression"
+tags = ["structure-cost-filter", "particle"]
+note = "今|です|ね が structure_cost_filter で除外される問題 — filter 閾値引き上げ+prefix floor で修正"
+
+[[cases]]
 reading = "あったほうが"
 expected = "あった方が"
 category = "regression"
