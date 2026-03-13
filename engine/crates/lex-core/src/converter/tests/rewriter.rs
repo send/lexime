@@ -907,7 +907,7 @@ fn test_kanji_variant_subsplit_only_2char_prefix() {
 #[test]
 fn test_kanji_variant_reading_scan_single_segment() {
     // Single-segment hiragana path "しておいたほうが" — reading scan should
-    // find 方 at [5,7) and produce a 3-segment variant.
+    // find 方 at [5,7) and produce a single-segment variant with kanji inlined.
     let lattice = make_lattice(
         "しておいたほうが",
         vec![

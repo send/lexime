@@ -193,7 +193,7 @@ impl Rewriter for KanjiVariantRewriter<'_> {
         // When HiraganaVariantRewriter produces a single-segment all-hiragana
         // path, the segment-based approach above can't find kanji sub-spans.
         // Scan the reading directly to find 2-char kanji alternatives in the
-        // lattice and build 3-segment variants (prefix + kanji + suffix).
+        // lattice and build single-segment variants with the kanji inlined.
         if let Some(base) = paths.iter().find(|p| {
             p.segments.len() == 1
                 && p.segments[0].surface == p.segments[0].reading
@@ -239,7 +239,7 @@ impl KanjiVariantRewriter<'_> {
         }
     }
 
-    /// For a 3+ char hiragana segment, try splitting at each internal boundary
+    /// For a 3+ char hiragana segment, try splitting at the 2-char boundary
     /// to find a 2-char kanji prefix with a hiragana remainder.
     ///
     /// Example: segment "ほうが" [5,8) → split at 7 → kanji "方" [5,7) + "が" [7,8)
@@ -307,21 +307,28 @@ impl KanjiVariantRewriter<'_> {
     }
 
     /// Scan the full reading for 2-char positions that have kanji alternatives
-    /// in the lattice, and build 3-segment variants (hiragana prefix + kanji + hiragana suffix).
+    /// in the lattice, and build single-segment variants with the kanji inlined.
     ///
     /// This handles cases where the only hiragana path is single-segment
     /// (from HiraganaVariantRewriter) and the multi-segment paths all have
     /// kanji/compound segments that don't expose the 2-char hiragana sub-span.
     ///
     /// Example: reading "しておいたほうが" → finds 方 at [5,7) →
-    /// builds "しておいた" + "方" + "が"
+    /// emits "しておいた方が" as a single segment
     fn kanji_variants_from_reading(
         &self,
         reading: &str,
         base_cost: i64,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        let char_count = reading.chars().count();
+        // Precompute byte offsets for each char boundary to avoid O(n^2)
+        // allocations from repeated chars().take/skip.
+        let byte_offsets: Vec<usize> = reading
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(reading.len()))
+            .collect();
+        let char_count = byte_offsets.len() - 1;
         if char_count < 3 {
             return;
         }
@@ -349,15 +356,14 @@ impl KanjiVariantRewriter<'_> {
                 continue;
             }
 
-            // Build prefix reading [0, pos) and suffix reading [end, char_count)
-            let prefix_reading: String = reading.chars().take(pos).collect();
-            let suffix_reading: String = reading.chars().skip(end).collect();
+            let prefix = &reading[..byte_offsets[pos]];
+            let suffix = &reading[byte_offsets[end]..];
 
             for node in kanji_nodes {
                 // Emit as a single segment so that group_segments (which uses
                 // left_id to classify morpheme roles) doesn't mis-group
                 // prefix/suffix with dummy POS IDs.
-                let surface = format!("{}{}{}", prefix_reading, node.surface, suffix_reading);
+                let surface = format!("{}{}{}", prefix, node.surface, suffix);
                 new_paths.push(ScoredPath::single(
                     reading.to_string(),
                     surface,
