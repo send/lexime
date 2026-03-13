@@ -118,7 +118,7 @@ pub struct RerankerSettings {
 }
 
 fn default_non_independent_kanji_penalty() -> i64 {
-    3000
+    1500
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
