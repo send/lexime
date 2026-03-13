@@ -354,27 +354,15 @@ impl KanjiVariantRewriter<'_> {
             let suffix_reading: String = reading.chars().skip(end).collect();
 
             for node in kanji_nodes {
-                let segments = vec![
-                    super::viterbi::RichSegment {
-                        reading: prefix_reading.clone(),
-                        surface: prefix_reading.clone(),
-                        left_id: 0,
-                        right_id: 0,
-                        word_cost: 0,
-                    },
-                    super::viterbi::RichSegment::from(node),
-                    super::viterbi::RichSegment {
-                        reading: suffix_reading.clone(),
-                        surface: suffix_reading.clone(),
-                        left_id: 0,
-                        right_id: 0,
-                        word_cost: 0,
-                    },
-                ];
-                new_paths.push(ScoredPath {
-                    segments,
-                    viterbi_cost: base_cost.saturating_add(2000),
-                });
+                // Emit as a single segment so that group_segments (which uses
+                // left_id to classify morpheme roles) doesn't mis-group
+                // prefix/suffix with dummy POS IDs.
+                let surface = format!("{}{}{}", prefix_reading, node.surface, suffix_reading);
+                new_paths.push(ScoredPath::single(
+                    reading.to_string(),
+                    surface,
+                    base_cost.saturating_add(2000),
+                ));
             }
         }
     }

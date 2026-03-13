@@ -931,12 +931,12 @@ fn test_kanji_variant_reading_scan_single_segment() {
 
     let result = rw.generate(&paths, "しておいたほうが");
 
-    // Should produce 方 and 法 variants
+    // Should produce 方 and 法 variants as single-segment paths
     assert_eq!(result.len(), 2, "should produce 2 reading-scan variants");
     assert!(result.iter().any(|p| p.surface_key() == "しておいた方が"));
     assert!(result.iter().any(|p| p.surface_key() == "しておいた法が"));
-    // Each variant should have 3 segments: prefix + kanji + suffix
-    assert!(result.iter().all(|p| p.segments.len() == 3));
+    // Single-segment to avoid group_segments POS misclassification
+    assert!(result.iter().all(|p| p.segments.len() == 1));
     assert!(result.iter().all(|p| p.viterbi_cost == 32000));
 }
 
