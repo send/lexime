@@ -123,7 +123,7 @@ pub fn rerank(
             for i in 1..p.segments.len() {
                 let mut tc = conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id);
                 if let Some(c) = conn {
-                    if c.is_prefix(p.segments[i - 1].left_id) {
+                    if c.is_prefix(p.segments[i - 1].right_id) {
                         tc = tc.max(prefix_floor);
                     }
                 }
