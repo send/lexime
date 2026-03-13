@@ -115,7 +115,7 @@ pub fn rerank(
     // (e.g. 今[prefix]→デスネ with conn=256) can drag min_sc so low that
     // the hard filter drops correct multi-segment paths like 今|です|ね.
     let cap = settings().reranker.structure_cost_transition_cap;
-    let prefix_floor = settings().reranker.structure_cost_filter / 2;
+    let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
     let mut structure_costs: Vec<i64> = paths
         .iter()
         .map(|p| {
