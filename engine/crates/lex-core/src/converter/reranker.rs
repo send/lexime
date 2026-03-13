@@ -108,23 +108,51 @@ pub fn rerank(
         return;
     }
 
-    // Step 1: Compute structure_cost for each path
+    // Step 1: Compute structure_cost for each path.
+    //
+    // Transitions FROM a prefix POS (role == 3) get a floor of half the
+    // filter threshold. Without this, a prefix→content-word transition
+    // (e.g. 今[prefix]→デスネ with conn=256) can drag min_sc so low that
+    // the hard filter drops correct multi-segment paths like 今|です|ね.
     let cap = settings().reranker.structure_cost_transition_cap;
+    let prefix_floor = settings().reranker.structure_cost_filter / 2;
     let mut structure_costs: Vec<i64> = paths
         .iter()
         .map(|p| {
             let mut sc: i64 = 0;
             for i in 1..p.segments.len() {
-                sc += conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id).min(cap);
+                let mut tc = conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id);
+                if let Some(c) = conn {
+                    if c.role(p.segments[i - 1].left_id) == 3 {
+                        tc = tc.max(prefix_floor);
+                    }
+                }
+                sc += tc.min(cap);
             }
             sc
         })
         .collect();
 
     // Step 2: Hard filter — drop paths exceeding min + threshold.
-    // min_sc is guaranteed to be <= threshold, so at least one path always survives.
-    let min_sc = *structure_costs.iter().min().unwrap();
-    let threshold = min_sc + settings().reranker.structure_cost_filter;
+    //
+    // For min_sc computation, single-segment paths (0 transitions, sc=0) are
+    // imputed with prefix_floor so they don't set an artificially low baseline.
+    // Combined with the prefix-transition floor in step 1, this ensures the
+    // threshold is high enough to keep correct multi-segment paths.
+    let filter = settings().reranker.structure_cost_filter;
+    let min_sc = structure_costs
+        .iter()
+        .zip(paths.iter())
+        .map(|(&sc, p)| {
+            if p.segments.len() <= 1 {
+                prefix_floor
+            } else {
+                sc
+            }
+        })
+        .min()
+        .unwrap();
+    let threshold = min_sc + filter;
     {
         let mut i = 0;
         let mut kept_costs = Vec::new();

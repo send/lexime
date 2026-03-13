@@ -8,7 +8,7 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 4000
+structure_cost_filter = 6000
 non_independent_kanji_penalty = 3000
 te_form_kanji_penalty = 3500
 pronoun_cost_bonus = 3500

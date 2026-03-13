@@ -29,7 +29,7 @@ pub fn script_cost(surface: &str, reading_chars: usize) -> i64 {
             all_katakana = false;
         }
     }
-    let scale = reading_chars.min(3) as i64;
+    let scale = reading_chars.min(2) as i64;
     if has_kanji && has_kana {
         -s.cost.mixed_script_bonus * scale / 3
     } else if has_kanji {
