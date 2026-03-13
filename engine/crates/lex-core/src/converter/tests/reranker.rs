@@ -176,14 +176,14 @@ fn test_rerank_penalizes_uneven_segments() {
 
     rerank(&mut paths, None, None);
 
-    // script_cost (scaled by reading length):
-    //   "来たり" (reading "きたり" = 3 chars) → mixed bonus -3000 * 3/3 = -3000
+    // script_cost (scaled by reading length, capped at 2):
+    //   "来たり" (reading "きたり" = 3 chars, cap 2) → mixed bonus -3000 * 2/3 = -2000
     //   "出来" (reading "でき" = 2 chars) → pure_kanji bonus -1000 * 2/3 = -666
-    // Uneven: 5000 + variance(0, exempt) + script("で"=0 + "来たり"=-3000) = 2000
-    // Even:   6500 + variance(0, exempt) + script("出来"=-666 + "たり"=0) = 5834
+    // Uneven: 5000 + script("で"=0 + "来たり"=-2000) = 3000
+    // Even:   6500 + script("出来"=-666 + "たり"=0) = 5834
     // Uneven path wins due to mixed-script bonus on "来たり"
     assert_eq!(paths[0].segments[0].surface, "で");
-    assert_eq!(paths[0].viterbi_cost, 2000);
+    assert_eq!(paths[0].viterbi_cost, 3000);
     assert_eq!(paths[1].segments[0].surface, "出来");
     assert_eq!(paths[1].viterbi_cost, 5834);
 }
@@ -373,13 +373,13 @@ fn uniform_conn(cost: i16) -> ConnectionMatrix {
 
 #[test]
 fn test_filter_drops_fragmented_paths() {
-    // Transition cost = 1500 each.
-    // Path A: 1 segment → 0 transitions → structure_cost = 0
-    // Path B: 2 segments → 1 transition → structure_cost = 1500
-    // Path C: 5 segments → 4 transitions → structure_cost = 6000
-    // min_sc = 0, threshold = 0 + 4000 = 4000
-    // Path C (6000 > 4000) should be dropped; A and B should remain.
-    let conn = uniform_conn(1500);
+    // Transition cost = 5000 each.
+    // Path A: 1 segment → sc = 0 (imputed to 3000 for min_sc)
+    // Path B: 2 segments → sc = 5000
+    // Path C: 5 segments → sc = 20000
+    // min_sc = 3000 (imputed), threshold = 3000 + 6000 = 9000.
+    // Path C (20000 > 9000) should be dropped; A and B survive.
+    let conn = uniform_conn(5000);
 
     let mut paths = vec![
         ScoredPath {
@@ -455,9 +455,9 @@ fn test_filter_drops_fragmented_paths() {
 
     rerank(&mut paths, Some(&conn), None);
 
-    // Path C should have been filtered out
+    // Path C should have been filtered out (sc=20000 > threshold=9000);
+    // paths A and B survive.
     assert_eq!(paths.len(), 2);
-    // Verify the fragmented 5-segment path is gone
     assert!(paths.iter().all(|p| p.segments.len() <= 2));
 }
 
@@ -465,8 +465,8 @@ fn test_filter_drops_fragmented_paths() {
 fn test_filter_keeps_all_when_all_exceed() {
     // All paths have high structure_cost; none should be dropped.
     // Transition cost = 2000. All paths have 4 segments → 3 transitions → sc = 6000.
-    // min_sc = 6000, threshold = 6000 + 4000 = 10000.
-    // All paths have sc = 6000 ≤ 10000, so all pass.
+    // min_sc = 6000, threshold = 6000 + 6000 = 12000.
+    // All paths have sc = 6000 ≤ 12000, so all pass.
     // But to truly test the "all exceed" safety, we need a scenario where
     // min_sc itself is above the threshold relative to... Actually the safety
     // is: if ALL paths have sc > threshold, keep all. Let's just verify
@@ -510,10 +510,11 @@ fn test_filter_keeps_all_when_all_exceed() {
 
 #[test]
 fn test_filter_preserves_minimum_path() {
-    // The path with minimum structure_cost must always survive the filter.
-    // Path A: 1 segment → sc = 0 (minimum)
-    // Path B: 4 segments → sc = 4500 (3 × 1500); 4500 > 0 + 4000 → filtered
-    let conn = uniform_conn(1500);
+    // The path with minimum structure_cost always survives.
+    // Path A: 4 segments → sc = 15000
+    // Path B: 1 segment → sc = 0 (imputed to 3000 for min_sc)
+    // min_sc = 3000, threshold = 3000 + 6000 = 9000. Path A (15000 > 9000) → filtered.
+    let conn = uniform_conn(5000);
 
     let mut paths = vec![
         ScoredPath {
@@ -566,4 +567,101 @@ fn test_filter_preserves_minimum_path() {
     // Only the single-segment path (sc=0) should survive
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "合言葉");
+}
+
+#[test]
+fn test_prefix_floor_prevents_low_baseline() {
+    // Verifies that prefix floor raises min_sc enough to keep a path
+    // that would be dropped without it.
+    //
+    // Setup: 4 POS IDs, ID 0 is prefix (role=3).
+    // Connection costs: all 4000, except (0→any) = 100.
+    // prefix_floor = 6000 / 2 = 3000.
+    //
+    // Path A: [prefix(id=0)] → [content(id=1)]  (1 transition)
+    //   Without floor: sc = 100
+    //   With floor:    sc = 3000
+    //
+    // Path B: [content(id=1)] → [content(id=1)] → [content(id=1)]  (2 transitions)
+    //   sc = 4000 + 4000 = 8000
+    //
+    // Without floor: min_sc = 100,  threshold = 100 + 6000 = 6100.
+    //   Path B (8000 > 6100) → DROPPED.
+    //
+    // With floor: min_sc = 3000, threshold = 3000 + 6000 = 9000.
+    //   Path B (8000 ≤ 9000) → KEPT.
+    let num_ids = 4u16;
+    let mut costs = Vec::new();
+    for left in 0..num_ids {
+        for _right in 0..num_ids {
+            costs.push(if left == 0 { 100i16 } else { 4000 });
+        }
+    }
+    let mut text = format!("{num_ids} {num_ids}\n");
+    for c in &costs {
+        text.push_str(&format!("{c}\n"));
+    }
+    // ID 0 = prefix (role 3), IDs 1-3 = content (role 0)
+    let roles = vec![3u8, 0, 0, 0];
+    let conn = ConnectionMatrix::from_text_with_roles(&text, 0, num_ids - 1, roles).unwrap();
+
+    assert!(conn.is_prefix(0));
+    assert!(!conn.is_prefix(1));
+
+    let mut paths = vec![
+        // Path A: prefix → content (low prefix transition, floored to 3000)
+        ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "お".into(),
+                    surface: "御".into(),
+                    left_id: 0,
+                    right_id: 0,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "くるま".into(),
+                    surface: "車".into(),
+                    left_id: 1,
+                    right_id: 1,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 3000,
+        },
+        // Path B: content → content → content (sc = 8000)
+        // Without floor this would be dropped (8000 > 6100).
+        // With floor it survives (8000 ≤ 9000).
+        ScoredPath {
+            segments: vec![
+                RichSegment {
+                    reading: "おくる".into(),
+                    surface: "送る".into(),
+                    left_id: 1,
+                    right_id: 1,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "ま".into(),
+                    surface: "間".into(),
+                    left_id: 1,
+                    right_id: 1,
+                    word_cost: 0,
+                },
+                RichSegment {
+                    reading: "で".into(),
+                    surface: "で".into(),
+                    left_id: 1,
+                    right_id: 1,
+                    word_cost: 0,
+                },
+            ],
+            viterbi_cost: 4000,
+        },
+    ];
+
+    rerank(&mut paths, Some(&conn), None);
+
+    // Both paths survive thanks to the prefix floor raising the threshold.
+    assert_eq!(paths.len(), 2);
 }
