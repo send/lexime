@@ -6,3 +6,4 @@ mod grouping;
 mod history;
 mod nbest;
 mod reranker;
+mod rewriter;

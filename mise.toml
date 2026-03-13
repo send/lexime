@@ -1,6 +1,6 @@
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
-sources = ["engine/src/**/*.rs", "engine/crates/**/*.rs", "engine/Cargo.toml", "engine/Cargo.lock"]
+sources = ["engine/src/**/*.rs", "engine/crates/**/*.rs", "engine/crates/**/*.toml", "engine/Cargo.toml", "engine/Cargo.lock"]
 outputs = ["build/liblex_engine.a"]
 run = """
 #!/usr/bin/env bash

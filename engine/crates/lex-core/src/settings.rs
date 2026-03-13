@@ -118,7 +118,7 @@ pub struct RerankerSettings {
 }
 
 fn default_non_independent_kanji_penalty() -> i64 {
-    3000
+    1500
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(s.cost.unknown_word_cost, 10000);
         assert_eq!(s.reranker.length_variance_weight, 2000);
         assert_eq!(s.reranker.structure_cost_filter, 6000);
-        assert_eq!(s.reranker.non_independent_kanji_penalty, 3000);
+        assert_eq!(s.reranker.non_independent_kanji_penalty, 1500);
         assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
         assert_eq!(s.reranker.pronoun_cost_bonus, 3500);
         assert_eq!(s.reranker.single_char_kanji_penalty, 4000);
@@ -375,7 +375,7 @@ unknown_word_cost = 5000
 [reranker]
 length_variance_weight = 1000
 structure_cost_filter = 2000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 1500
@@ -407,7 +407,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -439,7 +439,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -470,7 +470,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -501,7 +501,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -533,7 +533,7 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 3000
+non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
