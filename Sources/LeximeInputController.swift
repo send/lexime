@@ -28,6 +28,10 @@ class LeximeInputController: IMKInputController {
 
     private lazy var cachedTrigger: LexTriggerKey? = snippetTriggerKey()
 
+    /// Set when ESC is pressed during composing, so commitComposition
+    /// can guard against macOS switching to standard ABC.
+    private var escapeCausedCommit = false
+
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         let version = engineVersion()
@@ -127,6 +131,12 @@ class LeximeInputController: IMKInputController {
                     }
                 }
             }
+        }
+
+        // Track ESC during composing so commitComposition can guard
+        // against macOS switching to standard ABC (race condition).
+        if case .escape = keyEvent, isComposing {
+            escapeCausedCommit = true
         }
 
         let resp = session.handleKey(event: keyEvent)
@@ -244,8 +254,36 @@ class LeximeInputController: IMKInputController {
 
     override func commitComposition(_ sender: Any!) {
         guard let session, let client = sender as? IMKTextInput else { return }
+        let wasEscapeCommit = escapeCausedCommit
+        escapeCausedCommit = false
         let resp = session.commit()
         applyEvents(resp, client: client)
+
+        // Guard against macOS switching to standard ABC after ESC.
+        // Due to a race condition in IMKit, ESC during composing can
+        // sometimes cause the input source to switch to com.apple.keylayout.ABC
+        // even though we returned consumed=true.
+        if wasEscapeCommit {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.revertToLeximeIfNeeded()
+            }
+        }
+    }
+
+    /// If the current input source is standard ABC, switch back to Lexime Japanese.
+    private func revertToLeximeIfNeeded() {
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
+        let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID)
+        guard let id = Unmanaged<CFString>.fromOpaque(idRef!).takeUnretainedValue() as String?,
+              id == "com.apple.keylayout.ABC" else { return }
+
+        let conditions = [
+            kTISPropertyInputSourceID as String: Self.japaneseModeID
+        ] as CFDictionary
+        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
+                as? [TISInputSource],
+              let source = list.first else { return }
+        TISSelectInputSource(source)
     }
 
     override func activateServer(_ sender: Any!) {
