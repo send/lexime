@@ -264,19 +264,33 @@ class LeximeInputController: IMKInputController {
         // sometimes cause the input source to switch to com.apple.keylayout.ABC
         // even though we returned consumed=true.
         if wasEscapeCommit {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.revertToLeximeIfNeeded()
+            revertToLeximeWithRetry()
+        }
+    }
+
+    /// Check up to 5 times (at 50ms intervals) whether macOS switched to
+    /// standard ABC after ESC, and revert to Lexime Japanese if so.
+    private func revertToLeximeWithRetry(attempt: Int = 0) {
+        let maxAttempts = 5
+        guard attempt < maxAttempts else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            if self.isCurrentInputSourceStandardABC() {
+                self.selectLeximeJapanese()
+            } else {
+                self.revertToLeximeWithRetry(attempt: attempt + 1)
             }
         }
     }
 
-    /// If the current input source is standard ABC, switch back to Lexime Japanese.
-    private func revertToLeximeIfNeeded() {
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
-        let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID)
-        guard let id = Unmanaged<CFString>.fromOpaque(idRef!).takeUnretainedValue() as String?,
-              id == "com.apple.keylayout.ABC" else { return }
+    private func isCurrentInputSourceStandardABC() -> Bool {
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
+        guard let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else { return false }
+        let id = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
+        return id == "com.apple.keylayout.ABC"
+    }
 
+    private func selectLeximeJapanese() {
         let conditions = [
             kTISPropertyInputSourceID as String: Self.japaneseModeID
         ] as CFDictionary
