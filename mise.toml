@@ -120,12 +120,23 @@ SWIFTC_FLAGS="-O -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap"
 LINK_FLAGS="-Lbuild -llex_engine"
 
 mkdir -p "$MACOS" "$RES"
+MAIN_SOURCES=$(ls Sources/*.swift | grep -v lexime-select-input)
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
-  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-x86_64"
+  generated/lex_engine.swift $MAIN_SOURCES -o "$MACOS/Lexime-x86_64"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target arm64-apple-macosx$MACOS_MIN \
-  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-arm64"
+  generated/lex_engine.swift $MAIN_SOURCES -o "$MACOS/Lexime-arm64"
 lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime"
 rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
+
+# Build lexime-select-input helper
+swiftc -O -target x86_64-apple-macosx$MACOS_MIN \
+  Sources/lexime-select-input.swift -o "$MACOS/lexime-select-input-x86_64"
+swiftc -O -target arm64-apple-macosx$MACOS_MIN \
+  Sources/lexime-select-input.swift -o "$MACOS/lexime-select-input-arm64"
+lipo -create "$MACOS/lexime-select-input-x86_64" "$MACOS/lexime-select-input-arm64" \
+  -output "$MACOS/lexime-select-input"
+rm "$MACOS/lexime-select-input-x86_64" "$MACOS/lexime-select-input-arm64"
+codesign -f -s - "$MACOS/lexime-select-input"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.tiff "$RES/icon.tiff"
 cp Resources/icon-roman.tiff "$RES/icon-roman.tiff"

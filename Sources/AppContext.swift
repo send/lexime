@@ -19,6 +19,7 @@ class AppContext {
     let userDictPath: String
     let supportDir: String
     let candidatePanel = CandidatePanel()
+    let inputSourceMonitor = InputSourceMonitor()
 
     private init() {
         guard let resourcePath = Bundle.main.resourcePath else {
@@ -149,6 +150,9 @@ class AppContext {
         } catch {
             NSLog("Lexime: snippets load error: %@", "\(error)")
         }
+
+        // Start monitoring for unexpected ABC input source switches
+        inputSourceMonitor.startMonitoring()
     }
 
     /// Reload snippets from disk. Throws if the file exists but fails to load.
