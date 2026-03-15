@@ -8,15 +8,23 @@ import Foundation
 final class InputSourceMonitor: NSObject {
 
     private static let abcSourceID = "com.apple.keylayout.ABC"
+    private static let leximeJapaneseID = "sh.send.inputmethod.Lexime.Lexime.Japanese"
     private static let leximeRomanID = "sh.send.inputmethod.Lexime.Lexime.Roman"
 
     /// Suppress notifications for this many seconds after init (avoid startup noise).
     private static let startupQuietPeriod: TimeInterval = 5
     /// Minimum interval between consecutive notifications.
     private static let notificationCooldown: TimeInterval = 5
+    /// Polling interval for secure input release detection.
+    private static let secureInputPollInterval: TimeInterval = 0.5
+    /// Maximum polling duration for secure input (give up after this).
+    private static let secureInputPollTimeout: TimeInterval = 60
 
     private let startTime = Date()
     private var lastNotificationTime: Date?
+    private var secureInputTimer: Timer?
+    /// The Lexime input source ID that was active before ABC switch.
+    private var previousLeximeSourceID: String?
 
     func startMonitoring() {
         DistributedNotificationCenter.default().addObserver(
@@ -29,6 +37,7 @@ final class InputSourceMonitor: NSObject {
     }
 
     deinit {
+        secureInputTimer?.invalidate()
         DistributedNotificationCenter.default().removeObserver(self)
     }
 
@@ -38,6 +47,12 @@ final class InputSourceMonitor: NSObject {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
         guard let idRef = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return }
         let sourceID = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
+
+        // Track the last Lexime source so we can restore it after ABC switch
+        if sourceID.hasPrefix("sh.send.inputmethod.Lexime.") {
+            previousLeximeSourceID = sourceID
+            return
+        }
 
         guard sourceID == Self.abcSourceID else { return }
 
@@ -55,6 +70,15 @@ final class InputSourceMonitor: NSObject {
         }
 
         lastNotificationTime = Date()
+
+        // If secure input is active (e.g. password field), poll for its
+        // release and auto-switch back to Lexime instead of notifying.
+        if IsSecureEventInputEnabled() {
+            NSLog("Lexime: ABC switch detected during secure input, polling for release")
+            startSecureInputPolling()
+            return
+        }
+
         sendNotification()
     }
 
@@ -65,7 +89,8 @@ final class InputSourceMonitor: NSObject {
         }
 
         let helperPath = selectInputHelperPath()
-        let executeCmd = "\"\(helperPath)\" \(Self.leximeRomanID)"
+        let revertID = previousLeximeSourceID ?? Self.leximeJapaneseID
+        let executeCmd = "\"\(helperPath)\" \(revertID)"
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: macnotifier)
@@ -81,6 +106,39 @@ final class InputSourceMonitor: NSObject {
         } catch {
             NSLog("Lexime: Failed to launch macnotifier: %@", "\(error)")
         }
+    }
+
+    // MARK: - Secure Input Polling
+
+    private func startSecureInputPolling() {
+        secureInputTimer?.invalidate()
+        let deadline = Date().addingTimeInterval(Self.secureInputPollTimeout)
+        secureInputTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.secureInputPollInterval, repeats: true
+        ) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            if !IsSecureEventInputEnabled() {
+                timer.invalidate()
+                self.secureInputTimer = nil
+                NSLog("Lexime: Secure input released, switching back to Lexime")
+                self.selectPreviousLexime()
+            } else if Date() >= deadline {
+                timer.invalidate()
+                self.secureInputTimer = nil
+                NSLog("Lexime: Secure input poll timed out")
+            }
+        }
+    }
+
+    private func selectPreviousLexime() {
+        let revertID = previousLeximeSourceID ?? Self.leximeJapaneseID
+        let conditions = [
+            kTISPropertyInputSourceID as String: revertID
+        ] as CFDictionary
+        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
+                as? [TISInputSource],
+              let source = list.first else { return }
+        TISSelectInputSource(source)
     }
 
     // MARK: - Helper Paths
