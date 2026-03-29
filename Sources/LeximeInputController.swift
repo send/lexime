@@ -19,6 +19,7 @@ class LeximeInputController: IMKInputController {
 
     let candidateManager = CandidateManager()
 
+    // setValue receives bare Info.plist mode IDs (without bundle ID prefix).
     private static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
     private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
 
@@ -292,7 +293,7 @@ class LeximeInputController: IMKInputController {
 
     private func selectLeximeJapanese() {
         let conditions = [
-            kTISPropertyInputSourceID as String: Self.japaneseModeID
+            kTISPropertyInputSourceID as String: LeximeInputSourceID.japanese
         ] as CFDictionary
         guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
                 as? [TISInputSource],

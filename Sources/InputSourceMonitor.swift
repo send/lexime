@@ -8,9 +8,6 @@ import Foundation
 final class InputSourceMonitor: NSObject {
 
     private static let abcSourceID = "com.apple.keylayout.ABC"
-    // Runtime IDs include the bundle ID prefix, so they are "Lexime.Lexime.*"
-    // rather than the bare "Lexime.*" declared in Info.plist's tsInputModeListKey.
-    private static let leximeRomanID = "sh.send.inputmethod.Lexime.Lexime.Roman"
 
     /// Suppress notifications for this many seconds after init (avoid startup noise).
     private static let startupQuietPeriod: TimeInterval = 5
@@ -95,7 +92,7 @@ final class InputSourceMonitor: NSObject {
 
     private func selectLeximeRoman() {
         let conditions = [
-            kTISPropertyInputSourceID as String: Self.leximeRomanID
+            kTISPropertyInputSourceID as String: LeximeInputSourceID.roman
         ] as CFDictionary
         guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
                 as? [TISInputSource],

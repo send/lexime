@@ -1,5 +1,16 @@
 import Foundation
 
+// MARK: - Input Source IDs
+
+/// Canonical input source IDs derived from the bundle identifier at runtime.
+/// macOS prepends the bundle ID to the bare mode names in Info.plist's
+/// tsInputModeListKey, so "Japanese" becomes "<bundleID>.Japanese".
+enum LeximeInputSourceID {
+    private static let bundleID = Bundle.main.bundleIdentifier ?? "sh.send.inputmethod.Lexime"
+    static let japanese = bundleID + ".Japanese"
+    static let roman = bundleID + ".Roman"
+}
+
 // MARK: - UserDefaults Keys
 
 enum DefaultsKey {
