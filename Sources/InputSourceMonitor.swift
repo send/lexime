@@ -1,14 +1,15 @@
 import Carbon
 import Foundation
 
-/// Monitors input source changes and notifies the user when the system
-/// switches to the standard ABC keyboard layout (which can happen
-/// unexpectedly due to macOS behaviour), offering a one-tap action to
-/// switch back to Lexime via macnotifier.
+/// Monitors input source changes and automatically reverts unexpected
+/// switches to the standard ABC keyboard layout (which can happen due to
+/// macOS IMKit race conditions) back to Lexime Roman, with secure input
+/// awareness (polls for release before reverting).
 final class InputSourceMonitor: NSObject {
 
     private static let abcSourceID = "com.apple.keylayout.ABC"
-    private static let leximeJapaneseID = "sh.send.inputmethod.Lexime.Lexime.Japanese"
+    // Runtime IDs include the bundle ID prefix, so they are "Lexime.Lexime.*"
+    // rather than the bare "Lexime.*" declared in Info.plist's tsInputModeListKey.
     private static let leximeRomanID = "sh.send.inputmethod.Lexime.Lexime.Roman"
 
     /// Suppress notifications for this many seconds after init (avoid startup noise).
