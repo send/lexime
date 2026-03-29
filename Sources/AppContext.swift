@@ -1,5 +1,18 @@
 import Foundation
 
+// MARK: - Input Source IDs
+
+/// Runtime input source IDs for TIS API lookups (TISCreateInputSourceList etc).
+/// macOS prefixes the bundle identifier to the Info.plist tsInputModeListKey
+/// mode IDs, so "sh.send.inputmethod.Lexime.Japanese" in Info.plist becomes
+/// "sh.send.inputmethod.Lexime.Lexime.Japanese" at runtime. These IDs are
+/// derived from Bundle.main.bundleIdentifier to stay in sync automatically.
+enum LeximeInputSourceID {
+    private static let bundleID = Bundle.main.bundleIdentifier ?? "sh.send.inputmethod.Lexime"
+    static let japanese = bundleID + ".Japanese"
+    static let roman = bundleID + ".Roman"
+}
+
 // MARK: - UserDefaults Keys
 
 enum DefaultsKey {
@@ -19,6 +32,7 @@ class AppContext {
     let userDictPath: String
     let supportDir: String
     let candidatePanel = CandidatePanel()
+    let inputSourceMonitor = InputSourceMonitor()
 
     private init() {
         guard let resourcePath = Bundle.main.resourcePath else {
@@ -149,6 +163,9 @@ class AppContext {
         } catch {
             NSLog("Lexime: snippets load error: %@", "\(error)")
         }
+
+        // Start monitoring for unexpected ABC input source switches
+        inputSourceMonitor.startMonitoring()
     }
 
     /// Reload snippets from disk. Throws if the file exists but fails to load.
