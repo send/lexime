@@ -19,7 +19,10 @@ class LeximeInputController: IMKInputController {
 
     let candidateManager = CandidateManager()
 
-    // setValue receives bare Info.plist mode IDs (without bundle ID prefix).
+    // IMKit mode IDs as declared in Info.plist's tsInputModeListKey.
+    // These match the values IMKit passes to setValue(_:forTag:client:).
+    // For TIS API lookups (TISCreateInputSourceList), use LeximeInputSourceID
+    // which includes the additional bundle ID prefix macOS adds at runtime.
     private static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
     private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
 

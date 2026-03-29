@@ -2,9 +2,11 @@ import Foundation
 
 // MARK: - Input Source IDs
 
-/// Canonical input source IDs derived from the bundle identifier at runtime.
-/// macOS prepends the bundle ID to the bare mode names in Info.plist's
-/// tsInputModeListKey, so "Japanese" becomes "<bundleID>.Japanese".
+/// Runtime input source IDs for TIS API lookups (TISCreateInputSourceList etc).
+/// macOS prefixes the bundle identifier to the Info.plist tsInputModeListKey
+/// mode IDs, so "sh.send.inputmethod.Lexime.Japanese" in Info.plist becomes
+/// "sh.send.inputmethod.Lexime.Lexime.Japanese" at runtime. These IDs are
+/// derived from Bundle.main.bundleIdentifier to stay in sync automatically.
 enum LeximeInputSourceID {
     private static let bundleID = Bundle.main.bundleIdentifier ?? "sh.send.inputmethod.Lexime"
     static let japanese = bundleID + ".Japanese"
