@@ -290,6 +290,7 @@ run = [
 description = "Run supply chain checks (cargo-deny, quarantine, build.rs, machete)"
 run = [
   "cd engine && cargo deny check",
+  "cd engine && cargo vet check",
   "bash scripts/check-quarantine.sh",
   "bash scripts/check-build-scripts.sh",
   "cd engine && cargo machete",
