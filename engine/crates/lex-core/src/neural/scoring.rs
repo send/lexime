@@ -230,9 +230,9 @@ pub(crate) fn map_token_logprobs_to_segments(
     let mut seg_boundaries: Vec<usize> = Vec::with_capacity(segments.len() + 1);
     seg_boundaries.push(0);
     for &count in &seg_char_counts {
-        seg_boundaries.push(seg_boundaries.last().unwrap() + count);
+        seg_boundaries.push(seg_boundaries.last().expect("seg_boundaries non-empty") + count);
     }
-    let total_seg_chars: usize = *seg_boundaries.last().unwrap();
+    let total_seg_chars: usize = *seg_boundaries.last().expect("seg_boundaries non-empty");
 
     // Accumulate log-probs per segment
     let mut seg_logprobs = vec![0.0_f64; segments.len()];

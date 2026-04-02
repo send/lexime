@@ -88,7 +88,10 @@ pub fn generate(
         if path.is_empty() {
             continue;
         }
-        let last_surface = &path.last().unwrap().surface;
+        let last_surface = &path
+            .last()
+            .expect("path non-empty after is_empty check")
+            .surface;
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
 
         chained_starts.insert(joined.clone());

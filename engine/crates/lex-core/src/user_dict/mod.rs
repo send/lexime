@@ -47,7 +47,7 @@ impl UserDictionary {
 
     /// Register a word. Returns `true` if newly added, `false` if already exists.
     pub fn register(&self, reading: &str, surface: &str) -> bool {
-        let mut map = self.entries.write().unwrap();
+        let mut map = self.entries.write().expect("user_dict lock poisoned");
         let entries = map.entry(reading.to_string()).or_default();
         if entries.iter().any(|e| e.surface == surface) {
             return false;
@@ -58,7 +58,7 @@ impl UserDictionary {
 
     /// Unregister a word. Returns `true` if removed, `false` if not found.
     pub fn unregister(&self, reading: &str, surface: &str) -> bool {
-        let mut map = self.entries.write().unwrap();
+        let mut map = self.entries.write().expect("user_dict lock poisoned");
         let Some(entries) = map.get_mut(reading) else {
             return false;
         };
@@ -73,7 +73,7 @@ impl UserDictionary {
 
     /// List all entries as (reading, surface) pairs, sorted by reading.
     pub fn list(&self) -> Vec<(String, String)> {
-        let map = self.entries.read().unwrap();
+        let map = self.entries.read().expect("user_dict lock poisoned");
         let mut result: Vec<(String, String)> = Vec::new();
         for (reading, entries) in map.iter() {
             for e in entries {
@@ -86,7 +86,7 @@ impl UserDictionary {
 
     /// Serialize to bytes (LXUW format).
     pub fn to_bytes(&self) -> Result<Vec<u8>, io::Error> {
-        let map = self.entries.read().unwrap();
+        let map = self.entries.read().expect("user_dict lock poisoned");
         let records: Vec<UserWordRecord> = map
             .iter()
             .flat_map(|(reading, entries)| {
@@ -163,12 +163,12 @@ impl Default for UserDictionary {
 
 impl Dictionary for UserDictionary {
     fn lookup(&self, reading: &str) -> Vec<DictEntry> {
-        let map = self.entries.read().unwrap();
+        let map = self.entries.read().expect("user_dict lock poisoned");
         map.get(reading).cloned().unwrap_or_default()
     }
 
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult> {
-        let map = self.entries.read().unwrap();
+        let map = self.entries.read().expect("user_dict lock poisoned");
         let mut results: Vec<SearchResult> = map
             .iter()
             .filter(|(k, _)| k.starts_with(prefix))
@@ -183,7 +183,7 @@ impl Dictionary for UserDictionary {
     }
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {
-        let map = self.entries.read().unwrap();
+        let map = self.entries.read().expect("user_dict lock poisoned");
         let mut results = Vec::new();
         // Check all prefixes of query against the HashMap
         for end in 1..=query.len() {
