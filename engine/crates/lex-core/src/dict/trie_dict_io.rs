@@ -71,10 +71,14 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_ne_bytes(data[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_ne_bytes(data[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_ne_bytes(data[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_ne_bytes(data[20..24].try_into().unwrap()) as usize;
+        let trie_len =
+            u32::from_ne_bytes(data[8..12].try_into().expect("4-byte header field")) as usize;
+        let pool_len =
+            u32::from_ne_bytes(data[12..16].try_into().expect("4-byte header field")) as usize;
+        let entries_len =
+            u32::from_ne_bytes(data[16..20].try_into().expect("4-byte header field")) as usize;
+        let reading_count =
+            u32::from_ne_bytes(data[20..24].try_into().expect("4-byte header field")) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;
@@ -122,10 +126,14 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_ne_bytes(mmap[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_ne_bytes(mmap[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_ne_bytes(mmap[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_ne_bytes(mmap[20..24].try_into().unwrap()) as usize;
+        let trie_len =
+            u32::from_ne_bytes(mmap[8..12].try_into().expect("4-byte header field")) as usize;
+        let pool_len =
+            u32::from_ne_bytes(mmap[12..16].try_into().expect("4-byte header field")) as usize;
+        let entries_len =
+            u32::from_ne_bytes(mmap[16..20].try_into().expect("4-byte header field")) as usize;
+        let reading_count =
+            u32::from_ne_bytes(mmap[20..24].try_into().expect("4-byte header field")) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;
