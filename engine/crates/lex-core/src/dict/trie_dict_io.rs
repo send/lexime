@@ -36,7 +36,9 @@ impl TrieDictionary {
             .len()
             .try_into()
             .map_err(|_| DictError::Parse("entries data exceeds u32::MAX".to_string()))?;
-        let reading_count: u32 = (index.len() / SLOT_SIZE) as u32;
+        let reading_count: u32 = (index.len() / SLOT_SIZE)
+            .try_into()
+            .map_err(|_| DictError::Parse("reading count exceeds u32::MAX".to_string()))?;
 
         let total = HEADER_SIZE + trie_data.len() + pool.len() + entries.len() + index.len();
         let mut buf = Vec::with_capacity(total);
