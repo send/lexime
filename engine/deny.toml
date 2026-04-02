@@ -1,0 +1,56 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+    # bincode 1.3.3 is unmaintained but stable; migrate to postcard later
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is stable, migration planned" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",          # uniffi
+    "Unlicense",         # memchr
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# Workspace crates don't have a license field yet
+[[licenses.clarify]]
+name = "lex-core"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "lex-session"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "lex_engine"
+expression = "MIT"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"  # workspace path deps are flagged as wildcards
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

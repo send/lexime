@@ -30,6 +30,11 @@ jobs:
               - 'engine/crates/lex-core/**'
               - 'engine/Cargo.toml'
               - 'engine/Cargo.lock'
+              - 'engine/deny.toml'
+              - 'engine/quarantine-allowlist.toml'
+              - 'engine/build-script-baseline.txt'
+              - 'scripts/check-quarantine.sh'
+              - 'scripts/check-build-scripts.sh'
             session:
               - 'engine/crates/lex-session/**'
             ffi:
@@ -137,6 +142,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -148,13 +155,22 @@ jobs:
       - name: Install audit tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-machete
+          tool: cargo-deny,cargo-machete
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      - name: Verify Cargo.lock is in sync
+        run: cd engine && cargo check --locked
 
-      - run: mise run audit
+      - name: cargo deny (advisories, licenses, sources, bans)
+        run: cd engine && cargo deny check
+
+      - name: Quarantine check (7-day)
+        run: bash scripts/check-quarantine.sh
+
+      - name: build.rs baseline check
+        run: bash scripts/check-build-scripts.sh
+
+      - name: Unused dependencies
+        run: cd engine && cargo machete
 
   swift:
     needs: changes
