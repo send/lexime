@@ -45,7 +45,7 @@ else
     current=$(parse_lockfile "$LOCKFILE" | sort)
     if git show origin/main:"$LOCKFILE" >/dev/null 2>&1; then
         base=$(git show origin/main:"$LOCKFILE" | parse_lockfile /dev/stdin | sort)
-        deps=$(comm -23 <(echo "$current") <(echo "$base"))
+        deps=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$base"))
     else
         deps="$current"
     fi
@@ -72,6 +72,10 @@ if [ -f "$ALLOWLIST" ]; then
 fi
 
 now=$(date +%s)
+if ! [[ "$QUARANTINE_DAYS" =~ ^[0-9]+$ ]] || [ "$QUARANTINE_DAYS" -le 0 ]; then
+    echo "quarantine: invalid QUARANTINE_DAYS='$QUARANTINE_DAYS' (expected a positive integer)" >&2
+    exit 1
+fi
 threshold=$((now - QUARANTINE_DAYS * 86400))
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
@@ -86,7 +90,9 @@ echo "$deps" | while read -r name version; do
     fi
 
     # Query crates.io API
-    response=$(curl -sf -H "User-Agent: $USER_AGENT" \
+    response=$(curl -sf --connect-timeout 10 --max-time 30 \
+        --retry 2 --retry-delay 2 --retry-all-errors \
+        -H "User-Agent: $USER_AGENT" \
         "https://crates.io/api/v1/crates/$name/$version" 2>/dev/null) || {
         echo "quarantine: FAIL $name@$version — API request failed (unable to verify age)"
         echo "FAIL" >> "$tmpfile"

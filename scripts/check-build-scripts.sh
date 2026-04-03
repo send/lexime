@@ -29,8 +29,8 @@ if [[ "${1:-}" == "--update" ]]; then
     exit 0
 fi
 
-added=$(comm -23 <(echo "$current") <(sort -u "$BASELINE"))
-removed=$(comm -13 <(echo "$current") <(sort -u "$BASELINE"))
+added=$(comm -23 <(printf '%s\n' "$current") <(sort -u "$BASELINE"))
+removed=$(comm -13 <(printf '%s\n' "$current") <(sort -u "$BASELINE"))
 
 if [ -n "$removed" ]; then
     echo "build-scripts: removed (info only):"
