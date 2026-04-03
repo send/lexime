@@ -36,7 +36,9 @@ impl TrieDictionary {
             .len()
             .try_into()
             .map_err(|_| DictError::Parse("entries data exceeds u32::MAX".to_string()))?;
-        let reading_count: u32 = (index.len() / SLOT_SIZE) as u32;
+        let reading_count: u32 = (index.len() / SLOT_SIZE)
+            .try_into()
+            .map_err(|_| DictError::Parse("reading count exceeds u32::MAX".to_string()))?;
 
         let total = HEADER_SIZE + trie_data.len() + pool.len() + entries.len() + index.len();
         let mut buf = Vec::with_capacity(total);
@@ -69,10 +71,14 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_ne_bytes(data[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_ne_bytes(data[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_ne_bytes(data[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_ne_bytes(data[20..24].try_into().unwrap()) as usize;
+        let trie_len =
+            u32::from_ne_bytes(data[8..12].try_into().expect("4-byte header field")) as usize;
+        let pool_len =
+            u32::from_ne_bytes(data[12..16].try_into().expect("4-byte header field")) as usize;
+        let entries_len =
+            u32::from_ne_bytes(data[16..20].try_into().expect("4-byte header field")) as usize;
+        let reading_count =
+            u32::from_ne_bytes(data[20..24].try_into().expect("4-byte header field")) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;
@@ -120,10 +126,14 @@ impl TrieDictionary {
             return Err(DictError::InvalidHeader);
         }
 
-        let trie_len = u32::from_ne_bytes(mmap[8..12].try_into().unwrap()) as usize;
-        let pool_len = u32::from_ne_bytes(mmap[12..16].try_into().unwrap()) as usize;
-        let entries_len = u32::from_ne_bytes(mmap[16..20].try_into().unwrap()) as usize;
-        let reading_count = u32::from_ne_bytes(mmap[20..24].try_into().unwrap()) as usize;
+        let trie_len =
+            u32::from_ne_bytes(mmap[8..12].try_into().expect("4-byte header field")) as usize;
+        let pool_len =
+            u32::from_ne_bytes(mmap[12..16].try_into().expect("4-byte header field")) as usize;
+        let entries_len =
+            u32::from_ne_bytes(mmap[16..20].try_into().expect("4-byte header field")) as usize;
+        let reading_count =
+            u32::from_ne_bytes(mmap[20..24].try_into().expect("4-byte header field")) as usize;
         let index_len = reading_count * SLOT_SIZE;
 
         let expected = HEADER_SIZE + trie_len + pool_len + entries_len + index_len;

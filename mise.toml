@@ -287,9 +287,12 @@ run = [
 ]
 
 [tasks.audit]
-description = "Run cargo-audit (vulnerabilities) and cargo-machete (unused deps)"
+description = "Run supply chain checks (cargo-deny, cargo-vet, quarantine, build.rs, machete)"
 run = [
-  "cd engine && cargo audit",
+  "cd engine && cargo deny check",
+  "cd engine && cargo vet check",
+  "bash scripts/check-quarantine.sh",
+  "bash scripts/check-build-scripts.sh",
   "cd engine && cargo machete",
 ]
 

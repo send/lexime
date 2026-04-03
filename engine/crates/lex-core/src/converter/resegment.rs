@@ -158,7 +158,11 @@ fn score_path(segments: &[RichSegment], conn: Option<&ConnectionMatrix>) -> i64 
     }
 
     // EOS transition
-    cost += conn_cost(conn, segments.last().unwrap().right_id, 0);
+    cost += conn_cost(
+        conn,
+        segments.last().expect("segments non-empty").right_id,
+        0,
+    );
 
     cost
 }

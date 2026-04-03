@@ -60,8 +60,11 @@ impl HistoryWal {
         let mut count = 0;
         let mut pos = 0;
         while pos + 8 <= data.len() {
-            let length = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-            let expected_crc = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+            let length =
+                u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4-byte length field"))
+                    as usize;
+            let expected_crc =
+                u32::from_le_bytes(data[pos + 4..pos + 8].try_into().expect("4-byte CRC field"));
 
             if length == 0 || pos + 8 + length > data.len() {
                 break; // truncated frame
@@ -119,7 +122,7 @@ impl HistoryWal {
                 .open(&self.wal_path)?;
             self.file = Some(f);
         }
-        Ok(self.file.as_mut().unwrap())
+        Ok(self.file.as_mut().expect("file set by preceding lines"))
     }
 
     /// Whether the WAL has reached the compaction threshold.

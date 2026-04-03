@@ -151,7 +151,7 @@ pub fn rerank(
             }
         })
         .min()
-        .unwrap();
+        .expect("paths guaranteed non-empty after early return");
     let threshold = min_sc + filter;
     {
         let mut i = 0;

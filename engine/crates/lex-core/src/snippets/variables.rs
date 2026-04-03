@@ -247,7 +247,7 @@ fn format_date(fmt: &str) -> String {
                 Some(_) => {
                     // Unknown specifier — preserve as-is
                     result.push('%');
-                    result.push(chars.next().unwrap());
+                    result.push(chars.next().expect("Some(_) matched above"));
                 }
                 None => {
                     result.push('%');

@@ -1,0 +1,7 @@
+# Crates allowed to bypass the 7-day quarantine period.
+# Use this for security patches that must be adopted immediately.
+# Format: name = "version"
+
+[allow]
+candle-core = "0.10.2"
+candle-nn = "0.10.2"
