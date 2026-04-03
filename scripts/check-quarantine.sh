@@ -23,7 +23,7 @@ parse_lockfile() {
         /^\[\[package\]\]/ { name=""; version=""; source="" }
         /^name = / { gsub(/"/, "", $3); name=$3 }
         /^version = / { gsub(/"/, "", $3); version=$3 }
-        /^source = "registry/ { source="registry" }
+        /^source = "registry\+/ { source="registry" }
         /^$/ {
             if (name != "" && version != "" && source == "registry") {
                 print name " " version
@@ -88,7 +88,8 @@ echo "$deps" | while read -r name version; do
     # Query crates.io API
     response=$(curl -sf -H "User-Agent: $USER_AGENT" \
         "https://crates.io/api/v1/crates/$name/$version" 2>/dev/null) || {
-        echo "quarantine: $name@$version — WARNING: API request failed, skipping"
+        echo "quarantine: FAIL $name@$version — API request failed (unable to verify age)"
+        echo "FAIL" >> "$tmpfile"
         continue
     }
 
@@ -99,7 +100,8 @@ data = json.load(sys.stdin)
 dt = datetime.fromisoformat(data['version']['created_at'].replace('Z', '+00:00'))
 print(int(dt.timestamp()))
 " 2>/dev/null) || {
-        echo "quarantine: $name@$version — WARNING: failed to parse date, skipping"
+        echo "quarantine: FAIL $name@$version — failed to parse publication date (unable to verify age)"
+        echo "FAIL" >> "$tmpfile"
         continue
     }
 

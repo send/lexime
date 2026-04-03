@@ -12,7 +12,7 @@ if [ ! -f "$BASELINE" ]; then
     exit 1
 fi
 
-current=$(cargo metadata --manifest-path engine/Cargo.toml --format-version 1 2>/dev/null | python3 -c "
+current=$(cargo metadata --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for pkg in data['packages']:

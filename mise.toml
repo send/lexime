@@ -287,7 +287,7 @@ run = [
 ]
 
 [tasks.audit]
-description = "Run supply chain checks (cargo-deny, quarantine, build.rs, machete)"
+description = "Run supply chain checks (cargo-deny, cargo-vet, quarantine, build.rs, machete)"
 run = [
   "cd engine && cargo deny check",
   "cd engine && cargo vet check",
