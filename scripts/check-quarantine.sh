@@ -63,10 +63,11 @@ if [ -f "$ALLOWLIST" ]; then
         /^\[allow\]/ { in_allow=1; next }
         /^\[/ { in_allow=0 }
         in_allow && /=/ {
+            sub(/ *#.*$/, "");
             gsub(/"/, "", $1); gsub(/"/, "", $2);
             gsub(/^[ \t]+/, "", $1); gsub(/[ \t]+$/, "", $1);
             gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2);
-            print $1 " " $2
+            if ($1 != "" && $2 != "") print $1 " " $2
         }
     ' "$ALLOWLIST")
 fi
