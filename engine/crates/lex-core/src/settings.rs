@@ -99,6 +99,15 @@ pub struct CostSettings {
     pub unknown_word_cost: i16,
 }
 
+/// Default length variance weight (shared with FeatureWeights::default()).
+pub const DEFAULT_LENGTH_VARIANCE_WEIGHT: i64 = 1000;
+/// Default te-form kanji penalty (shared with FeatureWeights::default()).
+pub const DEFAULT_TE_FORM_KANJI_PENALTY: i64 = 2000;
+/// Default single-char kanji penalty (shared with FeatureWeights::default()).
+pub const DEFAULT_SINGLE_CHAR_KANJI_PENALTY: i64 = 0;
+/// Default structure cost transition cap.
+pub const DEFAULT_STRUCTURE_COST_TRANSITION_CAP: i64 = 5000;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
@@ -112,15 +121,15 @@ pub struct RerankerSettings {
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
-    2000
+    DEFAULT_TE_FORM_KANJI_PENALTY
 }
 
 fn default_single_char_kanji_penalty() -> i64 {
-    0
+    DEFAULT_SINGLE_CHAR_KANJI_PENALTY
 }
 
 fn default_structure_cost_transition_cap() -> i64 {
-    5000
+    DEFAULT_STRUCTURE_COST_TRANSITION_CAP
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -75,12 +75,16 @@ const SCRIPT_WEIGHT: i64 = 100;
 
 impl Default for FeatureWeights {
     fn default() -> Self {
+        use crate::settings::{
+            DEFAULT_LENGTH_VARIANCE_WEIGHT, DEFAULT_SINGLE_CHAR_KANJI_PENALTY,
+            DEFAULT_TE_FORM_KANJI_PENALTY,
+        };
         Self {
             structure: STRUCTURE_WEIGHT,
-            length_variance: 1000,
+            length_variance: DEFAULT_LENGTH_VARIANCE_WEIGHT,
             script: SCRIPT_WEIGHT,
-            te_kanji: 2000,
-            single_kanji: 0,
+            te_kanji: DEFAULT_TE_FORM_KANJI_PENALTY,
+            single_kanji: DEFAULT_SINGLE_CHAR_KANJI_PENALTY,
         }
     }
 }
