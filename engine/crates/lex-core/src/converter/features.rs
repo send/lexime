@@ -93,6 +93,35 @@ impl FeatureWeights {
     }
 }
 
+/// Check whether a segment triggers the single-char kanji content-word penalty.
+///
+/// Returns `true` when the segment is a single-character kanji content word
+/// that is NOT part of a dictionary compound with its neighbours.
+pub fn is_single_char_kanji_penalised(
+    seg: &RichSegment,
+    idx: usize,
+    segments: &[RichSegment],
+    conn: &ConnectionMatrix,
+    dict: Option<&dyn Dictionary>,
+) -> bool {
+    if seg.reading.chars().count() != 1
+        || !seg.surface.chars().any(is_kanji)
+        || conn.role(seg.left_id) != 0
+    {
+        return false;
+    }
+    let exempt = dict.is_some_and(|d| {
+        let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
+            let reading = format!("{}{}", a.reading, b.reading);
+            let surface = format!("{}{}", a.surface, b.surface);
+            d.lookup(&reading).iter().any(|e| e.surface == surface)
+        };
+        (idx > 0 && has_compound(&segments[idx - 1], seg))
+            || (idx + 1 < segments.len() && has_compound(seg, &segments[idx + 1]))
+    });
+    !exempt
+}
+
 /// Extract features from a path.
 pub fn extract_features(
     path: &ScoredPath,
@@ -162,22 +191,8 @@ pub fn extract_features(
                 }
             }
             // Single-char kanji content word
-            if seg.reading.chars().count() == 1
-                && seg.surface.chars().any(is_kanji)
-                && c.role(seg.left_id) == 0
-            {
-                let exempt = dict.is_some_and(|d| {
-                    let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
-                        let reading = format!("{}{}", a.reading, b.reading);
-                        let surface = format!("{}{}", a.surface, b.surface);
-                        d.lookup(&reading).iter().any(|e| e.surface == surface)
-                    };
-                    (i > 0 && has_compound(&path.segments[i - 1], seg))
-                        || (i + 1 < path.segments.len() && has_compound(seg, &path.segments[i + 1]))
-                });
-                if !exempt {
-                    f.single_kanji_count += 1;
-                }
+            if is_single_char_kanji_penalised(seg, i, &path.segments, c, dict) {
+                f.single_kanji_count += 1;
             }
         }
     }
