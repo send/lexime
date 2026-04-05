@@ -98,7 +98,7 @@ fn path_key(path: &ScoredPath) -> String {
 fn explain_segments(
     scored: &ScoredPath,
     conn: Option<&ConnectionMatrix>,
-    dict: &dyn Dictionary,
+    _dict: &dyn Dictionary,
 ) -> Vec<ExplainSegment> {
     scored
         .segments
@@ -116,17 +116,8 @@ fn explain_segments(
             } else {
                 None
             };
-            // Per-segment penalties from features module
-            let features = super::features::extract_features(
-                scored,
-                conn,
-                Some(dict),
-                settings().reranker.structure_cost_transition_cap,
-                (settings().reranker.structure_cost_filter / 2)
-                    .min(settings().reranker.structure_cost_transition_cap),
-            );
-            // te_form and single_char are path-level counts; for per-segment
-            // display we inline the check here.
+            // Per-segment penalties: te_form and single_char are path-level
+            // features, so we inline the per-segment check here for display.
             let te_penalty = if let Some(c) = conn {
                 if let Some(prev) = prev_seg {
                     if c.is_function_word(prev.left_id)
@@ -143,8 +134,7 @@ fn explain_segments(
             } else {
                 0
             };
-            let _ = &features; // suppress unused; features used for validation
-            let sc_penalty = 0i64; // TODO: per-segment single_char needs refactor
+            let sc_penalty = 0i64;
             ExplainSegment {
                 reading: seg.reading.clone(),
                 surface: seg.surface.clone(),

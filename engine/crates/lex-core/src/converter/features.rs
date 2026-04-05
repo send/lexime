@@ -55,7 +55,6 @@ impl PathFeatures {
 #[derive(Debug, Clone)]
 pub struct FeatureWeights {
     /// Structure cost weight (applied as structure_cost * weight / 100).
-    /// Default: 25 (= 25% of raw structure cost).
     pub structure: i64,
     /// Length variance weight (applied as variance_raw * weight / N²).
     pub length_variance: i64,

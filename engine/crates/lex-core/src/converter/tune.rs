@@ -196,14 +196,14 @@ fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64, 
 pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneResult {
     // Evaluate default weights first
     let default_weights = FeatureWeights::default();
-    let (default_pass, default_surfaces) = evaluate_weights(cases, &default_weights);
+    let default_pass = count_passes(cases, &default_weights);
     let default_eval = TuneEval {
-        weights: default_weights,
+        weights: default_weights.clone(),
         pass_count: default_pass,
         total: cases.len(),
     };
 
-    // Grid search
+    // Grid search — only track pass counts (cheap)
     let mut evals: Vec<TuneEval> = Vec::with_capacity(grid.total_combinations());
 
     for &st in &grid.structure {
@@ -217,7 +217,7 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
                         te_kanji: te,
                         single_kanji: sk,
                     };
-                    let (pass_count, _) = evaluate_weights(cases, &w);
+                    let pass_count = count_passes(cases, &w);
                     evals.push(TuneEval {
                         weights: w,
                         pass_count,
@@ -233,14 +233,15 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
 
     let best = evals[0].clone();
 
-    // Compute diffs and failures for best weights
-    let (_, best_surfaces) = evaluate_weights(cases, &best.weights);
+    // Collect surfaces only for default and best (for diffs + failures)
+    let default_surfaces = collect_surfaces(cases, &default_weights);
+    let best_surfaces = collect_surfaces(cases, &best.weights);
     let diffs = compute_diffs(cases, &default_surfaces, &best_surfaces);
 
     let best_failures: Vec<TuneFailure> = cases
         .iter()
         .zip(best_surfaces.iter())
-        .filter(|(c, s)| **s != c.expected)
+        .filter(|(c, s)| s.as_str() != c.expected)
         .map(|(c, s)| TuneFailure {
             reading: c.reading.clone(),
             expected: c.expected.clone(),
@@ -259,29 +260,29 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
     }
 }
 
-/// Evaluate a weight set: returns (pass_count, top1_surfaces).
-fn evaluate_weights(cases: &[TuneCase], weights: &FeatureWeights) -> (usize, Vec<String>) {
-    let mut pass = 0;
-    let mut surfaces = Vec::with_capacity(cases.len());
+/// Count how many cases pass with the given weights (no allocation).
+fn count_passes(cases: &[TuneCase], weights: &FeatureWeights) -> usize {
+    cases
+        .iter()
+        .filter(|case| top1_surface(&case.candidates, weights) == case.expected)
+        .count()
+}
 
-    for case in cases {
-        let top1 = top1_surface(&case.candidates, weights);
-        if top1 == case.expected {
-            pass += 1;
-        }
-        surfaces.push(top1);
-    }
-
-    (pass, surfaces)
+/// Collect top-1 surfaces for all cases (only used for diff/failure reporting).
+fn collect_surfaces(cases: &[TuneCase], weights: &FeatureWeights) -> Vec<String> {
+    cases
+        .iter()
+        .map(|case| top1_surface(&case.candidates, weights).to_owned())
+        .collect()
 }
 
 /// Find the top-1 surface for a set of candidates under the given weights.
-fn top1_surface(candidates: &[TuneCandidate], weights: &FeatureWeights) -> String {
+fn top1_surface<'a>(candidates: &'a [TuneCandidate], weights: &FeatureWeights) -> &'a str {
     candidates
         .iter()
         .min_by_key(|c| c.base_cost + c.features.weighted_cost(weights))
-        .map(|c| c.surface.clone())
-        .unwrap_or_default()
+        .map(|c| c.surface.as_str())
+        .unwrap_or("")
 }
 
 /// Compute per-case diffs between two sets of top-1 surfaces.
