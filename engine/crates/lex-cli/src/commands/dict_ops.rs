@@ -69,8 +69,8 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
             "Error loading morpheme roles: {}"
         );
         let mut adjusted = 0usize;
-        for entries in entries.values_mut() {
-            for entry in entries.iter_mut() {
+        for entry_list in entries.values_mut() {
+            for entry in entry_list.iter_mut() {
                 let id = entry.left_id as usize;
                 if id >= roles.len() {
                     eprintln!(
