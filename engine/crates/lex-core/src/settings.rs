@@ -112,11 +112,11 @@ pub struct RerankerSettings {
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
-    3500
+    2000
 }
 
 fn default_single_char_kanji_penalty() -> i64 {
-    4000
+    0
 }
 
 fn default_structure_cost_transition_cap() -> i64 {
