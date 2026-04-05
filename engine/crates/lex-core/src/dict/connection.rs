@@ -97,19 +97,4 @@ impl ConnectionMatrix {
     pub fn is_prefix(&self, id: u16) -> bool {
         self.role(id) == 3
     }
-
-    /// Check whether a POS ID is non-independent (非自立, role == 4).
-    pub fn is_non_independent(&self, id: u16) -> bool {
-        self.role(id) == 4
-    }
-
-    /// Check whether a POS ID is a pronoun (代名詞, role == 5).
-    pub fn is_pronoun(&self, id: u16) -> bool {
-        self.role(id) == 5
-    }
-
-    /// Check whether a POS ID is a person name (人名, role == 6).
-    pub fn is_person_name(&self, id: u16) -> bool {
-        self.role(id) == 6
-    }
 }

@@ -103,38 +103,20 @@ pub struct CostSettings {
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
     pub structure_cost_filter: i64,
-    #[serde(default = "default_non_independent_kanji_penalty")]
-    pub non_independent_kanji_penalty: i64,
     #[serde(default = "default_te_form_kanji_penalty")]
     pub te_form_kanji_penalty: i64,
-    #[serde(default = "default_pronoun_cost_bonus")]
-    pub pronoun_cost_bonus: i64,
     #[serde(default = "default_single_char_kanji_penalty")]
     pub single_char_kanji_penalty: i64,
-    #[serde(default = "default_person_name_penalty")]
-    pub person_name_penalty: i64,
     #[serde(default = "default_structure_cost_transition_cap")]
     pub structure_cost_transition_cap: i64,
-}
-
-fn default_non_independent_kanji_penalty() -> i64 {
-    1500
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
     3500
 }
 
-fn default_pronoun_cost_bonus() -> i64 {
-    3500
-}
-
 fn default_single_char_kanji_penalty() -> i64 {
     4000
-}
-
-fn default_person_name_penalty() -> i64 {
-    2000
 }
 
 fn default_structure_cost_transition_cap() -> i64 {
@@ -283,11 +265,8 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
 
     check_non_negative!(reranker.length_variance_weight);
     check_non_negative!(reranker.structure_cost_filter);
-    check_non_negative!(reranker.non_independent_kanji_penalty);
     check_non_negative!(reranker.te_form_kanji_penalty);
-    check_non_negative!(reranker.pronoun_cost_bonus);
     check_non_negative!(reranker.single_char_kanji_penalty);
-    check_non_negative!(reranker.person_name_penalty);
     check_non_negative!(reranker.structure_cost_transition_cap);
 
     check_non_negative!(history.boost_per_use);
@@ -332,11 +311,8 @@ mod tests {
         assert_eq!(s.cost.unknown_word_cost, 10000);
         assert_eq!(s.reranker.length_variance_weight, 2000);
         assert_eq!(s.reranker.structure_cost_filter, 6000);
-        assert_eq!(s.reranker.non_independent_kanji_penalty, 1500);
         assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
-        assert_eq!(s.reranker.pronoun_cost_bonus, 3500);
         assert_eq!(s.reranker.single_char_kanji_penalty, 4000);
-        assert_eq!(s.reranker.person_name_penalty, 2000);
         assert_eq!(s.reranker.structure_cost_transition_cap, 5000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);
@@ -375,7 +351,6 @@ unknown_word_cost = 5000
 [reranker]
 length_variance_weight = 1000
 structure_cost_filter = 2000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 1500
@@ -407,7 +382,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -439,7 +413,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -470,7 +443,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -501,7 +473,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000
@@ -533,7 +504,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 
 [history]
 boost_per_use = 3000

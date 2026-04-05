@@ -9,25 +9,6 @@ use crate::user_history::UserHistory;
 use super::cost::{conn_cost, script_cost};
 use super::viterbi::{RichSegment, ScoredPath};
 
-/// Non-independent kanji penalty for a segment.
-/// Returns penalty (> 0) if the segment is non-independent (形式名詞/補助動詞) with kanji surface.
-pub(super) fn non_independent_kanji_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
-        settings().reranker.non_independent_kanji_penalty
-    } else {
-        0
-    }
-}
-
-/// Pronoun cost bonus for a segment (positive value = cost reduction).
-pub(super) fn pronoun_bonus(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_pronoun(seg.left_id) {
-        settings().reranker.pronoun_cost_bonus
-    } else {
-        0
-    }
-}
-
 /// Te-form kanji penalty for a segment that follows て/で.
 /// `prev` is the preceding segment (None for the first segment).
 pub(super) fn te_form_kanji_penalty(
@@ -44,16 +25,6 @@ pub(super) fn te_form_kanji_penalty(
         }
     }
     0
-}
-
-/// Person name penalty for a segment.
-/// Returns penalty (> 0) if the segment is a person name (人名: 一般/姓/名; role == 6).
-pub(super) fn person_name_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_person_name(seg.left_id) {
-        settings().reranker.person_name_penalty
-    } else {
-        0
-    }
 }
 
 /// Single-char kanji content-word penalty with dictionary compound exemption.
@@ -222,8 +193,7 @@ pub fn rerank(
             .sum();
         path.viterbi_cost += total_script;
 
-        // Per-segment penalties: non-independent kanji, pronoun bonus,
-        // te-form kanji, single-char kanji content-word.
+        // Per-segment penalties: te-form kanji, single-char kanji content-word.
         if let Some(conn) = conn {
             for (i, seg) in path.segments.iter().enumerate() {
                 let prev = if i > 0 {
@@ -231,11 +201,8 @@ pub fn rerank(
                 } else {
                     None
                 };
-                path.viterbi_cost += non_independent_kanji_penalty(seg, conn);
-                path.viterbi_cost -= pronoun_bonus(seg, conn);
                 path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
                 path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
-                path.viterbi_cost += person_name_penalty(seg, conn);
             }
         }
     }
@@ -315,57 +282,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn non_independent_kanji_penalty_applied() {
-        // ID 2 = non-independent (role 4), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 4];
-        let conn = conn_with_roles(roles);
-
-        // Path A: こと (hiragana, non-independent) — no penalty
-        // Path B: 事 (kanji, non-independent) — penalty applied
-        let mut paths = vec![
-            path(vec![seg("こと", "事", 2)], 100),
-            path(vec![seg("こと", "こと", 2)], 100),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The hiragana path should rank higher (lower cost)
-        assert_eq!(paths[0].segments[0].surface, "こと");
-        assert_eq!(paths[1].segments[0].surface, "事");
-        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
-    }
-
     /// Build a minimal ConnectionMatrix with the given roles vector and
     /// function-word ID range.
     fn conn_with_roles_and_fw(roles: Vec<u8>, fw_min: u16, fw_max: u16) -> ConnectionMatrix {
         let num_ids = roles.len() as u16;
         let costs = vec![0i16; num_ids as usize * num_ids as usize];
         ConnectionMatrix::new_owned(num_ids, fw_min, fw_max, roles, costs)
-    }
-
-    #[test]
-    fn non_independent_kanji_penalty_not_applied_to_content_words() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
-
-        // Both paths use content word IDs — no non-independent penalty
-        let mut paths = vec![
-            path(vec![seg("こと", "事", 1)], 100),
-            path(vec![seg("こと", "こと", 1)], 100),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // Costs should differ only by script cost, not by non-independent penalty
-        let penalty = settings().reranker.non_independent_kanji_penalty;
-        let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
-        assert!(
-            cost_diff < penalty,
-            "no non-independent penalty should be applied: diff = {}",
-            cost_diff
-        );
     }
 
     #[test]
@@ -470,35 +392,6 @@ mod tests {
             "path where single-char reading segments are excluded from length variance should rank first (no variance penalty)"
         );
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
-    }
-
-    #[test]
-    fn pronoun_bonus_applied() {
-        // ID 2 = pronoun (role 5), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 5];
-        let conn = conn_with_roles(roles);
-
-        // Both paths have the same surface (hiragana) to isolate pronoun bonus.
-        // Path A: pronoun POS (id=2) — bonus applied
-        // Path B: content word POS (id=1) — no bonus
-        let mut paths = vec![
-            path(vec![seg("どれ", "どれ", 2)], 1000),
-            path(vec![seg("どれ", "どれ", 1)], 1000),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The pronoun path should rank higher (lower cost) after bonus
-        assert_eq!(
-            paths[0].segments[0].left_id, 2,
-            "pronoun path should rank first"
-        );
-        let bonus = settings().reranker.pronoun_cost_bonus;
-        let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
-        assert_eq!(
-            diff, bonus,
-            "cost difference should equal pronoun_cost_bonus"
-        );
     }
 
     /// A minimal dictionary for testing compound exemption.
@@ -717,35 +610,6 @@ mod tests {
             "only single-char reading should get penalty: multi={}, single={}",
             multi.viterbi_cost,
             single.viterbi_cost,
-        );
-    }
-
-    #[test]
-    fn person_name_penalty_applied() {
-        // ID 2 = person name (role 6), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 6];
-        let conn = conn_with_roles(roles);
-
-        // Both paths have the same hiragana surface to isolate person name penalty.
-        // Path A: person name POS (id=2) — penalty applied
-        // Path B: content word POS (id=1) — no penalty
-        let mut paths = vec![
-            path(vec![seg("にしま", "にしま", 2)], 1000),
-            path(vec![seg("にしま", "にしま", 1)], 1000),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The content word path should rank higher (lower cost)
-        assert_eq!(
-            paths[0].segments[0].left_id, 1,
-            "content word path should rank first"
-        );
-        let penalty = settings().reranker.person_name_penalty;
-        let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
-        assert_eq!(
-            diff, penalty,
-            "cost difference should equal person_name_penalty"
         );
     }
 

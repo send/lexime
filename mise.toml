@@ -44,14 +44,14 @@ run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc da
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/.stamp", "engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
+sources = ["engine/data/mozc-raw/.stamp", "engine/data/mozc-raw/id.def", "engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 cd engine
 cargo build --release -p lex-cli --bin dictool
-target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
+target/release/dictool compile --source mozc --id-def data/mozc-raw/id.def data/mozc-raw data/lexime-mozc.dict
 """
 
 [tasks.conn]

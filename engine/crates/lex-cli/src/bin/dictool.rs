@@ -30,6 +30,9 @@ enum Command {
         input_dir: String,
         /// Output file
         output_file: String,
+        /// Mozc id.def for compile-time cost adjustments (person name, pronoun)
+        #[arg(long)]
+        id_def: Option<String>,
     },
     /// Compile connection matrix
     CompileConn {
@@ -221,7 +224,8 @@ fn main() {
             source,
             input_dir,
             output_file,
-        } => dict_ops::compile(&source, &input_dir, &output_file),
+            id_def,
+        } => dict_ops::compile(&source, &input_dir, &output_file, id_def.as_deref()),
         Command::CompileConn {
             input_txt,
             output_file,
