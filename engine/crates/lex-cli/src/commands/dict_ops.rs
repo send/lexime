@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use crate::dict_source;
@@ -54,18 +54,18 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
 
     // Apply compile-time cost offsets based on morpheme roles.
     // Auto-detect id.def in input_dir if --id-def is not specified.
-    let id_def_resolved = id_def.map(|s| s.to_string()).or_else(|| {
+    let id_def_path = id_def.map(PathBuf::from).or_else(|| {
         let auto = input_path.join("id.def");
         if auto.is_file() {
             eprintln!("Auto-detected id.def at {}", auto.display());
-            Some(auto.to_string_lossy().into_owned())
+            Some(auto)
         } else {
             None
         }
     });
-    if let Some(id_def_path) = &id_def_resolved {
+    if let Some(id_def_path) = &id_def_path {
         let roles = die!(
-            pos_map::morpheme_roles(Path::new(id_def_path)),
+            pos_map::morpheme_roles(id_def_path),
             "Error loading morpheme roles: {}"
         );
         let mut adjusted = 0usize;

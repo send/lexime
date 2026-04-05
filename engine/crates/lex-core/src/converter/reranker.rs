@@ -193,8 +193,7 @@ pub fn rerank(
             .sum();
         path.viterbi_cost += total_script;
 
-        // Per-segment penalties: non-independent kanji, pronoun bonus,
-        // te-form kanji, single-char kanji content-word.
+        // Per-segment penalties: te-form kanji, single-char kanji content-word.
         if let Some(conn) = conn {
             for (i, seg) in path.segments.iter().enumerate() {
                 let prev = if i > 0 {
