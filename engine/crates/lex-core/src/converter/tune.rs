@@ -36,24 +36,23 @@ pub struct TuneCase {
 }
 
 /// Ranges for grid search.  Each `Vec<i64>` is the list of values to try.
+///
+/// `structure` and `script` are fixed in `FeatureWeights::from_settings()`
+/// (compile-time constants), so the default grid only varies the three
+/// settings-backed weights.
 #[derive(Debug, Clone)]
 pub struct WeightGrid {
-    pub structure: Vec<i64>,
     pub length_variance: Vec<i64>,
     pub te_kanji: Vec<i64>,
     pub single_kanji: Vec<i64>,
-    /// Fixed value (not searched).
-    pub script: i64,
 }
 
 impl Default for WeightGrid {
     fn default() -> Self {
         Self {
-            structure: vec![0, 10, 25, 50, 75, 100],
             length_variance: vec![0, 500, 1000, 2000, 3000, 5000],
             te_kanji: vec![0, 1000, 2000, 3500, 5000, 7000],
             single_kanji: vec![0, 1000, 2000, 4000, 6000, 8000],
-            script: 100,
         }
     }
 }
@@ -61,10 +60,7 @@ impl Default for WeightGrid {
 impl WeightGrid {
     /// Total number of weight combinations.
     pub fn total_combinations(&self) -> usize {
-        self.structure.len()
-            * self.length_variance.len()
-            * self.te_kanji.len()
-            * self.single_kanji.len()
+        self.length_variance.len() * self.te_kanji.len() * self.single_kanji.len()
     }
 }
 
@@ -203,27 +199,27 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
         total: cases.len(),
     };
 
-    // Grid search — only track pass counts (cheap)
+    // Grid search — only track pass counts (cheap).
+    // structure and script are fixed (compile-time constants in from_settings).
+    let base = FeatureWeights::from_settings();
     let mut evals: Vec<TuneEval> = Vec::with_capacity(grid.total_combinations());
 
-    for &st in &grid.structure {
-        for &lv in &grid.length_variance {
-            for &te in &grid.te_kanji {
-                for &sk in &grid.single_kanji {
-                    let w = FeatureWeights {
-                        structure: st,
-                        length_variance: lv,
-                        script: grid.script,
-                        te_kanji: te,
-                        single_kanji: sk,
-                    };
-                    let pass_count = count_passes(cases, &w);
-                    evals.push(TuneEval {
-                        weights: w,
-                        pass_count,
-                        total: cases.len(),
-                    });
-                }
+    for &lv in &grid.length_variance {
+        for &te in &grid.te_kanji {
+            for &sk in &grid.single_kanji {
+                let w = FeatureWeights {
+                    structure: base.structure,
+                    length_variance: lv,
+                    script: base.script,
+                    te_kanji: te,
+                    single_kanji: sk,
+                };
+                let pass_count = count_passes(cases, &w);
+                evals.push(TuneEval {
+                    weights: w,
+                    pass_count,
+                    total: cases.len(),
+                });
             }
         }
     }
@@ -291,10 +287,9 @@ fn top1_surface<'a>(candidates: &'a [TuneCandidate], weights: &FeatureWeights) -
         .unwrap_or("")
 }
 
-/// Sum of absolute differences from a reference weight set (L1 distance).
+/// L1 distance over the tunable weight dimensions (excludes fixed structure/script).
 fn weight_distance(a: &FeatureWeights, b: &FeatureWeights) -> i64 {
-    (a.structure - b.structure).abs()
-        + (a.length_variance - b.length_variance).abs()
+    (a.length_variance - b.length_variance).abs()
         + (a.te_kanji - b.te_kanji).abs()
         + (a.single_kanji - b.single_kanji).abs()
 }
@@ -322,4 +317,81 @@ fn compute_diffs(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::converter::testutil::{test_dict, zero_conn_with_fw};
+
+    #[test]
+    fn precompute_returns_candidates() {
+        let dict = test_dict();
+        let conn = zero_conn_with_fw(1200, 200, 200);
+        let cases = vec![("きょう".to_string(), "今日".to_string())];
+        let result = precompute_cases(&dict, &conn, &cases);
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].candidates.is_empty(), "should have candidates");
+        assert!(
+            result[0].candidates.iter().any(|c| c.surface == "今日"),
+            "expected surface should be among candidates"
+        );
+    }
+
+    #[test]
+    fn grid_search_best_ge_default() {
+        let dict = test_dict();
+        let conn = zero_conn_with_fw(1200, 200, 200);
+        let cases = vec![
+            ("きょう".to_string(), "今日".to_string()),
+            ("てんき".to_string(), "天気".to_string()),
+        ];
+        let tune_cases = precompute_cases(&dict, &conn, &cases);
+        let result = grid_search(&tune_cases, &WeightGrid::default(), 5);
+        assert!(
+            result.best.pass_count >= result.default_eval.pass_count,
+            "best should be at least as good as default"
+        );
+    }
+
+    #[test]
+    fn grid_search_empty_grid() {
+        let cases = vec![TuneCase {
+            reading: "あ".to_string(),
+            expected: "あ".to_string(),
+            candidates: vec![],
+        }];
+        let grid = WeightGrid {
+            length_variance: vec![],
+            te_kanji: vec![],
+            single_kanji: vec![],
+        };
+        let result = grid_search(&cases, &grid, 5);
+        // Should not panic; falls back to default
+        assert_eq!(result.best.total, 1);
+    }
+
+    #[test]
+    fn top1_surface_selects_lowest_cost() {
+        let candidates = vec![
+            TuneCandidate {
+                surface: "A".to_string(),
+                base_cost: 100,
+                features: PathFeatures::default(),
+            },
+            TuneCandidate {
+                surface: "B".to_string(),
+                base_cost: 50,
+                features: PathFeatures::default(),
+            },
+        ];
+        let w = FeatureWeights::default();
+        assert_eq!(top1_surface(&candidates, &w), "B");
+    }
+
+    #[test]
+    fn weight_distance_is_zero_for_same() {
+        let w = FeatureWeights::from_settings();
+        assert_eq!(weight_distance(&w, &w), 0);
+    }
 }

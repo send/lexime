@@ -796,8 +796,8 @@ fn main() {
 fn print_tune_text(result: &tune::TuneResult) {
     let fmt_weights = |w: &tune::FeatureWeights| {
         format!(
-            "structure={} lv={} te={} sk={}",
-            w.structure, w.length_variance, w.te_kanji, w.single_kanji
+            "lv={} te={} sk={}",
+            w.length_variance, w.te_kanji, w.single_kanji
         )
     };
 
@@ -812,7 +812,6 @@ fn print_tune_text(result: &tune::TuneResult) {
 
     println!();
     println!("=== Best Weights ===");
-    println!("  structure:       {}", result.best.weights.structure);
     println!("  length_variance: {}", result.best.weights.length_variance);
     println!("  te_kanji:        {}", result.best.weights.te_kanji);
     println!("  single_kanji:    {}", result.best.weights.single_kanji);
@@ -820,10 +819,6 @@ fn print_tune_text(result: &tune::TuneResult) {
 
     println!();
     println!("=== Default Weights ===");
-    println!(
-        "  structure:       {}",
-        result.default_eval.weights.structure
-    );
     println!(
         "  length_variance: {}",
         result.default_eval.weights.length_variance

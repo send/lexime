@@ -131,7 +131,6 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::features::extract_features;
     use crate::converter::viterbi::RichSegment;
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, Dictionary, SearchResult};
