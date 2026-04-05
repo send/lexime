@@ -8,12 +8,14 @@
 pub(crate) mod constrained;
 pub(crate) mod cost;
 pub mod explain;
+pub(crate) mod features;
 mod lattice;
 mod postprocess;
 pub(crate) mod reranker;
 mod resegment;
 pub(crate) mod rewriter;
 pub(crate) mod testutil;
+pub mod tune;
 mod viterbi;
 
 #[cfg(test)]

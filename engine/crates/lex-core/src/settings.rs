@@ -99,6 +99,15 @@ pub struct CostSettings {
     pub unknown_word_cost: i16,
 }
 
+/// Default length variance weight (shared with FeatureWeights::default()).
+pub const DEFAULT_LENGTH_VARIANCE_WEIGHT: i64 = 1000;
+/// Default te-form kanji penalty (shared with FeatureWeights::default()).
+pub const DEFAULT_TE_FORM_KANJI_PENALTY: i64 = 2000;
+/// Default single-char kanji penalty (shared with FeatureWeights::default()).
+pub const DEFAULT_SINGLE_CHAR_KANJI_PENALTY: i64 = 0;
+/// Default structure cost transition cap.
+pub const DEFAULT_STRUCTURE_COST_TRANSITION_CAP: i64 = 5000;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
@@ -112,15 +121,15 @@ pub struct RerankerSettings {
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
-    3500
+    DEFAULT_TE_FORM_KANJI_PENALTY
 }
 
 fn default_single_char_kanji_penalty() -> i64 {
-    4000
+    DEFAULT_SINGLE_CHAR_KANJI_PENALTY
 }
 
 fn default_structure_cost_transition_cap() -> i64 {
-    5000
+    DEFAULT_STRUCTURE_COST_TRANSITION_CAP
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -309,10 +318,10 @@ mod tests {
         assert_eq!(s.cost.pure_kanji_bonus, 1000);
         assert_eq!(s.cost.latin_penalty, 20000);
         assert_eq!(s.cost.unknown_word_cost, 10000);
-        assert_eq!(s.reranker.length_variance_weight, 2000);
+        assert_eq!(s.reranker.length_variance_weight, 1000);
         assert_eq!(s.reranker.structure_cost_filter, 6000);
-        assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
-        assert_eq!(s.reranker.single_char_kanji_penalty, 4000);
+        assert_eq!(s.reranker.te_form_kanji_penalty, 2000);
+        assert_eq!(s.reranker.single_char_kanji_penalty, 0);
         assert_eq!(s.reranker.structure_cost_transition_cap, 5000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);

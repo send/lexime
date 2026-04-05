@@ -7,6 +7,7 @@ use crate::user_history::UserHistory;
 use crate::settings::settings;
 
 use super::cost::{conn_cost, script_cost, DefaultCostFunction};
+use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, LatticeNode};
 use super::reranker;
 use super::viterbi::{viterbi_nbest, ScoredPath};
@@ -116,13 +117,23 @@ fn explain_segments(
             } else {
                 None
             };
-            let (te_penalty, sc_penalty) = if let Some(c) = conn {
-                (
-                    reranker::te_form_kanji_penalty(prev_seg, seg, c),
-                    reranker::single_char_kanji_penalty(seg, i, &scored.segments, c, Some(dict)),
-                )
+            let te_penalty = if let Some(c) = conn {
+                if is_te_form_kanji_penalised(seg, prev_seg, c) {
+                    settings().reranker.te_form_kanji_penalty
+                } else {
+                    0
+                }
             } else {
-                (0, 0)
+                0
+            };
+            let sc_penalty = if let Some(c) = conn {
+                if is_single_char_kanji_penalised(seg, i, &scored.segments, c, Some(dict)) {
+                    settings().reranker.single_char_kanji_penalty
+                } else {
+                    0
+                }
+            } else {
+                0
             };
             ExplainSegment {
                 reading: seg.reading.clone(),
