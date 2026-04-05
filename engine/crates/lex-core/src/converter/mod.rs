@@ -15,6 +15,7 @@ pub(crate) mod reranker;
 mod resegment;
 pub(crate) mod rewriter;
 pub(crate) mod testutil;
+pub mod tune;
 mod viterbi;
 
 #[cfg(test)]

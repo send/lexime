@@ -7,6 +7,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
+use lex_core::converter::tune;
 use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
@@ -88,6 +89,28 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
+    },
+
+    /// Grid-search FeatureWeights to optimise conversion accuracy
+    Tune {
+        /// Path to the compiled dictionary file
+        dict_file: String,
+        /// Path to the compiled connection matrix file
+        conn_file: String,
+        /// Path to the accuracy corpus TOML file
+        corpus_file: String,
+        /// Filter by tag (only run cases with this tag)
+        #[arg(long)]
+        tag: Option<String>,
+        /// Filter by category (only run cases in this category)
+        #[arg(long)]
+        category: Option<String>,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// Number of top weight combinations to show
+        #[arg(long, default_value = "10")]
+        top_n: usize,
     },
 
     /// Compare current output against a saved snapshot
@@ -595,6 +618,78 @@ fn main() {
             );
         }
 
+        Command::Tune {
+            dict_file,
+            conn_file,
+            corpus_file,
+            tag,
+            category,
+            json,
+            top_n,
+        } => {
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let conn = conn.expect("connection matrix is required for tune");
+
+            // Load and parse corpus (same as Accuracy)
+            let corpus_content = fs::read_to_string(&corpus_file).unwrap_or_else(|e| {
+                eprintln!("Failed to read corpus file {}: {}", corpus_file, e);
+                process::exit(1);
+            });
+            let corpus: AccuracyCorpus = toml::from_str(&corpus_content).unwrap_or_else(|e| {
+                eprintln!("Failed to parse corpus TOML: {}", e);
+                process::exit(1);
+            });
+
+            // Filter and collect non-skip cases
+            let cases: Vec<(String, String)> = corpus
+                .cases
+                .iter()
+                .filter(|c| {
+                    if c.skip {
+                        return false;
+                    }
+                    if let Some(ref t) = tag {
+                        if !c.tags.contains(t) {
+                            return false;
+                        }
+                    }
+                    if let Some(ref cat) = category {
+                        if c.category != *cat {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .map(|c| (c.reading.clone(), c.expected.clone()))
+                .collect();
+
+            if cases.is_empty() {
+                eprintln!("No cases match the given filters");
+                process::exit(1);
+            }
+
+            let grid = tune::WeightGrid::default();
+            let combos = grid.total_combinations();
+
+            eprint!("Pre-computing candidates for {} cases... ", cases.len());
+            let tune_cases = tune::precompute_cases(&dict, &conn, &cases);
+            eprintln!("done");
+
+            eprint!(
+                "Grid search: {} combinations x {} cases... ",
+                combos,
+                cases.len()
+            );
+            let result = tune::grid_search(&tune_cases, &grid, top_n);
+            eprintln!("done");
+
+            if json {
+                print_tune_json(&result);
+            } else {
+                print_tune_text(&result);
+            }
+        }
+
         Command::DiffSnapshot {
             dict_file,
             conn_file,
@@ -696,4 +791,177 @@ fn main() {
             }
         }
     }
+}
+
+fn print_tune_text(result: &tune::TuneResult) {
+    let fmt_weights = |w: &tune::FeatureWeights| {
+        format!(
+            "structure={} lv={} te={} sk={}",
+            w.structure, w.length_variance, w.te_kanji, w.single_kanji
+        )
+    };
+
+    let fmt_rate = |e: &tune::TuneEval| {
+        let rate = if e.total > 0 {
+            e.pass_count as f64 / e.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        format!("{:.1}% ({}/{})", rate, e.pass_count, e.total)
+    };
+
+    println!();
+    println!("=== Best Weights ===");
+    println!("  structure:       {}", result.best.weights.structure);
+    println!("  length_variance: {}", result.best.weights.length_variance);
+    println!("  te_kanji:        {}", result.best.weights.te_kanji);
+    println!("  single_kanji:    {}", result.best.weights.single_kanji);
+    println!("  Pass rate: {}", fmt_rate(&result.best));
+
+    println!();
+    println!("=== Default Weights ===");
+    println!(
+        "  structure:       {}",
+        result.default_eval.weights.structure
+    );
+    println!(
+        "  length_variance: {}",
+        result.default_eval.weights.length_variance
+    );
+    println!(
+        "  te_kanji:        {}",
+        result.default_eval.weights.te_kanji
+    );
+    println!(
+        "  single_kanji:    {}",
+        result.default_eval.weights.single_kanji
+    );
+    println!("  Pass rate: {}", fmt_rate(&result.default_eval));
+
+    if !result.diffs.is_empty() {
+        let improvements: Vec<_> = result
+            .diffs
+            .iter()
+            .filter(|d| d.best_pass && !d.default_pass)
+            .collect();
+        let regressions: Vec<_> = result
+            .diffs
+            .iter()
+            .filter(|d| !d.best_pass && d.default_pass)
+            .collect();
+        let other: Vec<_> = result
+            .diffs
+            .iter()
+            .filter(|d| d.best_pass == d.default_pass)
+            .collect();
+
+        if !improvements.is_empty() {
+            println!();
+            println!("=== Improvements (default -> best) ===");
+            for d in &improvements {
+                println!(
+                    "  + {}: {} (was: {})",
+                    d.reading, d.expected, d.default_top1
+                );
+            }
+        }
+
+        if !regressions.is_empty() {
+            println!();
+            println!("=== Regressions (default -> best) ===");
+            for d in &regressions {
+                println!("  - {}: {} -> {}", d.reading, d.expected, d.best_top1);
+            }
+        }
+
+        if !other.is_empty() {
+            println!();
+            println!("=== Other changes ===");
+            for d in &other {
+                println!(
+                    "  ~ {}: {} -> {} (expected: {})",
+                    d.reading, d.default_top1, d.best_top1, d.expected
+                );
+            }
+        }
+    }
+
+    if !result.best_failures.is_empty() {
+        println!();
+        println!("=== Failures (best weights) ===");
+        for f in &result.best_failures {
+            println!(
+                "  \u{2717} {} \u{2192} {} (got: {})",
+                f.reading, f.expected, f.actual
+            );
+        }
+    }
+
+    if result.top_n.len() > 1 {
+        println!();
+        println!("=== Top {} Weight Combinations ===", result.top_n.len());
+        for (i, e) in result.top_n.iter().enumerate() {
+            println!(
+                "  #{:<2} {}  {}",
+                i + 1,
+                fmt_rate(e),
+                fmt_weights(&e.weights)
+            );
+        }
+    }
+}
+
+fn print_tune_json(result: &tune::TuneResult) {
+    let weight_json = |w: &tune::FeatureWeights| -> serde_json::Value {
+        serde_json::json!({
+            "structure": w.structure,
+            "length_variance": w.length_variance,
+            "te_kanji": w.te_kanji,
+            "single_kanji": w.single_kanji,
+            "script": w.script,
+        })
+    };
+
+    let eval_json = |e: &tune::TuneEval| -> serde_json::Value {
+        let rate = if e.total > 0 {
+            e.pass_count as f64 / e.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "weights": weight_json(&e.weights),
+            "pass_count": e.pass_count,
+            "total": e.total,
+            "pass_rate": format!("{:.1}%", rate),
+        })
+    };
+
+    let diffs: Vec<serde_json::Value> = result
+        .diffs
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "reading": d.reading,
+                "expected": d.expected,
+                "default_top1": d.default_top1,
+                "best_top1": d.best_top1,
+                "default_pass": d.default_pass,
+                "best_pass": d.best_pass,
+            })
+        })
+        .collect();
+
+    let top_n: Vec<serde_json::Value> = result.top_n.iter().map(eval_json).collect();
+
+    let report = serde_json::json!({
+        "best": eval_json(&result.best),
+        "default": eval_json(&result.default_eval),
+        "diffs": diffs,
+        "top_n": top_n,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("JSON serialization failed")
+    );
 }
