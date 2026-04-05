@@ -78,9 +78,12 @@ pub fn rerank(
 
     // Step 3: Feature extraction + weighted cost adjustment.
     // Pass pre-computed structure_cost to avoid recomputing transition costs.
+    // Skip dictionary lookups when per-segment penalties are both zero.
     let weights = FeatureWeights::from_settings();
+    let need_dict = weights.te_kanji != 0 || weights.single_kanji != 0;
+    let dict_for_features = if need_dict { dict } else { None };
     for (path, &sc) in paths.iter_mut().zip(kept_sc.iter()) {
-        let features = extract_features(path, conn, dict, cap, prefix_floor, Some(sc));
+        let features = extract_features(path, conn, dict_for_features, cap, prefix_floor, Some(sc));
         path.viterbi_cost += features.weighted_cost(&weights);
     }
 
