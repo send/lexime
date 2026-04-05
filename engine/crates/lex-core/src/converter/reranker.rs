@@ -3,59 +3,11 @@ use tracing::{debug, debug_span};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::settings::settings;
-use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
-use super::cost::{conn_cost, script_cost};
-use super::viterbi::{RichSegment, ScoredPath};
-
-/// Te-form kanji penalty for a segment that follows て/で.
-/// `prev` is the preceding segment (None for the first segment).
-pub(super) fn te_form_kanji_penalty(
-    prev: Option<&RichSegment>,
-    curr: &RichSegment,
-    conn: &ConnectionMatrix,
-) -> i64 {
-    if let Some(prev) = prev {
-        if conn.is_function_word(prev.left_id)
-            && (prev.surface == "て" || prev.surface == "で")
-            && curr.surface.chars().any(is_kanji)
-        {
-            return settings().reranker.te_form_kanji_penalty;
-        }
-    }
-    0
-}
-
-/// Single-char kanji content-word penalty with dictionary compound exemption.
-pub(super) fn single_char_kanji_penalty(
-    seg: &RichSegment,
-    idx: usize,
-    segments: &[RichSegment],
-    conn: &ConnectionMatrix,
-    dict: Option<&dyn Dictionary>,
-) -> i64 {
-    if seg.reading.chars().count() != 1
-        || !seg.surface.chars().any(is_kanji)
-        || conn.role(seg.left_id) != 0
-    {
-        return 0;
-    }
-    let exempt = dict.is_some_and(|d| {
-        let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
-            let reading = format!("{}{}", a.reading, b.reading);
-            let surface = format!("{}{}", a.surface, b.surface);
-            d.lookup(&reading).iter().any(|e| e.surface == surface)
-        };
-        (idx > 0 && has_compound(&segments[idx - 1], seg))
-            || (idx + 1 < segments.len() && has_compound(seg, &segments[idx + 1]))
-    });
-    if exempt {
-        0
-    } else {
-        settings().reranker.single_char_kanji_penalty
-    }
-}
+use super::cost::conn_cost;
+use super::features::{extract_features, FeatureWeights};
+use super::viterbi::ScoredPath;
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
@@ -87,7 +39,7 @@ pub fn rerank(
     // the hard filter drops correct multi-segment paths like 今|です|ね.
     let cap = settings().reranker.structure_cost_transition_cap;
     let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
-    let mut structure_costs: Vec<i64> = paths
+    let structure_costs: Vec<i64> = paths
         .iter()
         .map(|p| {
             let mut sc: i64 = 0;
@@ -126,85 +78,18 @@ pub fn rerank(
     let threshold = min_sc + filter;
     {
         let mut i = 0;
-        let mut kept_costs = Vec::new();
         paths.retain(|_| {
             let keep = structure_costs[i] <= threshold;
-            if keep {
-                kept_costs.push(structure_costs[i]);
-            }
             i += 1;
             keep
         });
-        structure_costs = kept_costs;
     }
 
-    // Step 3: Soft penalty + length variance + script cost
-    // Reuse pre-computed structure costs (aligned with paths after filter).
-    for (path, &structure_cost) in paths.iter_mut().zip(structure_costs.iter()) {
-        // Add 25% of structure cost as penalty — enough to differentiate
-        // fragmented paths without dominating the Viterbi cost.
-        path.viterbi_cost += structure_cost / 4;
-
-        // Length variance penalty: for paths with 3+ segments, penalise
-        // uneven reading lengths. 2-segment paths are exempt because
-        // "long content word + short particle" is natural Japanese.
-        // Computed as sum-of-squared-deviations from the mean, scaled
-        // by LENGTH_VARIANCE_WEIGHT / N.
-        //
-        // Function-word segments (particles like は, が) and single-char
-        // reading segments are excluded from the variance calculation —
-        // they are naturally short and should not penalise an otherwise
-        // uniform segmentation.  Single-char readings cover verb inflection
-        // pieces (し, き, け …) whose POS IDs may fall outside the FW range.
-        let n = path.segments.len();
-        if n >= 3 {
-            let lengths: Vec<i64> = path
-                .segments
-                .iter()
-                .filter_map(|s| {
-                    let len = s.reading.chars().count() as i64;
-                    if len > 1 && !conn.is_some_and(|c| c.is_function_word(s.left_id)) {
-                        Some(len)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let n_var = lengths.len();
-            if n_var >= 2 {
-                let sum: i64 = lengths.iter().sum();
-                // sum_sq_dev = Σ (len_i - mean)² × N  (multiplied through to stay in integers)
-                //            = N × Σ len_i² - (Σ len_i)²
-                let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
-                let n_i64 = n_var as i64;
-                let sum_sq_dev = n_i64 * sum_sq - sum * sum;
-                // Divide by N² to get the true variance-based penalty:
-                // penalty = (sum_sq_dev / N) * WEIGHT / N = sum_sq_dev * WEIGHT / N²
-                path.viterbi_cost +=
-                    sum_sq_dev * settings().reranker.length_variance_weight / (n_i64 * n_i64);
-            }
-        }
-
-        // Script cost: penalise katakana / Latin surfaces, reward kanji+kana.
-        let total_script: i64 = path
-            .segments
-            .iter()
-            .map(|s| script_cost(&s.surface, s.reading.chars().count()))
-            .sum();
-        path.viterbi_cost += total_script;
-
-        // Per-segment penalties: te-form kanji, single-char kanji content-word.
-        if let Some(conn) = conn {
-            for (i, seg) in path.segments.iter().enumerate() {
-                let prev = if i > 0 {
-                    Some(&path.segments[i - 1])
-                } else {
-                    None
-                };
-                path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
-                path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
-            }
-        }
+    // Step 3: Feature extraction + weighted cost adjustment.
+    let weights = FeatureWeights::from_settings();
+    for path in paths.iter_mut() {
+        let features = extract_features(path, conn, dict, cap, prefix_floor);
+        path.viterbi_cost += features.weighted_cost(&weights);
     }
 
     paths.sort_by_key(|p| p.viterbi_cost);

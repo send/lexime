@@ -8,6 +8,7 @@
 pub(crate) mod constrained;
 pub(crate) mod cost;
 pub mod explain;
+pub(crate) mod features;
 mod lattice;
 mod postprocess;
 pub(crate) mod reranker;
