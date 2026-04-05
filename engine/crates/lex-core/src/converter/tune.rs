@@ -201,16 +201,15 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
 
     // Grid search — only track pass counts (cheap).
     // structure and script are fixed (compile-time constants in from_settings).
-    let base = FeatureWeights::from_settings();
     let mut evals: Vec<TuneEval> = Vec::with_capacity(grid.total_combinations());
 
     for &lv in &grid.length_variance {
         for &te in &grid.te_kanji {
             for &sk in &grid.single_kanji {
                 let w = FeatureWeights {
-                    structure: base.structure,
+                    structure: default_weights.structure,
                     length_variance: lv,
-                    script: base.script,
+                    script: default_weights.script,
                     te_kanji: te,
                     single_kanji: sk,
                 };
