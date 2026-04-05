@@ -79,14 +79,23 @@ impl Default for FeatureWeights {
     }
 }
 
+/// Structure weight is fixed at 0 (grid search found structure_cost
+/// adds noise rather than signal at the reranker stage).
+const STRUCTURE_WEIGHT: i64 = 0;
+/// Script weight is fixed at 100 (= 100% of raw script cost, no scaling).
+const SCRIPT_WEIGHT: i64 = 100;
+
 impl FeatureWeights {
-    /// Load weights from the current settings.
+    /// Build weights from settings + fixed constants.
+    ///
+    /// `structure` and `script` are compile-time constants (not in settings)
+    /// because grid search showed no benefit from varying them.
     pub fn from_settings() -> Self {
         let s = crate::settings::settings();
         Self {
-            structure: 0,
+            structure: STRUCTURE_WEIGHT,
             length_variance: s.reranker.length_variance_weight,
-            script: 100,
+            script: SCRIPT_WEIGHT,
             te_kanji: s.reranker.te_form_kanji_penalty,
             single_kanji: s.reranker.single_char_kanji_penalty,
         }
@@ -122,17 +131,17 @@ pub fn is_single_char_kanji_penalised(
     !exempt
 }
 
-/// Extract features from a path.
-pub fn extract_features(
+/// Compute capped structure cost for a path (sum of capped transition costs).
+///
+/// This is used by the reranker hard filter and can be passed into
+/// `extract_features` via `precomputed_structure_cost` to avoid recomputation.
+pub fn compute_structure_cost(
     path: &ScoredPath,
     conn: Option<&ConnectionMatrix>,
-    dict: Option<&dyn Dictionary>,
-    structure_cap: i64,
+    cap: i64,
     prefix_floor: i64,
-) -> PathFeatures {
-    let mut f = PathFeatures::default();
-
-    // Structure cost
+) -> i64 {
+    let mut sc: i64 = 0;
     for i in 1..path.segments.len() {
         let mut tc = conn_cost(
             conn,
@@ -144,8 +153,29 @@ pub fn extract_features(
                 tc = tc.max(prefix_floor);
             }
         }
-        f.structure_cost += tc.min(structure_cap);
+        sc += tc.min(cap);
     }
+    sc
+}
+
+/// Extract features from a path.
+///
+/// If `precomputed_structure_cost` is `Some`, reuses the value instead of
+/// recomputing the transition-cost sum (an optimisation for the reranker
+/// which already computes it for the hard filter).
+pub fn extract_features(
+    path: &ScoredPath,
+    conn: Option<&ConnectionMatrix>,
+    dict: Option<&dyn Dictionary>,
+    structure_cap: i64,
+    prefix_floor: i64,
+    precomputed_structure_cost: Option<i64>,
+) -> PathFeatures {
+    let mut f = PathFeatures {
+        structure_cost: precomputed_structure_cost
+            .unwrap_or_else(|| compute_structure_cost(path, conn, structure_cap, prefix_floor)),
+        ..Default::default()
+    };
 
     // Length variance (excluding FW and single-char segments)
     if path.segments.len() >= 3 {

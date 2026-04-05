@@ -5,8 +5,7 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::cost::conn_cost;
-use super::features::{extract_features, FeatureWeights};
+use super::features::{compute_structure_cost, extract_features, FeatureWeights};
 use super::viterbi::ScoredPath;
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
@@ -41,19 +40,7 @@ pub fn rerank(
     let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
     let structure_costs: Vec<i64> = paths
         .iter()
-        .map(|p| {
-            let mut sc: i64 = 0;
-            for i in 1..p.segments.len() {
-                let mut tc = conn_cost(conn, p.segments[i - 1].right_id, p.segments[i].left_id);
-                if let Some(c) = conn {
-                    if c.is_prefix(p.segments[i - 1].right_id) {
-                        tc = tc.max(prefix_floor);
-                    }
-                }
-                sc += tc.min(cap);
-            }
-            sc
-        })
+        .map(|p| compute_structure_cost(p, conn, cap, prefix_floor))
         .collect();
 
     // Step 2: Hard filter — drop paths exceeding min + threshold.
@@ -76,19 +63,24 @@ pub fn rerank(
         .min()
         .expect("paths guaranteed non-empty after early return");
     let threshold = min_sc + filter;
+    let mut kept_sc: Vec<i64> = Vec::new();
     {
         let mut i = 0;
         paths.retain(|_| {
             let keep = structure_costs[i] <= threshold;
+            if keep {
+                kept_sc.push(structure_costs[i]);
+            }
             i += 1;
             keep
         });
     }
 
     // Step 3: Feature extraction + weighted cost adjustment.
+    // Pass pre-computed structure_cost to avoid recomputing transition costs.
     let weights = FeatureWeights::from_settings();
-    for path in paths.iter_mut() {
-        let features = extract_features(path, conn, dict, cap, prefix_floor);
+    for (path, &sc) in paths.iter_mut().zip(kept_sc.iter()) {
+        let features = extract_features(path, conn, dict, cap, prefix_floor, Some(sc));
         path.viterbi_cost += features.weighted_cost(&weights);
     }
 
@@ -482,7 +474,7 @@ mod tests {
 
         // CW single-char kanji — should count
         let cw_path = path(vec![seg("ね", "根", 1)], 100);
-        let cw_features = extract_features(&cw_path, Some(&conn), None, cap, prefix_floor);
+        let cw_features = extract_features(&cw_path, Some(&conn), None, cap, prefix_floor, None);
         assert_eq!(
             cw_features.single_kanji_count, 1,
             "CW single-char kanji should be counted"
@@ -490,7 +482,7 @@ mod tests {
 
         // FW single-char — should NOT count (role checked)
         let fw_path = path(vec![seg("ね", "根", 2)], 100); // FW POS
-        let fw_features = extract_features(&fw_path, Some(&conn), None, cap, prefix_floor);
+        let fw_features = extract_features(&fw_path, Some(&conn), None, cap, prefix_floor, None);
         assert_eq!(
             fw_features.single_kanji_count, 0,
             "FW should not trigger single-char kanji feature"
@@ -537,7 +529,7 @@ mod tests {
 
         // "は" (FW, not て/で) + "見る" (kanji) — should NOT trigger te-form
         let ha_path = path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100);
-        let ha_features = extract_features(&ha_path, Some(&conn), None, cap, prefix_floor);
+        let ha_features = extract_features(&ha_path, Some(&conn), None, cap, prefix_floor, None);
         assert_eq!(
             ha_features.te_kanji_count, 0,
             "は is not て/で — no te-form kanji"
@@ -545,7 +537,7 @@ mod tests {
 
         // "で" (FW, て/で) + "見る" (kanji) — should trigger te-form
         let de_path = path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100);
-        let de_features = extract_features(&de_path, Some(&conn), None, cap, prefix_floor);
+        let de_features = extract_features(&de_path, Some(&conn), None, cap, prefix_floor, None);
         assert_eq!(
             de_features.te_kanji_count, 1,
             "で + kanji should trigger te-form"

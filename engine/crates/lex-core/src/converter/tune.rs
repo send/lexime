@@ -137,7 +137,7 @@ pub fn precompute_cases(
             let mut paired: Vec<(ScoredPath, PathFeatures)> = paths
                 .into_iter()
                 .map(|p| {
-                    let f = extract_features(&p, Some(conn), Some(dict), cap, prefix_floor);
+                    let f = extract_features(&p, Some(conn), Some(dict), cap, prefix_floor, None);
                     (p, f)
                 })
                 .collect();
@@ -228,8 +228,14 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
         }
     }
 
-    // Sort by pass_count descending; fall back to default if grid is empty.
-    evals.sort_by(|a, b| b.pass_count.cmp(&a.pass_count));
+    // Sort by pass_count descending, tie-break by distance from default
+    // (prefer weights closer to defaults for stability).
+    let defaults = FeatureWeights::default();
+    evals.sort_by(|a, b| {
+        b.pass_count.cmp(&a.pass_count).then_with(|| {
+            weight_distance(&a.weights, &defaults).cmp(&weight_distance(&b.weights, &defaults))
+        })
+    });
 
     let best = evals.first().cloned().unwrap_or(default_eval.clone());
 
@@ -283,6 +289,14 @@ fn top1_surface<'a>(candidates: &'a [TuneCandidate], weights: &FeatureWeights) -
         .min_by_key(|c| c.base_cost + c.features.weighted_cost(weights))
         .map(|c| c.surface.as_str())
         .unwrap_or("")
+}
+
+/// Sum of absolute differences from a reference weight set (L1 distance).
+fn weight_distance(a: &FeatureWeights, b: &FeatureWeights) -> i64 {
+    (a.structure - b.structure).abs()
+        + (a.length_variance - b.length_variance).abs()
+        + (a.te_kanji - b.te_kanji).abs()
+        + (a.single_kanji - b.single_kanji).abs()
 }
 
 /// Compute per-case diffs between two sets of top-1 surfaces.
