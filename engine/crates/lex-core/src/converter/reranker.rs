@@ -139,6 +139,7 @@ pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::converter::features::extract_features;
     use crate::converter::viterbi::RichSegment;
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, Dictionary, SearchResult};
@@ -180,18 +181,49 @@ mod tests {
         // ID 2 = function word (fw_min=2, fw_max=2), ID 1 = content word
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
 
-        // Path A: で + 見る (kanji after て/で FW) — penalty applied
-        // Path B: で + みる (hiragana after て/で FW) — no penalty
-        let mut paths = vec![
+        // Path A: で + 見る (kanji after て/で FW) — te_kanji penalty applied
+        // Path B: で + みる (hiragana after て/で FW) — no te_kanji penalty
+        // Both start at cost=100.  After rerank the kanji path gets a
+        // te_kanji penalty.  The script bonus for kanji may offset it, so we
+        // only assert the cost *delta* equals the configured penalty.
+        let mut with_kanji = vec![
             path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100),
+            path(vec![seg("で", "で", 2), seg("みる", "みる", 1)], 99999), // dummy
+        ];
+        let mut without_kanji = vec![
             path(vec![seg("で", "で", 2), seg("みる", "みる", 1)], 100),
+            path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 99999), // dummy
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut with_kanji, Some(&conn), None);
+        rerank(&mut without_kanji, Some(&conn), None);
 
-        assert_eq!(paths[0].segments[1].surface, "みる");
-        assert_eq!(paths[1].segments[1].surface, "見る");
-        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
+        let kanji_cost = with_kanji
+            .iter()
+            .find(|p| p.segments[1].surface == "見る")
+            .unwrap()
+            .viterbi_cost;
+        // Compare against a non-te baseline (は instead of で) to isolate
+        // the te_penalty amount from the script cost difference.
+        let te_penalty = settings().reranker.te_form_kanji_penalty;
+        let mut baseline_kanji = vec![
+            path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
+            path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 99999),
+        ];
+        rerank(&mut baseline_kanji, Some(&conn), None);
+        let baseline_kanji_cost = baseline_kanji
+            .iter()
+            .find(|p| p.segments[1].surface == "見る")
+            .unwrap()
+            .viterbi_cost;
+
+        // te_penalty = (cost with te-form context) - (cost without te-form context)
+        let actual_te_delta = kanji_cost - baseline_kanji_cost;
+        assert_eq!(
+            actual_te_delta, te_penalty,
+            "te-form kanji penalty should add exactly {} to cost",
+            te_penalty
+        );
     }
 
     #[test]
@@ -440,30 +472,28 @@ mod tests {
     }
 
     #[test]
-    fn single_char_kanji_penalty_not_applied_to_function_word() {
-        // ID 1 = content word (role 0), ID 2 = function word
-        let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+    fn single_char_kanji_feature_not_counted_for_function_word() {
+        // Verify that single-char kanji feature count is 0 for FW segments
+        // regardless of the configured penalty weight.
+        // ID 2 has role=1 (FW) so extract_features skips it (role != 0).
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 1], 2, 2);
+        let cap = settings().reranker.structure_cost_transition_cap;
+        let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
 
-        // "は" (hiragana) with FW POS — no penalty even if it were kanji
-        // "ね" (hiragana) with CW POS — would get penalty if kanji
-        let mut paths = vec![
-            path(vec![seg("ね", "根", 1)], 100), // CW, kanji → penalty
-            path(vec![seg("ね", "ね", 2)], 100), // FW → no penalty
-        ];
+        // CW single-char kanji — should count
+        let cw_path = path(vec![seg("ね", "根", 1)], 100);
+        let cw_features = extract_features(&cw_path, Some(&conn), None, cap, prefix_floor);
+        assert_eq!(
+            cw_features.single_kanji_count, 1,
+            "CW single-char kanji should be counted"
+        );
 
-        rerank(&mut paths, Some(&conn), None);
-
-        let fw_path = paths
-            .iter()
-            .find(|p| p.segments[0].surface == "ね")
-            .unwrap();
-        let cw_path = paths
-            .iter()
-            .find(|p| p.segments[0].surface == "根")
-            .unwrap();
-        assert!(
-            cw_path.viterbi_cost > fw_path.viterbi_cost,
-            "function word should not get single-char kanji penalty"
+        // FW single-char — should NOT count (role checked)
+        let fw_path = path(vec![seg("ね", "根", 2)], 100); // FW POS
+        let fw_features = extract_features(&fw_path, Some(&conn), None, cap, prefix_floor);
+        assert_eq!(
+            fw_features.single_kanji_count, 0,
+            "FW should not trigger single-char kanji feature"
         );
     }
 
@@ -499,24 +529,26 @@ mod tests {
     }
 
     #[test]
-    fn te_form_kanji_penalty_not_applied_to_non_te_function_word() {
-        // ID 2 = function word (fw_min=2, fw_max=2), ID 1 = content word
+    fn te_form_kanji_feature_not_counted_for_non_te_function_word() {
+        // Verify that te_kanji_count is 0 when the preceding FW is not て/で.
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
+        let cap = settings().reranker.structure_cost_transition_cap;
+        let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
 
-        // "は" is a function word but not て/で — no te-form penalty
-        let mut paths = vec![
-            path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
-            path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 100),
-        ];
+        // "は" (FW, not て/で) + "見る" (kanji) — should NOT trigger te-form
+        let ha_path = path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100);
+        let ha_features = extract_features(&ha_path, Some(&conn), None, cap, prefix_floor);
+        assert_eq!(
+            ha_features.te_kanji_count, 0,
+            "は is not て/で — no te-form kanji"
+        );
 
-        rerank(&mut paths, Some(&conn), None);
-
-        let te_penalty = settings().reranker.te_form_kanji_penalty;
-        let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
-        assert!(
-            cost_diff < te_penalty,
-            "no te-form penalty should be applied for non-te FW: diff = {}",
-            cost_diff
+        // "で" (FW, て/で) + "見る" (kanji) — should trigger te-form
+        let de_path = path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100);
+        let de_features = extract_features(&de_path, Some(&conn), None, cap, prefix_floor);
+        assert_eq!(
+            de_features.te_kanji_count, 1,
+            "で + kanji should trigger te-form"
         );
     }
 }

@@ -309,10 +309,10 @@ mod tests {
         assert_eq!(s.cost.pure_kanji_bonus, 1000);
         assert_eq!(s.cost.latin_penalty, 20000);
         assert_eq!(s.cost.unknown_word_cost, 10000);
-        assert_eq!(s.reranker.length_variance_weight, 2000);
+        assert_eq!(s.reranker.length_variance_weight, 1000);
         assert_eq!(s.reranker.structure_cost_filter, 6000);
-        assert_eq!(s.reranker.te_form_kanji_penalty, 3500);
-        assert_eq!(s.reranker.single_char_kanji_penalty, 4000);
+        assert_eq!(s.reranker.te_form_kanji_penalty, 2000);
+        assert_eq!(s.reranker.single_char_kanji_penalty, 0);
         assert_eq!(s.reranker.structure_cost_transition_cap, 5000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);

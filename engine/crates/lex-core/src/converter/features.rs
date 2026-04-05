@@ -71,11 +71,11 @@ pub struct FeatureWeights {
 impl Default for FeatureWeights {
     fn default() -> Self {
         Self {
-            structure: 25,
-            length_variance: 2000,
+            structure: 0,
+            length_variance: 1000,
             script: 100,
-            te_kanji: 3500,
-            single_kanji: 4000,
+            te_kanji: 2000,
+            single_kanji: 0,
         }
     }
 }
@@ -85,7 +85,7 @@ impl FeatureWeights {
     pub fn from_settings() -> Self {
         let s = crate::settings::settings();
         Self {
-            structure: 25, // structure_cost / 4 = * 25 / 100
+            structure: 0,
             length_variance: s.reranker.length_variance_weight,
             script: 100,
             te_kanji: s.reranker.te_form_kanji_penalty,
