@@ -32,6 +32,7 @@ pub fn fetch(source_name: &str, output_dir: &str) {
 /// Cost offsets applied at dictionary compile time to eliminate reranker heuristics.
 const PERSON_NAME_COST_OFFSET: i16 = 2000;
 const PRONOUN_COST_OFFSET: i16 = -3500;
+const NON_INDEPENDENT_KANJI_COST_OFFSET: i16 = 1500;
 
 pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Option<&str>) {
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
@@ -64,13 +65,18 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
                 let offset = match role {
                     pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
                     pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
+                    pos_map::ROLE_NON_INDEPENDENT
+                        if entry.surface.chars().any(lex_core::unicode::is_kanji) =>
+                    {
+                        NON_INDEPENDENT_KANJI_COST_OFFSET
+                    }
                     _ => continue,
                 };
                 entry.cost = entry.cost.saturating_add(offset);
                 adjusted += 1;
             }
         }
-        eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET})");
+        eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
     }
 
     let reading_count = entries.len();

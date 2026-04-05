@@ -9,16 +9,6 @@ use crate::user_history::UserHistory;
 use super::cost::{conn_cost, script_cost};
 use super::viterbi::{RichSegment, ScoredPath};
 
-/// Non-independent kanji penalty for a segment.
-/// Returns penalty (> 0) if the segment is non-independent (形式名詞/補助動詞) with kanji surface.
-pub(super) fn non_independent_kanji_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_non_independent(seg.left_id) && seg.surface.chars().any(is_kanji) {
-        settings().reranker.non_independent_kanji_penalty
-    } else {
-        0
-    }
-}
-
 /// Te-form kanji penalty for a segment that follows て/で.
 /// `prev` is the preceding segment (None for the first segment).
 pub(super) fn te_form_kanji_penalty(
@@ -212,7 +202,6 @@ pub fn rerank(
                 } else {
                     None
                 };
-                path.viterbi_cost += non_independent_kanji_penalty(seg, conn);
                 path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
                 path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
             }
@@ -294,57 +283,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn non_independent_kanji_penalty_applied() {
-        // ID 2 = non-independent (role 4), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 4];
-        let conn = conn_with_roles(roles);
-
-        // Path A: こと (hiragana, non-independent) — no penalty
-        // Path B: 事 (kanji, non-independent) — penalty applied
-        let mut paths = vec![
-            path(vec![seg("こと", "事", 2)], 100),
-            path(vec![seg("こと", "こと", 2)], 100),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The hiragana path should rank higher (lower cost)
-        assert_eq!(paths[0].segments[0].surface, "こと");
-        assert_eq!(paths[1].segments[0].surface, "事");
-        assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
-    }
-
     /// Build a minimal ConnectionMatrix with the given roles vector and
     /// function-word ID range.
     fn conn_with_roles_and_fw(roles: Vec<u8>, fw_min: u16, fw_max: u16) -> ConnectionMatrix {
         let num_ids = roles.len() as u16;
         let costs = vec![0i16; num_ids as usize * num_ids as usize];
         ConnectionMatrix::new_owned(num_ids, fw_min, fw_max, roles, costs)
-    }
-
-    #[test]
-    fn non_independent_kanji_penalty_not_applied_to_content_words() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
-
-        // Both paths use content word IDs — no non-independent penalty
-        let mut paths = vec![
-            path(vec![seg("こと", "事", 1)], 100),
-            path(vec![seg("こと", "こと", 1)], 100),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // Costs should differ only by script cost, not by non-independent penalty
-        let penalty = settings().reranker.non_independent_kanji_penalty;
-        let cost_diff = (paths[1].viterbi_cost - paths[0].viterbi_cost).abs();
-        assert!(
-            cost_diff < penalty,
-            "no non-independent penalty should be applied: diff = {}",
-            cost_diff
-        );
     }
 
     #[test]

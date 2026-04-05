@@ -9,7 +9,6 @@ unknown_word_cost = 10000
 [reranker]
 length_variance_weight = 2000
 structure_cost_filter = 6000
-non_independent_kanji_penalty = 1500
 te_form_kanji_penalty = 3500
 single_char_kanji_penalty = 4000
 structure_cost_transition_cap = 5000
