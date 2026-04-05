@@ -52,8 +52,18 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
         "Error parsing dictionary: {}"
     );
 
-    // Apply compile-time cost offsets based on morpheme roles
-    if let Some(id_def_path) = id_def {
+    // Apply compile-time cost offsets based on morpheme roles.
+    // Auto-detect id.def in input_dir if --id-def is not specified.
+    let id_def_resolved = id_def.map(|s| s.to_string()).or_else(|| {
+        let auto = input_path.join("id.def");
+        if auto.is_file() {
+            eprintln!("Auto-detected id.def at {}", auto.display());
+            Some(auto.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    });
+    if let Some(id_def_path) = &id_def_resolved {
         let roles = die!(
             pos_map::morpheme_roles(Path::new(id_def_path)),
             "Error loading morpheme roles: {}"
@@ -61,7 +71,17 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
         let mut adjusted = 0usize;
         for entries in entries.values_mut() {
             for entry in entries.iter_mut() {
-                let role = roles.get(entry.left_id as usize).copied().unwrap_or(0);
+                let id = entry.left_id as usize;
+                if id >= roles.len() {
+                    eprintln!(
+                        "Warning: left_id {} out of roles table range ({}), skipping entry '{}'",
+                        id,
+                        roles.len(),
+                        entry.surface
+                    );
+                    continue;
+                }
+                let role = roles[id];
                 let offset = match role {
                     pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
                     pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
