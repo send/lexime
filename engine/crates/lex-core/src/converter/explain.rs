@@ -2,13 +2,12 @@ use serde::Serialize;
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
-use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
 use crate::settings::settings;
 
 use super::cost::{conn_cost, script_cost, DefaultCostFunction};
-use super::features::is_single_char_kanji_penalised;
+use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, LatticeNode};
 use super::reranker;
 use super::viterbi::{viterbi_nbest, ScoredPath};
@@ -118,18 +117,9 @@ fn explain_segments(
             } else {
                 None
             };
-            // Per-segment penalties: te_form and single_char are path-level
-            // features, so we inline the per-segment check here for display.
             let te_penalty = if let Some(c) = conn {
-                if let Some(prev) = prev_seg {
-                    if c.is_function_word(prev.left_id)
-                        && (prev.surface == "て" || prev.surface == "で")
-                        && seg.surface.chars().any(is_kanji)
-                    {
-                        settings().reranker.te_form_kanji_penalty
-                    } else {
-                        0
-                    }
+                if is_te_form_kanji_penalised(seg, prev_seg, c) {
+                    settings().reranker.te_form_kanji_penalty
                 } else {
                     0
                 }

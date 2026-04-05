@@ -194,8 +194,8 @@ fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64, 
 
 /// Evaluate all weight combinations and return the best result.
 pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneResult {
-    // Evaluate default weights first
-    let default_weights = FeatureWeights::default();
+    // Evaluate current production weights as the baseline
+    let default_weights = FeatureWeights::from_settings();
     let default_pass = count_passes(cases, &default_weights);
     let default_eval = TuneEval {
         weights: default_weights.clone(),
@@ -228,12 +228,12 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
         }
     }
 
-    // Sort by pass_count descending, tie-break by distance from default
-    // (prefer weights closer to defaults for stability).
-    let defaults = FeatureWeights::default();
+    // Sort by pass_count descending, tie-break by distance from production
+    // weights (prefer weights closer to current settings for stability).
+    let defaults = &default_weights;
     evals.sort_by(|a, b| {
         b.pass_count.cmp(&a.pass_count).then_with(|| {
-            weight_distance(&a.weights, &defaults).cmp(&weight_distance(&b.weights, &defaults))
+            weight_distance(&a.weights, defaults).cmp(&weight_distance(&b.weights, defaults))
         })
     });
 

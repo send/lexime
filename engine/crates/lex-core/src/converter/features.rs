@@ -102,6 +102,24 @@ impl FeatureWeights {
     }
 }
 
+/// Check whether a segment triggers the te-form kanji penalty.
+///
+/// Returns `true` when the segment contains kanji and follows a て/で
+/// function word.
+pub fn is_te_form_kanji_penalised(
+    seg: &RichSegment,
+    prev: Option<&RichSegment>,
+    conn: &ConnectionMatrix,
+) -> bool {
+    if let Some(prev) = prev {
+        conn.is_function_word(prev.left_id)
+            && (prev.surface == "て" || prev.surface == "で")
+            && seg.surface.chars().any(is_kanji)
+    } else {
+        false
+    }
+}
+
 /// Check whether a segment triggers the single-char kanji content-word penalty.
 ///
 /// Returns `true` when the segment is a single-character kanji content word
@@ -211,14 +229,13 @@ pub fn extract_features(
     if let Some(c) = conn {
         for (i, seg) in path.segments.iter().enumerate() {
             // Te-form kanji
-            if i > 0 {
-                let prev = &path.segments[i - 1];
-                if c.is_function_word(prev.left_id)
-                    && (prev.surface == "て" || prev.surface == "で")
-                    && seg.surface.chars().any(is_kanji)
-                {
-                    f.te_kanji_count += 1;
-                }
+            let prev = if i > 0 {
+                Some(&path.segments[i - 1])
+            } else {
+                None
+            };
+            if is_te_form_kanji_penalised(seg, prev, c) {
+                f.te_kanji_count += 1;
             }
             // Single-char kanji content word
             if is_single_char_kanji_penalised(seg, i, &path.segments, c, dict) {
