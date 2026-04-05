@@ -67,23 +67,23 @@ pub struct FeatureWeights {
     pub single_kanji: i64,
 }
 
-impl Default for FeatureWeights {
-    fn default() -> Self {
-        Self {
-            structure: 0,
-            length_variance: 1000,
-            script: 100,
-            te_kanji: 2000,
-            single_kanji: 0,
-        }
-    }
-}
-
 /// Structure weight is fixed at 0 (grid search found structure_cost
 /// adds noise rather than signal at the reranker stage).
 const STRUCTURE_WEIGHT: i64 = 0;
 /// Script weight is fixed at 100 (= 100% of raw script cost, no scaling).
 const SCRIPT_WEIGHT: i64 = 100;
+
+impl Default for FeatureWeights {
+    fn default() -> Self {
+        Self {
+            structure: STRUCTURE_WEIGHT,
+            length_variance: 1000,
+            script: SCRIPT_WEIGHT,
+            te_kanji: 2000,
+            single_kanji: 0,
+        }
+    }
+}
 
 impl FeatureWeights {
     /// Build weights from settings + fixed constants.
