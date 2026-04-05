@@ -228,10 +228,10 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
         }
     }
 
-    // Sort by pass_count descending
+    // Sort by pass_count descending; fall back to default if grid is empty.
     evals.sort_by(|a, b| b.pass_count.cmp(&a.pass_count));
 
-    let best = evals[0].clone();
+    let best = evals.first().cloned().unwrap_or(default_eval.clone());
 
     // Collect surfaces only for default and best (for diffs + failures)
     let default_surfaces = collect_surfaces(cases, &default_weights);
