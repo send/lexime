@@ -19,15 +19,6 @@ pub(super) fn non_independent_kanji_penalty(seg: &RichSegment, conn: &Connection
     }
 }
 
-/// Pronoun cost bonus for a segment (positive value = cost reduction).
-pub(super) fn pronoun_bonus(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_pronoun(seg.left_id) {
-        settings().reranker.pronoun_cost_bonus
-    } else {
-        0
-    }
-}
-
 /// Te-form kanji penalty for a segment that follows て/で.
 /// `prev` is the preceding segment (None for the first segment).
 pub(super) fn te_form_kanji_penalty(
@@ -44,16 +35,6 @@ pub(super) fn te_form_kanji_penalty(
         }
     }
     0
-}
-
-/// Person name penalty for a segment.
-/// Returns penalty (> 0) if the segment is a person name (人名: 一般/姓/名; role == 6).
-pub(super) fn person_name_penalty(seg: &RichSegment, conn: &ConnectionMatrix) -> i64 {
-    if conn.is_person_name(seg.left_id) {
-        settings().reranker.person_name_penalty
-    } else {
-        0
-    }
 }
 
 /// Single-char kanji content-word penalty with dictionary compound exemption.
@@ -232,10 +213,8 @@ pub fn rerank(
                     None
                 };
                 path.viterbi_cost += non_independent_kanji_penalty(seg, conn);
-                path.viterbi_cost -= pronoun_bonus(seg, conn);
                 path.viterbi_cost += te_form_kanji_penalty(prev, seg, conn);
                 path.viterbi_cost += single_char_kanji_penalty(seg, i, &path.segments, conn, dict);
-                path.viterbi_cost += person_name_penalty(seg, conn);
             }
         }
     }
@@ -472,35 +451,6 @@ mod tests {
         assert!(paths[0].viterbi_cost < paths[1].viterbi_cost);
     }
 
-    #[test]
-    fn pronoun_bonus_applied() {
-        // ID 2 = pronoun (role 5), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 5];
-        let conn = conn_with_roles(roles);
-
-        // Both paths have the same surface (hiragana) to isolate pronoun bonus.
-        // Path A: pronoun POS (id=2) — bonus applied
-        // Path B: content word POS (id=1) — no bonus
-        let mut paths = vec![
-            path(vec![seg("どれ", "どれ", 2)], 1000),
-            path(vec![seg("どれ", "どれ", 1)], 1000),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The pronoun path should rank higher (lower cost) after bonus
-        assert_eq!(
-            paths[0].segments[0].left_id, 2,
-            "pronoun path should rank first"
-        );
-        let bonus = settings().reranker.pronoun_cost_bonus;
-        let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
-        assert_eq!(
-            diff, bonus,
-            "cost difference should equal pronoun_cost_bonus"
-        );
-    }
-
     /// A minimal dictionary for testing compound exemption.
     struct MockDict {
         entries: Vec<(String, Vec<DictEntry>)>,
@@ -717,35 +667,6 @@ mod tests {
             "only single-char reading should get penalty: multi={}, single={}",
             multi.viterbi_cost,
             single.viterbi_cost,
-        );
-    }
-
-    #[test]
-    fn person_name_penalty_applied() {
-        // ID 2 = person name (role 6), ID 1 = content word (role 0)
-        let roles = vec![0u8, 0, 6];
-        let conn = conn_with_roles(roles);
-
-        // Both paths have the same hiragana surface to isolate person name penalty.
-        // Path A: person name POS (id=2) — penalty applied
-        // Path B: content word POS (id=1) — no penalty
-        let mut paths = vec![
-            path(vec![seg("にしま", "にしま", 2)], 1000),
-            path(vec![seg("にしま", "にしま", 1)], 1000),
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        // The content word path should rank higher (lower cost)
-        assert_eq!(
-            paths[0].segments[0].left_id, 1,
-            "content word path should rank first"
-        );
-        let penalty = settings().reranker.person_name_penalty;
-        let diff = paths[1].viterbi_cost - paths[0].viterbi_cost;
-        assert_eq!(
-            diff, penalty,
-            "cost difference should equal person_name_penalty"
         );
     }
 

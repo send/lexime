@@ -77,8 +77,6 @@ pub struct ExplainSegment {
     pub connection_cost: i64,
     /// Non-independent kanji penalty applied.
     pub non_independent_kanji_penalty: i64,
-    /// Pronoun cost bonus applied (positive value, subtracted from cost).
-    pub pronoun_bonus: i64,
     /// Te-form kanji penalty applied.
     pub te_form_kanji_penalty: i64,
     /// Single-char kanji content-word penalty applied.
@@ -120,15 +118,14 @@ fn explain_segments(
             } else {
                 None
             };
-            let (ni_penalty, p_bonus, te_penalty, sc_penalty) = if let Some(c) = conn {
+            let (ni_penalty, te_penalty, sc_penalty) = if let Some(c) = conn {
                 (
                     reranker::non_independent_kanji_penalty(seg, c),
-                    reranker::pronoun_bonus(seg, c),
                     reranker::te_form_kanji_penalty(prev_seg, seg, c),
                     reranker::single_char_kanji_penalty(seg, i, &scored.segments, c, Some(dict)),
                 )
             } else {
-                (0, 0, 0, 0)
+                (0, 0, 0)
             };
             ExplainSegment {
                 reading: seg.reading.clone(),
@@ -138,7 +135,6 @@ fn explain_segments(
                 script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
                 non_independent_kanji_penalty: ni_penalty,
-                pronoun_bonus: p_bonus,
                 te_form_kanji_penalty: te_penalty,
                 single_char_kanji_penalty: sc_penalty,
                 left_id: seg.left_id,
@@ -294,11 +290,6 @@ pub fn format_text(result: &ExplainResult) -> String {
             } else {
                 String::new()
             };
-            let pronoun_str = if seg.pronoun_bonus > 0 {
-                format!(" pronoun={:<+6}", -(seg.pronoun_bonus))
-            } else {
-                String::new()
-            };
             let te_str = if seg.te_form_kanji_penalty > 0 {
                 format!(" teK={:<+6}", seg.te_form_kanji_penalty)
             } else {
@@ -310,7 +301,7 @@ pub fn format_text(result: &ExplainResult) -> String {
                 String::new()
             };
             out.push_str(&format!(
-                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}{}{}{}\n",
+                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}{}{}\n",
                 j,
                 padded,
                 seg.word_cost,
@@ -319,7 +310,6 @@ pub fn format_text(result: &ExplainResult) -> String {
                 conn_label,
                 seg.connection_cost,
                 ni_str,
-                pronoun_str,
                 te_str,
                 single_char_str,
             ));

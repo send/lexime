@@ -51,7 +51,7 @@ run = """
 set -euo pipefail
 cd engine
 cargo build --release -p lex-cli --bin dictool
-target/release/dictool compile --source mozc data/mozc-raw data/lexime-mozc.dict
+target/release/dictool compile --source mozc --id-def data/mozc-raw/id.def data/mozc-raw data/lexime-mozc.dict
 """
 
 [tasks.conn]

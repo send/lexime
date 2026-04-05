@@ -29,7 +29,11 @@ pub fn fetch(source_name: &str, output_dir: &str) {
     );
 }
 
-pub fn compile(source_name: &str, input_dir: &str, output_file: &str) {
+/// Cost offsets applied at dictionary compile time to eliminate reranker heuristics.
+const PERSON_NAME_COST_OFFSET: i16 = 2000;
+const PRONOUN_COST_OFFSET: i16 = -3500;
+
+pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Option<&str>) {
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
         eprintln!("Error: unknown source '{source_name}' (available: mozc)");
         process::exit(1);
@@ -42,10 +46,32 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str) {
     }
 
     eprintln!("Source: {source_name}");
-    let entries = die!(
+    let mut entries = die!(
         dict_source.parse_dir(input_path),
         "Error parsing dictionary: {}"
     );
+
+    // Apply compile-time cost offsets based on morpheme roles
+    if let Some(id_def_path) = id_def {
+        let roles = die!(
+            pos_map::morpheme_roles(Path::new(id_def_path)),
+            "Error loading morpheme roles: {}"
+        );
+        let mut adjusted = 0usize;
+        for entries in entries.values_mut() {
+            for entry in entries.iter_mut() {
+                let role = roles.get(entry.left_id as usize).copied().unwrap_or(0);
+                let offset = match role {
+                    pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
+                    pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
+                    _ => continue,
+                };
+                entry.cost = entry.cost.saturating_add(offset);
+                adjusted += 1;
+            }
+        }
+        eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET})");
+    }
 
     let reading_count = entries.len();
     let entry_count: usize = entries.values().map(|v| v.len()).sum();
