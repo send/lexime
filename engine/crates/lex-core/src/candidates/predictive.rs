@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
+use crate::converter::Lattice;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
@@ -52,6 +53,7 @@ pub fn generate(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    lattice: &Lattice,
 ) -> CandidateResponse {
     let _span = debug_span!("generate_prediction_candidates", reading, max_results).entered();
     if reading.is_empty() {
@@ -67,8 +69,14 @@ pub fn generate(
     }
 
     // Get base candidates (same Viterbi N-best + predictions as Standard)
-    let base =
-        super::standard::generate_normal_candidates(dict, conn, history, reading, max_results);
+    let base = super::standard::generate_normal_candidates(
+        dict,
+        conn,
+        history,
+        reading,
+        max_results,
+        lattice,
+    );
 
     let Some(h) = history else {
         // No history → can't chain, return standard candidates

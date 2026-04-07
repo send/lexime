@@ -1,5 +1,5 @@
 use lex_core::candidates::CandidateResponse;
-use lex_core::converter::{convert, convert_with_history, ConvertedSegment};
+use lex_core::converter::{build_lattice, convert_from_lattice, ConvertedSegment};
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
@@ -46,30 +46,36 @@ impl InputSession {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
-            // Quick sync 1-best for interim display (~1-2ms)
-            let segments = {
-                // See update_candidates for rationale on read().ok()
+            // Build lattice once — reused for sync 1-best and async N-best.
+            let (segments, lattice) = {
                 let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-                match h_guard.as_deref() {
-                    Some(h) => convert_with_history(&*self.dict, self.conn.as_deref(), h, &reading),
-                    None => convert(&*self.dict, self.conn.as_deref(), &reading),
-                }
-            };
+                let lattice = build_lattice(&*self.dict, &reading);
+                let segments = convert_from_lattice(
+                    &lattice,
+                    &*self.dict,
+                    self.conn.as_deref(),
+                    h_guard.as_deref(),
+                    &reading,
+                );
+                (segments, lattice)
+            }; // h_guard dropped here
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();
             c.candidates.surfaces = vec![surface];
             c.candidates.paths = vec![segments];
             c.candidates.selected = 0;
-        } else {
-            self.comp().candidates.clear();
-        }
-        let mut resp = build_marked_text(self.comp());
-        if !reading.is_empty() {
+
+            let mut resp = build_marked_text(self.comp());
             resp.async_request = Some(AsyncCandidateRequest {
                 reading,
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
+                lattice: Some(lattice),
             });
+            return resp;
+        } else {
+            self.comp().candidates.clear();
         }
+        let resp = build_marked_text(self.comp());
         resp
     }
 

@@ -17,6 +17,7 @@ pub(crate) struct CandidateWork {
     pub reading: String,
     pub dispatch: CandidateDispatch,
     pub generation: u64,
+    pub lattice: Option<crate::converter::Lattice>,
 }
 
 pub(crate) struct CandidateResult {
@@ -67,13 +68,19 @@ impl AsyncWorker {
         }
     }
 
-    pub fn submit_candidates(&self, reading: String, dispatch: CandidateDispatch) {
+    pub fn submit_candidates(
+        &self,
+        reading: String,
+        dispatch: CandidateDispatch,
+        lattice: Option<crate::converter::Lattice>,
+    ) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(ref tx) = self.candidate_tx {
             let _ = tx.send(CandidateWork {
                 reading,
                 dispatch,
                 generation: gen,
+                lattice,
             });
         }
     }
@@ -127,21 +134,44 @@ fn candidate_worker(
         let conn_ref = conn.as_deref();
 
         let max_results = settings().candidates.max_results;
-        let response = match latest.dispatch {
-            CandidateDispatch::Predictive => crate::candidates::generate_prediction_candidates(
-                &*dict,
-                conn_ref,
-                hist_ref,
-                &latest.reading,
-                max_results,
-            ),
-            CandidateDispatch::Standard => crate::candidates::generate_candidates(
-                &*dict,
-                conn_ref,
-                hist_ref,
-                &latest.reading,
-                max_results,
-            ),
+        let response = if let Some(ref lattice) = latest.lattice {
+            match latest.dispatch {
+                CandidateDispatch::Predictive => {
+                    crate::candidates::generate_prediction_candidates_from_lattice(
+                        lattice,
+                        &*dict,
+                        conn_ref,
+                        hist_ref,
+                        &latest.reading,
+                        max_results,
+                    )
+                }
+                CandidateDispatch::Standard => crate::candidates::generate_candidates_from_lattice(
+                    lattice,
+                    &*dict,
+                    conn_ref,
+                    hist_ref,
+                    &latest.reading,
+                    max_results,
+                ),
+            }
+        } else {
+            match latest.dispatch {
+                CandidateDispatch::Predictive => crate::candidates::generate_prediction_candidates(
+                    &*dict,
+                    conn_ref,
+                    hist_ref,
+                    &latest.reading,
+                    max_results,
+                ),
+                CandidateDispatch::Standard => crate::candidates::generate_candidates(
+                    &*dict,
+                    conn_ref,
+                    hist_ref,
+                    &latest.reading,
+                    max_results,
+                ),
+            }
         };
 
         // Check staleness after generation

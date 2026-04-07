@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::converter::ConvertedSegment;
+use crate::converter::{build_lattice, ConvertedSegment, Lattice};
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
@@ -96,9 +96,12 @@ fn generate_punctuation_candidates(
     }
 }
 
-// --- Backward-compatible public API wrappers ---
+// --- Public API ---
 
 /// Unified candidate generation: handles both punctuation and normal input.
+///
+/// Builds a lattice internally. Use `generate_candidates_from_lattice` when
+/// a pre-built lattice is available (e.g. deferred candidate mode).
 pub fn generate_candidates(
     dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
@@ -106,7 +109,20 @@ pub fn generate_candidates(
     reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
-    standard::generate(dict, conn, history, reading, max_results)
+    let lattice = build_lattice(dict, reading);
+    standard::generate(dict, conn, history, reading, max_results, &lattice)
+}
+
+/// Unified candidate generation from a pre-built lattice.
+pub fn generate_candidates_from_lattice(
+    lattice: &Lattice,
+    dict: &dyn Dictionary,
+    conn: Option<&crate::dict::connection::ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+) -> CandidateResponse {
+    standard::generate(dict, conn, history, reading, max_results, lattice)
 }
 
 /// Generate prediction candidates with bigram chaining.
@@ -117,7 +133,20 @@ pub fn generate_prediction_candidates(
     reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
-    predictive::generate(dict, conn, history, reading, max_results)
+    let lattice = build_lattice(dict, reading);
+    predictive::generate(dict, conn, history, reading, max_results, &lattice)
+}
+
+/// Generate prediction candidates from a pre-built lattice.
+pub fn generate_prediction_candidates_from_lattice(
+    lattice: &Lattice,
+    dict: &dyn Dictionary,
+    conn: Option<&crate::dict::connection::ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+) -> CandidateResponse {
+    predictive::generate(dict, conn, history, reading, max_results, lattice)
 }
 
 /// Generate candidates using neural speculative decoding.
