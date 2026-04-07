@@ -27,7 +27,7 @@ pub(super) fn generate_normal_candidates(
     //    lattice search), so it cannot cause fragmentation. Time-decayed
     //    boosts (half-life 168h) prevent stale history from dominating.
     let nbest = settings().candidates.nbest;
-    let paths = convert_nbest_from_lattice(lattice, dict, conn, history, reading, nbest);
+    let paths = convert_nbest_from_lattice(lattice, dict, conn, history, nbest);
 
     let mut nbest_paths = Vec::new();
     for path in &paths {

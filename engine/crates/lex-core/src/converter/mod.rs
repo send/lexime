@@ -54,18 +54,25 @@ pub fn convert_from_lattice(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
-    kana: &str,
 ) -> Vec<ConvertedSegment> {
-    if kana.is_empty() {
+    if lattice.input.is_empty() {
         return Vec::new();
     }
     let cost_fn = DefaultCostFunction::new(conn);
     let oversample = if history.is_some() { 30 } else { 10 };
     let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-    postprocess(&mut paths, lattice, conn, Some(dict), history, kana, 1)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
+    postprocess(
+        &mut paths,
+        lattice,
+        conn,
+        Some(dict),
+        history,
+        &lattice.input,
+        1,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default()
 }
 
 /// N-best conversion from a pre-built lattice.
@@ -78,10 +85,9 @@ pub fn convert_nbest_from_lattice(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
     history: Option<&UserHistory>,
-    kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
-    if kana.is_empty() || n == 0 {
+    if lattice.input.is_empty() || n == 0 {
         return Vec::new();
     }
     let cost_fn = DefaultCostFunction::new(conn);
@@ -91,7 +97,15 @@ pub fn convert_nbest_from_lattice(
         n * 3
     };
     let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-    postprocess(&mut paths, lattice, conn, Some(dict), history, kana, n)
+    postprocess(
+        &mut paths,
+        lattice,
+        conn,
+        Some(dict),
+        history,
+        &lattice.input,
+        n,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +119,7 @@ pub fn convert(
     kana: &str,
 ) -> Vec<ConvertedSegment> {
     let lattice = build_lattice(dict, kana);
-    convert_from_lattice(&lattice, dict, conn, None, kana)
+    convert_from_lattice(&lattice, dict, conn, None)
 }
 
 /// 1-best conversion with history-aware reranking.
@@ -116,7 +130,7 @@ pub fn convert_with_history(
     kana: &str,
 ) -> Vec<ConvertedSegment> {
     let lattice = build_lattice(dict, kana);
-    convert_from_lattice(&lattice, dict, conn, Some(history), kana)
+    convert_from_lattice(&lattice, dict, conn, Some(history))
 }
 
 /// Convert a kana string to the N-best segmentations.
@@ -127,7 +141,7 @@ pub fn convert_nbest(
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
     let lattice = build_lattice(dict, kana);
-    convert_nbest_from_lattice(&lattice, dict, conn, None, kana, n)
+    convert_nbest_from_lattice(&lattice, dict, conn, None, n)
 }
 
 /// N-best conversion with history-aware reranking.
@@ -139,7 +153,7 @@ pub fn convert_nbest_with_history(
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
     let lattice = build_lattice(dict, kana);
-    convert_nbest_from_lattice(&lattice, dict, conn, Some(history), kana, n)
+    convert_nbest_from_lattice(&lattice, dict, conn, Some(history), n)
 }
 
 // ---------------------------------------------------------------------------

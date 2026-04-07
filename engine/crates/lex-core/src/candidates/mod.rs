@@ -109,6 +109,9 @@ pub fn generate_candidates(
     reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
+    if reading.is_empty() || punctuation_alternatives(reading).is_some() {
+        return standard::generate(dict, conn, history, reading, max_results, &Lattice::empty());
+    }
     let lattice = build_lattice(dict, reading);
     standard::generate(dict, conn, history, reading, max_results, &lattice)
 }
@@ -133,6 +136,9 @@ pub fn generate_prediction_candidates(
     reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
+    if reading.is_empty() || punctuation_alternatives(reading).is_some() {
+        return predictive::generate(dict, conn, history, reading, max_results, &Lattice::empty());
+    }
     let lattice = build_lattice(dict, reading);
     predictive::generate(dict, conn, history, reading, max_results, &lattice)
 }

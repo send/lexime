@@ -41,6 +41,19 @@ pub struct Lattice {
     pub char_count: usize,
 }
 
+impl Lattice {
+    /// An empty lattice (no input, no nodes).
+    pub fn empty() -> Self {
+        Self {
+            input: String::new(),
+            nodes: Vec::new(),
+            nodes_by_end: Vec::new(),
+            nodes_by_start: Vec::new(),
+            char_count: 0,
+        }
+    }
+}
+
 /// Build a lattice from a kana string using dictionary lookups.
 ///
 /// Uses `common_prefix_search` for efficient trie traversal: a single trie walk

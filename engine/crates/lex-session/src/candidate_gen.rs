@@ -55,7 +55,6 @@ impl InputSession {
                     &*self.dict,
                     self.conn.as_deref(),
                     h_guard.as_deref(),
-                    &reading,
                 );
                 (segments, lattice)
             }; // h_guard dropped here
