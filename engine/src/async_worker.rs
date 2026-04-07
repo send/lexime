@@ -142,7 +142,6 @@ fn candidate_worker(
                         &*dict,
                         conn_ref,
                         hist_ref,
-                        &latest.reading,
                         max_results,
                     )
                 }
@@ -151,7 +150,6 @@ fn candidate_worker(
                     &*dict,
                     conn_ref,
                     hist_ref,
-                    &latest.reading,
                     max_results,
                 ),
             }

@@ -117,15 +117,16 @@ pub fn generate_candidates(
 }
 
 /// Unified candidate generation from a pre-built lattice.
+///
+/// Uses `lattice.input` as the reading to prevent mismatch.
 pub fn generate_candidates_from_lattice(
     lattice: &Lattice,
     dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
-    reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
-    standard::generate(dict, conn, history, reading, max_results, lattice)
+    standard::generate(dict, conn, history, &lattice.input, max_results, lattice)
 }
 
 /// Generate prediction candidates with bigram chaining.
@@ -144,15 +145,16 @@ pub fn generate_prediction_candidates(
 }
 
 /// Generate prediction candidates from a pre-built lattice.
+///
+/// Uses `lattice.input` as the reading to prevent mismatch.
 pub fn generate_prediction_candidates_from_lattice(
     lattice: &Lattice,
     dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
-    reading: &str,
     max_results: usize,
 ) -> CandidateResponse {
-    predictive::generate(dict, conn, history, reading, max_results, lattice)
+    predictive::generate(dict, conn, history, &lattice.input, max_results, lattice)
 }
 
 /// Generate candidates using neural speculative decoding.
