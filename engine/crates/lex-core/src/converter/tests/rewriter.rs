@@ -599,20 +599,7 @@ fn test_partial_hiragana_single_segment_skip() {
 // ── KanjiVariantRewriter tests ────────────────────────────────────
 
 fn make_lattice(input: &str, nodes: Vec<LatticeNode>) -> Lattice {
-    let char_count = input.chars().count();
-    let mut nodes_by_start: Vec<Vec<usize>> = vec![Vec::new(); char_count];
-    let mut nodes_by_end: Vec<Vec<usize>> = vec![Vec::new(); char_count + 1];
-    for (i, node) in nodes.iter().enumerate() {
-        nodes_by_start[node.start].push(i);
-        nodes_by_end[node.end].push(i);
-    }
-    Lattice {
-        input: input.to_string(),
-        nodes,
-        nodes_by_start,
-        nodes_by_end,
-        char_count,
-    }
+    Lattice::from_nodes(input, nodes)
 }
 
 fn lattice_node(start: usize, end: usize, reading: &str, surface: &str, cost: i16) -> LatticeNode {
