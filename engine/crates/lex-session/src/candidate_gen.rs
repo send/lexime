@@ -46,12 +46,11 @@ impl InputSession {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
-            // Try incremental lattice extension, fall back to full rebuild.
+            // Reuse cached lattice: extend if kana grew, or keep as-is
+            // if unchanged. Fall back to full rebuild otherwise.
             let lattice = match self.comp().cached_lattice.take() {
-                Some(mut cached)
-                    if reading.starts_with(&cached.input) && reading != cached.input =>
-                {
-                    cached.extend(&*self.dict, &reading);
+                Some(mut cached) if reading.starts_with(&cached.input) => {
+                    cached.extend(&*self.dict, &reading); // no-op if reading == input
                     cached
                 }
                 _ => build_lattice(&*self.dict, &reading),

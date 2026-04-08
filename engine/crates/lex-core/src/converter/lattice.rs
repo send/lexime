@@ -12,11 +12,6 @@ struct StringSpan {
     len: u16,
 }
 
-/// Maximum word length (in characters) to look back when extending the
-/// lattice incrementally. Japanese dictionary entries rarely exceed 10
-/// characters; 15 provides a safe margin.
-const MAX_WORD_LOOKBACK: usize = 15;
-
 /// The lattice: all possible segmentations of a kana string.
 ///
 /// Stores node data in Structure-of-Arrays (SoA) layout for cache-friendly
@@ -243,14 +238,16 @@ impl Lattice {
         self.nodes_by_start.resize_with(new_char_count, Vec::new);
         self.nodes_by_end.resize_with(new_char_count + 1, Vec::new);
 
-        // Existing positions near boundary: find new longer matches only
-        let lookback_start = old_char_count.saturating_sub(MAX_WORD_LOOKBACK);
+        // Existing positions: find new longer matches that extend into
+        // the appended suffix. All positions are scanned so that extend
+        // is equivalent to build_lattice regardless of dictionary max
+        // reading length (user dictionary entries have no length limit).
         add_nodes_for_range(
             self,
             dict,
             new_kana,
             &byte_offsets,
-            lookback_start,
+            0,
             old_char_count,
             Some(old_char_count),
         );
