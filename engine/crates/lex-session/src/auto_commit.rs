@@ -42,6 +42,13 @@ impl InputSession {
             let committed_reading: String = segments.iter().map(|s| s.reading.as_str()).collect();
             let committed_surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
 
+            // Skip auto-commit if the committed reading is too short (< 2 kana).
+            // Single-kana commits (e.g. "じ" from "じぇのさいど") destroy longer
+            // words that haven't been fully typed yet.
+            if committed_reading.chars().count() < 2 {
+                return None;
+            }
+
             if !c.kana.starts_with(&committed_reading) {
                 return None;
             }
