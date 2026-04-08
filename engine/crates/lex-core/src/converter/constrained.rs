@@ -12,7 +12,7 @@ use super::viterbi::ConvertedSegment;
 
 /// Confirmed prefix constraint for constrained Viterbi.
 ///
-/// Segments within the prefix are matched by (pos, reading, surface).
+/// Segments within the prefix are matched by (char_range, reading, surface).
 /// Nodes that contradict the fixed prefix receive a prohibitive cost.
 pub(crate) struct PrefixConstraint {
     /// Fixed segments: (char_range, reading, surface)

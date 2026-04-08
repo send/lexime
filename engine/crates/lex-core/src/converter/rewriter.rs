@@ -213,7 +213,7 @@ impl Rewriter for KanjiVariantRewriter<'_> {
 }
 
 impl KanjiVariantRewriter<'_> {
-    /// Top kanji node indices at `pos`, sorted by cost, up to MAX_KANJI_PER_SEGMENT.
+    /// Top kanji node indices in span `pos` (`[start, end)`), sorted by cost, up to MAX_KANJI_PER_SEGMENT.
     fn top_kanji_at(&self, pos: std::ops::Range<usize>) -> Vec<usize> {
         let Some(indices) = self.lattice.nodes_by_start.get(pos.start) else {
             return Vec::new();
