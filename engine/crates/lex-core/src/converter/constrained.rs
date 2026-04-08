@@ -4,17 +4,19 @@
 //! this module constrains the lattice so that those segments are fixed,
 //! allowing re-exploration only of the suffix.
 
+use std::ops::Range;
+
 use super::cost::{CostFunction, DefaultCostFunction};
 use super::lattice::Lattice;
 use super::viterbi::ConvertedSegment;
 
 /// Confirmed prefix constraint for constrained Viterbi.
 ///
-/// Segments within the prefix are matched by (start, end, reading, surface).
+/// Segments within the prefix are matched by (char_range, reading, surface).
 /// Nodes that contradict the fixed prefix receive a prohibitive cost.
 pub(crate) struct PrefixConstraint {
-    /// Fixed segments: (start_char, end_char, reading, surface)
-    segments: Vec<(usize, usize, String, String)>,
+    /// Fixed segments: (char_range, reading, surface)
+    segments: Vec<(Range<usize>, String, String)>,
     /// Total character length of the prefix
     prefix_char_end: usize,
 }
@@ -27,7 +29,7 @@ impl PrefixConstraint {
         for seg in confirmed {
             let char_len = seg.reading.chars().count();
             let end = pos + char_len;
-            segments.push((pos, end, seg.reading.clone(), seg.surface.clone()));
+            segments.push((pos..end, seg.reading.clone(), seg.surface.clone()));
             pos = end;
         }
         Self {
@@ -48,9 +50,9 @@ impl PrefixConstraint {
 
     /// Check if a lattice node matches a fixed segment exactly.
     fn matches_fixed_segment(&self, lattice: &Lattice, idx: usize) -> bool {
-        self.segments.iter().any(|(start, end, reading, surface)| {
-            lattice.start(idx) == *start
-                && lattice.end(idx) == *end
+        self.segments.iter().any(|(pos, reading, surface)| {
+            lattice.start(idx) == pos.start
+                && lattice.end(idx) == pos.end
                 && lattice.reading(idx) == *reading
                 && lattice.surface(idx) == *surface
         })
@@ -250,7 +252,7 @@ mod tests {
     fn test_boundary_spanning_node_rejected() {
         // A node that starts in prefix and ends after should be rejected
         let constraint = PrefixConstraint {
-            segments: vec![(0, 2, "きょ".to_string(), "虚".to_string())],
+            segments: vec![(0..2, "きょ".to_string(), "虚".to_string())],
             prefix_char_end: 2,
         };
 
@@ -279,11 +281,11 @@ mod tests {
         assert_eq!(constraint.segments.len(), 2);
         assert_eq!(
             constraint.segments[0],
-            (0, 3, "きょう".to_string(), "今日".to_string())
+            (0..3, "きょう".to_string(), "今日".to_string())
         );
         assert_eq!(
             constraint.segments[1],
-            (3, 4, "は".to_string(), "は".to_string())
+            (3..4, "は".to_string(), "は".to_string())
         );
     }
 }

@@ -5,7 +5,7 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::features::{compute_structure_cost, extract_features, FeatureWeights};
+use super::features::{compute_structure_cost, FeatureConfig, FeatureWeights};
 use super::viterbi::ScoredPath;
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
@@ -83,8 +83,14 @@ pub fn rerank(
     let weights = FeatureWeights::from_settings();
     let need_dict = weights.single_kanji != 0;
     let dict_for_features = if need_dict { dict } else { None };
+    let fcfg = FeatureConfig {
+        conn,
+        dict: dict_for_features,
+        structure_cap: cap,
+        prefix_floor,
+    };
     for (path, &sc) in paths.iter_mut().zip(kept_sc.iter()) {
-        let features = extract_features(path, conn, dict_for_features, cap, prefix_floor, Some(sc));
+        let features = fcfg.extract(path, Some(sc));
         path.viterbi_cost += features.weighted_cost(&weights);
     }
 
@@ -477,7 +483,13 @@ mod tests {
 
         // CW single-char kanji — should count
         let cw_path = path(vec![seg("ね", "根", 1)], 100);
-        let cw_features = extract_features(&cw_path, Some(&conn), None, cap, prefix_floor, None);
+        let fcfg = FeatureConfig {
+            conn: Some(&conn),
+            dict: None,
+            structure_cap: cap,
+            prefix_floor,
+        };
+        let cw_features = fcfg.extract(&cw_path, None);
         assert_eq!(
             cw_features.single_kanji_count, 1,
             "CW single-char kanji should be counted"
@@ -485,7 +497,7 @@ mod tests {
 
         // FW single-char — should NOT count (role checked)
         let fw_path = path(vec![seg("ね", "根", 2)], 100); // FW POS
-        let fw_features = extract_features(&fw_path, Some(&conn), None, cap, prefix_floor, None);
+        let fw_features = fcfg.extract(&fw_path, None);
         assert_eq!(
             fw_features.single_kanji_count, 0,
             "FW should not trigger single-char kanji feature"
@@ -532,7 +544,13 @@ mod tests {
 
         // "は" (FW, not て/で) + "見る" (kanji) — should NOT trigger te-form
         let ha_path = path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100);
-        let ha_features = extract_features(&ha_path, Some(&conn), None, cap, prefix_floor, None);
+        let fcfg = FeatureConfig {
+            conn: Some(&conn),
+            dict: None,
+            structure_cap: cap,
+            prefix_floor,
+        };
+        let ha_features = fcfg.extract(&ha_path, None);
         assert_eq!(
             ha_features.te_kanji_count, 0,
             "は is not て/で — no te-form kanji"
@@ -540,7 +558,7 @@ mod tests {
 
         // "で" (FW, て/で) + "見る" (kanji) — should trigger te-form
         let de_path = path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100);
-        let de_features = extract_features(&de_path, Some(&conn), None, cap, prefix_floor, None);
+        let de_features = fcfg.extract(&de_path, None);
         assert_eq!(
             de_features.te_kanji_count, 1,
             "で + kanji should trigger te-form"

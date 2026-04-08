@@ -40,72 +40,70 @@ pub use viterbi::ConvertedSegment;
 #[allow(unused_imports)]
 pub(crate) use viterbi::{viterbi_nbest, RichSegment, ScoredPath};
 
-// ---------------------------------------------------------------------------
-// Primary API — lattice is an explicit parameter
-// ---------------------------------------------------------------------------
-
-/// 1-best conversion from a pre-built lattice.
+/// Shared conversion resources: dictionary, connection matrix, and user history.
 ///
-/// Pass `history` to enable user-history reranking (boosts previously
-/// selected candidates). The oversample factor is higher with history
-/// to ensure enough diversity for the reranker.
-pub fn convert_from_lattice(
-    lattice: &Lattice,
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
-) -> Vec<ConvertedSegment> {
-    if lattice.input.is_empty() {
-        return Vec::new();
-    }
-    let cost_fn = DefaultCostFunction::new(conn);
-    let oversample = if history.is_some() { 30 } else { 10 };
-    let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-    postprocess(
-        &mut paths,
-        lattice,
-        conn,
-        Some(dict),
-        history,
-        &lattice.input,
-        1,
-    )
-    .into_iter()
-    .next()
-    .unwrap_or_default()
+/// Groups the `(dict, conn, history)` triple that appears across conversion
+/// and candidate generation APIs.
+pub struct ConversionContext<'a> {
+    pub dict: &'a dyn Dictionary,
+    pub conn: Option<&'a ConnectionMatrix>,
+    pub history: Option<&'a UserHistory>,
 }
 
-/// N-best conversion from a pre-built lattice.
-///
-/// Internally generates more candidates than `n`, applies reranking,
-/// then returns the top `n` distinct paths. With history the oversample
-/// is set to `max(n*3, 50)` for diversity.
-pub fn convert_nbest_from_lattice(
-    lattice: &Lattice,
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
-    n: usize,
-) -> Vec<Vec<ConvertedSegment>> {
-    if lattice.input.is_empty() || n == 0 {
-        return Vec::new();
+impl ConversionContext<'_> {
+    /// Build a lattice from a kana string.
+    pub fn build_lattice(&self, kana: &str) -> Lattice {
+        build_lattice(self.dict, kana)
     }
-    let cost_fn = DefaultCostFunction::new(conn);
-    let oversample = if history.is_some() {
-        (n * 3).max(50)
-    } else {
-        n * 3
-    };
-    let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-    postprocess(
-        &mut paths,
-        lattice,
-        conn,
-        Some(dict),
-        history,
-        &lattice.input,
-        n,
-    )
+
+    /// 1-best conversion from a pre-built lattice.
+    pub fn convert_from_lattice(&self, lattice: &Lattice) -> Vec<ConvertedSegment> {
+        if lattice.input.is_empty() {
+            return Vec::new();
+        }
+        let cost_fn = DefaultCostFunction::new(self.conn);
+        let oversample = if self.history.is_some() { 30 } else { 10 };
+        let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
+        postprocess(
+            &mut paths,
+            lattice,
+            self.conn,
+            Some(self.dict),
+            self.history,
+            &lattice.input,
+            1,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+    }
+
+    /// N-best conversion from a pre-built lattice.
+    pub fn convert_nbest_from_lattice(
+        &self,
+        lattice: &Lattice,
+        n: usize,
+    ) -> Vec<Vec<ConvertedSegment>> {
+        if lattice.input.is_empty() || n == 0 {
+            return Vec::new();
+        }
+        let cost_fn = DefaultCostFunction::new(self.conn);
+        let oversample = if self.history.is_some() {
+            (n * 3).max(50)
+        } else {
+            n * 3
+        };
+        let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
+        postprocess(
+            &mut paths,
+            lattice,
+            self.conn,
+            Some(self.dict),
+            self.history,
+            &lattice.input,
+            n,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,8 +119,13 @@ pub fn convert(
     if kana.is_empty() {
         return Vec::new();
     }
-    let lattice = build_lattice(dict, kana);
-    convert_from_lattice(&lattice, dict, conn, None)
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history: None,
+    };
+    let lattice = ctx.build_lattice(kana);
+    ctx.convert_from_lattice(&lattice)
 }
 
 /// 1-best conversion with history-aware reranking.
@@ -135,8 +138,13 @@ pub fn convert_with_history(
     if kana.is_empty() {
         return Vec::new();
     }
-    let lattice = build_lattice(dict, kana);
-    convert_from_lattice(&lattice, dict, conn, Some(history))
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history: Some(history),
+    };
+    let lattice = ctx.build_lattice(kana);
+    ctx.convert_from_lattice(&lattice)
 }
 
 /// Convert a kana string to the N-best segmentations.
@@ -149,8 +157,13 @@ pub fn convert_nbest(
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
-    let lattice = build_lattice(dict, kana);
-    convert_nbest_from_lattice(&lattice, dict, conn, None, n)
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history: None,
+    };
+    let lattice = ctx.build_lattice(kana);
+    ctx.convert_nbest_from_lattice(&lattice, n)
 }
 
 /// N-best conversion with history-aware reranking.
@@ -164,8 +177,13 @@ pub fn convert_nbest_with_history(
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
-    let lattice = build_lattice(dict, kana);
-    convert_nbest_from_lattice(&lattice, dict, conn, Some(history), n)
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history: Some(history),
+    };
+    let lattice = ctx.build_lattice(kana);
+    ctx.convert_nbest_from_lattice(&lattice, n)
 }
 
 // ---------------------------------------------------------------------------
@@ -175,8 +193,7 @@ pub fn convert_nbest_with_history(
 /// N-best Viterbi with a prefix constraint (for speculative decoding).
 #[cfg(feature = "neural")]
 pub(crate) fn convert_nbest_constrained(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
+    ctx: &ConversionContext<'_>,
     kana: &str,
     constraint: &constrained::PrefixConstraint,
     n: usize,
@@ -184,11 +201,11 @@ pub(crate) fn convert_nbest_constrained(
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
-    let cost_fn = constrained::PrefixConstrainedCost::new(conn, constraint);
-    let lattice = build_lattice(dict, kana);
+    let cost_fn = constrained::PrefixConstrainedCost::new(ctx.conn, constraint);
+    let lattice = build_lattice(ctx.dict, kana);
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    reranker::rerank(&mut paths, conn, Some(dict));
+    reranker::rerank(&mut paths, ctx.conn, Some(ctx.dict));
     paths.truncate(n);
     paths
 }

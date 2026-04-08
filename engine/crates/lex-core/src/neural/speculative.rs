@@ -133,6 +133,11 @@ pub fn speculative_decode(
     }
 
     // 3. Speculative decode loop
+    let conv_ctx = crate::converter::ConversionContext {
+        dict,
+        conn,
+        history: None,
+    };
     let mut current = draft_segments;
     let mut confirmed_counts = Vec::new();
     let mut converged = false;
@@ -162,7 +167,7 @@ pub fn speculative_decode(
                 let constraint = PrefixConstraint::from_confirmed(&confirmed_prefix);
                 let viterbi_start = Instant::now();
                 let new_paths =
-                    convert_nbest_constrained(dict, conn, kana, &constraint, config.nbest_per_pass);
+                    convert_nbest_constrained(&conv_ctx, kana, &constraint, config.nbest_per_pass);
                 viterbi_latency += viterbi_start.elapsed();
 
                 if new_paths.is_empty() {

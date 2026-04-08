@@ -9,7 +9,7 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 
 use super::cost::DefaultCostFunction;
-use super::features::extract_features;
+use super::features::FeatureConfig;
 pub use super::features::{FeatureWeights, PathFeatures};
 use super::lattice::build_lattice;
 use super::resegment;
@@ -119,6 +119,13 @@ pub fn precompute_cases(
     let filter = s.reranker.structure_cost_filter;
     let cost_fn = DefaultCostFunction::new(Some(conn));
 
+    let fcfg = FeatureConfig {
+        conn: Some(conn),
+        dict: Some(dict),
+        structure_cap: cap,
+        prefix_floor,
+    };
+
     cases
         .iter()
         .map(|(reading, expected)| {
@@ -128,12 +135,10 @@ pub fn precompute_cases(
             // Resegment
             let reseg = resegment::resegment(&paths, &lattice, Some(conn));
             paths.extend(reseg);
-
-            // Extract features and pair with paths
             let mut paired: Vec<(ScoredPath, PathFeatures)> = paths
                 .into_iter()
                 .map(|p| {
-                    let f = extract_features(&p, Some(conn), Some(dict), cap, prefix_floor, None);
+                    let f = fcfg.extract(&p, None);
                     (p, f)
                 })
                 .collect();

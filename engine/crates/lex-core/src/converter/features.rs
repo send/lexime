@@ -180,6 +180,28 @@ pub fn compute_structure_cost(
     sc
 }
 
+/// Configuration for feature extraction shared across paths.
+pub struct FeatureConfig<'a> {
+    pub conn: Option<&'a ConnectionMatrix>,
+    pub dict: Option<&'a dyn Dictionary>,
+    pub structure_cap: i64,
+    pub prefix_floor: i64,
+}
+
+impl FeatureConfig<'_> {
+    /// Extract features from a path.
+    ///
+    /// If `precomputed_structure_cost` is `Some`, reuses the value instead of
+    /// recomputing the transition-cost sum.
+    pub fn extract(
+        &self,
+        path: &ScoredPath,
+        precomputed_structure_cost: Option<i64>,
+    ) -> PathFeatures {
+        extract_features(path, self, precomputed_structure_cost)
+    }
+}
+
 /// Extract features from a path.
 ///
 /// If `precomputed_structure_cost` is `Some`, reuses the value instead of
@@ -187,15 +209,13 @@ pub fn compute_structure_cost(
 /// which already computes it for the hard filter).
 pub fn extract_features(
     path: &ScoredPath,
-    conn: Option<&ConnectionMatrix>,
-    dict: Option<&dyn Dictionary>,
-    structure_cap: i64,
-    prefix_floor: i64,
+    cfg: &FeatureConfig<'_>,
     precomputed_structure_cost: Option<i64>,
 ) -> PathFeatures {
     let mut f = PathFeatures {
-        structure_cost: precomputed_structure_cost
-            .unwrap_or_else(|| compute_structure_cost(path, conn, structure_cap, prefix_floor)),
+        structure_cost: precomputed_structure_cost.unwrap_or_else(|| {
+            compute_structure_cost(path, cfg.conn, cfg.structure_cap, cfg.prefix_floor)
+        }),
         ..Default::default()
     };
 
@@ -206,7 +226,7 @@ pub fn extract_features(
             .iter()
             .filter_map(|s| {
                 let len = s.reading.chars().count() as i64;
-                if len > 1 && !conn.is_some_and(|c| c.is_function_word(s.left_id)) {
+                if len > 1 && !cfg.conn.is_some_and(|c| c.is_function_word(s.left_id)) {
                     Some(len)
                 } else {
                     None
@@ -230,7 +250,7 @@ pub fn extract_features(
         .sum();
 
     // Per-segment features
-    if let Some(c) = conn {
+    if let Some(c) = cfg.conn {
         for (i, seg) in path.segments.iter().enumerate() {
             // Te-form kanji
             let prev = if i > 0 {
@@ -242,7 +262,7 @@ pub fn extract_features(
                 f.te_kanji_count += 1;
             }
             // Single-char kanji content word
-            if is_single_char_kanji_penalised(seg, i, &path.segments, c, dict) {
+            if is_single_char_kanji_penalised(seg, i, &path.segments, c, cfg.dict) {
                 f.single_kanji_count += 1;
             }
         }
