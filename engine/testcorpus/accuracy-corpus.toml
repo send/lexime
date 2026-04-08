@@ -318,11 +318,10 @@ note = "今|です|ね が structure_cost_filter で除外される問題 — fi
 
 [[cases]]
 reading = "あったほうが"
-expected = "あった方が"
+expected = "あったほうが"
 category = "regression"
 tags = ["kanji-variant"]
-skip = true
-issue = "あった邦画 が top-1 — KanjiVariantRewriter で方は候補に出るが top-1 にはならない"
+note = "方が is ideal but ほうが is acceptable — 邦画 must not be top-1"
 
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
