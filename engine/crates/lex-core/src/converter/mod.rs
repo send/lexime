@@ -118,6 +118,9 @@ pub fn convert(
     conn: Option<&ConnectionMatrix>,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    if kana.is_empty() {
+        return Vec::new();
+    }
     let lattice = build_lattice(dict, kana);
     convert_from_lattice(&lattice, dict, conn, None)
 }
@@ -129,6 +132,9 @@ pub fn convert_with_history(
     history: &UserHistory,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    if kana.is_empty() {
+        return Vec::new();
+    }
     let lattice = build_lattice(dict, kana);
     convert_from_lattice(&lattice, dict, conn, Some(history))
 }

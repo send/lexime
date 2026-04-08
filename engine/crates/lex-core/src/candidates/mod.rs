@@ -138,7 +138,7 @@ pub fn generate_prediction_candidates(
     max_results: usize,
 ) -> CandidateResponse {
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
-        return predictive::generate(dict, conn, history, reading, max_results, &Lattice::empty());
+        return generate_candidates(dict, conn, history, reading, max_results);
     }
     let lattice = build_lattice(dict, reading);
     predictive::generate(dict, conn, history, reading, max_results, &lattice)
