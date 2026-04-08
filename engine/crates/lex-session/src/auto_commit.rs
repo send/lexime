@@ -138,6 +138,7 @@ impl InputSession {
             resp.async_request = Some(AsyncCandidateRequest {
                 reading: c.kana.clone(),
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
+                lattice: None, // kana changed after commit; worker rebuilds
             });
             resp.candidates = CandidateAction::Show {
                 surfaces: provisional,

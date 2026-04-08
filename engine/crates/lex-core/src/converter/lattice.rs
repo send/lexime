@@ -41,6 +41,22 @@ pub struct Lattice {
     pub char_count: usize,
 }
 
+impl Lattice {
+    /// An empty lattice (no input, no nodes).
+    ///
+    /// Maintains the invariant `nodes_by_end.len() == char_count + 1` so
+    /// that downstream code (e.g. `viterbi_nbest`) can safely index into it.
+    pub fn empty() -> Self {
+        Self {
+            input: String::new(),
+            nodes: Vec::new(),
+            nodes_by_end: vec![Vec::new()],
+            nodes_by_start: Vec::new(),
+            char_count: 0,
+        }
+    }
+}
+
 /// Build a lattice from a kana string using dictionary lookups.
 ///
 /// Uses `common_prefix_search` for efficient trie traversal: a single trie walk

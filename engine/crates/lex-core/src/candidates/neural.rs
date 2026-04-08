@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
+use crate::converter::build_lattice;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::neural::NeuralScorer;
@@ -49,12 +50,14 @@ pub fn generate(
             let spec_segments = result.segments;
 
             // Get standard candidates as the base
+            let lattice = build_lattice(dict, reading);
             let base = super::standard::generate_normal_candidates(
                 dict,
                 conn,
                 history,
                 reading,
                 max_results,
+                &lattice,
             );
 
             let mut surfaces = Vec::new();
@@ -89,7 +92,15 @@ pub fn generate(
         }
         Err(e) => {
             debug!("speculative decode failed, falling back to standard: {e}");
-            super::standard::generate_normal_candidates(dict, conn, history, reading, max_results)
+            let lattice = build_lattice(dict, reading);
+            super::standard::generate_normal_candidates(
+                dict,
+                conn,
+                history,
+                reading,
+                max_results,
+                &lattice,
+            )
         }
     }
 }

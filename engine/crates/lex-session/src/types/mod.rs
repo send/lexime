@@ -104,6 +104,9 @@ pub enum CandidateDispatch {
 pub struct AsyncCandidateRequest {
     pub reading: String,
     pub candidate_dispatch: CandidateDispatch,
+    /// Pre-built lattice for reuse by the async worker.
+    /// `None` when the lattice is unavailable (e.g. auto-commit with new kana).
+    pub lattice: Option<lex_core::converter::Lattice>,
 }
 
 /// Orthogonal side-effects that accompany a response.

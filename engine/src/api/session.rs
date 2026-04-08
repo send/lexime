@@ -60,7 +60,7 @@ impl LexSession {
         let has_pending_work = resp.async_request.is_some();
         if let Some(req) = resp.async_request.take() {
             self.worker
-                .submit_candidates(req.reading, req.candidate_dispatch);
+                .submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
         }
 
         let records = session.take_history_records();
@@ -89,7 +89,7 @@ impl LexSession {
                 let has_pending_work = resp.async_request.is_some();
                 if let Some(req) = resp.async_request.take() {
                     self.worker
-                        .submit_candidates(req.reading, req.candidate_dispatch);
+                        .submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
                 }
                 let records = session.take_history_records();
                 drop(session);

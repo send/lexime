@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::{convert_nbest, convert_nbest_with_history};
+use crate::converter::{convert_nbest_from_lattice, Lattice};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::settings::settings;
@@ -17,6 +17,7 @@ pub(super) fn generate_normal_candidates(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    lattice: &Lattice,
 ) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
@@ -26,11 +27,7 @@ pub(super) fn generate_normal_candidates(
     //    lattice search), so it cannot cause fragmentation. Time-decayed
     //    boosts (half-life 168h) prevent stale history from dominating.
     let nbest = settings().candidates.nbest;
-    let paths = if let Some(h) = history {
-        convert_nbest_with_history(dict, conn, h, reading, nbest)
-    } else {
-        convert_nbest(dict, conn, reading, nbest)
-    };
+    let paths = convert_nbest_from_lattice(lattice, dict, conn, history, nbest);
 
     let mut nbest_paths = Vec::new();
     for path in &paths {
@@ -141,6 +138,7 @@ pub fn generate(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    lattice: &Lattice,
 ) -> CandidateResponse {
     let _span = debug_span!("generate_candidates", reading, max_results).entered();
     if reading.is_empty() {
@@ -153,7 +151,7 @@ pub fn generate(
     let resp = if punctuation_alternatives(reading).is_some() {
         generate_punctuation_candidates(dict, history, reading, max_results)
     } else {
-        generate_normal_candidates(dict, conn, history, reading, max_results)
+        generate_normal_candidates(dict, conn, history, reading, max_results, lattice)
     };
     debug!(
         surface_count = resp.surfaces.len(),
