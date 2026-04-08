@@ -240,16 +240,23 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
         for result in &matches {
             let reading_char_count = result.reading.chars().count();
             let end = start + reading_char_count;
-            // Pool the reading once and reuse the span for all entries
+            // Pool the reading once and reuse the span for all entries.
+            // When surface == reading (hiragana-only entries like は→は),
+            // reuse the reading span for the surface too.
             let reading_span = lattice.pool_string(&result.reading);
             for entry in &result.entries {
+                let surface_span = if entry.surface == result.reading {
+                    Some(reading_span)
+                } else {
+                    None
+                };
                 lattice.push_node(
                     start,
                     end,
                     &result.reading,
                     Some(reading_span),
                     &entry.surface,
-                    None,
+                    surface_span,
                     entry.cost,
                     entry.left_id,
                     entry.right_id,
