@@ -70,8 +70,12 @@ pub trait Dictionary: Send + Sync {
 
     /// Maximum reading length (in characters) across all entries.
     ///
-    /// Used by `Lattice::extend` to bound the lookback window.
-    /// Default returns `usize::MAX` (no bound) for safety.
+    /// Used by `Lattice::extend` to bound the lookback window for
+    /// incremental extension. Implementors should override this whenever
+    /// a finite maximum is known. The default returns `usize::MAX` as a
+    /// conservative fallback; `extend` also tracks the longest reading
+    /// observed during construction, so the lookback is bounded even
+    /// when this method is not overridden.
     fn max_reading_len(&self) -> usize {
         usize::MAX
     }

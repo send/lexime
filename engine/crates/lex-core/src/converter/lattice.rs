@@ -249,7 +249,6 @@ impl Lattice {
         self.nodes_by_end.resize_with(new_char_count + 1, Vec::new);
 
         // New positions first: full search + fallback nodes.
-        // This updates max_reading_chars with any longer matches found.
         add_nodes_for_range(
             self,
             dict,
@@ -262,10 +261,11 @@ impl Lattice {
 
         // Existing positions near the boundary: find new longer matches
         // that extend into the appended suffix. Lookback is bounded by
-        // the dictionary's max reading length, so extend remains O(max_word)
-        // per keystroke rather than O(input_length).
-        self.max_reading_chars = self.max_reading_chars.max(dict.max_reading_len());
-        let lookback_start = old_char_count.saturating_sub(self.max_reading_chars);
+        // the longest reading observed so far (tracked in add_nodes_for_range)
+        // combined with the dictionary's declared max, keeping extend
+        // O(max_word) per keystroke rather than O(input_length).
+        let lookback = self.max_reading_chars.min(dict.max_reading_len());
+        let lookback_start = old_char_count.saturating_sub(lookback);
         add_nodes_for_range(
             self,
             dict,
@@ -322,6 +322,7 @@ fn add_nodes_for_range(
                 }
             }
 
+            lattice.max_reading_chars = lattice.max_reading_chars.max(reading_char_count);
             let reading_span = lattice.pool_string(&result.reading);
             for entry in &result.entries {
                 let surface_span = if entry.surface == result.reading {
@@ -489,13 +490,18 @@ mod tests {
 
     // ── extend tests ──────────────────────────────────────────────
 
-    /// Collect the set of (start, end, reading, surface) tuples from a lattice.
-    fn node_set(lattice: &Lattice) -> std::collections::HashSet<(usize, usize, String, String)> {
+    /// Collect the full set of node tuples from a lattice for equivalence testing.
+    fn node_set(
+        lattice: &Lattice,
+    ) -> std::collections::HashSet<(usize, usize, i16, u16, u16, String, String)> {
         (0..lattice.node_count())
             .map(|i| {
                 (
                     lattice.start(i),
                     lattice.end(i),
+                    lattice.cost(i),
+                    lattice.left_id(i),
+                    lattice.right_id(i),
                     lattice.reading(i).to_string(),
                     lattice.surface(i).to_string(),
                 )
