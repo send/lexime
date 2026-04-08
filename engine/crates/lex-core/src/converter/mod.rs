@@ -140,6 +140,9 @@ pub fn convert_nbest(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
     let lattice = build_lattice(dict, kana);
     convert_nbest_from_lattice(&lattice, dict, conn, None, n)
 }
@@ -152,6 +155,9 @@ pub fn convert_nbest_with_history(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
     let lattice = build_lattice(dict, kana);
     convert_nbest_from_lattice(&lattice, dict, conn, Some(history), n)
 }
