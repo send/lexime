@@ -261,6 +261,7 @@ impl InputSession {
                 c.pending.pop();
             } else if !c.kana.is_empty() {
                 c.kana.pop();
+                c.cached_lattice = None; // kana shortened — invalidate
             } else if !c.prefix.is_empty() {
                 c.prefix.pop();
             }

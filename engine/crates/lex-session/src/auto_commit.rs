@@ -92,6 +92,7 @@ impl InputSession {
         let c = self.comp();
         let skip_chars = committed_reading_len;
         c.kana = c.kana.chars().skip(skip_chars).collect();
+        c.cached_lattice = None; // kana truncated — invalidate
         c.stability.reset();
 
         // Include prefix in the committed text, then clear it
