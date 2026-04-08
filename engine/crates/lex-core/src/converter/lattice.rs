@@ -339,6 +339,7 @@ fn add_nodes_for_range(
         if !has_single_char_match {
             let next_offset = byte_offsets.get(start + 1).copied().unwrap_or(kana.len());
             let ch = &kana[byte_offsets[start]..next_offset];
+            // reading == surface for fallback — pool once, reuse for both
             let span = lattice.pool_string(ch);
             lattice.push_node(
                 start,
