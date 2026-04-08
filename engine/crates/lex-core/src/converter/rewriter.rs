@@ -167,6 +167,8 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                 }
 
                 if seg_char_len == 1 {
+                    // Single-char segments are almost always function morphemes
+                    // (し, た, な, が) where kanji replacements would be incorrect.
                     continue;
                 }
 

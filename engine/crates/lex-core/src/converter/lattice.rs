@@ -64,18 +64,23 @@ impl Lattice {
         }
     }
 
-    /// Create a lattice pre-allocated for the given input.
-    fn with_capacity(input: &str, char_count: usize) -> Self {
+    /// Create a lattice for the given input with pre-allocated SoA storage.
+    ///
+    /// Estimates ~3 nodes per character (typical dictionary density) and
+    /// ~10 bytes of string pool per node.
+    fn new(input: &str, char_count: usize) -> Self {
+        let est_nodes = char_count * 3;
+        let est_pool = est_nodes * 10;
         Self {
             input: input.to_string(),
-            starts: Vec::new(),
-            ends: Vec::new(),
-            costs: Vec::new(),
-            left_ids: Vec::new(),
-            right_ids: Vec::new(),
-            string_pool: Vec::new(),
-            reading_spans: Vec::new(),
-            surface_spans: Vec::new(),
+            starts: Vec::with_capacity(est_nodes),
+            ends: Vec::with_capacity(est_nodes),
+            costs: Vec::with_capacity(est_nodes),
+            left_ids: Vec::with_capacity(est_nodes),
+            right_ids: Vec::with_capacity(est_nodes),
+            string_pool: Vec::with_capacity(est_pool),
+            reading_spans: Vec::with_capacity(est_nodes),
+            surface_spans: Vec::with_capacity(est_nodes),
             nodes_by_end: vec![Vec::new(); char_count + 1],
             nodes_by_start: vec![Vec::new(); char_count],
             char_count,
@@ -115,12 +120,7 @@ impl Lattice {
         };
         self.reading_spans.push(r_span);
 
-        let s_span = if surface.as_ptr() == reading.as_ptr() && surface.len() == reading.len() {
-            // reading == surface (same slice) — reuse the reading span
-            r_span
-        } else {
-            self.pool_string(surface)
-        };
+        let s_span = self.pool_string(surface);
         self.surface_spans.push(s_span);
 
         // Index tables
@@ -143,7 +143,7 @@ impl Lattice {
         }
     }
 
-    // ── Test / migration helpers ───────────────────────────────────
+    // ── Test helpers ──────────────────────────────────────────────
 
     /// Build a Lattice from a list of (start, end, reading, surface, cost,
     /// left_id, right_id) tuples.
@@ -153,7 +153,7 @@ impl Lattice {
         nodes: &[(usize, usize, &str, &str, i16, u16, u16)],
     ) -> Self {
         let char_count = input.chars().count();
-        let mut lattice = Self::with_capacity(input, char_count);
+        let mut lattice = Self::new(input, char_count);
         for &(start, end, reading, surface, cost, left_id, right_id) in nodes {
             lattice.push_node(start, end, reading, None, surface, cost, left_id, right_id);
         }
@@ -234,7 +234,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
     // Pre-compute byte offsets for each char position so we can slice
     // the original &str directly instead of allocating a new String per position.
     let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
-    let mut lattice = Lattice::with_capacity(kana, char_count);
+    let mut lattice = Lattice::new(kana, char_count);
 
     for start in 0..char_count {
         let mut has_single_char_match = false;
