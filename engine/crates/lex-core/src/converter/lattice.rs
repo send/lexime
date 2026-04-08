@@ -43,11 +43,14 @@ pub struct Lattice {
 
 impl Lattice {
     /// An empty lattice (no input, no nodes).
+    ///
+    /// Maintains the invariant `nodes_by_end.len() == char_count + 1` so
+    /// that downstream code (e.g. `viterbi_nbest`) can safely index into it.
     pub fn empty() -> Self {
         Self {
             input: String::new(),
             nodes: Vec::new(),
-            nodes_by_end: Vec::new(),
+            nodes_by_end: vec![Vec::new()],
             nodes_by_start: Vec::new(),
             char_count: 0,
         }
