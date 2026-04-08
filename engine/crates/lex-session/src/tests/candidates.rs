@@ -271,15 +271,15 @@ fn test_auto_commit_skips_single_kana_first_segment() {
     let r = complete_cycle(&mut session, &*dict);
 
     // Even after many cycles, a single-kana first segment must not auto-commit.
-    if let Some(resp) = r {
-        if let Some(ref committed) = resp.commit {
-            // If auto-commit did fire, verify the committed text is at least 2 kana
-            assert!(
-                committed.chars().count() >= 2,
-                "auto-commit should not commit single-kana reading, got: {committed}"
-            );
-        }
+    if let Some(ref resp) = r {
+        assert!(
+            resp.commit.is_none(),
+            "auto-commit should not commit when the first segment would be a single kana"
+        );
     }
-    // Session should still be composing (not fully committed)
-    assert!(session.is_composing(), "session should still be composing");
+    assert_eq!(
+        session.comp().kana,
+        "じじじじ",
+        "composing kana should remain unchanged when auto-commit is skipped"
+    );
 }
