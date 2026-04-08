@@ -12,7 +12,7 @@ impl InputSession {
         }
         // Extract data from comp() in a block so the borrow is dropped before
         // we access self.history_records.
-        let (committed_reading, committed_surface, seg_pairs, commit_count) = {
+        let (committed_reading, committed_surface, committed_reading_len, seg_pairs, commit_count) = {
             let c = self.comp();
             if c.stability.count < 3 {
                 return None;
@@ -41,6 +41,17 @@ impl InputSession {
             let segments: Vec<&ConvertedSegment> = best_path[0..commit_count].iter().collect();
             let committed_reading: String = segments.iter().map(|s| s.reading.as_str()).collect();
             let committed_surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+            let committed_reading_len = committed_reading.chars().count();
+
+            // Skip auto-commit if the committed reading is a single kana.
+            // Single-kana commits (e.g. "じ" from "じぇのさいど") destroy longer
+            // words that haven't been fully typed yet.  Only applies to kana
+            // readings — ASCII prefixes (e.g. URLs) are not subject to this guard.
+            if lex_core::unicode::is_hiragana_reading(&committed_reading)
+                && committed_reading_len < 2
+            {
+                return None;
+            }
 
             if !c.kana.starts_with(&committed_reading) {
                 return None;
@@ -60,6 +71,7 @@ impl InputSession {
             (
                 committed_reading,
                 committed_surface,
+                committed_reading_len,
                 seg_pairs,
                 commit_count,
             )
@@ -78,7 +90,7 @@ impl InputSession {
         // Safety: starts_with check above guarantees the byte offset is a valid
         // UTF-8 boundary, but we use char-based slicing for extra safety.
         let c = self.comp();
-        let skip_chars = committed_reading.chars().count();
+        let skip_chars = committed_reading_len;
         c.kana = c.kana.chars().skip(skip_chars).collect();
         c.stability.reset();
 
