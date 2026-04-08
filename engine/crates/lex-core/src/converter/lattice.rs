@@ -89,9 +89,9 @@ impl Lattice {
 
     /// Append a node to the lattice.
     ///
-    /// `reading_span` allows reusing an already-pooled reading span (e.g.
-    /// when multiple entries share the same reading within a SearchResult).
-    /// Pass `None` to append the reading to the pool.
+    /// `reading_span` / `surface_span` allow reusing already-pooled spans
+    /// (e.g. shared reading within a SearchResult, or reading == surface
+    /// for fallback nodes). Pass `None` to append the string to the pool.
     #[allow(clippy::too_many_arguments)]
     fn push_node(
         &mut self,
@@ -100,6 +100,7 @@ impl Lattice {
         reading: &str,
         reading_span: Option<StringSpan>,
         surface: &str,
+        surface_span: Option<StringSpan>,
         cost: i16,
         left_id: u16,
         right_id: u16,
@@ -114,13 +115,10 @@ impl Lattice {
         self.right_ids.push(right_id);
 
         // String pool
-        let r_span = match reading_span {
-            Some(span) => span,
-            None => self.pool_string(reading),
-        };
+        let r_span = reading_span.unwrap_or_else(|| self.pool_string(reading));
         self.reading_spans.push(r_span);
 
-        let s_span = self.pool_string(surface);
+        let s_span = surface_span.unwrap_or_else(|| self.pool_string(surface));
         self.surface_spans.push(s_span);
 
         // Index tables
@@ -150,7 +148,9 @@ impl Lattice {
         let char_count = input.chars().count();
         let mut lattice = Self::new(input, char_count);
         for &(start, end, reading, surface, cost, left_id, right_id) in nodes {
-            lattice.push_node(start, end, reading, None, surface, cost, left_id, right_id);
+            lattice.push_node(
+                start, end, reading, None, surface, None, cost, left_id, right_id,
+            );
         }
         lattice
     }
@@ -249,6 +249,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
                     &result.reading,
                     Some(reading_span),
                     &entry.surface,
+                    None,
                     entry.cost,
                     entry.left_id,
                     entry.right_id,
@@ -273,6 +274,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
                 ch,
                 Some(span),
                 ch,
+                Some(span),
                 settings().cost.unknown_word_cost,
                 0,
                 0,
