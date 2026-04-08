@@ -1,5 +1,5 @@
 use lex_core::candidates::CandidateResponse;
-use lex_core::converter::{build_lattice, convert_from_lattice, ConvertedSegment};
+use lex_core::converter::{build_lattice, ConversionContext, ConvertedSegment};
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
@@ -58,12 +58,12 @@ impl InputSession {
 
             let segments = {
                 let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-                convert_from_lattice(
-                    &lattice,
-                    &*self.dict,
-                    self.conn.as_deref(),
-                    h_guard.as_deref(),
-                )
+                let ctx = ConversionContext {
+                    dict: &*self.dict,
+                    conn: self.conn.as_deref(),
+                    history: h_guard.as_deref(),
+                };
+                ctx.convert_from_lattice(&lattice)
             };
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();

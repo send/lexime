@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::{convert_nbest_from_lattice, Lattice};
+use crate::converter::Lattice;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::settings::settings;
@@ -27,7 +27,12 @@ pub(super) fn generate_normal_candidates(
     //    lattice search), so it cannot cause fragmentation. Time-decayed
     //    boosts (half-life 168h) prevent stale history from dominating.
     let nbest = settings().candidates.nbest;
-    let paths = convert_nbest_from_lattice(lattice, dict, conn, history, nbest);
+    let ctx = crate::converter::ConversionContext {
+        dict,
+        conn,
+        history,
+    };
+    let paths = ctx.convert_nbest_from_lattice(lattice, nbest);
 
     let mut nbest_paths = Vec::new();
     for path in &paths {

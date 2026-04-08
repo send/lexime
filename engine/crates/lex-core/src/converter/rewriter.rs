@@ -6,6 +6,20 @@ use crate::unicode::{hiragana_to_katakana, is_hiragana, is_kanji, is_katakana};
 use super::lattice::Lattice;
 use super::viterbi::ScoredPath;
 
+/// Position of a segment within a path: its index and character range.
+#[derive(Clone, Copy)]
+struct SegmentPos {
+    idx: usize,
+    start: usize,
+    end: usize,
+}
+
+impl SegmentPos {
+    fn char_range(self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
 /// A rewriter that generates new candidates from the N-best list.
 ///
 /// Implementations return new candidates without mutating the input.
@@ -172,10 +186,15 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                     continue;
                 }
 
+                let spos = SegmentPos {
+                    idx: seg_idx,
+                    start: seg_start,
+                    end: seg_end,
+                };
                 if seg_char_len == 2 {
-                    self.kanji_variants_exact(path, seg_idx, seg_start, seg_end, &mut new_paths);
+                    self.kanji_variants_exact(path, spos, &mut new_paths);
                 } else {
-                    self.kanji_variants_subsplit(path, seg_idx, seg_start, seg_end, &mut new_paths);
+                    self.kanji_variants_subsplit(path, spos, &mut new_paths);
                 }
             }
         }
@@ -215,14 +234,12 @@ impl KanjiVariantRewriter<'_> {
     fn kanji_variants_exact(
         &self,
         path: &ScoredPath,
-        seg_idx: usize,
-        seg_start: usize,
-        seg_end: usize,
+        seg: SegmentPos,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        for idx in self.top_kanji_at(seg_start..seg_end) {
+        for idx in self.top_kanji_at(seg.char_range()) {
             let mut new_segments = path.segments.clone();
-            new_segments[seg_idx] = self.lattice.to_rich_segment(idx);
+            new_segments[seg.idx] = self.lattice.to_rich_segment(idx);
             new_paths.push(ScoredPath {
                 segments: new_segments,
                 viterbi_cost: path.viterbi_cost.saturating_add(2000),
@@ -235,17 +252,15 @@ impl KanjiVariantRewriter<'_> {
     fn kanji_variants_subsplit(
         &self,
         path: &ScoredPath,
-        seg_idx: usize,
-        seg_start: usize,
-        seg_end: usize,
+        seg: SegmentPos,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        let mid = seg_start + 2;
-        if mid >= seg_end {
+        let mid = seg.start + 2;
+        if mid >= seg.end {
             return;
         }
 
-        let kanji_indices = self.top_kanji_at(seg_start..mid);
+        let kanji_indices = self.top_kanji_at(seg.start..mid);
         if kanji_indices.is_empty() {
             return;
         }
@@ -259,7 +274,7 @@ impl KanjiVariantRewriter<'_> {
             .copied()
             .filter(|&idx| {
                 let s = self.lattice.surface(idx);
-                self.lattice.end(idx) == seg_end
+                self.lattice.end(idx) == seg.end
                     && s == self.lattice.reading(idx)
                     && s.chars().all(is_hiragana)
             })
@@ -271,8 +286,8 @@ impl KanjiVariantRewriter<'_> {
         for kanji_idx in kanji_indices {
             let mut new_segments = path.segments.clone();
             let right_seg = self.lattice.to_rich_segment(right_idx);
-            new_segments[seg_idx] = self.lattice.to_rich_segment(kanji_idx);
-            new_segments.insert(seg_idx + 1, right_seg);
+            new_segments[seg.idx] = self.lattice.to_rich_segment(kanji_idx);
+            new_segments.insert(seg.idx + 1, right_seg);
             new_paths.push(ScoredPath {
                 segments: new_segments,
                 viterbi_cost: path.viterbi_cost.saturating_add(2000),

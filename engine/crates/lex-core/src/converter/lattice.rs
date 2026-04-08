@@ -138,6 +138,11 @@ impl Lattice {
         }
     }
 
+    /// Append a string to the pool and return a reusable `PooledStr`.
+    fn pool(&mut self, s: &str) -> PooledStr<'static> {
+        PooledStr::Reuse(self.pool_string(s))
+    }
+
     /// Append a string to the pool and return its span.
     fn pool_string(&mut self, s: &str) -> StringSpan {
         let offset = u32::try_from(self.string_pool.len()).expect("string pool offset overflow");
@@ -332,16 +337,16 @@ fn add_nodes_for_range(
             }
 
             lattice.max_reading_chars = lattice.max_reading_chars.max(reading_char_count);
-            let reading_span = lattice.pool_string(&result.reading);
+            let reading = lattice.pool(&result.reading);
             for entry in &result.entries {
                 let surface = if entry.surface == result.reading {
-                    PooledStr::Reuse(reading_span)
+                    reading
                 } else {
                     PooledStr::New(&entry.surface)
                 };
                 lattice.push_node(
                     start..end,
-                    PooledStr::Reuse(reading_span),
+                    reading,
                     surface,
                     entry.cost,
                     entry.left_id,
@@ -357,7 +362,7 @@ fn add_nodes_for_range(
             let next_offset = byte_offsets.get(start + 1).copied().unwrap_or(kana.len());
             let ch = &kana[byte_offsets[start]..next_offset];
             // reading == surface for fallback — pool once, reuse for both
-            let span = PooledStr::Reuse(lattice.pool_string(ch));
+            let span = lattice.pool(ch);
             lattice.push_node(
                 start..start + 1,
                 span,
