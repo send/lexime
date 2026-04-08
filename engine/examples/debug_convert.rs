@@ -44,19 +44,19 @@ fn main() {
     let lattice = build_lattice(&dict, input);
     println!(
         "  {} nodes, {} chars",
-        lattice.nodes.len(),
+        lattice.node_count(),
         lattice.char_count
     );
-    for (i, node) in lattice.nodes.iter().enumerate() {
+    for i in 0..lattice.node_count() {
         println!(
             "  [{i:3}] {}-{} {:8} {:12} cost={:6} L={:5} R={:5}",
-            node.start,
-            node.end,
-            node.reading,
-            node.surface,
-            node.cost,
-            node.left_id,
-            node.right_id
+            lattice.start(i),
+            lattice.end(i),
+            lattice.reading(i),
+            lattice.surface(i),
+            lattice.cost(i),
+            lattice.left_id(i),
+            lattice.right_id(i)
         );
     }
 

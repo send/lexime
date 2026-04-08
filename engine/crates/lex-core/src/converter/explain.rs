@@ -8,7 +8,7 @@ use crate::settings::settings;
 
 use super::cost::{conn_cost, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
-use super::lattice::{build_lattice, LatticeNode};
+use super::lattice::{build_lattice, Lattice};
 use super::reranker;
 use super::viterbi::{viterbi_nbest, ScoredPath};
 
@@ -33,16 +33,17 @@ pub struct ExplainNode {
     pub right_id: u16,
 }
 
-impl From<&LatticeNode> for ExplainNode {
-    fn from(n: &LatticeNode) -> Self {
+impl ExplainNode {
+    /// Build from a lattice + node index.
+    fn from_lattice(lattice: &Lattice, idx: usize) -> Self {
         Self {
-            start: n.start,
-            end: n.end,
-            reading: n.reading.clone(),
-            surface: n.surface.clone(),
-            cost: n.cost,
-            left_id: n.left_id,
-            right_id: n.right_id,
+            start: lattice.start(idx),
+            end: lattice.end(idx),
+            reading: lattice.reading(idx).to_string(),
+            surface: lattice.surface(idx).to_string(),
+            cost: lattice.cost(idx),
+            left_id: lattice.left_id(idx),
+            right_id: lattice.right_id(idx),
         }
     }
 }
@@ -162,7 +163,9 @@ pub fn explain(
     use std::collections::HashMap;
 
     let lattice = build_lattice(dict, kana);
-    let lattice_nodes: Vec<ExplainNode> = lattice.nodes.iter().map(ExplainNode::from).collect();
+    let lattice_nodes: Vec<ExplainNode> = (0..lattice.node_count())
+        .map(|idx| ExplainNode::from_lattice(&lattice, idx))
+        .collect();
 
     let cost_fn = DefaultCostFunction::new(conn);
     let oversample = (n * 3).max(50);

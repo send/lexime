@@ -2,7 +2,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::settings::settings;
 use crate::unicode::{is_hiragana, is_kanji, is_katakana, is_latin};
 
-use super::lattice::LatticeNode;
+use super::lattice::Lattice;
 
 /// Cost adjustment based on the surface script.
 /// - Mixed-script (kanji+kana, e.g. 通っ, 食べる): bonus (negative)
@@ -42,11 +42,18 @@ pub fn script_cost(surface: &str, reading_chars: usize) -> i64 {
 }
 
 /// Trait for scoring lattice paths during Viterbi search.
+///
+/// Hybrid design: `word_cost` receives `(&Lattice, usize)` because
+/// `PrefixConstrainedCost` needs full node inspection (start, end,
+/// reading, surface).  The other three methods take raw IDs — both
+/// implementations only ever read `left_id` / `right_id`, so passing
+/// the Lattice would be wasteful (especially for `transition_cost`,
+/// the most frequent call at O(P*Q) per position).
 pub(crate) trait CostFunction: Send + Sync {
-    fn word_cost(&self, node: &LatticeNode) -> i64;
-    fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64;
-    fn bos_cost(&self, node: &LatticeNode) -> i64;
-    fn eos_cost(&self, node: &LatticeNode) -> i64;
+    fn word_cost(&self, lattice: &Lattice, idx: usize) -> i64;
+    fn transition_cost(&self, prev_right_id: u16, next_left_id: u16) -> i64;
+    fn bos_cost(&self, left_id: u16) -> i64;
+    fn eos_cost(&self, right_id: u16) -> i64;
 }
 
 /// Look up connection cost between two IDs, returning 0 if no matrix is provided.
@@ -66,25 +73,25 @@ impl<'a> DefaultCostFunction<'a> {
 }
 
 impl CostFunction for DefaultCostFunction<'_> {
-    fn word_cost(&self, node: &LatticeNode) -> i64 {
+    fn word_cost(&self, lattice: &Lattice, idx: usize) -> i64 {
         let seg_penalty = settings().cost.segment_penalty;
         let is_fw = self
             .conn
-            .map(|c| c.is_function_word(node.left_id))
+            .map(|c| c.is_function_word(lattice.left_id(idx)))
             .unwrap_or(false);
         let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
-        node.cost as i64 + penalty
+        lattice.cost(idx) as i64 + penalty
     }
 
-    fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64 {
-        conn_cost(self.conn, prev.right_id, next.left_id)
+    fn transition_cost(&self, prev_right_id: u16, next_left_id: u16) -> i64 {
+        conn_cost(self.conn, prev_right_id, next_left_id)
     }
 
-    fn bos_cost(&self, node: &LatticeNode) -> i64 {
-        conn_cost(self.conn, 0, node.left_id)
+    fn bos_cost(&self, left_id: u16) -> i64 {
+        conn_cost(self.conn, 0, left_id)
     }
 
-    fn eos_cost(&self, node: &LatticeNode) -> i64 {
-        conn_cost(self.conn, node.right_id, 0)
+    fn eos_cost(&self, right_id: u16) -> i64 {
+        conn_cost(self.conn, right_id, 0)
     }
 }
