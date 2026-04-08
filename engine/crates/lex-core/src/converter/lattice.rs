@@ -132,15 +132,10 @@ impl Lattice {
 
     /// Append a string to the pool and return its span.
     fn pool_string(&mut self, s: &str) -> StringSpan {
-        let offset = self.string_pool.len();
-        let len = s.len();
-        debug_assert!(offset <= u32::MAX as usize, "string pool offset overflow");
-        debug_assert!(len <= u16::MAX as usize, "string length overflow");
+        let offset = u32::try_from(self.string_pool.len()).expect("string pool offset overflow");
+        let len = u16::try_from(s.len()).expect("string length overflow");
         self.string_pool.extend_from_slice(s.as_bytes());
-        StringSpan {
-            offset: offset as u32,
-            len: len as u16,
-        }
+        StringSpan { offset, len }
     }
 
     // ── Test helpers ──────────────────────────────────────────────
