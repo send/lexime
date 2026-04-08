@@ -439,7 +439,6 @@ reading = "らいねんにほんにいきたい"
 expected = "来年日本に行きたい"
 category = "phrase"
 tags = ["long", "desire"]
-skip = true
 issue = "にほん→二本 — homophone error in sentence context"
 
 [[cases]]
