@@ -173,7 +173,7 @@ impl InputSession {
     pub(super) fn handle_idle(&mut self, text: &str) -> KeyResponse {
         // Uppercase letter: add to composition as-is (no romaji conversion)
         if text.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-            self.state = SessionState::Composing(Composition::new());
+            self.state = SessionState::Composing(Box::new(Composition::new()));
             self.comp().kana.push_str(text);
             self.comp().stability.reset();
             return if self.config.defer_candidates {
@@ -186,7 +186,7 @@ impl InputSession {
 
         // Romaji input
         if is_romaji_input(text) {
-            self.state = SessionState::Composing(Composition::new());
+            self.state = SessionState::Composing(Box::new(Composition::new()));
             return self.append_and_convert(&text.to_lowercase());
         }
 
@@ -194,7 +194,7 @@ impl InputSession {
         let trie = RomajiTrie::global();
         match trie.lookup(text) {
             TrieLookupResult::Exact(_) | TrieLookupResult::ExactAndPrefix(_) => {
-                self.state = SessionState::Composing(Composition::new());
+                self.state = SessionState::Composing(Box::new(Composition::new()));
                 self.append_and_convert(text)
             }
             _ => KeyResponse::not_consumed(),
@@ -261,6 +261,7 @@ impl InputSession {
                 c.pending.pop();
             } else if !c.kana.is_empty() {
                 c.kana.pop();
+                c.cached_lattice = None; // kana shortened — invalidate
             } else if !c.prefix.is_empty() {
                 c.prefix.pop();
             }

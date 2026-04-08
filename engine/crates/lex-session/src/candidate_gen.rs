@@ -46,23 +46,32 @@ impl InputSession {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
-            // Build lattice once — reused for sync 1-best and async N-best.
-            let (segments, lattice) = {
+            // Reuse cached lattice: extend if kana grew, or keep as-is
+            // if unchanged. Fall back to full rebuild otherwise.
+            let lattice = match self.comp().cached_lattice.take() {
+                Some(mut cached) if reading.starts_with(&cached.input) => {
+                    cached.extend(&*self.dict, &reading); // no-op if reading == input
+                    cached
+                }
+                _ => build_lattice(&*self.dict, &reading),
+            };
+
+            let segments = {
                 let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-                let lattice = build_lattice(&*self.dict, &reading);
-                let segments = convert_from_lattice(
+                convert_from_lattice(
                     &lattice,
                     &*self.dict,
                     self.conn.as_deref(),
                     h_guard.as_deref(),
-                );
-                (segments, lattice)
-            }; // h_guard dropped here
+                )
+            };
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();
             c.candidates.surfaces = vec![surface];
             c.candidates.paths = vec![segments];
             c.candidates.selected = 0;
+            // Cache for next keystroke's incremental extension
+            c.cached_lattice = Some(lattice.clone());
 
             let mut resp = build_marked_text(self.comp());
             resp.async_request = Some(AsyncCandidateRequest {
