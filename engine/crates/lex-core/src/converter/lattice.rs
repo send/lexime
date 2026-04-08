@@ -12,6 +12,14 @@ struct StringSpan {
     len: u16,
 }
 
+/// A string that is either already pooled (reuse existing span) or
+/// new (will be appended to the pool on use).
+#[derive(Clone, Copy)]
+enum PooledStr<'a> {
+    New(&'a str),
+    Reuse(StringSpan),
+}
+
 /// The lattice: all possible segmentations of a kana string.
 ///
 /// Stores node data in Structure-of-Arrays (SoA) layout for cache-friendly
@@ -94,44 +102,40 @@ impl Lattice {
     }
 
     /// Append a node to the lattice.
-    ///
-    /// `reading_span` / `surface_span` allow reusing already-pooled spans
-    /// (e.g. shared reading within a SearchResult, or reading == surface
-    /// for fallback nodes). Pass `None` to append the string to the pool.
-    #[allow(clippy::too_many_arguments)]
     fn push_node(
         &mut self,
-        start: usize,
-        end: usize,
-        reading: &str,
-        reading_span: Option<StringSpan>,
-        surface: &str,
-        surface_span: Option<StringSpan>,
+        pos: std::ops::Range<usize>,
+        reading: PooledStr<'_>,
+        surface: PooledStr<'_>,
         cost: i16,
         left_id: u16,
         right_id: u16,
     ) -> usize {
         let idx = self.costs.len();
 
-        // SoA numeric
-        self.starts.push(start);
-        self.ends.push(end);
+        self.starts.push(pos.start);
+        self.ends.push(pos.end);
         self.costs.push(cost);
         self.left_ids.push(left_id);
         self.right_ids.push(right_id);
 
-        // String pool
-        let r_span = reading_span.unwrap_or_else(|| self.pool_string(reading));
+        let r_span = self.resolve(reading);
+        let s_span = self.resolve(surface);
         self.reading_spans.push(r_span);
-
-        let s_span = surface_span.unwrap_or_else(|| self.pool_string(surface));
         self.surface_spans.push(s_span);
 
-        // Index tables
-        self.nodes_by_end[end].push(idx);
-        self.nodes_by_start[start].push(idx);
+        self.nodes_by_end[pos.end].push(idx);
+        self.nodes_by_start[pos.start].push(idx);
 
         idx
+    }
+
+    /// Resolve a `PooledStr` to a `StringSpan`, appending to the pool if new.
+    fn resolve(&mut self, s: PooledStr<'_>) -> StringSpan {
+        match s {
+            PooledStr::Reuse(span) => span,
+            PooledStr::New(s) => self.pool_string(s),
+        }
     }
 
     /// Append a string to the pool and return its span.
@@ -155,7 +159,12 @@ impl Lattice {
         let mut lattice = Self::new(input, char_count);
         for &(start, end, reading, surface, cost, left_id, right_id) in nodes {
             lattice.push_node(
-                start, end, reading, None, surface, None, cost, left_id, right_id,
+                start..end,
+                PooledStr::New(reading),
+                PooledStr::New(surface),
+                cost,
+                left_id,
+                right_id,
             );
         }
         lattice
@@ -325,18 +334,15 @@ fn add_nodes_for_range(
             lattice.max_reading_chars = lattice.max_reading_chars.max(reading_char_count);
             let reading_span = lattice.pool_string(&result.reading);
             for entry in &result.entries {
-                let surface_span = if entry.surface == result.reading {
-                    Some(reading_span)
+                let surface = if entry.surface == result.reading {
+                    PooledStr::Reuse(reading_span)
                 } else {
-                    None
+                    PooledStr::New(&entry.surface)
                 };
                 lattice.push_node(
-                    start,
-                    end,
-                    &result.reading,
-                    Some(reading_span),
-                    &entry.surface,
-                    surface_span,
+                    start..end,
+                    PooledStr::Reuse(reading_span),
+                    surface,
                     entry.cost,
                     entry.left_id,
                     entry.right_id,
@@ -351,14 +357,11 @@ fn add_nodes_for_range(
             let next_offset = byte_offsets.get(start + 1).copied().unwrap_or(kana.len());
             let ch = &kana[byte_offsets[start]..next_offset];
             // reading == surface for fallback — pool once, reuse for both
-            let span = lattice.pool_string(ch);
+            let span = PooledStr::Reuse(lattice.pool_string(ch));
             lattice.push_node(
-                start,
-                start + 1,
-                ch,
-                Some(span),
-                ch,
-                Some(span),
+                start..start + 1,
+                span,
+                span,
                 settings().cost.unknown_word_cost,
                 0,
                 0,

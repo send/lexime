@@ -194,16 +194,16 @@ impl Rewriter for KanjiVariantRewriter<'_> {
 }
 
 impl KanjiVariantRewriter<'_> {
-    /// Top kanji node indices at [start, end), sorted by cost, up to MAX_KANJI_PER_SEGMENT.
-    fn top_kanji_at(&self, start: usize, end: usize) -> Vec<usize> {
-        let Some(indices) = self.lattice.nodes_by_start.get(start) else {
+    /// Top kanji node indices at `pos`, sorted by cost, up to MAX_KANJI_PER_SEGMENT.
+    fn top_kanji_at(&self, pos: std::ops::Range<usize>) -> Vec<usize> {
+        let Some(indices) = self.lattice.nodes_by_start.get(pos.start) else {
             return Vec::new();
         };
         let mut kanji: Vec<usize> = indices
             .iter()
             .copied()
             .filter(|&idx| {
-                self.lattice.end(idx) == end && self.lattice.surface(idx).chars().any(is_kanji)
+                self.lattice.end(idx) == pos.end && self.lattice.surface(idx).chars().any(is_kanji)
             })
             .collect();
         kanji.sort_by_key(|&idx| self.lattice.cost(idx));
@@ -220,7 +220,7 @@ impl KanjiVariantRewriter<'_> {
         seg_end: usize,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        for idx in self.top_kanji_at(seg_start, seg_end) {
+        for idx in self.top_kanji_at(seg_start..seg_end) {
             let mut new_segments = path.segments.clone();
             new_segments[seg_idx] = self.lattice.to_rich_segment(idx);
             new_paths.push(ScoredPath {
@@ -245,7 +245,7 @@ impl KanjiVariantRewriter<'_> {
             return;
         }
 
-        let kanji_indices = self.top_kanji_at(seg_start, mid);
+        let kanji_indices = self.top_kanji_at(seg_start..mid);
         if kanji_indices.is_empty() {
             return;
         }
@@ -300,7 +300,7 @@ impl KanjiVariantRewriter<'_> {
 
         for pos in 1..char_count.saturating_sub(2) {
             let end = pos + 2;
-            let kanji_indices = self.top_kanji_at(pos, end);
+            let kanji_indices = self.top_kanji_at(pos..end);
             if kanji_indices.is_empty() {
                 continue;
             }
