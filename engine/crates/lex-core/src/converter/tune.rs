@@ -130,15 +130,15 @@ pub fn precompute_cases(
             paths.extend(reseg);
 
             // Extract features and pair with paths
+            let fcfg = FeatureConfig {
+                conn: Some(conn),
+                dict: Some(dict),
+                structure_cap: cap,
+                prefix_floor,
+            };
             let mut paired: Vec<(ScoredPath, PathFeatures)> = paths
                 .into_iter()
                 .map(|p| {
-                    let fcfg = FeatureConfig {
-                        conn: Some(conn),
-                        dict: Some(dict),
-                        structure_cap: cap,
-                        prefix_floor,
-                    };
                     let f = fcfg.extract(&p, None);
                     (p, f)
                 })

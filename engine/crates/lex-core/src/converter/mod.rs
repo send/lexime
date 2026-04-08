@@ -116,6 +116,9 @@ pub fn convert(
     conn: Option<&ConnectionMatrix>,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    if kana.is_empty() {
+        return Vec::new();
+    }
     let ctx = ConversionContext {
         dict,
         conn,
@@ -132,6 +135,9 @@ pub fn convert_with_history(
     history: &UserHistory,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
+    if kana.is_empty() {
+        return Vec::new();
+    }
     let ctx = ConversionContext {
         dict,
         conn,
@@ -148,6 +154,9 @@ pub fn convert_nbest(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
     let ctx = ConversionContext {
         dict,
         conn,
@@ -165,6 +174,9 @@ pub fn convert_nbest_with_history(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
+    if kana.is_empty() || n == 0 {
+        return Vec::new();
+    }
     let ctx = ConversionContext {
         dict,
         conn,
