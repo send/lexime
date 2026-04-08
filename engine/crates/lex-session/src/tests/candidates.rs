@@ -240,3 +240,46 @@ fn test_predictive_mode_no_auto_commit() {
         );
     }
 }
+
+#[test]
+fn test_auto_commit_skips_single_kana_first_segment() {
+    use lex_core::candidates::generate_candidates;
+
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
+        let reading = session.comp().kana.clone();
+        if reading.is_empty() {
+            return None;
+        }
+        let cand = generate_candidates(dict, None, None, &reading, 20);
+        session.receive_candidates(&reading, cand.surfaces, cand.paths)
+    }
+
+    // Type a reading where Viterbi may produce a single-kana first segment.
+    // Even if stability threshold is met, auto-commit must NOT fire when the
+    // committed reading is shorter than 2 kana.
+    type_string(&mut session, "ji");
+    complete_cycle(&mut session, &*dict);
+    type_string(&mut session, "ji");
+    complete_cycle(&mut session, &*dict);
+    type_string(&mut session, "ji");
+    complete_cycle(&mut session, &*dict);
+    type_string(&mut session, "ji");
+    let r = complete_cycle(&mut session, &*dict);
+
+    // Even after many cycles, a single-kana first segment must not auto-commit.
+    if let Some(resp) = r {
+        if let Some(ref committed) = resp.commit {
+            // If auto-commit did fire, verify the committed text is at least 2 kana
+            assert!(
+                committed.chars().count() >= 2,
+                "auto-commit should not commit single-kana reading, got: {committed}"
+            );
+        }
+    }
+    // Session should still be composing (not fully committed)
+    assert!(session.is_composing(), "session should still be composing");
+}
