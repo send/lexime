@@ -1,4 +1,7 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.rustls-webpki]]
+who = "SAKAI, Kazuaki <kaz.july.7@gmail.com>"
+criteria = "safe-to-deploy"
+delta = "0.103.9 -> 0.103.10"
