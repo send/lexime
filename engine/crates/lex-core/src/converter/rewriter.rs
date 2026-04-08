@@ -194,6 +194,23 @@ impl Rewriter for KanjiVariantRewriter<'_> {
 }
 
 impl KanjiVariantRewriter<'_> {
+    /// Top kanji node indices at [start, end), sorted by cost, up to MAX_KANJI_PER_SEGMENT.
+    fn top_kanji_at(&self, start: usize, end: usize) -> Vec<usize> {
+        let Some(indices) = self.lattice.nodes_by_start.get(start) else {
+            return Vec::new();
+        };
+        let mut kanji: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&idx| {
+                self.lattice.end(idx) == end && self.lattice.surface(idx).chars().any(is_kanji)
+            })
+            .collect();
+        kanji.sort_by_key(|&idx| self.lattice.cost(idx));
+        kanji.truncate(MAX_KANJI_PER_SEGMENT);
+        kanji
+    }
+
     /// Replace a 2-char hiragana segment with kanji alternatives from the lattice.
     fn kanji_variants_exact(
         &self,
@@ -203,22 +220,7 @@ impl KanjiVariantRewriter<'_> {
         seg_end: usize,
         new_paths: &mut Vec<ScoredPath>,
     ) {
-        let node_indices = match self.lattice.nodes_by_start.get(seg_start) {
-            Some(indices) => indices,
-            None => return,
-        };
-
-        let mut kanji_indices: Vec<usize> = node_indices
-            .iter()
-            .copied()
-            .filter(|&idx| {
-                self.lattice.end(idx) == seg_end && self.lattice.surface(idx).chars().any(is_kanji)
-            })
-            .collect();
-        kanji_indices.sort_by_key(|&idx| self.lattice.cost(idx));
-        kanji_indices.truncate(MAX_KANJI_PER_SEGMENT);
-
-        for idx in kanji_indices {
+        for idx in self.top_kanji_at(seg_start, seg_end) {
             let mut new_segments = path.segments.clone();
             new_segments[seg_idx] = self.lattice.to_rich_segment(idx);
             new_paths.push(ScoredPath {
@@ -243,29 +245,14 @@ impl KanjiVariantRewriter<'_> {
             return;
         }
 
-        // Find kanji nodes for the left part [seg_start, mid)
-        let left_indices = match self.lattice.nodes_by_start.get(seg_start) {
-            Some(indices) => indices,
-            None => return,
-        };
-        let mut kanji_indices: Vec<usize> = left_indices
-            .iter()
-            .copied()
-            .filter(|&idx| {
-                self.lattice.end(idx) == mid && self.lattice.surface(idx).chars().any(is_kanji)
-            })
-            .collect();
-        kanji_indices.sort_by_key(|&idx| self.lattice.cost(idx));
-        kanji_indices.truncate(MAX_KANJI_PER_SEGMENT);
-
+        let kanji_indices = self.top_kanji_at(seg_start, mid);
         if kanji_indices.is_empty() {
             return;
         }
 
         // Find a hiragana node for the right part [mid, seg_end)
-        let right_indices = match self.lattice.nodes_by_start.get(mid) {
-            Some(indices) => indices,
-            None => return,
+        let Some(right_indices) = self.lattice.nodes_by_start.get(mid) else {
+            return;
         };
         let right_idx = right_indices
             .iter()
@@ -313,22 +300,7 @@ impl KanjiVariantRewriter<'_> {
 
         for pos in 1..char_count.saturating_sub(2) {
             let end = pos + 2;
-
-            let node_indices = match self.lattice.nodes_by_start.get(pos) {
-                Some(indices) => indices,
-                None => continue,
-            };
-
-            let mut kanji_indices: Vec<usize> = node_indices
-                .iter()
-                .copied()
-                .filter(|&idx| {
-                    self.lattice.end(idx) == end && self.lattice.surface(idx).chars().any(is_kanji)
-                })
-                .collect();
-            kanji_indices.sort_by_key(|&idx| self.lattice.cost(idx));
-            kanji_indices.truncate(MAX_KANJI_PER_SEGMENT);
-
+            let kanji_indices = self.top_kanji_at(pos, end);
             if kanji_indices.is_empty() {
                 continue;
             }
