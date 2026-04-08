@@ -177,10 +177,13 @@ fn candidate_worker(
             continue;
         }
 
-        let _ = tx.send(CandidateResult {
-            reading: latest.reading,
-            response,
-        });
+        // Use lattice.input as the canonical reading when a lattice was provided,
+        // so the stale-check in receive_candidates matches the actual conversion.
+        let reading = match latest.lattice {
+            Some(lattice) => lattice.input,
+            None => latest.reading,
+        };
+        let _ = tx.send(CandidateResult { reading, response });
     }
 }
 
