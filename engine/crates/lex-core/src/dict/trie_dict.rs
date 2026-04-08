@@ -141,16 +141,17 @@ impl TrieDictionary {
         let mut reading_index = Vec::with_capacity(pairs.len() * SLOT_SIZE);
 
         for (_, candidates) in &pairs {
-            let entry_offset = (entries_data.len() / ENTRY_SIZE) as u32;
-            let count = candidates.len() as u16;
+            let entry_offset =
+                u32::try_from(entries_data.len() / ENTRY_SIZE).expect("entry offset overflow");
+            let count = u16::try_from(candidates.len()).expect("candidate count overflow");
 
             for e in candidates {
                 let str_offset = *pool_map.entry(e.surface.clone()).or_insert_with(|| {
-                    let offset = pool.len() as u32;
+                    let offset = u32::try_from(pool.len()).expect("string pool offset overflow");
                     pool.extend_from_slice(e.surface.as_bytes());
                     offset
                 });
-                let str_len = e.surface.len() as u16;
+                let str_len = u16::try_from(e.surface.len()).expect("surface length overflow");
 
                 entries_data.extend_from_slice(&str_offset.to_ne_bytes());
                 entries_data.extend_from_slice(&str_len.to_ne_bytes());

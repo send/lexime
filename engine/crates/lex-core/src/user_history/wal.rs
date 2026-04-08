@@ -98,7 +98,8 @@ impl HistoryWal {
             timestamp,
         };
         let payload = bincode::serialize(&entry).map_err(io::Error::other)?;
-        let length = payload.len() as u32;
+        let length = u32::try_from(payload.len())
+            .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
         let crc = crc32fast::hash(&payload);
 
         let file = self.open_file()?;
