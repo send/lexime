@@ -41,7 +41,7 @@ impl InputSession {
             let c = self.comp();
             if c.candidates.selected > 0 && c.candidates.selected < c.candidates.surfaces.len() {
                 let commit_resp = self.commit_current_state();
-                self.state = SessionState::Composing(Composition::new());
+                self.state = SessionState::Composing(Box::new(Composition::new()));
                 let append_resp = self.append_and_convert(&text.to_lowercase());
                 return commit_resp.with_display_from(append_resp);
             }
@@ -83,7 +83,7 @@ impl InputSession {
         // Overflow: flush + commit if kana too long
         if self.comp().kana.len() >= MAX_COMPOSED_KANA_LENGTH {
             let resp = self.commit_composed();
-            self.state = SessionState::Composing(Composition::new());
+            self.state = SessionState::Composing(Box::new(Composition::new()));
             self.comp().pending.push_str(input);
             self.comp().drain_pending(false);
             let sub_resp = if self.config.defer_candidates {

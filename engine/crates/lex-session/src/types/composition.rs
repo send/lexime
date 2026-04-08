@@ -48,7 +48,7 @@ impl ConversionMode {
 
 pub(crate) enum SessionState {
     Idle,
-    Composing(Composition),
+    Composing(Box<Composition>),
     Snippet(SnippetState),
 }
 
@@ -64,6 +64,9 @@ pub(crate) struct Composition {
     pub(crate) prefix: FrozenPrefix,
     pub(crate) candidates: CandidateState,
     pub(crate) stability: StabilityTracker,
+    /// Cached lattice for incremental extension on character append.
+    /// Cleared on backspace, auto-commit, or other destructive kana changes.
+    pub(crate) cached_lattice: Option<lex_core::converter::Lattice>,
 }
 
 impl Composition {
@@ -74,6 +77,7 @@ impl Composition {
             prefix: FrozenPrefix::new(),
             candidates: CandidateState::new(),
             stability: StabilityTracker::new(),
+            cached_lattice: None,
         }
     }
 
