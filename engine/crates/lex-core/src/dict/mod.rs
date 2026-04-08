@@ -68,6 +68,14 @@ pub trait Dictionary: Send + Sync {
     fn predict(&self, prefix: &str, max_results: usize) -> Vec<SearchResult>;
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult>;
 
+    /// Maximum reading length (in characters) across all entries.
+    ///
+    /// Used by `Lattice::extend` to bound the lookback window.
+    /// Default returns `usize::MAX` (no bound) for safety.
+    fn max_reading_len(&self) -> usize {
+        usize::MAX
+    }
+
     /// Check whether any entry exists for the given reading.
     ///
     /// Default implementation delegates to `lookup().is_empty()`. Implementors

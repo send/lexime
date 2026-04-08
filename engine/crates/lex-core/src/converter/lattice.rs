@@ -41,6 +41,9 @@ pub struct Lattice {
     pub nodes_by_start: Vec<Vec<usize>>,
     /// Number of characters in input
     pub char_count: usize,
+    /// Longest reading (in chars) seen during lattice construction.
+    /// Used by `extend` to bound the lookback window.
+    max_reading_chars: usize,
 }
 
 impl Lattice {
@@ -62,6 +65,7 @@ impl Lattice {
             nodes_by_end: vec![Vec::new()],
             nodes_by_start: Vec::new(),
             char_count: 0,
+            max_reading_chars: 0,
         }
     }
 
@@ -85,6 +89,7 @@ impl Lattice {
             nodes_by_end: vec![Vec::new(); char_count + 1],
             nodes_by_start: vec![Vec::new(); char_count],
             char_count,
+            max_reading_chars: 0,
         }
     }
 
@@ -218,10 +223,15 @@ impl Lattice {
     ///
     /// This avoids rebuilding the entire lattice on each keystroke.
     pub fn extend(&mut self, dict: &dyn Dictionary, new_kana: &str) {
-        assert!(
+        debug_assert!(
             new_kana.starts_with(&self.input),
             "extend: new_kana must start with current input"
         );
+        if !new_kana.starts_with(&self.input) {
+            // Precondition violated — rebuild from scratch instead of panicking.
+            *self = build_lattice(dict, new_kana);
+            return;
+        }
         let old_char_count = self.char_count;
         let new_char_count = new_kana.chars().count();
         if new_char_count <= old_char_count {
@@ -238,21 +248,8 @@ impl Lattice {
         self.nodes_by_start.resize_with(new_char_count, Vec::new);
         self.nodes_by_end.resize_with(new_char_count + 1, Vec::new);
 
-        // Existing positions: find new longer matches that extend into
-        // the appended suffix. All positions are scanned so that extend
-        // is equivalent to build_lattice regardless of dictionary max
-        // reading length (user dictionary entries have no length limit).
-        add_nodes_for_range(
-            self,
-            dict,
-            new_kana,
-            &byte_offsets,
-            0,
-            old_char_count,
-            Some(old_char_count),
-        );
-
-        // New positions: full search + fallback nodes
+        // New positions first: full search + fallback nodes.
+        // This updates max_reading_chars with any longer matches found.
         add_nodes_for_range(
             self,
             dict,
@@ -261,6 +258,22 @@ impl Lattice {
             old_char_count,
             new_char_count,
             None,
+        );
+
+        // Existing positions near the boundary: find new longer matches
+        // that extend into the appended suffix. Lookback is bounded by
+        // the dictionary's max reading length, so extend remains O(max_word)
+        // per keystroke rather than O(input_length).
+        self.max_reading_chars = self.max_reading_chars.max(dict.max_reading_len());
+        let lookback_start = old_char_count.saturating_sub(self.max_reading_chars);
+        add_nodes_for_range(
+            self,
+            dict,
+            new_kana,
+            &byte_offsets,
+            lookback_start,
+            old_char_count,
+            Some(old_char_count),
         );
 
         debug!(node_count = self.node_count());
@@ -364,6 +377,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
     let _span = debug_span!("build_lattice", char_count).entered();
     let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
     let mut lattice = Lattice::new(kana, char_count);
+    lattice.max_reading_chars = dict.max_reading_len();
 
     add_nodes_for_range(&mut lattice, dict, kana, &byte_offsets, 0, char_count, None);
 
