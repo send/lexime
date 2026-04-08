@@ -254,7 +254,6 @@ impl Lattice {
     }
 
     /// Build a `RichSegment` from node `idx` (allocates owned Strings).
-    #[allow(dead_code)] // used in Commit 2
     pub(crate) fn to_rich_segment(&self, idx: usize) -> RichSegment {
         RichSegment {
             reading: self.reading(idx).to_string(),
@@ -471,20 +470,19 @@ mod tests {
         }
     }
 
-    /// Verify that to_rich_segment produces the same result as From<&LatticeNode>.
+    /// Verify that to_rich_segment produces correct values from SoA fields.
     #[test]
-    fn test_to_rich_segment_matches_legacy() {
+    fn test_to_rich_segment() {
         let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうはいいてんき");
 
         for idx in 0..lattice.node_count() {
-            let from_soa = lattice.to_rich_segment(idx);
-            let from_legacy = RichSegment::from(&lattice.nodes[idx]);
-            assert_eq!(from_soa.reading, from_legacy.reading);
-            assert_eq!(from_soa.surface, from_legacy.surface);
-            assert_eq!(from_soa.left_id, from_legacy.left_id);
-            assert_eq!(from_soa.right_id, from_legacy.right_id);
-            assert_eq!(from_soa.word_cost, from_legacy.word_cost);
+            let seg = lattice.to_rich_segment(idx);
+            assert_eq!(seg.reading, lattice.reading(idx));
+            assert_eq!(seg.surface, lattice.surface(idx));
+            assert_eq!(seg.left_id, lattice.left_id(idx));
+            assert_eq!(seg.right_id, lattice.right_id(idx));
+            assert_eq!(seg.word_cost, lattice.cost(idx));
         }
     }
 }

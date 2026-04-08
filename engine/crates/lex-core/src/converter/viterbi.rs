@@ -1,7 +1,7 @@
 use tracing::{debug, debug_span};
 
 use super::cost::CostFunction;
-use super::lattice::{Lattice, LatticeNode};
+use super::lattice::Lattice;
 
 /// A segment in the conversion result.
 #[derive(Debug, Clone)]
@@ -20,18 +20,6 @@ pub(crate) struct RichSegment {
     pub left_id: u16,
     pub right_id: u16,
     pub word_cost: i16,
-}
-
-impl From<&LatticeNode> for RichSegment {
-    fn from(n: &LatticeNode) -> Self {
-        Self {
-            reading: n.reading.clone(),
-            surface: n.surface.clone(),
-            left_id: n.left_id,
-            right_id: n.right_id,
-            word_cost: n.cost,
-        }
-    }
 }
 
 /// A scored path from N-best Viterbi, carrying enough info for reranking.
@@ -105,9 +93,12 @@ struct KEntry {
 ///
 /// Returns up to `n` distinct `ScoredPath`s, sorted by Viterbi cost (best first).
 /// Paths that produce identical surface strings are deduplicated.
-pub(crate) fn viterbi_nbest(
+///
+/// Generic over `C: CostFunction` so that the cost function calls are
+/// monomorphized and inlined in the hot forward-pass loop (no vtable dispatch).
+pub(crate) fn viterbi_nbest<C: CostFunction>(
     lattice: &Lattice,
-    cost_fn: &dyn CostFunction,
+    cost_fn: &C,
     n: usize,
 ) -> Vec<ScoredPath> {
     let char_count = lattice.char_count;
@@ -116,14 +107,13 @@ pub(crate) fn viterbi_nbest(
         return Vec::new();
     }
 
-    let num_nodes = lattice.nodes.len();
+    let num_nodes = lattice.node_count();
     // top_k[node_idx] = sorted Vec of KEntry (ascending cost), max `n` entries
     let mut top_k: Vec<Vec<KEntry>> = vec![Vec::new(); num_nodes];
 
     // Initialize nodes starting at position 0 (BOS transition)
     for &idx in &lattice.nodes_by_start[0] {
-        let node = &lattice.nodes[idx];
-        let cost = cost_fn.word_cost(node) + cost_fn.bos_cost(node);
+        let cost = cost_fn.word_cost(lattice, idx) + cost_fn.bos_cost(lattice.left_id(idx));
         top_k[idx].push(KEntry {
             cost,
             prev_idx: None,
@@ -135,15 +125,15 @@ pub(crate) fn viterbi_nbest(
     // once per next_node (O(P)) instead of once per (prev, next) pair (O(P²)).
     for pos in 1..char_count {
         for &next_idx in &lattice.nodes_by_start[pos] {
-            let next_node = &lattice.nodes[next_idx];
-            let word = cost_fn.word_cost(next_node);
+            let word = cost_fn.word_cost(lattice, next_idx);
+            let next_left_id = lattice.left_id(next_idx);
 
             for &prev_idx in &lattice.nodes_by_end[pos] {
                 if top_k[prev_idx].is_empty() {
                     continue;
                 }
-                let prev_node = &lattice.nodes[prev_idx];
-                let transition = cost_fn.transition_cost(prev_node, next_node);
+                let prev_right_id = lattice.right_id(prev_idx);
+                let transition = cost_fn.transition_cost(prev_right_id, next_left_id);
 
                 for rank in 0..top_k[prev_idx].len() {
                     let prev_cost = top_k[prev_idx][rank].cost;
@@ -166,8 +156,7 @@ pub(crate) fn viterbi_nbest(
     // Collect top-K at EOS
     let mut eos_entries: Vec<(i64, usize, usize)> = Vec::new(); // (total_cost, node_idx, rank)
     for &node_idx in &lattice.nodes_by_end[char_count] {
-        let node = &lattice.nodes[node_idx];
-        let eos = cost_fn.eos_cost(node);
+        let eos = cost_fn.eos_cost(lattice.right_id(node_idx));
         for (rank, entry) in top_k[node_idx].iter().enumerate() {
             let total = entry.cost + eos;
             eos_entries.push((total, node_idx, rank));
@@ -244,6 +233,6 @@ fn backtrace_nbest(
 
     path_indices
         .iter()
-        .map(|&idx| RichSegment::from(&lattice.nodes[idx]))
+        .map(|&idx| lattice.to_rich_segment(idx))
         .collect()
 }

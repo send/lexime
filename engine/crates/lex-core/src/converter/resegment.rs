@@ -63,7 +63,7 @@ pub(super) fn resegment(
                     indices
                         .iter()
                         .copied()
-                        .filter(|&idx| lattice.nodes[idx].end == mid)
+                        .filter(|&idx| lattice.end(idx) == mid)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -76,22 +76,19 @@ pub(super) fn resegment(
                     indices
                         .iter()
                         .copied()
-                        .filter(|&idx| lattice.nodes[idx].end == seg_end)
+                        .filter(|&idx| lattice.end(idx) == seg_end)
                         .collect()
                 })
                 .unwrap_or_default();
 
             for &left_idx in &left_nodes {
                 for &right_idx in &right_nodes {
-                    let left_node = &lattice.nodes[left_idx];
-                    let right_node = &lattice.nodes[right_idx];
-
                     // At least one part must be a function word
                     let left_is_fw = conn
-                        .map(|c| c.is_function_word(left_node.left_id))
+                        .map(|c| c.is_function_word(lattice.left_id(left_idx)))
                         .unwrap_or(false);
                     let right_is_fw = conn
-                        .map(|c| c.is_function_word(right_node.left_id))
+                        .map(|c| c.is_function_word(lattice.left_id(right_idx)))
                         .unwrap_or(false);
                     if !left_is_fw && !right_is_fw {
                         continue;
@@ -101,8 +98,8 @@ pub(super) fn resegment(
                     let mut new_segs: Vec<RichSegment> =
                         Vec::with_capacity(best.segments.len() + 1);
                     new_segs.extend_from_slice(&best.segments[..seg_idx]);
-                    new_segs.push(RichSegment::from(left_node));
-                    new_segs.push(RichSegment::from(right_node));
+                    new_segs.push(lattice.to_rich_segment(left_idx));
+                    new_segs.push(lattice.to_rich_segment(right_idx));
                     new_segs.extend_from_slice(&best.segments[(seg_idx + 1)..]);
 
                     let cost = score_path(&new_segs, conn);
@@ -247,15 +244,10 @@ mod tests {
 
     #[test]
     fn test_resegment_splits_compound_with_fw() {
-        // dict_with_compound has "きょうは"→教派 (compound) plus "きょう"→今日 + "は"→は(FW).
-        // With FW half-penalty, Viterbi picks 教派 as one segment; resegment
-        // should split it into 今日+は.
         let conn = zero_conn_with_fw(1200, 200, 200);
         let dict = dict_with_compound();
-        // n=1: only the best Viterbi path (教派) so the 今日+は split is novel
         let (lattice, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 1);
 
-        // Verify best path actually contains 教派 as a single segment
         assert!(
             paths[0].segments.iter().any(|s| s.surface == "教派"),
             "Viterbi best should contain 教派 compound for this test to be meaningful"
@@ -263,13 +255,11 @@ mod tests {
 
         let new_paths = resegment(&paths, &lattice, Some(&conn));
 
-        // Must produce at least one resegmented candidate
         assert!(
             !new_paths.is_empty(),
             "resegment should produce at least one alternative path"
         );
 
-        // No duplicates with existing Viterbi paths
         let existing_keys: HashSet<String> = paths.iter().map(|p| p.surface_key()).collect();
         for p in &new_paths {
             assert!(
@@ -279,7 +269,6 @@ mod tests {
             );
         }
 
-        // At least one resegmented path should contain 今日+は split
         let has_kyou_ha = new_paths.iter().any(|p| {
             p.segments
                 .windows(2)
@@ -293,7 +282,6 @@ mod tests {
 
     #[test]
     fn test_resegment_no_split_without_fw() {
-        // With no function words defined (fw_min=0, fw_max=0), no splits should occur
         let conn = zero_conn_with_fw(1200, 0, 0);
         let dict = dict_with_compound();
         let (lattice, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 5);
@@ -337,7 +325,6 @@ mod tests {
 
     #[test]
     fn test_score_path_matches_viterbi() {
-        // For a path that Viterbi also produces, score_path should match.
         let conn = zero_conn_with_fw(1200, 200, 200);
         let dict = test_dict();
         let (_, paths) = build_paths(&dict, "きょうはいいてんき", Some(&conn), 5);

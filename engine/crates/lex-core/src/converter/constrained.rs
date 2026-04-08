@@ -5,7 +5,7 @@
 //! allowing re-exploration only of the suffix.
 
 use super::cost::{CostFunction, DefaultCostFunction};
-use super::lattice::LatticeNode;
+use super::lattice::Lattice;
 use super::viterbi::ConvertedSegment;
 
 /// Confirmed prefix constraint for constrained Viterbi.
@@ -37,22 +37,22 @@ impl PrefixConstraint {
     }
 
     /// Check if a lattice node is within the prefix region.
-    fn is_in_prefix(&self, node: &LatticeNode) -> bool {
-        node.start < self.prefix_char_end
+    fn is_in_prefix(&self, lattice: &Lattice, idx: usize) -> bool {
+        lattice.start(idx) < self.prefix_char_end
     }
 
     /// Check if a lattice node spans the prefix boundary.
-    fn spans_boundary(&self, node: &LatticeNode) -> bool {
-        node.start < self.prefix_char_end && node.end > self.prefix_char_end
+    fn spans_boundary(&self, lattice: &Lattice, idx: usize) -> bool {
+        lattice.start(idx) < self.prefix_char_end && lattice.end(idx) > self.prefix_char_end
     }
 
     /// Check if a lattice node matches a fixed segment exactly.
-    fn matches_fixed_segment(&self, node: &LatticeNode) -> bool {
+    fn matches_fixed_segment(&self, lattice: &Lattice, idx: usize) -> bool {
         self.segments.iter().any(|(start, end, reading, surface)| {
-            node.start == *start
-                && node.end == *end
-                && node.reading == *reading
-                && node.surface == *surface
+            lattice.start(idx) == *start
+                && lattice.end(idx) == *end
+                && lattice.reading(idx) == *reading
+                && lattice.surface(idx) == *surface
         })
     }
 }
@@ -84,31 +84,31 @@ impl<'a> PrefixConstrainedCost<'a> {
 }
 
 impl CostFunction for PrefixConstrainedCost<'_> {
-    fn word_cost(&self, node: &LatticeNode) -> i64 {
-        if self.constraint.spans_boundary(node) {
+    fn word_cost(&self, lattice: &Lattice, idx: usize) -> i64 {
+        if self.constraint.spans_boundary(lattice, idx) {
             return CONSTRAINT_VIOLATION_COST;
         }
-        if self.constraint.is_in_prefix(node) {
-            if self.constraint.matches_fixed_segment(node) {
-                self.inner.word_cost(node)
+        if self.constraint.is_in_prefix(lattice, idx) {
+            if self.constraint.matches_fixed_segment(lattice, idx) {
+                self.inner.word_cost(lattice, idx)
             } else {
                 CONSTRAINT_VIOLATION_COST
             }
         } else {
-            self.inner.word_cost(node)
+            self.inner.word_cost(lattice, idx)
         }
     }
 
-    fn transition_cost(&self, prev: &LatticeNode, next: &LatticeNode) -> i64 {
-        self.inner.transition_cost(prev, next)
+    fn transition_cost(&self, prev_right_id: u16, next_left_id: u16) -> i64 {
+        self.inner.transition_cost(prev_right_id, next_left_id)
     }
 
-    fn bos_cost(&self, node: &LatticeNode) -> i64 {
-        self.inner.bos_cost(node)
+    fn bos_cost(&self, left_id: u16) -> i64 {
+        self.inner.bos_cost(left_id)
     }
 
-    fn eos_cost(&self, node: &LatticeNode) -> i64 {
-        self.inner.eos_cost(node)
+    fn eos_cost(&self, right_id: u16) -> i64 {
+        self.inner.eos_cost(right_id)
     }
 }
 
@@ -254,19 +254,26 @@ mod tests {
             prefix_char_end: 2,
         };
 
-        // Node spanning boundary: starts at 1, ends at 3
-        let boundary_node = LatticeNode {
-            start: 1,
-            end: 3,
-            reading: "ょう".to_string(),
-            surface: "陽".to_string(),
-            cost: 1000,
-            left_id: 0,
-            right_id: 0,
-        };
+        // Build a mini lattice with one boundary-spanning node
+        let mut lattice = Lattice::from_nodes(
+            "きょう",
+            vec![crate::converter::lattice::LatticeNode {
+                start: 1,
+                end: 3,
+                reading: "ょう".to_string(),
+                surface: "陽".to_string(),
+                cost: 1000,
+                left_id: 0,
+                right_id: 0,
+            }],
+        );
+        // Also need a node at position 0 for the lattice to be well-formed
+        // (nodes_by_start[0] must be non-empty for Viterbi to start)
+        // We just test the cost function directly, not through Viterbi.
+        let _ = &mut lattice; // suppress unused_mut
 
         let cost_fn = PrefixConstrainedCost::new(None, &constraint);
-        assert_eq!(cost_fn.word_cost(&boundary_node), CONSTRAINT_VIOLATION_COST);
+        assert_eq!(cost_fn.word_cost(&lattice, 0), CONSTRAINT_VIOLATION_COST);
     }
 
     #[test]
