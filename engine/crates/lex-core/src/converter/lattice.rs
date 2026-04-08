@@ -12,11 +12,17 @@ struct StringSpan {
     len: u16,
 }
 
+/// Maximum word length (in characters) to look back when extending the
+/// lattice incrementally. Japanese dictionary entries rarely exceed 10
+/// characters; 15 provides a safe margin.
+const MAX_WORD_LOOKBACK: usize = 15;
+
 /// The lattice: all possible segmentations of a kana string.
 ///
 /// Stores node data in Structure-of-Arrays (SoA) layout for cache-friendly
 /// Viterbi traversal, with a shared string pool for reading/surface strings
 /// (zero per-node String allocation).
+#[derive(Clone)]
 pub struct Lattice {
     /// The original kana input
     pub input: String,
@@ -208,6 +214,61 @@ impl Lattice {
         }
     }
 
+    /// Extend the lattice with additional kana characters.
+    ///
+    /// `new_kana` must be an extension of `self.input` (i.e., start with the
+    /// same characters). Only new nodes are added:
+    /// - Existing positions near the boundary get new longer matches
+    /// - New positions get full dictionary search + fallback nodes
+    ///
+    /// This avoids rebuilding the entire lattice on each keystroke.
+    pub fn extend(&mut self, dict: &dyn Dictionary, new_kana: &str) {
+        assert!(
+            new_kana.starts_with(&self.input),
+            "extend: new_kana must start with current input"
+        );
+        let old_char_count = self.char_count;
+        let new_char_count = new_kana.chars().count();
+        if new_char_count <= old_char_count {
+            return;
+        }
+
+        let _span = debug_span!("lattice_extend", old_char_count, new_char_count).entered();
+
+        let byte_offsets: Vec<usize> = new_kana.char_indices().map(|(i, _)| i).collect();
+
+        // Update lattice metadata
+        self.input = new_kana.to_string();
+        self.char_count = new_char_count;
+        self.nodes_by_start.resize_with(new_char_count, Vec::new);
+        self.nodes_by_end.resize_with(new_char_count + 1, Vec::new);
+
+        // Existing positions near boundary: find new longer matches only
+        let lookback_start = old_char_count.saturating_sub(MAX_WORD_LOOKBACK);
+        add_nodes_for_range(
+            self,
+            dict,
+            new_kana,
+            &byte_offsets,
+            lookback_start,
+            old_char_count,
+            Some(old_char_count),
+        );
+
+        // New positions: full search + fallback nodes
+        add_nodes_for_range(
+            self,
+            dict,
+            new_kana,
+            &byte_offsets,
+            old_char_count,
+            new_char_count,
+            None,
+        );
+
+        debug!(node_count = self.node_count());
+    }
+
     /// Resolve a `StringSpan` to a `&str`.
     fn span_str(&self, span: &StringSpan) -> &str {
         let start = span.offset as usize;
@@ -217,22 +278,22 @@ impl Lattice {
     }
 }
 
-/// Build a lattice from a kana string using dictionary lookups.
+/// Add nodes for dictionary matches at a range of character positions.
 ///
-/// Uses `common_prefix_search` for efficient trie traversal: a single trie walk
-/// per starting position finds all matching prefixes, instead of O(n) individual
-/// lookups per position.
-/// Adds an unknown-word fallback node (1-char, high cost) to guarantee connectivity.
-pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
-    let char_count = kana.chars().count();
-    let _span = debug_span!("build_lattice", char_count).entered();
-    // Pre-compute byte offsets for each char position so we can slice
-    // the original &str directly instead of allocating a new String per position.
-    let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
-    let mut lattice = Lattice::new(kana, char_count);
-
-    for start in 0..char_count {
-        let mut has_single_char_match = false;
+/// For each position in `start_pos..end_pos`, runs `common_prefix_search`
+/// and adds matching nodes. If `min_end` is set, only nodes with
+/// `end > min_end` are added (used by `extend` to skip already-known matches).
+fn add_nodes_for_range(
+    lattice: &mut Lattice,
+    dict: &dyn Dictionary,
+    kana: &str,
+    byte_offsets: &[usize],
+    start_pos: usize,
+    end_pos: usize,
+    min_end: Option<usize>,
+) {
+    for start in start_pos..end_pos {
+        let mut has_single_char_match = min_end.is_some(); // existing positions already have fallbacks
 
         let suffix = &kana[byte_offsets[start]..];
         let matches = dict.common_prefix_search(suffix);
@@ -240,9 +301,17 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
         for result in &matches {
             let reading_char_count = result.reading.chars().count();
             let end = start + reading_char_count;
-            // Pool the reading once and reuse the span for all entries.
-            // When surface == reading (hiragana-only entries like は→は),
-            // reuse the reading span for the surface too.
+
+            if let Some(min) = min_end {
+                if end <= min {
+                    // Already exists from previous build
+                    if reading_char_count == 1 {
+                        has_single_char_match = true;
+                    }
+                    continue;
+                }
+            }
+
             let reading_span = lattice.pool_string(&result.reading);
             for entry in &result.entries {
                 let surface_span = if entry.surface == result.reading {
@@ -261,19 +330,15 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
                     entry.left_id,
                     entry.right_id,
                 );
-                if reading_char_count == 1 {
-                    has_single_char_match = true;
-                }
+            }
+            if reading_char_count == 1 {
+                has_single_char_match = true;
             }
         }
 
-        // Add a 1-char fallback node when no dictionary entry covers exactly
-        // this single character. This guarantees connectivity: even positions
-        // spanned only by longer matches remain reachable via the fallback.
         if !has_single_char_match {
             let next_offset = byte_offsets.get(start + 1).copied().unwrap_or(kana.len());
             let ch = &kana[byte_offsets[start]..next_offset];
-            // reading == surface for fallback — pool once, reuse for both
             let span = lattice.pool_string(ch);
             lattice.push_node(
                 start,
@@ -288,6 +353,21 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
             );
         }
     }
+}
+
+/// Build a lattice from a kana string using dictionary lookups.
+///
+/// Uses `common_prefix_search` for efficient trie traversal: a single trie walk
+/// per starting position finds all matching prefixes, instead of O(n) individual
+/// lookups per position.
+/// Adds an unknown-word fallback node (1-char, high cost) to guarantee connectivity.
+pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
+    let char_count = kana.chars().count();
+    let _span = debug_span!("build_lattice", char_count).entered();
+    let byte_offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
+    let mut lattice = Lattice::new(kana, char_count);
+
+    add_nodes_for_range(&mut lattice, dict, kana, &byte_offsets, 0, char_count, None);
 
     debug!(node_count = lattice.node_count());
     lattice
@@ -393,6 +473,108 @@ mod tests {
             assert_eq!(seg.right_id, lattice.right_id(idx));
             assert_eq!(seg.word_cost, lattice.cost(idx));
         }
+    }
+
+    // ── extend tests ──────────────────────────────────────────────
+
+    /// Collect the set of (start, end, reading, surface) tuples from a lattice.
+    fn node_set(lattice: &Lattice) -> std::collections::HashSet<(usize, usize, String, String)> {
+        (0..lattice.node_count())
+            .map(|i| {
+                (
+                    lattice.start(i),
+                    lattice.end(i),
+                    lattice.reading(i).to_string(),
+                    lattice.surface(i).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_extend_equivalence() {
+        let dict = test_dict();
+
+        // Build incrementally: "きょう" → "きょうは" → "きょうはいいてんき"
+        let mut lattice = build_lattice(&dict, "きょう");
+        lattice.extend(&dict, "きょうは");
+        lattice.extend(&dict, "きょうはいいてんき");
+
+        // Build from scratch
+        let full = build_lattice(&dict, "きょうはいいてんき");
+
+        // Same node set
+        assert_eq!(node_set(&lattice), node_set(&full));
+        assert_eq!(lattice.char_count, full.char_count);
+    }
+
+    #[test]
+    fn test_extend_adds_longer_matches() {
+        let dict = test_dict();
+
+        let mut lattice = build_lattice(&dict, "きょう");
+        let old_count = lattice.node_count();
+
+        lattice.extend(&dict, "きょうは");
+
+        // Should have new nodes at position 3 (は) and potentially longer matches
+        assert!(
+            lattice.node_count() > old_count,
+            "extend should add nodes: {} -> {}",
+            old_count,
+            lattice.node_count()
+        );
+        assert_eq!(lattice.char_count, 4);
+
+        // Verify connectivity: every position reachable
+        for pos in 1..=lattice.char_count {
+            assert!(
+                !lattice.nodes_by_end[pos].is_empty(),
+                "no nodes end at position {pos} after extend"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extend_noop() {
+        let dict = test_dict();
+
+        let mut lattice = build_lattice(&dict, "きょう");
+        let count_before = lattice.node_count();
+
+        lattice.extend(&dict, "きょう"); // same input
+        assert_eq!(lattice.node_count(), count_before);
+    }
+
+    #[test]
+    fn test_extend_multi_char() {
+        let dict = test_dict();
+
+        // Start with "き", extend by 2 chars to "きょう"
+        let mut lattice = build_lattice(&dict, "き");
+        lattice.extend(&dict, "きょう");
+
+        let full = build_lattice(&dict, "きょう");
+        assert_eq!(node_set(&lattice), node_set(&full));
+    }
+
+    #[test]
+    fn test_extend_single_char_at_a_time() {
+        let dict = test_dict();
+        let input = "きょうはいいてんき";
+        let chars: Vec<char> = input.chars().collect();
+
+        // Build one char at a time
+        let first: String = chars[..1].iter().collect();
+        let mut lattice = build_lattice(&dict, &first);
+        for i in 2..=chars.len() {
+            let prefix: String = chars[..i].iter().collect();
+            lattice.extend(&dict, &prefix);
+        }
+
+        // Should match full build
+        let full = build_lattice(&dict, input);
+        assert_eq!(node_set(&lattice), node_set(&full));
     }
 
     #[test]
