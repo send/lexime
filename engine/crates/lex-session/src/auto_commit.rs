@@ -43,10 +43,13 @@ impl InputSession {
             let committed_surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let committed_reading_len = committed_reading.chars().count();
 
-            // Skip auto-commit if the committed reading is too short (< 2 kana).
+            // Skip auto-commit if the committed reading is a single kana.
             // Single-kana commits (e.g. "じ" from "じぇのさいど") destroy longer
-            // words that haven't been fully typed yet.
-            if committed_reading_len < 2 {
+            // words that haven't been fully typed yet.  Only applies to kana
+            // readings — ASCII prefixes (e.g. URLs) are not subject to this guard.
+            if lex_core::unicode::is_hiragana_reading(&committed_reading)
+                && committed_reading_len < 2
+            {
                 return None;
             }
 

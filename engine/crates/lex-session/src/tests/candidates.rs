@@ -270,6 +270,14 @@ fn test_auto_commit_skips_single_kana_first_segment() {
     type_string(&mut session, "ji");
     let r = complete_cycle(&mut session, &*dict);
 
+    // Verify auto-commit preconditions are met (stability >= 3),
+    // so this test is actually exercising the min-length guard.
+    assert!(
+        session.comp().stability.count >= 3,
+        "stability count should reach threshold; got {}",
+        session.comp().stability.count
+    );
+
     // Even after many cycles, a single-kana first segment must not auto-commit.
     if let Some(ref resp) = r {
         assert!(
