@@ -1,4 +1,4 @@
-use crate::converter::lattice::{Lattice, LatticeNode};
+use crate::converter::lattice::Lattice;
 use crate::converter::rewriter::{
     run_rewriters, HiraganaVariantRewriter, KanjiVariantRewriter, KatakanaRewriter,
     NumericRewriter, PartialHiraganaRewriter, Rewriter,
@@ -598,31 +598,15 @@ fn test_partial_hiragana_single_segment_skip() {
 
 // ── KanjiVariantRewriter tests ────────────────────────────────────
 
-fn make_lattice(input: &str, nodes: Vec<LatticeNode>) -> Lattice {
-    Lattice::from_nodes(input, nodes)
-}
-
-fn lattice_node(start: usize, end: usize, reading: &str, surface: &str, cost: i16) -> LatticeNode {
-    LatticeNode {
-        start,
-        end,
-        reading: reading.into(),
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    }
-}
-
 #[test]
 fn test_kanji_variant_replaces_2char_hiragana() {
     // Lattice has ほう → 方 (cost=733) at position [3,5)
-    let lattice = make_lattice(
+    let lattice = Lattice::from_test_nodes(
         "あったほうが",
-        vec![
-            lattice_node(3, 5, "ほう", "ほう", 0),
-            lattice_node(3, 5, "ほう", "方", 733),
-            lattice_node(3, 5, "ほう", "法", 2181),
+        &[
+            (3, 5, "ほう", "ほう", 0, 0, 0),
+            (3, 5, "ほう", "方", 733, 0, 0),
+            (3, 5, "ほう", "法", 2181, 0, 0),
         ],
     );
     let rw = KanjiVariantRewriter { lattice: &lattice };
@@ -674,7 +658,7 @@ fn test_kanji_variant_replaces_2char_hiragana() {
 #[test]
 fn test_kanji_variant_skips_single_char() {
     // Single-char hiragana (し) should NOT be replaced
-    let lattice = make_lattice("した", vec![lattice_node(0, 1, "し", "死", 500)]);
+    let lattice = Lattice::from_test_nodes("した", &[(0, 1, "し", "死", 500, 0, 0)]);
     let rw = KanjiVariantRewriter { lattice: &lattice };
 
     let paths = vec![ScoredPath {
@@ -704,7 +688,7 @@ fn test_kanji_variant_skips_single_char() {
 
 #[test]
 fn test_kanji_variant_skips_single_segment() {
-    let lattice = make_lattice("ほう", vec![lattice_node(0, 2, "ほう", "方", 733)]);
+    let lattice = Lattice::from_test_nodes("ほう", &[(0, 2, "ほう", "方", 733, 0, 0)]);
     let rw = KanjiVariantRewriter { lattice: &lattice };
 
     let paths = vec![ScoredPath {
@@ -726,7 +710,7 @@ fn test_kanji_variant_skips_single_segment() {
 #[test]
 fn test_kanji_variant_skips_kanji_segments() {
     // Segments already containing kanji should not be processed
-    let lattice = make_lattice("したほう", vec![lattice_node(2, 4, "ほう", "方", 733)]);
+    let lattice = Lattice::from_test_nodes("したほう", &[(2, 4, "ほう", "方", 733, 0, 0)]);
     let rw = KanjiVariantRewriter { lattice: &lattice };
 
     let paths = vec![ScoredPath {
@@ -761,10 +745,10 @@ fn test_kanji_variant_skips_kanji_segments() {
 fn test_kanji_variant_skips_3char_segments_no_2char_kanji() {
     // 3-char hiragana segment "たほう" — lattice has 他方 at [0,3) but
     // no 2-char kanji split, so subsplit produces nothing.
-    let lattice = make_lattice(
+    let lattice = Lattice::from_test_nodes(
         "たほうが",
-        vec![
-            lattice_node(0, 3, "たほう", "他方", 5290),
+        &[
+            (0, 3, "たほう", "他方", 5290, 0, 0),
             // No 2-char kanji at [0,2) ("たほ" has no kanji)
         ],
     );
@@ -802,12 +786,12 @@ fn test_kanji_variant_skips_3char_segments_no_2char_kanji() {
 fn test_kanji_variant_subsplit_3char_segment() {
     // 3-char hiragana segment "ほうが" [3,6) — lattice has 方 at [3,5)
     // and が at [5,6). Subsplit should produce "方が".
-    let lattice = make_lattice(
+    let lattice = Lattice::from_test_nodes(
         "あったほうが",
-        vec![
-            lattice_node(3, 5, "ほう", "方", 733),
-            lattice_node(3, 5, "ほう", "法", 2181),
-            lattice_node(5, 6, "が", "が", 0),
+        &[
+            (3, 5, "ほう", "方", 733, 0, 0),
+            (3, 5, "ほう", "法", 2181, 0, 0),
+            (5, 6, "が", "が", 0, 0, 0),
         ],
     );
     let rw = KanjiVariantRewriter { lattice: &lattice };
@@ -854,12 +838,12 @@ fn test_kanji_variant_subsplit_3char_segment() {
 fn test_kanji_variant_subsplit_only_2char_prefix() {
     // 4-char hiragana segment "ほうがく" — should only try 2-char prefix split.
     // Lattice has 方 at [0,2) and がく at [2,4) (hiragana).
-    let lattice = make_lattice(
+    let lattice = Lattice::from_test_nodes(
         "ほうがくが",
-        vec![
-            lattice_node(0, 2, "ほう", "方", 733),
+        &[
+            (0, 2, "ほう", "方", 733, 0, 0),
             // がく has kanji 学 but that's for the right side — we need hiragana
-            lattice_node(2, 4, "がく", "がく", 0),
+            (2, 4, "がく", "がく", 0, 0, 0),
         ],
     );
     let rw = KanjiVariantRewriter { lattice: &lattice };
@@ -895,11 +879,11 @@ fn test_kanji_variant_subsplit_only_2char_prefix() {
 fn test_kanji_variant_reading_scan_single_segment() {
     // Single-segment hiragana path "しておいたほうが" — reading scan should
     // find 方 at [5,7) and produce a single-segment variant with kanji inlined.
-    let lattice = make_lattice(
+    let lattice = Lattice::from_test_nodes(
         "しておいたほうが",
-        vec![
-            lattice_node(5, 7, "ほう", "方", 733),
-            lattice_node(5, 7, "ほう", "法", 2181),
+        &[
+            (5, 7, "ほう", "方", 733, 0, 0),
+            (5, 7, "ほう", "法", 2181, 0, 0),
         ],
     );
     let rw = KanjiVariantRewriter { lattice: &lattice };
@@ -931,7 +915,7 @@ fn test_kanji_variant_reading_scan_single_segment() {
 fn test_kanji_variant_reading_scan_skips_edges() {
     // Reading scan should skip positions at start (pos=0) and end
     // where the remaining prefix/suffix would be empty.
-    let lattice = make_lattice("ほうが", vec![lattice_node(0, 2, "ほう", "方", 733)]);
+    let lattice = Lattice::from_test_nodes("ほうが", &[(0, 2, "ほう", "方", 733, 0, 0)]);
     let rw = KanjiVariantRewriter { lattice: &lattice };
 
     let paths = vec![ScoredPath {

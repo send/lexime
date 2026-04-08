@@ -255,22 +255,7 @@ mod tests {
         };
 
         // Build a mini lattice with one boundary-spanning node
-        let mut lattice = Lattice::from_nodes(
-            "きょう",
-            vec![crate::converter::lattice::LatticeNode {
-                start: 1,
-                end: 3,
-                reading: "ょう".to_string(),
-                surface: "陽".to_string(),
-                cost: 1000,
-                left_id: 0,
-                right_id: 0,
-            }],
-        );
-        // Also need a node at position 0 for the lattice to be well-formed
-        // (nodes_by_start[0] must be non-empty for Viterbi to start)
-        // We just test the cost function directly, not through Viterbi.
-        let _ = &mut lattice; // suppress unused_mut
+        let lattice = Lattice::from_test_nodes("きょう", &[(1, 3, "ょう", "陽", 1000, 0, 0)]);
 
         let cost_fn = PrefixConstrainedCost::new(None, &constraint);
         assert_eq!(cost_fn.word_cost(&lattice, 0), CONSTRAINT_VIOLATION_COST);

@@ -12,43 +12,14 @@ struct StringSpan {
     len: u16,
 }
 
-/// A node in the conversion lattice (legacy owned representation).
-///
-/// Kept alongside the SoA arrays during the migration period.
-/// Will be removed once all consumers use Lattice accessors.
-#[derive(Debug, Clone)]
-pub struct LatticeNode {
-    /// Start position (char index, inclusive)
-    pub start: usize,
-    /// End position (char index, exclusive)
-    pub end: usize,
-    /// Kana substring (reading)
-    pub reading: String,
-    /// Surface form (kanji, etc.)
-    pub surface: String,
-    /// Word cost (lower = more preferred)
-    pub cost: i16,
-    /// Left boundary morpheme ID
-    pub left_id: u16,
-    /// Right boundary morpheme ID
-    pub right_id: u16,
-}
-
 /// The lattice: all possible segmentations of a kana string.
 ///
-/// Internally stores node data in Structure-of-Arrays (SoA) layout for
-/// cache-friendly Viterbi traversal, with a shared string pool for
-/// reading/surface strings (zero per-node String allocation).
-///
-/// During the migration period, a legacy `nodes: Vec<LatticeNode>` is
-/// maintained in parallel for backward compatibility.
+/// Stores node data in Structure-of-Arrays (SoA) layout for cache-friendly
+/// Viterbi traversal, with a shared string pool for reading/surface strings
+/// (zero per-node String allocation).
 pub struct Lattice {
     /// The original kana input
     pub input: String,
-
-    // ── Legacy AoS (will be removed in a follow-up commit) ──────────
-    /// All nodes in the lattice (legacy, redundant with SoA fields)
-    pub nodes: Vec<LatticeNode>,
 
     // ── SoA numeric fields (hot during Viterbi forward pass) ────────
     starts: Vec<usize>,
@@ -79,7 +50,6 @@ impl Lattice {
     pub fn empty() -> Self {
         Self {
             input: String::new(),
-            nodes: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
             costs: Vec::new(),
@@ -98,7 +68,6 @@ impl Lattice {
     fn with_capacity(input: &str, char_count: usize) -> Self {
         Self {
             input: input.to_string(),
-            nodes: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
             costs: Vec::new(),
@@ -113,7 +82,7 @@ impl Lattice {
         }
     }
 
-    /// Append a node to the lattice, populating both SoA and legacy storage.
+    /// Append a node to the lattice.
     ///
     /// `reading_span` allows reusing an already-pooled reading span (e.g.
     /// when multiple entries share the same reading within a SearchResult).
@@ -158,17 +127,6 @@ impl Lattice {
         self.nodes_by_end[end].push(idx);
         self.nodes_by_start[start].push(idx);
 
-        // Legacy AoS (temporary, removed in a follow-up commit)
-        self.nodes.push(LatticeNode {
-            start,
-            end,
-            reading: reading.to_string(),
-            surface: surface.to_string(),
-            cost,
-            left_id,
-            right_id,
-        });
-
         idx
     }
 
@@ -187,26 +145,17 @@ impl Lattice {
 
     // ── Test / migration helpers ───────────────────────────────────
 
-    /// Build a Lattice from a legacy `Vec<LatticeNode>`, populating both
-    /// the SoA arrays and the legacy `nodes` field.
-    ///
-    /// Used by test helpers during the migration period; will be removed
-    /// once all tests use `push_node` directly.
+    /// Build a Lattice from a list of (start, end, reading, surface, cost,
+    /// left_id, right_id) tuples.
     #[cfg(test)]
-    pub(crate) fn from_nodes(input: &str, nodes: Vec<LatticeNode>) -> Self {
+    pub(crate) fn from_test_nodes(
+        input: &str,
+        nodes: &[(usize, usize, &str, &str, i16, u16, u16)],
+    ) -> Self {
         let char_count = input.chars().count();
         let mut lattice = Self::with_capacity(input, char_count);
-        for node in &nodes {
-            lattice.push_node(
-                node.start,
-                node.end,
-                &node.reading,
-                None,
-                &node.surface,
-                node.cost,
-                node.left_id,
-                node.right_id,
-            );
+        for &(start, end, reading, surface, cost, left_id, right_id) in nodes {
+            lattice.push_node(start, end, reading, None, surface, cost, left_id, right_id);
         }
         lattice
     }
@@ -350,32 +299,27 @@ mod tests {
         let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうは");
 
-        // Should have nodes for "きょう" (2 entries), "は" (1 entry), and "き" (1 entry)
-        assert!(!lattice.nodes.is_empty());
+        assert!(lattice.node_count() > 0);
         assert_eq!(lattice.char_count, 4); // き, ょ, う, は
 
         // Check that "きょう" nodes exist
-        let kyou_nodes: Vec<_> = lattice
-            .nodes
-            .iter()
-            .filter(|n| n.reading == "きょう")
+        let kyou_indices: Vec<usize> = (0..lattice.node_count())
+            .filter(|&i| lattice.reading(i) == "きょう")
             .collect();
-        assert_eq!(kyou_nodes.len(), 2);
-        assert!(kyou_nodes.iter().any(|n| n.surface == "今日"));
-        assert!(kyou_nodes.iter().any(|n| n.surface == "京"));
+        assert_eq!(kyou_indices.len(), 2);
+        assert!(kyou_indices.iter().any(|&i| lattice.surface(i) == "今日"));
+        assert!(kyou_indices.iter().any(|&i| lattice.surface(i) == "京"));
     }
 
     #[test]
     fn test_unknown_word_fallback() {
         let dict = test_dict();
-        // "zzz" is not in dictionary — each char gets an unknown node
         let lattice = build_lattice(&dict, "ぬ");
 
-        assert!(!lattice.nodes.is_empty());
-        let unknown = &lattice.nodes[0];
-        assert_eq!(unknown.reading, "ぬ");
-        assert_eq!(unknown.surface, "ぬ");
-        assert_eq!(unknown.cost, 10000);
+        assert!(lattice.node_count() > 0);
+        assert_eq!(lattice.reading(0), "ぬ");
+        assert_eq!(lattice.surface(0), "ぬ");
+        assert_eq!(lattice.cost(0), 10000);
     }
 
     #[test]
@@ -383,8 +327,6 @@ mod tests {
         let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうはいいてんき");
 
-        // Every position should be reachable: nodes_by_end[i] should be non-empty
-        // for all i in 1..=char_count
         for pos in 1..=lattice.char_count {
             assert!(
                 !lattice.nodes_by_end[pos].is_empty(),
@@ -398,79 +340,42 @@ mod tests {
         let dict = test_dict();
         let lattice = build_lattice(&dict, "きょうはいいてんき");
 
-        // All nodes are correctly indexed in nodes_by_start and nodes_by_end
-        for (idx, node) in lattice.nodes.iter().enumerate() {
+        for idx in 0..lattice.node_count() {
             assert!(
-                lattice.nodes_by_start[node.start].contains(&idx),
+                lattice.nodes_by_start[lattice.start(idx)].contains(&idx),
                 "node {idx} not in nodes_by_start[{}]",
-                node.start
+                lattice.start(idx)
             );
             assert!(
-                lattice.nodes_by_end[node.end].contains(&idx),
+                lattice.nodes_by_end[lattice.end(idx)].contains(&idx),
                 "node {idx} not in nodes_by_end[{}]",
-                node.end
+                lattice.end(idx)
             );
         }
 
-        // Reverse: indices in nodes_by_start point to nodes with correct start
         for (pos, indices) in lattice.nodes_by_start.iter().enumerate() {
             for &idx in indices {
                 assert_eq!(
-                    lattice.nodes[idx].start, pos,
+                    lattice.start(idx),
+                    pos,
                     "nodes_by_start[{pos}] contains node {idx} with start={}",
-                    lattice.nodes[idx].start
+                    lattice.start(idx)
                 );
             }
         }
 
-        // Reverse: indices in nodes_by_end point to nodes with correct end
         for (pos, indices) in lattice.nodes_by_end.iter().enumerate() {
             for &idx in indices {
                 assert_eq!(
-                    lattice.nodes[idx].end, pos,
+                    lattice.end(idx),
+                    pos,
                     "nodes_by_end[{pos}] contains node {idx} with end={}",
-                    lattice.nodes[idx].end
+                    lattice.end(idx)
                 );
             }
         }
     }
 
-    /// Verify that SoA accessors return identical values to legacy nodes.
-    #[test]
-    fn test_soa_accessors_match_legacy() {
-        let dict = test_dict();
-        let lattice = build_lattice(&dict, "きょうはいいてんき");
-
-        assert_eq!(lattice.node_count(), lattice.nodes.len());
-        for idx in 0..lattice.node_count() {
-            let node = &lattice.nodes[idx];
-            assert_eq!(lattice.start(idx), node.start, "start mismatch at {idx}");
-            assert_eq!(lattice.end(idx), node.end, "end mismatch at {idx}");
-            assert_eq!(lattice.cost(idx), node.cost, "cost mismatch at {idx}");
-            assert_eq!(
-                lattice.left_id(idx),
-                node.left_id,
-                "left_id mismatch at {idx}"
-            );
-            assert_eq!(
-                lattice.right_id(idx),
-                node.right_id,
-                "right_id mismatch at {idx}"
-            );
-            assert_eq!(
-                lattice.reading(idx),
-                node.reading,
-                "reading mismatch at {idx}"
-            );
-            assert_eq!(
-                lattice.surface(idx),
-                node.surface,
-                "surface mismatch at {idx}"
-            );
-        }
-    }
-
-    /// Verify that to_rich_segment produces correct values from SoA fields.
     #[test]
     fn test_to_rich_segment() {
         let dict = test_dict();
@@ -484,5 +389,23 @@ mod tests {
             assert_eq!(seg.right_id, lattice.right_id(idx));
             assert_eq!(seg.word_cost, lattice.cost(idx));
         }
+    }
+
+    #[test]
+    fn test_string_pool_reading_dedup() {
+        let dict = test_dict();
+        let lattice = build_lattice(&dict, "きょう");
+
+        // "きょう" has 2 entries (今日, 京) — they should share the same reading span
+        let kyou_indices: Vec<usize> = (0..lattice.node_count())
+            .filter(|&i| lattice.reading(i) == "きょう")
+            .collect();
+        assert!(kyou_indices.len() >= 2);
+
+        // Reading spans should point to the same pool region
+        let span0 = lattice.reading_spans[kyou_indices[0]];
+        let span1 = lattice.reading_spans[kyou_indices[1]];
+        assert_eq!(span0.offset, span1.offset);
+        assert_eq!(span0.len, span1.len);
     }
 }
