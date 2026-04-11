@@ -323,6 +323,13 @@ category = "regression"
 tags = ["kanji-variant"]
 note = "方が is ideal but ほうが is acceptable — 邦画 must not be top-1"
 
+[[cases]]
+reading = "じゅんびをしましょうか"
+expected = "準備をしましょうか"
+category = "regression"
+tags = ["particle", "auxiliary"]
+note = "auxiliary し/ましょう/か must not fragment into 島+消化 etc."
+
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)
 # ═══════════════════════════════════════════════════════════════════
