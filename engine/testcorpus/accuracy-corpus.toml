@@ -328,7 +328,7 @@ reading = "じゅんびをしましょうか"
 expected = "準備をしましょうか"
 category = "regression"
 tags = ["particle", "auxiliary"]
-note = "script bonus on 1-char kanji (死/化) must not beat hiragana し/か"
+note = "auxiliary し/ましょう/か must not fragment into 島+消化 etc."
 
 # ═══════════════════════════════════════════════════════════════════
 # Katakana loanwords (dictionary entry vs KatakanaRewriter)

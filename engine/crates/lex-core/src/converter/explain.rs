@@ -102,20 +102,12 @@ fn path_key(path: &ScoredPath) -> String {
         .join("\x1e")
 }
 
+#[derive(Default)]
 struct ExplainObserver {
     /// viterbi_cost before resegment/rerank — the raw Viterbi output.
     original_costs: HashMap<String, i64>,
     /// viterbi_cost after resegment + rerank (before history_rerank).
     post_rerank_costs: HashMap<String, i64>,
-}
-
-impl ExplainObserver {
-    fn new() -> Self {
-        Self {
-            original_costs: HashMap::new(),
-            post_rerank_costs: HashMap::new(),
-        }
-    }
 }
 
 impl PostprocessObserver for ExplainObserver {
@@ -228,7 +220,7 @@ pub fn explain(
     let oversample = (n * 3).max(50);
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
-    let mut observer = ExplainObserver::new();
+    let mut observer = ExplainObserver::default();
     let ctx = PostprocessContext {
         lattice: &lattice,
         conn,
