@@ -202,9 +202,9 @@ pub fn explain(
     kana: &str,
     n: usize,
 ) -> ExplainResult {
-    if kana.is_empty() {
+    if kana.is_empty() || n == 0 {
         return ExplainResult {
-            reading: String::new(),
+            reading: kana.to_string(),
             lattice_char_count: 0,
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
