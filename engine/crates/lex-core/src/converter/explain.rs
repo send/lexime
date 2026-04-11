@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 use crate::dict::connection::ConnectionMatrix;
@@ -9,7 +11,7 @@ use crate::settings::settings;
 use super::cost::{conn_cost, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
-use super::reranker;
+use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
 use super::viterbi::{viterbi_nbest, ScoredPath};
 
 /// Full diagnostic result for a single reading.
@@ -85,7 +87,11 @@ pub struct ExplainSegment {
     pub right_id: u16,
 }
 
-/// Build a key string from a ScoredPath for cost tracking across reranker passes.
+// ---------------------------------------------------------------------------
+// Observer that captures cost snapshots for explain diagnostics
+// ---------------------------------------------------------------------------
+
+/// Build a key string from a ScoredPath for cost tracking across pipeline stages.
 /// Uses ASCII control characters (US=\x1f, RS=\x1e) as delimiters to avoid
 /// collisions with any reading/surface content.
 fn path_key(path: &ScoredPath) -> String {
@@ -95,6 +101,42 @@ fn path_key(path: &ScoredPath) -> String {
         .collect::<Vec<_>>()
         .join("\x1e")
 }
+
+struct ExplainObserver {
+    /// viterbi_cost before resegment/rerank — the raw Viterbi output.
+    original_costs: HashMap<String, i64>,
+    /// viterbi_cost after resegment + rerank (before history_rerank).
+    post_rerank_costs: HashMap<String, i64>,
+}
+
+impl ExplainObserver {
+    fn new() -> Self {
+        Self {
+            original_costs: HashMap::new(),
+            post_rerank_costs: HashMap::new(),
+        }
+    }
+}
+
+impl PostprocessObserver for ExplainObserver {
+    fn after_viterbi(&mut self, paths: &[ScoredPath]) {
+        self.original_costs = paths
+            .iter()
+            .map(|p| (path_key(p), p.viterbi_cost))
+            .collect();
+    }
+
+    fn after_rerank(&mut self, paths: &[ScoredPath]) {
+        self.post_rerank_costs = paths
+            .iter()
+            .map(|p| (path_key(p), p.viterbi_cost))
+            .collect();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-segment cost breakdown
+// ---------------------------------------------------------------------------
 
 /// Build per-segment cost breakdown from a ScoredPath.
 fn explain_segments(
@@ -152,7 +194,15 @@ fn explain_segments(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /// Run the full conversion pipeline and capture detailed cost breakdown.
+///
+/// Uses `postprocess_observed` to follow the exact same pipeline as
+/// production conversion, with an observer that records cost snapshots
+/// at each stage for diagnostic output.
 pub fn explain(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -160,7 +210,14 @@ pub fn explain(
     kana: &str,
     n: usize,
 ) -> ExplainResult {
-    use std::collections::HashMap;
+    if kana.is_empty() {
+        return ExplainResult {
+            reading: String::new(),
+            lattice_char_count: 0,
+            lattice_nodes: Vec::new(),
+            paths: Vec::new(),
+        };
+    }
 
     let lattice = build_lattice(dict, kana);
     let lattice_nodes: Vec<ExplainNode> = (0..lattice.node_count())
@@ -171,39 +228,31 @@ pub fn explain(
     let oversample = (n * 3).max(50);
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
-    // 1. Record original viterbi costs
-    let original_costs: HashMap<String, i64> = raw_paths
-        .iter()
-        .map(|p| (path_key(p), p.viterbi_cost))
-        .collect();
+    let mut observer = ExplainObserver::new();
+    let ctx = PostprocessContext {
+        lattice: &lattice,
+        conn,
+        dict: Some(dict),
+        history,
+        kana,
+        n,
+    };
+    let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
 
-    // 2. Apply real reranker (structure cost + length variance + script cost)
-    reranker::rerank(&mut raw_paths, conn, Some(dict));
-
-    // 3. Record post-rerank costs
-    let post_rerank_costs: HashMap<String, i64> = raw_paths
-        .iter()
-        .map(|p| (path_key(p), p.viterbi_cost))
-        .collect();
-
-    // 4. Apply history reranker
-    if let Some(h) = history {
-        reranker::history_rerank(&mut raw_paths, h);
-    }
-
-    // 5. Truncate to requested count
-    raw_paths.truncate(n);
-
-    // 6. Build explained paths with cost deltas
-    let paths: Vec<ExplainPath> = raw_paths
+    let paths: Vec<ExplainPath> = final_paths
         .iter()
         .map(|scored| {
             let key = path_key(scored);
-            let original = original_costs
+            let original = observer
+                .original_costs
                 .get(&key)
                 .copied()
                 .unwrap_or(scored.viterbi_cost);
-            let post_rerank = post_rerank_costs.get(&key).copied().unwrap_or(original);
+            let post_rerank = observer
+                .post_rerank_costs
+                .get(&key)
+                .copied()
+                .unwrap_or(original);
             let rerank_delta = post_rerank - original;
             let history_boost = post_rerank - scored.viterbi_cost;
             ExplainPath {

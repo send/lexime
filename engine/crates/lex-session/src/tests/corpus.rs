@@ -46,6 +46,7 @@ const REAL_DICT_CORPUS: &[(&str, &str)] = &[
     ("nihongo", "日本語"),
     ("kyouhaiitenki", "今日はいい天気"),
     ("watashihagakuseidesu", "私は学生です"),
+    ("junbiwoshimashouka", "準備をしましょうか"),
 ];
 
 fn real_dict_paths() -> Option<(PathBuf, PathBuf)> {

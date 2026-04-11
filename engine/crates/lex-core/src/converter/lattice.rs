@@ -604,6 +604,67 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn test_extend_real_dict_junbi() {
+        use crate::dict::TrieDictionary;
+        let dict_path = std::path::PathBuf::from(
+            std::env::var("LEXIME_DICT").unwrap_or_else(|_| "data/lexime.dict".to_string()),
+        );
+        if !dict_path.exists() {
+            eprintln!("skipping: dict not found at {:?}", dict_path);
+            return;
+        }
+        let dict = TrieDictionary::open(&dict_path).unwrap();
+
+        let input = "じゅんびをしましょうか";
+        let chars: Vec<char> = input.chars().collect();
+
+        // Build one char at a time via extend
+        let first: String = chars[..1].iter().collect();
+        let mut lattice = build_lattice(&dict, &first);
+        for i in 2..=chars.len() {
+            let prefix: String = chars[..i].iter().collect();
+            lattice.extend(&dict, &prefix);
+        }
+
+        // Full build
+        let full = build_lattice(&dict, input);
+
+        let ext_set = node_set(&lattice);
+        let full_set = node_set(&full);
+
+        let missing: Vec<_> = full_set.difference(&ext_set).collect();
+        let extra: Vec<_> = ext_set.difference(&full_set).collect();
+
+        if !missing.is_empty() {
+            eprintln!("MISSING from extend ({} nodes):", missing.len());
+            for n in &missing {
+                eprintln!(
+                    "  [{},{}] {} -> {} cost={} L={} R={}",
+                    n.0, n.1, n.5, n.6, n.2, n.3, n.4
+                );
+            }
+        }
+        if !extra.is_empty() {
+            eprintln!("EXTRA in extend ({} nodes):", extra.len());
+            for n in &extra {
+                eprintln!(
+                    "  [{},{}] {} -> {} cost={} L={} R={}",
+                    n.0, n.1, n.5, n.6, n.2, n.3, n.4
+                );
+            }
+        }
+
+        assert_eq!(
+            ext_set,
+            full_set,
+            "extend lattice differs from full build: {} missing, {} extra",
+            missing.len(),
+            extra.len()
+        );
+    }
+
+    #[test]
     fn test_string_pool_reading_dedup() {
         let dict = test_dict();
         let lattice = build_lattice(&dict, "きょう");
