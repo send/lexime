@@ -19,7 +19,14 @@ lipo -create \
 [tasks.uniffi-gen]
 description = "Generate UniFFI Swift bindings from cdylib"
 depends = ["engine-lib"]
-sources = ["engine/src/api/**/*.rs", "engine/Cargo.toml"]
+sources = [
+  "engine/src/**/*.rs",
+  "engine/uniffi-bindgen.rs",
+  "engine/crates/**/*.rs",
+  "engine/crates/**/*.toml",
+  "engine/Cargo.toml",
+  "engine/Cargo.lock",
+]
 outputs = ["generated/lex_engine.swift", "generated/lex_engineFFI.h", "generated/lex_engineFFI.modulemap"]
 run = """
 #!/usr/bin/env bash
@@ -69,7 +76,13 @@ target/release/dictool compile --source mozc --id-def data/mozc-raw/id.def data/
 [tasks.conn]
 description = "Compile Mozc connection cost matrix"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/connection_single_column.txt", "engine/data/mozc-raw/id.def"]
+sources = [
+  "engine/data/mozc-raw/connection_single_column.txt",
+  "engine/data/mozc-raw/id.def",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+]
 outputs = ["engine/data/lexime.conn"]
 run = """
 #!/usr/bin/env bash

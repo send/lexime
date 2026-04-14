@@ -138,11 +138,7 @@ pub fn compile(
                 added_readings += 1;
             }
             for entry in list {
-                if let Some(existing) = slot.iter_mut().find(|e| {
-                    e.surface == entry.surface
-                        && e.left_id == entry.left_id
-                        && e.right_id == entry.right_id
-                }) {
+                if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
                     if entry.cost < existing.cost {
                         *existing = entry;
                         replaced_entries += 1;
