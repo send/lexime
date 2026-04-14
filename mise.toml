@@ -19,7 +19,14 @@ lipo -create \
 [tasks.uniffi-gen]
 description = "Generate UniFFI Swift bindings from cdylib"
 depends = ["engine-lib"]
-sources = ["engine/src/api/**/*.rs", "engine/Cargo.toml"]
+sources = [
+  "engine/src/**/*.rs",
+  "engine/uniffi-bindgen.rs",
+  "engine/crates/**/*.rs",
+  "engine/crates/**/*.toml",
+  "engine/Cargo.toml",
+  "engine/Cargo.lock",
+]
 outputs = ["generated/lex_engine.swift", "generated/lex_engineFFI.h", "generated/lex_engineFFI.modulemap"]
 run = """
 #!/usr/bin/env bash
@@ -37,14 +44,26 @@ ls -la generated/
 
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data"
-sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
+sources = [
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+]
 outputs = ["engine/data/mozc-raw/.stamp"]
 run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc data/mozc-raw"
 
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/.stamp", "engine/data/mozc-raw/id.def", "engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
+sources = [
+  "engine/data/mozc-raw/.stamp",
+  "engine/data/mozc-raw/id.def",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
@@ -57,7 +76,13 @@ target/release/dictool compile --source mozc --id-def data/mozc-raw/id.def data/
 [tasks.conn]
 description = "Compile Mozc connection cost matrix"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/connection_single_column.txt", "engine/data/mozc-raw/id.def"]
+sources = [
+  "engine/data/mozc-raw/connection_single_column.txt",
+  "engine/data/mozc-raw/id.def",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+]
 outputs = ["engine/data/lexime.conn"]
 run = """
 #!/usr/bin/env bash
@@ -69,22 +94,50 @@ target/release/dictool compile-conn \
   data/mozc-raw/connection_single_column.txt data/lexime.conn
 """
 
+[tasks.fetch-dict-symbols]
+description = "Materialize bundled symbols TSV (Greek letters + math symbols)"
+sources = [
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+]
+outputs = ["engine/data/symbols-raw/.stamp"]
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source symbols data/symbols-raw"
+
 [tasks.dict]
-description = "Build dictionary (Mozc only)"
-depends = ["dict-mozc"]
+description = "Build merged dictionary (Mozc + bundled symbols)"
+depends = ["fetch-dict-mozc", "fetch-dict-symbols"]
+sources = [
+  "engine/data/mozc-raw/.stamp",
+  "engine/data/mozc-raw/id.def",
+  "engine/data/symbols-raw/.stamp",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+]
 outputs = ["engine/data/lexime.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-cp engine/data/lexime-mozc.dict engine/data/lexime.dict
+cd engine
+cargo build --release -p lex-cli --bin dictool
+target/release/dictool compile \
+  --source mozc \
+  --id-def data/mozc-raw/id.def \
+  --extra-source symbols:data/symbols-raw \
+  data/mozc-raw data/lexime.dict
 """
 
 [tasks.dict-clean]
 description = "Remove compiled dictionaries (forces rebuild on next dict/build)"
 run = """
 #!/usr/bin/env bash
-rm -f engine/data/lexime-mozc.dict engine/data/lexime.dict \
-      engine/data/lexime.conn
+rm -f engine/data/lexime-mozc.dict engine/data/lexime.dict engine/data/lexime.conn
 echo "Removed compiled dictionaries"
 """
 
