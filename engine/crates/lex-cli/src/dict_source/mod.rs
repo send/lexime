@@ -1,5 +1,6 @@
 mod mozc;
 pub mod pos_map;
+mod symbols;
 
 use std::collections::HashMap;
 use std::fs;
@@ -8,7 +9,9 @@ use std::path::Path;
 
 use lex_core::dict::DictEntry;
 
-pub use mozc::MozcSource;
+/// Comma-separated list of source names recognized by [`from_name`]. Shown in
+/// error messages so users know what to pick.
+pub const AVAILABLE_SOURCES: &str = "mozc, symbols";
 
 /// A pluggable dictionary source that parses raw dictionary files into entries.
 pub trait DictSource {
@@ -133,7 +136,8 @@ pub(super) fn parse_dict_files(
 /// Create a `DictSource` by name. Returns `None` for unknown source names.
 pub fn from_name(name: &str) -> Option<Box<dyn DictSource>> {
     match name {
-        "mozc" => Some(Box::new(MozcSource)),
+        "mozc" => Some(Box::new(mozc::MozcSource)),
+        "symbols" => Some(Box::new(symbols::SymbolsSource)),
         _ => None,
     }
 }

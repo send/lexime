@@ -4,6 +4,17 @@ use clap::{Parser, Subcommand};
 
 use lex_cli::commands::{config_ops, convert_ops, dict_ops, user_dict_ops};
 
+/// Parse a `SOURCE:DIR` pair for `--extra-source`.
+fn parse_extra_source(raw: &str) -> Result<(String, String), String> {
+    let (source, dir) = raw
+        .split_once(':')
+        .ok_or_else(|| format!("expected SOURCE:DIR, got '{raw}'"))?;
+    if source.is_empty() || dir.is_empty() {
+        return Err(format!("SOURCE and DIR must be non-empty, got '{raw}'"));
+    }
+    Ok((source.to_string(), dir.to_string()))
+}
+
 #[derive(Parser)]
 #[command(name = "dictool", about = "Lexime dictionary build tool")]
 struct Cli {
@@ -33,6 +44,10 @@ enum Command {
         /// Mozc id.def for compile-time cost adjustments (person name, pronoun)
         #[arg(long)]
         id_def: Option<String>,
+        /// Additional source to merge in after id.def adjustments, formatted
+        /// as `SOURCE:DIR` (e.g. `symbols:data/symbols-raw`). May be repeated.
+        #[arg(long = "extra-source", value_parser = parse_extra_source)]
+        extra_source: Vec<(String, String)>,
     },
     /// Compile connection matrix
     CompileConn {
@@ -225,7 +240,14 @@ fn main() {
             input_dir,
             output_file,
             id_def,
-        } => dict_ops::compile(&source, &input_dir, &output_file, id_def.as_deref()),
+            extra_source,
+        } => dict_ops::compile(
+            &source,
+            &input_dir,
+            &output_file,
+            id_def.as_deref(),
+            &extra_source,
+        ),
         Command::CompileConn {
             input_txt,
             output_file,

@@ -3,8 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use crate::dict_source;
-use crate::dict_source::pos_map;
+use crate::dict_source::{self, pos_map, AVAILABLE_SOURCES};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
@@ -20,7 +19,7 @@ macro_rules! die {
 pub fn fetch(source_name: &str, output_dir: &str) {
     let output_dir = Path::new(output_dir);
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: mozc)");
+        eprintln!("Error: unknown source '{source_name}' (available: {AVAILABLE_SOURCES})");
         process::exit(1);
     });
     die!(
@@ -34,9 +33,15 @@ const PERSON_NAME_COST_OFFSET: i16 = 2000;
 const PRONOUN_COST_OFFSET: i16 = -3500;
 const NON_INDEPENDENT_KANJI_COST_OFFSET: i16 = 1500;
 
-pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Option<&str>) {
+pub fn compile(
+    source_name: &str,
+    input_dir: &str,
+    output_file: &str,
+    id_def: Option<&str>,
+    extra_sources: &[(String, String)],
+) {
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: mozc)");
+        eprintln!("Error: unknown source '{source_name}' (available: {AVAILABLE_SOURCES})");
         process::exit(1);
     });
 
@@ -51,6 +56,30 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
         dict_source.parse_dir(input_path),
         "Error parsing dictionary: {}"
     );
+
+    // Parse extra sources up front, but defer merging until after id.def
+    // adjustments below — extras carry hand-tuned costs that must not be
+    // rewritten by role-based offsets.
+    let mut extras: Vec<(String, HashMap<String, Vec<DictEntry>>)> = Vec::new();
+    for (extra_name, extra_dir) in extra_sources {
+        let extra_src = dict_source::from_name(extra_name).unwrap_or_else(|| {
+            eprintln!(
+                "Error: unknown extra source '{extra_name}' (available: {AVAILABLE_SOURCES})"
+            );
+            process::exit(1);
+        });
+        let extra_path = Path::new(extra_dir);
+        if !extra_path.is_dir() {
+            eprintln!("Error: extra input {extra_dir} is not a directory");
+            process::exit(1);
+        }
+        eprintln!("Extra source: {extra_name}");
+        let parsed = die!(
+            extra_src.parse_dir(extra_path),
+            "Error parsing extra dictionary: {}"
+        );
+        extras.push((extra_name.clone(), parsed));
+    }
 
     // Apply compile-time cost offsets based on morpheme roles.
     // Auto-detect id.def in input_dir if --id-def is not specified.
@@ -97,6 +126,28 @@ pub fn compile(source_name: &str, input_dir: &str, output_file: &str, id_def: Op
             }
         }
         eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
+    }
+
+    for (extra_name, extra_entries) in extras {
+        let mut added_readings = 0usize;
+        let mut added_entries = 0usize;
+        for (reading, list) in extra_entries {
+            let slot = entries.entry(reading).or_default();
+            if slot.is_empty() {
+                added_readings += 1;
+            }
+            for entry in list {
+                if !slot.iter().any(|e| {
+                    e.surface == entry.surface
+                        && e.left_id == entry.left_id
+                        && e.right_id == entry.right_id
+                }) {
+                    slot.push(entry);
+                    added_entries += 1;
+                }
+            }
+        }
+        eprintln!("Merged '{extra_name}': +{added_readings} readings, +{added_entries} entries");
     }
 
     let reading_count = entries.len();

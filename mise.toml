@@ -69,22 +69,42 @@ target/release/dictool compile-conn \
   data/mozc-raw/connection_single_column.txt data/lexime.conn
 """
 
+[tasks.fetch-dict-symbols]
+description = "Materialize bundled symbols TSV (Greek letters + math symbols)"
+sources = ["engine/crates/lex-cli/src/dict_source/symbols.rs", "engine/crates/lex-cli/src/dict_source/symbols.tsv"]
+outputs = ["engine/data/symbols-raw/.stamp"]
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source symbols data/symbols-raw"
+
 [tasks.dict]
-description = "Build dictionary (Mozc only)"
-depends = ["dict-mozc"]
+description = "Build merged dictionary (Mozc + bundled symbols)"
+depends = ["fetch-dict-mozc", "fetch-dict-symbols"]
+sources = [
+  "engine/data/mozc-raw/.stamp",
+  "engine/data/mozc-raw/id.def",
+  "engine/data/symbols-raw/.stamp",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+]
 outputs = ["engine/data/lexime.dict"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-cp engine/data/lexime-mozc.dict engine/data/lexime.dict
+cd engine
+cargo build --release -p lex-cli --bin dictool
+target/release/dictool compile \
+  --source mozc \
+  --id-def data/mozc-raw/id.def \
+  --extra-source symbols:data/symbols-raw \
+  data/mozc-raw data/lexime.dict
 """
 
 [tasks.dict-clean]
 description = "Remove compiled dictionaries (forces rebuild on next dict/build)"
 run = """
 #!/usr/bin/env bash
-rm -f engine/data/lexime-mozc.dict engine/data/lexime.dict \
-      engine/data/lexime.conn
+rm -f engine/data/lexime-mozc.dict engine/data/lexime.dict engine/data/lexime.conn
 echo "Removed compiled dictionaries"
 """
 
