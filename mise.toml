@@ -37,14 +37,26 @@ ls -la generated/
 
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data"
-sources = ["engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
+sources = [
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+]
 outputs = ["engine/data/mozc-raw/.stamp"]
 run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc data/mozc-raw"
 
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
 depends = ["fetch-dict-mozc"]
-sources = ["engine/data/mozc-raw/.stamp", "engine/data/mozc-raw/id.def", "engine/crates/lex-cli/src/bin/dictool.rs", "engine/crates/lex-cli/src/dict_source/mozc.rs"]
+sources = [
+  "engine/data/mozc-raw/.stamp",
+  "engine/data/mozc-raw/id.def",
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/mozc.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
 #!/usr/bin/env bash
@@ -88,7 +100,10 @@ sources = [
   "engine/data/mozc-raw/id.def",
   "engine/data/symbols-raw/.stamp",
   "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/commands/dict_ops.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
   "engine/crates/lex-cli/src/dict_source/mozc.rs",
+  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
   "engine/crates/lex-cli/src/dict_source/symbols.rs",
   "engine/crates/lex-cli/src/dict_source/symbols.tsv",
 ]

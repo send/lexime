@@ -131,23 +131,31 @@ pub fn compile(
     for (extra_name, extra_entries) in extras {
         let mut added_readings = 0usize;
         let mut added_entries = 0usize;
+        let mut replaced_entries = 0usize;
         for (reading, list) in extra_entries {
             let slot = entries.entry(reading).or_default();
             if slot.is_empty() {
                 added_readings += 1;
             }
             for entry in list {
-                if !slot.iter().any(|e| {
+                if let Some(existing) = slot.iter_mut().find(|e| {
                     e.surface == entry.surface
                         && e.left_id == entry.left_id
                         && e.right_id == entry.right_id
                 }) {
+                    if entry.cost < existing.cost {
+                        *existing = entry;
+                        replaced_entries += 1;
+                    }
+                } else {
                     slot.push(entry);
                     added_entries += 1;
                 }
             }
         }
-        eprintln!("Merged '{extra_name}': +{added_readings} readings, +{added_entries} entries");
+        eprintln!(
+            "Merged '{extra_name}': +{added_readings} readings, +{added_entries} entries, {replaced_entries} replaced"
+        );
     }
 
     let reading_count = entries.len();
