@@ -71,7 +71,12 @@ target/release/dictool compile-conn \
 
 [tasks.fetch-dict-symbols]
 description = "Materialize bundled symbols TSV (Greek letters + math symbols)"
-sources = ["engine/crates/lex-cli/src/dict_source/symbols.rs", "engine/crates/lex-cli/src/dict_source/symbols.tsv"]
+sources = [
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.rs",
+  "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+]
 outputs = ["engine/data/symbols-raw/.stamp"]
 run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source symbols data/symbols-raw"
 
