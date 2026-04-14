@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use crate::dict_source::{self, pos_map, AVAILABLE_SOURCES};
+use crate::dict_source::{self, pos_map};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
@@ -19,7 +19,10 @@ macro_rules! die {
 pub fn fetch(source_name: &str, output_dir: &str) {
     let output_dir = Path::new(output_dir);
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: {AVAILABLE_SOURCES})");
+        eprintln!(
+            "Error: unknown source '{source_name}' (available: {})",
+            dict_source::available_sources()
+        );
         process::exit(1);
     });
     die!(
@@ -41,7 +44,10 @@ pub fn compile(
     extra_sources: &[(String, String)],
 ) {
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!("Error: unknown source '{source_name}' (available: {AVAILABLE_SOURCES})");
+        eprintln!(
+            "Error: unknown source '{source_name}' (available: {})",
+            dict_source::available_sources()
+        );
         process::exit(1);
     });
 
@@ -64,7 +70,8 @@ pub fn compile(
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).unwrap_or_else(|| {
             eprintln!(
-                "Error: unknown extra source '{extra_name}' (available: {AVAILABLE_SOURCES})"
+                "Error: unknown extra source '{extra_name}' (available: {})",
+                dict_source::available_sources()
             );
             process::exit(1);
         });

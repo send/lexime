@@ -9,9 +9,25 @@ use std::path::Path;
 
 use lex_core::dict::DictEntry;
 
+/// Constructor for a [`DictSource`] stored in the [`SOURCES`] registry.
+type SourceCtor = fn() -> Box<dyn DictSource>;
+
+/// Registry of dictionary sources. Single source of truth for both
+/// [`from_name`] and [`available_sources`] — add new sources here.
+const SOURCES: &[(&str, SourceCtor)] = &[
+    ("mozc", || Box::new(mozc::MozcSource)),
+    ("symbols", || Box::new(symbols::SymbolsSource)),
+];
+
 /// Comma-separated list of source names recognized by [`from_name`]. Shown in
 /// error messages so users know what to pick.
-pub const AVAILABLE_SOURCES: &str = "mozc, symbols";
+pub fn available_sources() -> String {
+    SOURCES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// A pluggable dictionary source that parses raw dictionary files into entries.
 pub trait DictSource {
@@ -135,9 +151,8 @@ pub(super) fn parse_dict_files(
 
 /// Create a `DictSource` by name. Returns `None` for unknown source names.
 pub fn from_name(name: &str) -> Option<Box<dyn DictSource>> {
-    match name {
-        "mozc" => Some(Box::new(mozc::MozcSource)),
-        "symbols" => Some(Box::new(symbols::SymbolsSource)),
-        _ => None,
-    }
+    SOURCES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, ctor)| ctor())
 }
