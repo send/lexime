@@ -190,7 +190,7 @@ impl TrieDictionary {
             mmap.clone(),
             sections.trie_start,
             trie_len,
-        ))?;
+        )?)?;
 
         // The string pool / entry records / reading index are plain
         // byte slices — not lexime-trie types — so `DoubleArrayBacked`

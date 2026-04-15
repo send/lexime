@@ -4,7 +4,7 @@ use std::sync::Arc;
 use lexime_trie::{DoubleArray, DoubleArrayBacked, StableBacking, TrieSearch};
 use memmap2::Mmap;
 
-use super::{DictEntry, Dictionary, SearchResult};
+use super::{DictEntry, DictError, Dictionary, SearchResult};
 
 /// Self-contained `AsRef<[u8]>` over a memory-mapped slice.
 ///
@@ -24,19 +24,21 @@ pub(super) struct OwnedMmap {
 }
 
 impl OwnedMmap {
-    /// Constructor. `offset..offset + len` must fit within `mmap.len()`;
-    /// this is an internal invariant — callers in `trie_dict_io` validate
-    /// section ranges up-front, so a violation here is a bug.
-    pub(super) fn new(mmap: Arc<Mmap>, offset: usize, len: usize) -> Self {
-        let end = offset
-            .checked_add(len)
-            .expect("OwnedMmap range overflow: offset + len > usize::MAX");
-        assert!(
-            end <= mmap.len(),
-            "OwnedMmap range {offset}..{end} exceeds mmap length {}",
-            mmap.len()
-        );
-        Self { mmap, offset, end }
+    /// Constructor. Returns `Err(DictError::InvalidHeader)` if
+    /// `offset + len` overflows `usize` or runs past `mmap.len()`.
+    ///
+    /// Callers in `trie_dict_io` already validate section ranges
+    /// up-front, so errors here indicate either a caller bug or a
+    /// header-validation path that didn't defend against the same
+    /// arithmetic. Returning `Result` instead of panicking keeps the
+    /// loader contract uniform: malformed on-disk data surfaces as
+    /// `DictError`, never a process abort.
+    pub(super) fn new(mmap: Arc<Mmap>, offset: usize, len: usize) -> Result<Self, DictError> {
+        let end = offset.checked_add(len).ok_or(DictError::InvalidHeader)?;
+        if end > mmap.len() {
+            return Err(DictError::InvalidHeader);
+        }
+        Ok(Self { mmap, offset, end })
     }
 }
 
