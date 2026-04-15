@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use lexime_trie::DoubleArray;
+use lexime_trie::{DoubleArray, TrieSearch};
 
 use super::config::{parse_romaji_toml, RomajiConfigError};
 use super::table::DEFAULT_TOML;

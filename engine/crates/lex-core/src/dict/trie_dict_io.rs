@@ -1,11 +1,12 @@
 use std::fs::{self, File};
 use std::path::Path;
+use std::sync::Arc;
 
-use lexime_trie::{DoubleArray, DoubleArrayRef};
+use lexime_trie::{DoubleArray, DoubleArrayBacked};
 use memmap2::Mmap;
 
 use super::trie_dict::{
-    TrieDictionary, TrieStore, ValuesStore, HEADER_SIZE, MAGIC, SLOT_SIZE, VERSION,
+    OwnedMmap, TrieDictionary, TrieStore, ValuesStore, HEADER_SIZE, MAGIC, SLOT_SIZE, VERSION,
 };
 use super::DictError;
 
@@ -111,7 +112,7 @@ impl TrieDictionary {
     pub fn open(path: &Path) -> Result<Self, DictError> {
         let file = File::open(path)?;
         // SAFETY: The file is opened read-only and the mapping is immutable.
-        let mmap = unsafe { Mmap::map(&file)? };
+        let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         if mmap.len() < 5 {
             return Err(DictError::InvalidHeader);
@@ -146,17 +147,27 @@ impl TrieDictionary {
         let entries_start = pool_start + pool_len;
         let index_start = entries_start + entries_len;
 
-        // Zero-copy trie from mmap
-        let trie_ref =
-            DoubleArrayRef::<u8>::from_bytes_ref(&mmap[trie_start..trie_start + trie_len])?;
-        // SAFETY: The mmap is stored in self._mmap and will be dropped after trie and values
-        // (Rust drops fields in declaration order: trie, values, _mmap).
-        let trie_ref = unsafe {
-            std::mem::transmute::<DoubleArrayRef<'_, u8>, DoubleArrayRef<'static, u8>>(trie_ref)
-        };
+        // Zero-copy trie from mmap via DoubleArrayBacked + StableBacking
+        // newtype. The wrapper owns its own `Arc<Mmap>` clone so the
+        // mapping cannot be released out from under it, even if the
+        // surrounding `_mmap` slot is dropped first.
+        let backed = DoubleArrayBacked::<u8, OwnedMmap>::from_backing(OwnedMmap::new(
+            mmap.clone(),
+            trie_start,
+            trie_len,
+        ))?;
 
-        // SAFETY: The slices reference mmap data. The mmap is stored in self._mmap
-        // and will outlive these references (dropped last due to field order).
+        // The string pool / entry records / reading index are plain
+        // byte slices — not lexime-trie types — so `DoubleArrayBacked`
+        // doesn't cover them. Keep the self-referential transmute for
+        // those three; `_mmap` (an `Arc<Mmap>` clone) stays alive as
+        // long as `TrieDictionary`, and is dropped strictly after
+        // `values` thanks to field declaration order.
+        //
+        // SAFETY: Each slice references a region of the mmap. The
+        // `Arc<Mmap>` held in `_mmap` keeps the mapping alive for the
+        // lifetime of `self`; field drop order is trie → values →
+        // `_mmap`, so the mapping outlives every borrow.
         let string_pool = unsafe {
             std::mem::transmute::<&[u8], &'static [u8]>(&mmap[pool_start..pool_start + pool_len])
         };
@@ -170,7 +181,7 @@ impl TrieDictionary {
         };
 
         Ok(Self {
-            trie: TrieStore::MmapRef(trie_ref),
+            trie: TrieStore::MmapRef(backed),
             values: ValuesStore::MmapRef {
                 string_pool,
                 entries_data,
