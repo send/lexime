@@ -24,15 +24,10 @@ pub(super) struct OwnedMmap {
 }
 
 impl OwnedMmap {
-    /// Constructor. Returns `Err(DictError::InvalidHeader)` if
-    /// `offset + len` overflows `usize` or runs past `mmap.len()`.
-    ///
-    /// Callers in `trie_dict_io` already validate section ranges
-    /// up-front, so errors here indicate either a caller bug or a
-    /// header-validation path that didn't defend against the same
-    /// arithmetic. Returning `Result` instead of panicking keeps the
-    /// loader contract uniform: malformed on-disk data surfaces as
-    /// `DictError`, never a process abort.
+    /// Returns `Err(DictError::InvalidHeader)` if `offset + len`
+    /// overflows `usize` or runs past `mmap.len()`. Fallible rather
+    /// than panicking so malformed on-disk data surfaces as a
+    /// recoverable `DictError`.
     pub(super) fn new(mmap: Arc<Mmap>, offset: usize, len: usize) -> Result<Self, DictError> {
         let end = offset.checked_add(len).ok_or(DictError::InvalidHeader)?;
         if end > mmap.len() {

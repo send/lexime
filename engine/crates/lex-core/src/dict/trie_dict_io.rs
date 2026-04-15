@@ -12,10 +12,11 @@ use super::DictError;
 
 /// Validated byte offsets for each LXDX section.
 ///
-/// Produced by [`SectionOffsets::compute`] which checks every step for
-/// `usize` overflow and ensures the last section ends within the buffer.
-/// Once constructed, the offsets are known-good and downstream slicing
-/// is panic-free.
+/// Produced by [`SectionOffsets::parse`], which also performs the
+/// magic / version / field reads so the two call sites (`open` and
+/// `from_bytes`) share a single source of truth for the on-disk
+/// layout. Once constructed, the offsets are known-good and
+/// downstream slicing is panic-free.
 struct SectionOffsets {
     trie_start: usize,
     pool_start: usize,
@@ -25,13 +26,29 @@ struct SectionOffsets {
 }
 
 impl SectionOffsets {
-    fn compute(
-        buf_len: usize,
-        trie_len: usize,
-        pool_len: usize,
-        entries_len: usize,
-        reading_count: usize,
-    ) -> Result<Self, DictError> {
+    /// Validate the LXDX header in `data` and compute section offsets.
+    fn parse(data: &[u8]) -> Result<Self, DictError> {
+        if data.len() < 5 {
+            return Err(DictError::InvalidHeader);
+        }
+        if &data[..4] != MAGIC {
+            return Err(DictError::InvalidMagic);
+        }
+        if data[4] != VERSION {
+            return Err(DictError::UnsupportedVersion(data[4]));
+        }
+        if data.len() < HEADER_SIZE {
+            return Err(DictError::InvalidHeader);
+        }
+
+        let read_u32 = |range: std::ops::Range<usize>| {
+            u32::from_ne_bytes(data[range].try_into().expect("4-byte header field")) as usize
+        };
+        let trie_len = read_u32(8..12);
+        let pool_len = read_u32(12..16);
+        let entries_len = read_u32(16..20);
+        let reading_count = read_u32(20..24);
+
         let index_len = reading_count
             .checked_mul(SLOT_SIZE)
             .ok_or(DictError::InvalidHeader)?;
@@ -48,7 +65,7 @@ impl SectionOffsets {
         let end = index_start
             .checked_add(index_len)
             .ok_or(DictError::InvalidHeader)?;
-        if buf_len < end {
+        if data.len() < end {
             return Err(DictError::InvalidHeader);
         }
         Ok(Self {
@@ -110,31 +127,7 @@ impl TrieDictionary {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
-        if data.len() < 5 {
-            return Err(DictError::InvalidHeader);
-        }
-        if &data[..4] != MAGIC {
-            return Err(DictError::InvalidMagic);
-        }
-        if data[4] != VERSION {
-            return Err(DictError::UnsupportedVersion(data[4]));
-        }
-        if data.len() < HEADER_SIZE {
-            return Err(DictError::InvalidHeader);
-        }
-
-        let trie_len =
-            u32::from_ne_bytes(data[8..12].try_into().expect("4-byte header field")) as usize;
-        let pool_len =
-            u32::from_ne_bytes(data[12..16].try_into().expect("4-byte header field")) as usize;
-        let entries_len =
-            u32::from_ne_bytes(data[16..20].try_into().expect("4-byte header field")) as usize;
-        let reading_count =
-            u32::from_ne_bytes(data[20..24].try_into().expect("4-byte header field")) as usize;
-
-        let sections =
-            SectionOffsets::compute(data.len(), trie_len, pool_len, entries_len, reading_count)?;
-
+        let sections = SectionOffsets::parse(data)?;
         let trie = DoubleArray::<u8>::from_bytes(&data[sections.trie_start..sections.pool_start])?;
 
         Ok(Self {
@@ -156,53 +149,24 @@ impl TrieDictionary {
         let file = File::open(path)?;
         // SAFETY: The file is opened read-only and the mapping is immutable.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
+        let sections = SectionOffsets::parse(&mmap)?;
+        let trie_len = sections.pool_start - sections.trie_start;
 
-        if mmap.len() < 5 {
-            return Err(DictError::InvalidHeader);
-        }
-        if &mmap[..4] != MAGIC {
-            return Err(DictError::InvalidMagic);
-        }
-        if mmap[4] != VERSION {
-            return Err(DictError::UnsupportedVersion(mmap[4]));
-        }
-        if mmap.len() < HEADER_SIZE {
-            return Err(DictError::InvalidHeader);
-        }
-
-        let trie_len =
-            u32::from_ne_bytes(mmap[8..12].try_into().expect("4-byte header field")) as usize;
-        let pool_len =
-            u32::from_ne_bytes(mmap[12..16].try_into().expect("4-byte header field")) as usize;
-        let entries_len =
-            u32::from_ne_bytes(mmap[16..20].try_into().expect("4-byte header field")) as usize;
-        let reading_count =
-            u32::from_ne_bytes(mmap[20..24].try_into().expect("4-byte header field")) as usize;
-
-        let sections =
-            SectionOffsets::compute(mmap.len(), trie_len, pool_len, entries_len, reading_count)?;
-
-        // Zero-copy trie from mmap via DoubleArrayBacked + StableBacking
-        // newtype. The wrapper owns its own `Arc<Mmap>` clone so the
-        // mapping cannot be released out from under it, even if the
-        // surrounding `_mmap` slot is dropped first.
+        // The trie backing owns its own `Arc<Mmap>` clone so the mapping
+        // cannot be released out from under it even if the surrounding
+        // `_mmap` slot is dropped first.
         let backed = DoubleArrayBacked::<u8, OwnedMmap>::from_backing(OwnedMmap::new(
             mmap.clone(),
             sections.trie_start,
             trie_len,
         )?)?;
 
-        // The string pool / entry records / reading index are plain
-        // byte slices — not lexime-trie types — so `DoubleArrayBacked`
-        // doesn't cover them. Keep the self-referential transmute for
-        // those three; `_mmap` (an `Arc<Mmap>` clone) stays alive as
-        // long as `TrieDictionary`, and is dropped strictly after
-        // `values` thanks to field declaration order.
-        //
-        // SAFETY: Each slice references a region of the mmap. The
-        // `Arc<Mmap>` held in `_mmap` keeps the mapping alive for the
-        // lifetime of `self`; field drop order is trie → values →
-        // `_mmap`, so the mapping outlives every borrow.
+        // SAFETY: `DoubleArrayBacked` only owns the trie slice; the
+        // string pool / entry records / reading index are plain byte
+        // slices so we keep the self-referential transmute for them.
+        // `_mmap` stores a clone of the `Arc<Mmap>` and field drop
+        // order (trie → values → `_mmap`) guarantees the mapping
+        // outlives every borrow.
         let string_pool = unsafe {
             std::mem::transmute::<&[u8], &'static [u8]>(
                 &mmap[sections.pool_start..sections.entries_start],

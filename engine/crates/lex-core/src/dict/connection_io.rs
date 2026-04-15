@@ -84,14 +84,12 @@ impl ConnectionMatrix {
                 let cost: i16 = fields[2]
                     .parse()
                     .map_err(|e| DictError::Parse(format!("cost: {e}")))?;
-                // `left_id` / `right_id` come from untrusted text input
-                // and can be anything up to `usize::MAX`. Validate each
-                // against `num_ids` explicitly: a product-only check
-                // (`idx < expected`) misses cases like `num_ids=2,
-                // left_id=0, right_id=2` where idx=2 lands in-range but
-                // refers to cell (1, 0). Once both fields are bounded by
-                // `num_ids ≤ u16::MAX`, `left_id · num_ids + right_id`
-                // provably fits in `u32`, so plain arithmetic is safe.
+                // Validate each ID against `num_ids` explicitly: a
+                // product-only check (`idx < expected`) would accept
+                // e.g. `num_ids=2, left_id=0, right_id=2` and write
+                // into cell (1, 0) instead of erroring. Once both
+                // fields are bounded, `left · num_ids + right` fits
+                // in `u32`, so plain arithmetic is safe.
                 if left_id >= num_ids_usize || right_id >= num_ids_usize {
                     return Err(DictError::Parse(format!(
                         "id out of range: left_id={left_id}, right_id={right_id} (num_ids={num_ids})"
@@ -183,9 +181,8 @@ impl ConnectionMatrix {
             return Err(DictError::InvalidHeader);
         }
         let roles = data[FIXED_HEADER_SIZE..roles_end].to_vec();
-        // `u16 * u16 * 2` fits in `u64` but *not* in a 32-bit `usize`.
-        // `checked_mul` turns that wrap into a clean `InvalidHeader`
-        // instead of a silent short-read past the buffer.
+        // `u16² · 2` can exceed a 32-bit `usize`; fall back to
+        // `InvalidHeader` instead of silently wrapping.
         let expected_bytes = (num_ids as usize)
             .checked_mul(num_ids as usize)
             .and_then(|n| n.checked_mul(2))
@@ -250,11 +247,9 @@ impl ConnectionMatrix {
 
     /// Helper: re-serialize a Mapped matrix.
     fn to_bytes_from_mapped(&self) -> Vec<u8> {
-        // `num_ids` has already been validated on the way in (loaded by
-        // `validate_header`), so the product is guaranteed to fit in
-        // `usize` on every target we care about. Use saturating
-        // arithmetic for the capacity hint — an exact figure is not
-        // required and we would rather over-allocate than panic.
+        // Saturating arithmetic for the capacity hint — it's advisory
+        // and over-allocating is preferable to panicking on a
+        // worst-case value.
         let n = (self.num_ids as usize).saturating_mul(self.num_ids as usize);
         let cap = FIXED_HEADER_SIZE
             .saturating_add(self.roles.len())
