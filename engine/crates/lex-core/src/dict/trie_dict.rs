@@ -1,9 +1,55 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use lexime_trie::{DoubleArray, DoubleArrayRef};
+use lexime_trie::{DoubleArray, DoubleArrayBacked, StableBacking, TrieSearch};
 use memmap2::Mmap;
 
-use super::{DictEntry, Dictionary, SearchResult};
+use super::{DictEntry, DictError, Dictionary, SearchResult};
+
+/// Self-contained `AsRef<[u8]>` over a memory-mapped slice.
+///
+/// `DoubleArrayBacked` requires its backing type to implement
+/// `StableBacking`, which promises that `as_ref().as_ptr()` stays at
+/// the same address across moves of `Self`. `memmap2::Mmap` satisfies
+/// that in spirit — the OS-backed page mapping does not relocate —
+/// but the crate cannot blanket-impl `StableBacking` for it without
+/// a `memmap2` dep. This newtype wraps `Arc<Mmap>` so the trie
+/// dictionary and the adjacent string-pool / entry / index slices
+/// share the same mapping without copying, and exposes only the
+/// sub-slice for the embedded trie (range is fixed at construction).
+pub(super) struct OwnedMmap {
+    mmap: Arc<Mmap>,
+    offset: usize,
+    end: usize,
+}
+
+impl OwnedMmap {
+    /// Returns `Err(DictError::InvalidHeader)` if `offset + len`
+    /// overflows `usize` or runs past `mmap.len()`. Fallible rather
+    /// than panicking so malformed on-disk data surfaces as a
+    /// recoverable `DictError`.
+    pub(super) fn new(mmap: Arc<Mmap>, offset: usize, len: usize) -> Result<Self, DictError> {
+        let end = offset.checked_add(len).ok_or(DictError::InvalidHeader)?;
+        if end > mmap.len() {
+            return Err(DictError::InvalidHeader);
+        }
+        Ok(Self { mmap, offset, end })
+    }
+}
+
+impl AsRef<[u8]> for OwnedMmap {
+    fn as_ref(&self) -> &[u8] {
+        &self.mmap[self.offset..self.end]
+    }
+}
+
+// SAFETY: `Arc<Mmap>` keeps the OS-backed page mapping alive for the
+// lifetime of `Self`. Moving `OwnedMmap` moves only the `Arc` handle
+// plus two `usize` fields — the pointer returned by `as_ref()` is
+// derived from the mapping's virtual address plus a fixed offset, so
+// it stays at the same address across moves. `Mmap` has no interior
+// mutability reachable through a shared reference.
+unsafe impl StableBacking for OwnedMmap {}
 
 pub(super) const MAGIC: &[u8; 4] = b"LXDX";
 pub(super) const VERSION: u8 = 4;
@@ -14,7 +60,7 @@ pub(super) const SLOT_SIZE: usize = 6; // entry_offset(4) + count(2)
 
 pub(super) enum TrieStore {
     Owned(DoubleArray<u8>),
-    MmapRef(DoubleArrayRef<'static, u8>),
+    MmapRef(DoubleArrayBacked<u8, OwnedMmap>),
 }
 
 /// Dispatch a method call on the inner trie, avoiding `Box<dyn Iterator>`.
@@ -118,7 +164,7 @@ impl ValuesStore {
 pub struct TrieDictionary {
     pub(super) trie: TrieStore,
     pub(super) values: ValuesStore,
-    pub(super) _mmap: Option<Mmap>,
+    pub(super) _mmap: Option<Arc<Mmap>>,
 }
 
 impl TrieDictionary {

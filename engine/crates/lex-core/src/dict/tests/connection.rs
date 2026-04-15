@@ -113,6 +113,40 @@ fn test_mecab_triplet_sparse() {
     assert_eq!(m.cost(1, 1), 0);
 }
 
+fn assert_id_out_of_range(text: &str) {
+    match ConnectionMatrix::from_text(text) {
+        Err(DictError::Parse(msg)) => assert!(
+            msg.contains("id out of range"),
+            "unexpected parse error message: {msg}"
+        ),
+        Err(other) => panic!("expected DictError::Parse, got {other:?}"),
+        Ok(_) => panic!("expected error for out-of-range id, got Ok"),
+    }
+}
+
+#[test]
+fn test_mecab_triplet_right_id_out_of_range() {
+    // num_ids=2, right_id=2 is invalid (valid ids are 0..2).
+    // A product-only check (idx=0*2+2=2 < expected=4) would miss this
+    // and silently write to cell (left=1, right=0). Verify the explicit
+    // per-field range check rejects it instead.
+    assert_id_out_of_range("2 2\n2 0 10\n");
+}
+
+#[test]
+fn test_mecab_triplet_left_id_out_of_range() {
+    assert_id_out_of_range("2 2\n0 2 10\n"); // right_id=0, left_id=2
+}
+
+#[test]
+fn test_mecab_triplet_left_id_overflow() {
+    // `left_id = usize::MAX` — used to silently wrap past the index
+    // bounds check via `left_id * num_ids` before the per-field range
+    // check was in place. The per-field check catches this before any
+    // arithmetic runs.
+    assert_id_out_of_range(&format!("2 2\n0 {} 10\n", usize::MAX));
+}
+
 #[test]
 fn test_mecab_triplet_roundtrip() {
     let text = "2 2\n0 0 10\n0 1 20\n1 0 30\n1 1 40\n";

@@ -45,7 +45,11 @@ impl ConnectionMatrix {
             }
         };
 
-        let expected = num_ids as usize * num_ids as usize;
+        // `num_ids` is `u16`, so `num_ids² ≤ u32::MAX` and the product
+        // always fits in `usize` on every supported target (32-bit
+        // included). Plain multiplication is overflow-safe here.
+        let num_ids_usize = num_ids as usize;
+        let expected = num_ids_usize * num_ids_usize;
 
         // Auto-detect format: skip empty lines then peek at first data line
         while lines.peek().is_some_and(|line| line.trim().is_empty()) {
@@ -80,12 +84,18 @@ impl ConnectionMatrix {
                 let cost: i16 = fields[2]
                     .parse()
                     .map_err(|e| DictError::Parse(format!("cost: {e}")))?;
-                let idx = left_id * num_ids as usize + right_id;
-                if idx >= expected {
+                // Validate each ID against `num_ids` explicitly: a
+                // product-only check (`idx < expected`) would accept
+                // e.g. `num_ids=2, left_id=0, right_id=2` and write
+                // into cell (1, 0) instead of erroring. Once both
+                // fields are bounded, `left · num_ids + right` fits
+                // in `u32`, so plain arithmetic is safe.
+                if left_id >= num_ids_usize || right_id >= num_ids_usize {
                     return Err(DictError::Parse(format!(
-                        "index out of bounds: ({right_id}, {left_id})"
+                        "id out of range: left_id={left_id}, right_id={right_id} (num_ids={num_ids})"
                     )));
                 }
+                let idx = left_id * num_ids_usize + right_id;
                 costs[idx] = cost;
             }
             costs
@@ -164,12 +174,19 @@ impl ConnectionMatrix {
         let num_ids = u16::from_ne_bytes([data[5], data[6]]);
         let fw_min = u16::from_ne_bytes([data[7], data[8]]);
         let fw_max = u16::from_ne_bytes([data[9], data[10]]);
-        let roles_end = FIXED_HEADER_SIZE + num_ids as usize;
+        let roles_end = FIXED_HEADER_SIZE
+            .checked_add(num_ids as usize)
+            .ok_or(DictError::InvalidHeader)?;
         if data.len() < roles_end {
             return Err(DictError::InvalidHeader);
         }
         let roles = data[FIXED_HEADER_SIZE..roles_end].to_vec();
-        let expected_bytes = num_ids as usize * num_ids as usize * 2;
+        // `u16² · 2` can exceed a 32-bit `usize`; fall back to
+        // `InvalidHeader` instead of silently wrapping.
+        let expected_bytes = (num_ids as usize)
+            .checked_mul(num_ids as usize)
+            .and_then(|n| n.checked_mul(2))
+            .ok_or(DictError::InvalidHeader)?;
         let actual_bytes = data.len() - roles_end;
         if actual_bytes != expected_bytes {
             return Err(DictError::Parse(format!(
@@ -230,8 +247,14 @@ impl ConnectionMatrix {
 
     /// Helper: re-serialize a Mapped matrix.
     fn to_bytes_from_mapped(&self) -> Vec<u8> {
-        let n = self.num_ids as usize * self.num_ids as usize;
-        let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + n * 2);
+        // Saturating arithmetic for the capacity hint — it's advisory
+        // and over-allocating is preferable to panicking on a
+        // worst-case value.
+        let n = (self.num_ids as usize).saturating_mul(self.num_ids as usize);
+        let cap = FIXED_HEADER_SIZE
+            .saturating_add(self.roles.len())
+            .saturating_add(n.saturating_mul(2));
+        let mut buf = Vec::with_capacity(cap);
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
         buf.extend_from_slice(&self.num_ids.to_ne_bytes());
