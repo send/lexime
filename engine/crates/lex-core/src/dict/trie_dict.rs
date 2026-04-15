@@ -13,26 +13,36 @@ use super::{DictEntry, Dictionary, SearchResult};
 /// the same address across moves of `Self`. `memmap2::Mmap` satisfies
 /// that in spirit — the OS-backed page mapping does not relocate —
 /// but the crate cannot blanket-impl `StableBacking` for it without
-/// an `memmap2` dep. This newtype wraps `Arc<Mmap>` so the trie
+/// a `memmap2` dep. This newtype wraps `Arc<Mmap>` so the trie
 /// dictionary and the adjacent string-pool / entry / index slices
 /// share the same mapping without copying, and exposes only the
-/// sub-slice for the embedded trie (offset + len are fixed at
-/// construction).
+/// sub-slice for the embedded trie (range is fixed at construction).
 pub(super) struct OwnedMmap {
     mmap: Arc<Mmap>,
     offset: usize,
-    len: usize,
+    end: usize,
 }
 
 impl OwnedMmap {
+    /// Constructor. `offset..offset + len` must fit within `mmap.len()`;
+    /// this is an internal invariant — callers in `trie_dict_io` validate
+    /// section ranges up-front, so a violation here is a bug.
     pub(super) fn new(mmap: Arc<Mmap>, offset: usize, len: usize) -> Self {
-        Self { mmap, offset, len }
+        let end = offset
+            .checked_add(len)
+            .expect("OwnedMmap range overflow: offset + len > usize::MAX");
+        assert!(
+            end <= mmap.len(),
+            "OwnedMmap range {offset}..{end} exceeds mmap length {}",
+            mmap.len()
+        );
+        Self { mmap, offset, end }
     }
 }
 
 impl AsRef<[u8]> for OwnedMmap {
     fn as_ref(&self) -> &[u8] {
-        &self.mmap[self.offset..self.offset + self.len]
+        &self.mmap[self.offset..self.end]
     }
 }
 

@@ -45,7 +45,12 @@ impl ConnectionMatrix {
             }
         };
 
-        let expected = num_ids as usize * num_ids as usize;
+        // `num_ids` is `u16`, so the product fits in `u32`; multiplication
+        // on `usize` is overflow-safe on every supported 64-bit target but
+        // can wrap on 32-bit. `checked_mul` surfaces the wrap cleanly.
+        let expected = (num_ids as usize)
+            .checked_mul(num_ids as usize)
+            .ok_or_else(|| DictError::Parse(format!("num_ids {num_ids} overflows usize")))?;
 
         // Auto-detect format: skip empty lines then peek at first data line
         while lines.peek().is_some_and(|line| line.trim().is_empty()) {
@@ -80,12 +85,17 @@ impl ConnectionMatrix {
                 let cost: i16 = fields[2]
                     .parse()
                     .map_err(|e| DictError::Parse(format!("cost: {e}")))?;
-                let idx = left_id * num_ids as usize + right_id;
-                if idx >= expected {
-                    return Err(DictError::Parse(format!(
-                        "index out of bounds: ({right_id}, {left_id})"
-                    )));
-                }
+                // `left_id` and `right_id` come from untrusted text input,
+                // so either can be up to `usize::MAX` and the product with
+                // `num_ids` would wrap. Use checked arithmetic; any
+                // overflow is reported as an out-of-bounds index.
+                let idx = (left_id)
+                    .checked_mul(num_ids as usize)
+                    .and_then(|p| p.checked_add(right_id))
+                    .filter(|&i| i < expected)
+                    .ok_or_else(|| {
+                        DictError::Parse(format!("index out of bounds: ({right_id}, {left_id})"))
+                    })?;
                 costs[idx] = cost;
             }
             costs
@@ -164,12 +174,20 @@ impl ConnectionMatrix {
         let num_ids = u16::from_ne_bytes([data[5], data[6]]);
         let fw_min = u16::from_ne_bytes([data[7], data[8]]);
         let fw_max = u16::from_ne_bytes([data[9], data[10]]);
-        let roles_end = FIXED_HEADER_SIZE + num_ids as usize;
+        let roles_end = FIXED_HEADER_SIZE
+            .checked_add(num_ids as usize)
+            .ok_or(DictError::InvalidHeader)?;
         if data.len() < roles_end {
             return Err(DictError::InvalidHeader);
         }
         let roles = data[FIXED_HEADER_SIZE..roles_end].to_vec();
-        let expected_bytes = num_ids as usize * num_ids as usize * 2;
+        // `u16 * u16 * 2` fits in `u64` but *not* in a 32-bit `usize`.
+        // `checked_mul` turns that wrap into a clean `InvalidHeader`
+        // instead of a silent short-read past the buffer.
+        let expected_bytes = (num_ids as usize)
+            .checked_mul(num_ids as usize)
+            .and_then(|n| n.checked_mul(2))
+            .ok_or(DictError::InvalidHeader)?;
         let actual_bytes = data.len() - roles_end;
         if actual_bytes != expected_bytes {
             return Err(DictError::Parse(format!(
@@ -230,8 +248,16 @@ impl ConnectionMatrix {
 
     /// Helper: re-serialize a Mapped matrix.
     fn to_bytes_from_mapped(&self) -> Vec<u8> {
-        let n = self.num_ids as usize * self.num_ids as usize;
-        let mut buf = Vec::with_capacity(FIXED_HEADER_SIZE + self.roles.len() + n * 2);
+        // `num_ids` has already been validated on the way in (loaded by
+        // `validate_header`), so the product is guaranteed to fit in
+        // `usize` on every target we care about. Use saturating
+        // arithmetic for the capacity hint — an exact figure is not
+        // required and we would rather over-allocate than panic.
+        let n = (self.num_ids as usize).saturating_mul(self.num_ids as usize);
+        let cap = FIXED_HEADER_SIZE
+            .saturating_add(self.roles.len())
+            .saturating_add(n.saturating_mul(2));
+        let mut buf = Vec::with_capacity(cap);
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
         buf.extend_from_slice(&self.num_ids.to_ne_bytes());
