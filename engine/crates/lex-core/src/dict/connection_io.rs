@@ -45,12 +45,11 @@ impl ConnectionMatrix {
             }
         };
 
-        // `num_ids` is `u16`, so the product fits in `u32`; multiplication
-        // on `usize` is overflow-safe on every supported 64-bit target but
-        // can wrap on 32-bit. `checked_mul` surfaces the wrap cleanly.
-        let expected = (num_ids as usize)
-            .checked_mul(num_ids as usize)
-            .ok_or_else(|| DictError::Parse(format!("num_ids {num_ids} overflows usize")))?;
+        // `num_ids` is `u16`, so `num_ids² ≤ u32::MAX` and the product
+        // always fits in `usize` on every supported target (32-bit
+        // included). Plain multiplication is overflow-safe here.
+        let num_ids_usize = num_ids as usize;
+        let expected = num_ids_usize * num_ids_usize;
 
         // Auto-detect format: skip empty lines then peek at first data line
         while lines.peek().is_some_and(|line| line.trim().is_empty()) {
@@ -85,17 +84,20 @@ impl ConnectionMatrix {
                 let cost: i16 = fields[2]
                     .parse()
                     .map_err(|e| DictError::Parse(format!("cost: {e}")))?;
-                // `left_id` and `right_id` come from untrusted text input,
-                // so either can be up to `usize::MAX` and the product with
-                // `num_ids` would wrap. Use checked arithmetic; any
-                // overflow is reported as an out-of-bounds index.
-                let idx = (left_id)
-                    .checked_mul(num_ids as usize)
-                    .and_then(|p| p.checked_add(right_id))
-                    .filter(|&i| i < expected)
-                    .ok_or_else(|| {
-                        DictError::Parse(format!("index out of bounds: ({right_id}, {left_id})"))
-                    })?;
+                // `left_id` / `right_id` come from untrusted text input
+                // and can be anything up to `usize::MAX`. Validate each
+                // against `num_ids` explicitly: a product-only check
+                // (`idx < expected`) misses cases like `num_ids=2,
+                // left_id=0, right_id=2` where idx=2 lands in-range but
+                // refers to cell (1, 0). Once both fields are bounded by
+                // `num_ids ≤ u16::MAX`, `left_id · num_ids + right_id`
+                // provably fits in `u32`, so plain arithmetic is safe.
+                if left_id >= num_ids_usize || right_id >= num_ids_usize {
+                    return Err(DictError::Parse(format!(
+                        "id out of range: left_id={left_id}, right_id={right_id} (num_ids={num_ids})"
+                    )));
+                }
+                let idx = left_id * num_ids_usize + right_id;
                 costs[idx] = cost;
             }
             costs
