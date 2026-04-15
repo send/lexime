@@ -5,5 +5,5 @@
 [allow]
 candle-core = "0.10.2"
 candle-nn = "0.10.2"
-# Own crate — sibling-chain ordering fix (see supply-chain/audits.toml).
-lexime-trie = "0.2.2"
+# Own crate — v3 binary format + CSR children layout (see supply-chain/audits.toml).
+lexime-trie = "0.3.0"

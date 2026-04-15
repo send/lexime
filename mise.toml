@@ -58,11 +58,10 @@ depends = ["fetch-dict-mozc"]
 sources = [
   "engine/data/mozc-raw/.stamp",
   "engine/data/mozc-raw/id.def",
-  "engine/crates/lex-cli/src/bin/dictool.rs",
-  "engine/crates/lex-cli/src/commands/dict_ops.rs",
-  "engine/crates/lex-cli/src/dict_source/mod.rs",
-  "engine/crates/lex-cli/src/dict_source/mozc.rs",
-  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+  "engine/crates/**/*.rs",
+  "engine/crates/**/*.toml",
+  "engine/Cargo.toml",
+  "engine/Cargo.lock",
 ]
 outputs = ["engine/data/lexime-mozc.dict"]
 run = """
@@ -79,9 +78,10 @@ depends = ["fetch-dict-mozc"]
 sources = [
   "engine/data/mozc-raw/connection_single_column.txt",
   "engine/data/mozc-raw/id.def",
-  "engine/crates/lex-cli/src/bin/dictool.rs",
-  "engine/crates/lex-cli/src/commands/dict_ops.rs",
-  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
+  "engine/crates/**/*.rs",
+  "engine/crates/**/*.toml",
+  "engine/Cargo.toml",
+  "engine/Cargo.lock",
 ]
 outputs = ["engine/data/lexime.conn"]
 run = """
@@ -112,13 +112,11 @@ sources = [
   "engine/data/mozc-raw/.stamp",
   "engine/data/mozc-raw/id.def",
   "engine/data/symbols-raw/.stamp",
-  "engine/crates/lex-cli/src/bin/dictool.rs",
-  "engine/crates/lex-cli/src/commands/dict_ops.rs",
-  "engine/crates/lex-cli/src/dict_source/mod.rs",
-  "engine/crates/lex-cli/src/dict_source/mozc.rs",
-  "engine/crates/lex-cli/src/dict_source/pos_map.rs",
-  "engine/crates/lex-cli/src/dict_source/symbols.rs",
   "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+  "engine/crates/**/*.rs",
+  "engine/crates/**/*.toml",
+  "engine/Cargo.toml",
+  "engine/Cargo.lock",
 ]
 outputs = ["engine/data/lexime.dict"]
 run = """
