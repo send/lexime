@@ -85,6 +85,14 @@ mod tests {
         let mugendai = entries.get("むげんだい").expect("むげんだい must map to ∞");
         assert!(mugendai.iter().any(|e| e.surface == "∞"));
 
+        // General-purpose symbols
+        let hoshi = entries.get("ほし").expect("ほし must map to ★/☆");
+        assert!(hoshi.iter().any(|e| e.surface == "★"));
+        assert!(hoshi.iter().any(|e| e.surface == "☆"));
+
+        let onpu = entries.get("おんぷ").expect("おんぷ must map to ♪");
+        assert!(onpu.iter().any(|e| e.surface == "♪"));
+
         for entries in entries.values() {
             for entry in entries {
                 assert_eq!(entry.left_id, 2643, "symbols use 記号,一般 POS id 2643");
