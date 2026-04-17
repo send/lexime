@@ -21,15 +21,10 @@ use std::io;
 /// Unified error type for dictionary and connection-matrix binary I/O.
 ///
 /// Covers loading/saving both `TrieDictionary` (LXDX) and
-/// `ConnectionMatrix` (LXCX) files. Previously these were separate
-/// `DictError` and `ConnectionError` enums with overlapping variants.
-///
-/// Marked `#[non_exhaustive]` so additional failure categories can be
-/// introduced without a breaking change. `InvalidMagic` /
-/// `InvalidHeader` / `UnsupportedVersion` refer to lexime's own LXDX
-/// and LXCX formats; failures bubbling up from the embedded
-/// `lexime_trie` loader come through the dedicated `Trie` variant with
-/// the original `TrieError` preserved.
+/// `ConnectionMatrix` (LXCX) files. `InvalidMagic` / `InvalidHeader` /
+/// `UnsupportedVersion` refer to lexime's own LXDX/LXCX framing;
+/// failures from the embedded `lexime_trie` loader bubble up through
+/// the dedicated `Trie` variant.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DictError {
