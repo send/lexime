@@ -23,7 +23,15 @@ use std::io;
 /// Covers loading/saving both `TrieDictionary` (LXDX) and
 /// `ConnectionMatrix` (LXCX) files. Previously these were separate
 /// `DictError` and `ConnectionError` enums with overlapping variants.
+///
+/// Marked `#[non_exhaustive]` so additional failure categories can be
+/// introduced without a breaking change. `InvalidMagic` /
+/// `InvalidHeader` / `UnsupportedVersion` refer to lexime's own LXDX
+/// and LXCX formats; failures bubbling up from the embedded
+/// `lexime_trie` loader come through the dedicated `Trie` variant with
+/// the original `TrieError` preserved.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DictError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
@@ -37,6 +45,13 @@ pub enum DictError {
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u8),
 
+    /// Failure bubbled up from the `lexime_trie` loader for the embedded
+    /// trie section. Preserves the original `TrieError` variant so
+    /// callers can distinguish (e.g.) alignment problems from structural
+    /// corruption without string-matching on messages.
+    #[error("trie load failed: {0}")]
+    Trie(#[from] lexime_trie::TrieError),
+
     #[error("serialization error: {0}")]
     Serialize(bincode::Error),
 
@@ -45,17 +60,6 @@ pub enum DictError {
 
     #[error("parse error: {0}")]
     Parse(String),
-}
-
-impl From<lexime_trie::TrieError> for DictError {
-    fn from(e: lexime_trie::TrieError) -> Self {
-        match e {
-            lexime_trie::TrieError::InvalidMagic => DictError::InvalidMagic,
-            lexime_trie::TrieError::InvalidVersion => DictError::UnsupportedVersion(0),
-            lexime_trie::TrieError::TruncatedData => DictError::InvalidHeader,
-            lexime_trie::TrieError::MisalignedData => DictError::Parse("misaligned data".into()),
-        }
-    }
 }
 
 pub struct SearchResult {
