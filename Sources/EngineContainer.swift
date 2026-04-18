@@ -25,7 +25,7 @@ final class EngineContainer {
             let d = try LexDictionary.open(path: dictPath)
             NSLog("Lexime: Dictionary loaded from %@", dictPath)
             let entries = d.lookup(reading: "かんじ")
-            NSLog("Lexime: Sample lookup 'かんじ' → %d candidates", entries.count)
+            NSLog("Lexime: Sample lookup 'かんじ' → %ld candidates", entries.count)
             dict = d
         } catch {
             NSLog("Lexime: Failed to load dictionary at %@: %@", dictPath, "\(error)")

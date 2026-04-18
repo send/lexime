@@ -4,7 +4,7 @@ import InputMethodKit
 let kConnectionName = "sh.send.inputmethod.Lexime_Connection"
 
 // Initialize shared app context (loads dictionary, connection matrix, user history)
-AppContext.shared = AppContext.bootstrap()
+AppContext.installShared(AppContext.bootstrap())
 
 guard let bundleId = Bundle.main.bundleIdentifier else {
     NSLog("Lexime: Bundle.main.bundleIdentifier is nil")

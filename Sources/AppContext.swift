@@ -51,8 +51,20 @@ extension Notification.Name {
 /// Composite facade over `EngineContainer`, `UIServices`, and `ConfigStore`.
 /// Retained for backwards compatibility; prefer the underlying containers in new code.
 final class AppContext {
-    /// Process-wide shared instance, assigned by `main.swift` at startup.
-    static var shared: AppContext!
+    private static var _shared: AppContext?
+
+    /// Process-wide shared instance, assigned once at startup via `installShared(_:)`.
+    static var shared: AppContext {
+        guard let shared = _shared else {
+            fatalError("AppContext.shared accessed before initialization. Call AppContext.installShared(_:) during startup.")
+        }
+        return shared
+    }
+
+    static func installShared(_ context: AppContext) {
+        precondition(_shared == nil, "AppContext.shared may only be installed once.")
+        _shared = context
+    }
 
     let engineContainer: EngineContainer
     let ui: UIServices
