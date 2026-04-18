@@ -46,13 +46,14 @@ impl InputSession {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
+            let lattice = self.lattice_cache.get_or_build(&reading, &*self.dict);
+
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
             let ctx = ConversionContext {
                 dict: &*self.dict,
                 conn: self.conn.as_deref(),
                 history: h_guard.as_deref(),
             };
-            let lattice = self.lattice_cache.get_or_build(&reading, &ctx);
             let segments = ctx.convert_from_lattice(&lattice);
             drop(h_guard);
 

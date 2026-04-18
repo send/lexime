@@ -7,7 +7,8 @@
 
 use std::sync::Arc;
 
-use lex_core::converter::{build_lattice, ConversionContext, Lattice};
+use lex_core::converter::{build_lattice, Lattice};
+use lex_core::dict::Dictionary;
 
 pub(crate) struct LatticeCache {
     lattice: Option<Arc<Lattice>>,
@@ -27,11 +28,7 @@ impl LatticeCache {
     ///
     /// Reuses the cached lattice unchanged when `reading` matches, extends it
     /// when `reading` is a pure suffix append, and rebuilds otherwise.
-    pub(crate) fn get_or_build(
-        &mut self,
-        reading: &str,
-        ctx: &ConversionContext<'_>,
-    ) -> Arc<Lattice> {
+    pub(crate) fn get_or_build(&mut self, reading: &str, dict: &dyn Dictionary) -> Arc<Lattice> {
         if let Some(arc) = self.lattice.take() {
             if reading == arc.input {
                 self.lattice = Some(Arc::clone(&arc));
@@ -39,13 +36,13 @@ impl LatticeCache {
             }
             if reading.starts_with(&arc.input) {
                 let mut owned = Arc::try_unwrap(arc).unwrap_or_else(|shared| (*shared).clone());
-                owned.extend(ctx.dict, reading);
+                owned.extend(dict, reading);
                 let arc = Arc::new(owned);
                 self.lattice = Some(Arc::clone(&arc));
                 return arc;
             }
         }
-        let arc = Arc::new(build_lattice(ctx.dict, reading));
+        let arc = Arc::new(build_lattice(dict, reading));
         self.lattice = Some(Arc::clone(&arc));
         arc
     }
