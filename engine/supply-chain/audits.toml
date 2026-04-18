@@ -16,6 +16,11 @@ who = "SAKAI, Kazuaki <kaz.july.7@gmail.com>"
 criteria = "safe-to-deploy"
 delta = "0.3.0 -> 0.4.0"
 
+[[audits.lexime-trie]]
+who = "SAKAI, Kazuaki <kaz.july.7@gmail.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.0 -> 0.5.0"
+
 [[audits.rustls-webpki]]
 who = "SAKAI, Kazuaki <kaz.july.7@gmail.com>"
 criteria = "safe-to-deploy"

@@ -163,6 +163,39 @@ fn test_unsupported_version() {
 }
 
 #[test]
+fn test_embedded_trie_error_preserved() {
+    // Failures from the embedded `lexime_trie` loader must bubble up
+    // through `DictError::Trie(_)` with the original `TrieError`
+    // variant (and payload) intact, not flattened onto `InvalidHeader`
+    // / `UnsupportedVersion(0)` / `Parse(_)` as in the pre-0.5 mapping.
+    //
+    // Construct a valid LXDX outer frame with `trie_len = 24` pointing
+    // at an LXTR header that declares version 99. `DictError::Trie`
+    // must carry `TrieError::InvalidVersion(99)`.
+    use lexime_trie::TrieError;
+
+    let mut bytes = Vec::with_capacity(48);
+    bytes.extend_from_slice(b"LXDX");
+    bytes.push(4); // LXDX VERSION
+    bytes.extend_from_slice(&[0, 0, 0]); // reserved
+    bytes.extend_from_slice(&24u32.to_ne_bytes()); // trie_len
+    bytes.extend_from_slice(&0u32.to_ne_bytes()); // pool_len
+    bytes.extend_from_slice(&0u32.to_ne_bytes()); // entries_len
+    bytes.extend_from_slice(&0u32.to_ne_bytes()); // reading_count
+
+    bytes.extend_from_slice(b"LXTR");
+    bytes.push(99); // bogus LXTR version
+    bytes.extend_from_slice(&[0u8; 19]); // rest of LXTR 24-byte header
+
+    match TrieDictionary::from_bytes(&bytes) {
+        Err(DictError::Trie(TrieError::InvalidVersion(99))) => {}
+        Err(DictError::Trie(other)) => panic!("expected InvalidVersion(99), got Trie({other:?})"),
+        Err(other) => panic!("expected DictError::Trie, got {other:?}"),
+        Ok(_) => panic!("expected error on corrupt embedded trie"),
+    }
+}
+
+#[test]
 fn test_predict_ranked_cost_order() {
     let dict = sample_dict();
     let results = dict.predict_ranked("かん", 100, 200);
