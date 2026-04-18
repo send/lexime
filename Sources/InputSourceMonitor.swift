@@ -8,8 +8,6 @@ import Foundation
 /// awareness (polls for release before reverting).
 final class InputSourceMonitor: NSObject {
 
-    private static let abcSourceID = "com.apple.keylayout.ABC"
-
     /// Suppress notifications for this many seconds after init (avoid startup noise).
     private static let startupQuietPeriod: TimeInterval = 5
     /// Delay before auto-reverting non-secure ABC switch.
@@ -18,11 +16,9 @@ final class InputSourceMonitor: NSObject {
     private static let secureInputPollInterval: TimeInterval = 0.5
     /// Maximum polling duration for secure input (give up after this).
     private static let secureInputPollTimeout: TimeInterval = 60
-    /// Delay after wake before rechecking input source.
+    /// macOS needs a beat after wake before TIS calls reliably take effect.
     private static let wakeRecheckDelay: TimeInterval = 1.0
-    /// Interval between retry attempts when revert fails.
     private static let revertRetryInterval: TimeInterval = 0.05
-    /// Max retry attempts verifying revert took effect.
     private static let revertRetryMaxAttempts = 5
 
     private let startTime = Date()
@@ -53,11 +49,7 @@ final class InputSourceMonitor: NSObject {
     // MARK: - Input Source Change Handling
 
     @objc private func inputSourceDidChange() {
-        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
-        guard let idRef = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return }
-        let sourceID = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
-
-        guard sourceID == Self.abcSourceID else { return }
+        guard InputSource.isCurrentStandardABC() else { return }
 
         // Startup quiet period
         guard Date().timeIntervalSince(startTime) >= Self.startupQuietPeriod else {
@@ -90,7 +82,7 @@ final class InputSourceMonitor: NSObject {
         NSLog("Lexime: wake detected, rechecking input source in %.1fs", Self.wakeRecheckDelay)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.wakeRecheckDelay) { [weak self] in
             guard let self else { return }
-            guard self.isCurrentInputSourceAbc() else { return }
+            guard InputSource.isCurrentStandardABC() else { return }
             if IsSecureEventInputEnabled() {
                 NSLog("Lexime: wake on ABC during secure input, polling for release")
                 self.startSecureInputPolling()
@@ -123,31 +115,14 @@ final class InputSourceMonitor: NSObject {
         }
     }
 
-    private func selectLeximeRoman() {
-        let conditions = [
-            kTISPropertyInputSourceID as String: LeximeInputSourceID.roman
-        ] as CFDictionary
-        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
-                as? [TISInputSource],
-              let source = list.first else { return }
-        TISSelectInputSource(source)
-    }
-
-    private func isCurrentInputSourceAbc() -> Bool {
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        guard let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else { return false }
-        let id = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
-        return id == Self.abcSourceID
-    }
-
     /// TISSelectInputSource can silently fail during wake or other input source
     /// transitions. Verify the switch took effect and retry if still on ABC.
     private func revertFromAbcWithRetry(attempt: Int = 0) {
-        selectLeximeRoman()
+        InputSource.select(id: LeximeInputSourceID.roman)
         guard attempt + 1 < Self.revertRetryMaxAttempts else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertRetryInterval) { [weak self] in
             guard let self else { return }
-            guard self.isCurrentInputSourceAbc() else { return }
+            guard InputSource.isCurrentStandardABC() else { return }
             self.revertFromAbcWithRetry(attempt: attempt + 1)
         }
     }

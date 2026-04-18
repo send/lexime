@@ -279,29 +279,12 @@ class LeximeInputController: IMKInputController {
         guard attempt < maxAttempts else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self else { return }
-            if self.isCurrentInputSourceStandardABC() {
-                self.selectLeximeJapanese()
+            if InputSource.isCurrentStandardABC() {
+                InputSource.select(id: LeximeInputSourceID.japanese)
             } else {
                 self.revertToLeximeWithRetry(attempt: attempt + 1)
             }
         }
-    }
-
-    private func isCurrentInputSourceStandardABC() -> Bool {
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        guard let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else { return false }
-        let id = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
-        return id == "com.apple.keylayout.ABC"
-    }
-
-    private func selectLeximeJapanese() {
-        let conditions = [
-            kTISPropertyInputSourceID as String: LeximeInputSourceID.japanese
-        ] as CFDictionary
-        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
-                as? [TISInputSource],
-              let source = list.first else { return }
-        TISSelectInputSource(source)
     }
 
     override func activateServer(_ sender: Any!) {
