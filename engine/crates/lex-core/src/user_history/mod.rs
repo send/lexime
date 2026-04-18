@@ -205,7 +205,7 @@ impl UserHistory {
             .map(|((reading, surface), entry)| (reading.clone(), surface.clone(), entry.boost(now)))
             .filter(|(_, _, boost)| *boost > 0)
             .collect();
-        results.sort_by(|a, b| b.2.cmp(&a.2));
+        results.sort_by_key(|b| std::cmp::Reverse(b.2));
         results
     }
 
@@ -220,7 +220,7 @@ impl UserHistory {
             .map(|(surface, entry)| (surface.clone(), entry.boost(now)))
             .filter(|(_, boost)| *boost > 0)
             .collect();
-        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.sort_by_key(|b| std::cmp::Reverse(b.1));
         results
     }
 

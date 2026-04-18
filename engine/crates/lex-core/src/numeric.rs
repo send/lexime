@@ -127,11 +127,9 @@ fn consume_digit_or_rendaku_prefix(s: &str, unit_val: u64) -> Option<(u64, usize
                 return Some((8, "はっ".len()));
             }
         }
-        1000 => {
+        1000 if s.starts_with("はっ") => {
             // はっせん(8000)
-            if s.starts_with("はっ") {
-                return Some((8, "はっ".len()));
-            }
+            return Some((8, "はっ".len()));
         }
         10 => {
             // じっ as prefix for じゅう (じっ = 10, used in じっかい etc., but also standalone)

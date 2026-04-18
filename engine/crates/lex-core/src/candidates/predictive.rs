@@ -124,7 +124,7 @@ pub fn generate(
     }
 
     // Sort chained phrases by length descending (longest first = most Copilot-like)
-    chained_phrases.sort_by(|a, b| b.1.cmp(&a.1));
+    chained_phrases.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     // Add chained phrases first (longest completions)
     for (phrase, _) in &chained_phrases {
