@@ -89,14 +89,16 @@ impl InputSession {
         // Remove committed reading from kana.
         // Safety: starts_with check above guarantees the byte offset is a valid
         // UTF-8 boundary, but we use char-based slicing for extra safety.
-        let c = self.comp();
-        let skip_chars = committed_reading_len;
-        c.kana = c.kana.chars().skip(skip_chars).collect();
-        c.cached_lattice = None; // kana truncated — invalidate
-        c.stability.reset();
+        let prefix_text = {
+            let c = self.comp();
+            let skip_chars = committed_reading_len;
+            c.kana = c.kana.chars().skip(skip_chars).collect();
+            c.stability.reset();
+            std::mem::take(&mut c.prefix.text)
+        };
+        self.lattice_cache.invalidate();
 
-        // Include prefix in the committed text, then clear it
-        let prefix_text = std::mem::take(&mut c.prefix.text);
+        // Include prefix in the committed text
         let committed_text = format!("{}{}", prefix_text, committed_surface);
 
         // Accumulate committed text for context

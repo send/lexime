@@ -78,5 +78,6 @@ impl InputSession {
 
     pub(super) fn reset_state(&mut self) {
         self.state = SessionState::Idle;
+        self.lattice_cache.invalidate();
     }
 }

@@ -10,6 +10,7 @@ mod candidate_gen;
 mod commit;
 mod composing;
 mod key_handlers;
+mod lattice_cache;
 mod response;
 mod snippet_handler;
 
@@ -28,6 +29,7 @@ pub use types::{
     KeyResponse, LearningRecord, MarkedText, SideEffects,
 };
 
+use lattice_cache::LatticeCache;
 use types::{Composition, SessionConfig, SessionState};
 
 /// Stateful IME session encapsulating all input processing logic.
@@ -39,6 +41,9 @@ pub struct InputSession {
     state: SessionState,
 
     config: SessionConfig,
+
+    /// Incremental Viterbi-input cache, independent of the UI `Composition`.
+    pub(crate) lattice_cache: LatticeCache,
 
     // History recording buffer
     history_records: Vec<LearningRecord>,
@@ -67,6 +72,7 @@ impl InputSession {
                 defer_candidates: false,
                 conversion_mode: ConversionMode::Standard,
             },
+            lattice_cache: LatticeCache::new(),
             history_records: Vec::new(),
             abc_passthrough: false,
             committed_context: String::new(),

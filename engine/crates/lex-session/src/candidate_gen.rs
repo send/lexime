@@ -1,5 +1,5 @@
 use lex_core::candidates::CandidateResponse;
-use lex_core::converter::{build_lattice, ConversionContext, ConvertedSegment};
+use lex_core::converter::{ConversionContext, ConvertedSegment};
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
@@ -46,38 +46,29 @@ impl InputSession {
         // Do NOT reset stability here. It accumulates across keystrokes.
         let reading = self.comp().kana.clone();
         if !reading.is_empty() {
-            // Reuse cached lattice: extend if kana grew, or keep as-is
-            // if unchanged. Fall back to full rebuild otherwise.
-            let lattice = match self.comp().cached_lattice.take() {
-                Some(mut cached) if reading.starts_with(&cached.input) => {
-                    cached.extend(&*self.dict, &reading); // no-op if reading == input
-                    cached
-                }
-                _ => build_lattice(&*self.dict, &reading),
+            let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
+            let ctx = ConversionContext {
+                dict: &*self.dict,
+                conn: self.conn.as_deref(),
+                history: h_guard.as_deref(),
             };
+            let lattice = self.lattice_cache.get_or_build(&reading, &ctx);
+            let segments = ctx.convert_from_lattice(&lattice);
+            drop(h_guard);
 
-            let segments = {
-                let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-                let ctx = ConversionContext {
-                    dict: &*self.dict,
-                    conn: self.conn.as_deref(),
-                    history: h_guard.as_deref(),
-                };
-                ctx.convert_from_lattice(&lattice)
-            };
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
             let c = self.comp();
             c.candidates.surfaces = vec![surface];
             c.candidates.paths = vec![segments];
             c.candidates.selected = 0;
-            // Cache for next keystroke's incremental extension
-            c.cached_lattice = Some(lattice.clone());
 
             let mut resp = build_marked_text(self.comp());
+            // AsyncCandidateRequest.lattice stays `Option<Lattice>` in this PR;
+            // PR #6 will switch it (and the worker) to `Arc<Lattice>`.
             resp.async_request = Some(AsyncCandidateRequest {
                 reading,
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
-                lattice: Some(lattice),
+                lattice: Some((*lattice).clone()),
             });
             return resp;
         } else {

@@ -255,16 +255,23 @@ impl InputSession {
     }
 
     pub(super) fn handle_backspace(&mut self) -> KeyResponse {
-        {
+        let kana_shortened = {
             let c = self.comp();
             if !c.pending.is_empty() {
                 c.pending.pop();
+                false
             } else if !c.kana.is_empty() {
                 c.kana.pop();
-                c.cached_lattice = None; // kana shortened — invalidate
+                true
             } else if !c.prefix.is_empty() {
                 c.prefix.pop();
+                false
+            } else {
+                false
             }
+        };
+        if kana_shortened {
+            self.lattice_cache.invalidate();
         }
 
         let c = self.comp();
