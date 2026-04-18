@@ -274,6 +274,9 @@ class LeximeInputController: IMKInputController {
 
     /// Check up to 5 times (at 50ms intervals) whether macOS switched to
     /// standard ABC after ESC, and revert to Lexime Japanese if so.
+    /// The IMKit ABC race fires asynchronously so we keep checking each tick;
+    /// we also re-select on subsequent ticks if still ABC, to recover from a
+    /// silent TISSelectInputSource failure.
     private func revertToLeximeWithRetry(attempt: Int = 0) {
         let maxAttempts = 5
         guard attempt < maxAttempts else { return }
@@ -281,9 +284,8 @@ class LeximeInputController: IMKInputController {
             guard let self else { return }
             if InputSource.isCurrentStandardABC() {
                 InputSource.select(id: LeximeInputSourceID.japanese)
-            } else {
-                self.revertToLeximeWithRetry(attempt: attempt + 1)
             }
+            self.revertToLeximeWithRetry(attempt: attempt + 1)
         }
     }
 
