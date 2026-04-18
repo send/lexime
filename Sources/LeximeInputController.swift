@@ -274,34 +274,19 @@ class LeximeInputController: IMKInputController {
 
     /// Check up to 5 times (at 50ms intervals) whether macOS switched to
     /// standard ABC after ESC, and revert to Lexime Japanese if so.
+    /// The IMKit ABC race fires asynchronously so we keep checking each tick;
+    /// we also re-select on subsequent ticks if still ABC, to recover from a
+    /// silent TISSelectInputSource failure.
     private func revertToLeximeWithRetry(attempt: Int = 0) {
         let maxAttempts = 5
         guard attempt < maxAttempts else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self else { return }
-            if self.isCurrentInputSourceStandardABC() {
-                self.selectLeximeJapanese()
-            } else {
-                self.revertToLeximeWithRetry(attempt: attempt + 1)
+            if InputSource.isCurrentStandardABC() {
+                InputSource.select(id: LeximeInputSourceID.japanese)
             }
+            self.revertToLeximeWithRetry(attempt: attempt + 1)
         }
-    }
-
-    private func isCurrentInputSourceStandardABC() -> Bool {
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        guard let idRef = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else { return false }
-        let id = Unmanaged<CFString>.fromOpaque(idRef).takeUnretainedValue() as String
-        return id == "com.apple.keylayout.ABC"
-    }
-
-    private func selectLeximeJapanese() {
-        let conditions = [
-            kTISPropertyInputSourceID as String: LeximeInputSourceID.japanese
-        ] as CFDictionary
-        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
-                as? [TISInputSource],
-              let source = list.first else { return }
-        TISSelectInputSource(source)
     }
 
     override func activateServer(_ sender: Any!) {
