@@ -48,56 +48,49 @@ extension Notification.Name {
     static let snippetsDidReload = Notification.Name("LeximeSnippetsDidReload")
 }
 
-class AppContext {
-    static let shared = AppContext()
+/// Composite facade over `EngineContainer`, `UIServices`, and `ConfigStore`.
+/// Retained for backwards compatibility; prefer the underlying containers in new code.
+final class AppContext {
+    /// Process-wide shared instance, assigned by `main.swift` at startup.
+    static var shared: AppContext!
 
-    let engine: LexEngine?
-    private(set) var snippetStore: LexSnippetStore?
-    let userDictPath: String
-    let supportDir: String
-    let candidatePanel = CandidatePanel()
-    let inputSourceMonitor = InputSourceMonitor()
+    let engineContainer: EngineContainer
+    let ui: UIServices
+    let config: ConfigStore
 
-    private init() {
+    init(engineContainer: EngineContainer, ui: UIServices, config: ConfigStore) {
+        self.engineContainer = engineContainer
+        self.ui = ui
+        self.config = config
+    }
+
+    // MARK: - Forwarded properties (backwards-compatible surface)
+
+    var engine: LexEngine? { engineContainer.engine }
+    var snippetStore: LexSnippetStore? { config.snippetStore }
+    var userDictPath: String { config.userDictPath }
+    var supportDir: String { config.supportDir }
+    var candidatePanel: CandidatePanel { ui.candidatePanel }
+    var inputSourceMonitor: InputSourceMonitor { ui.inputSourceMonitor }
+
+    func reloadSnippets() throws {
+        try config.reloadSnippets()
+    }
+
+    // MARK: - Bootstrap
+
+    static func bootstrap() -> AppContext {
         guard let resourcePath = Bundle.main.resourcePath else {
             fatalError("Lexime: Bundle.main.resourcePath is nil")
         }
 
-        // Load dictionary
-        let dictPath = (resourcePath as NSString).appendingPathComponent("lexime.dict")
-        var dict: LexDictionary?
-        do {
-            let d = try LexDictionary.open(path: dictPath)
-            NSLog("Lexime: Dictionary loaded from %@", dictPath)
-            let entries = d.lookup(reading: "かんじ")
-            NSLog("Lexime: Sample lookup 'かんじ' → %d candidates", entries.count)
-            dict = d
-        } catch {
-            NSLog("Lexime: Failed to load dictionary at %@: %@", dictPath, "\(error)")
-            dict = nil
-        }
-
-        // Load connection matrix (optional — falls back to unigram if not found)
-        let connPath = (resourcePath as NSString).appendingPathComponent("lexime.conn")
-        let conn: LexConnection?
-        do {
-            let c = try LexConnection.open(path: connPath)
-            NSLog("Lexime: Connection matrix loaded from %@", connPath)
-            conn = c
-        } catch {
-            NSLog("Lexime: Connection matrix not found at %@ (using unigram fallback)", connPath)
-            conn = nil
-        }
-
-        // Load user history (learning data)
         guard let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first else {
             fatalError("Lexime: Cannot find Application Support directory")
         }
         let leximeDir = appSupport.appendingPathComponent("Lexime").path
-        self.supportDir = leximeDir
-        let historyPath = (leximeDir as NSString).appendingPathComponent("user_history.lxud")
-        self.userDictPath = (leximeDir as NSString).appendingPathComponent("user_dict.lxuw")
+
+        let config = ConfigStore(supportDir: leximeDir)
 
         // Initialize tracing (no-op unless built with --features trace)
         let libraryDir = NSSearchPathForDirectoriesInDomains(
@@ -108,9 +101,7 @@ class AppContext {
             atPath: logDir, withIntermediateDirectories: true)
         traceInit(logDir: logDir)
 
-        // Load custom settings if present
-        let settingsPath = appSupport
-            .appendingPathComponent("Lexime/settings.toml").path
+        let settingsPath = (leximeDir as NSString).appendingPathComponent("settings.toml")
         if FileManager.default.fileExists(atPath: settingsPath) {
             do {
                 try settingsLoadConfig(path: settingsPath)
@@ -118,13 +109,10 @@ class AppContext {
             } catch {
                 NSLog("Lexime: settings config error at %@: %@",
                       settingsPath, "\(error)")
-                // Embedded defaults will be used
             }
         }
 
-        // Load custom romaji config if present
-        let romajiPath = appSupport
-            .appendingPathComponent("Lexime/romaji.toml").path
+        let romajiPath = (leximeDir as NSString).appendingPathComponent("romaji.toml")
         if FileManager.default.fileExists(atPath: romajiPath) {
             do {
                 try romajiLoadConfig(path: romajiPath)
@@ -132,77 +120,27 @@ class AppContext {
             } catch {
                 NSLog("Lexime: romaji config error at %@: %@",
                       romajiPath, "\(error)")
-                // Embedded default will be used
             }
         }
 
-        // Load user dictionary (optional — for custom word registration)
-        let userDict: LexUserDictionary?
+        let historyPath = (leximeDir as NSString).appendingPathComponent("user_history.lxud")
+        let engineContainer = EngineContainer.load(
+            resourcePath: resourcePath,
+            userDictPath: config.userDictPath,
+            historyPath: historyPath)
+
+        let ui = UIServices()
+
+        let ctx = AppContext(engineContainer: engineContainer, ui: ui, config: config)
+
         do {
-            let ud = try LexUserDictionary.open(path: self.userDictPath)
-            NSLog("Lexime: User dictionary loaded from %@", self.userDictPath)
-            userDict = ud
-        } catch {
-            NSLog("Lexime: Failed to open user dictionary at %@: %@",
-                  self.userDictPath, "\(error)")
-            userDict = nil
-        }
-
-        // Reload dict with user dictionary layer if available
-        if userDict != nil, dict != nil {
-            do {
-                let composite = try LexDictionary.openWithUserDict(
-                    path: dictPath, userDict: userDict)
-                NSLog("Lexime: Composite dictionary created (system + user)")
-                dict = composite
-            } catch {
-                NSLog("Lexime: Failed to create composite dictionary: %@", "\(error)")
-                // Fall back to system-only dict (already set)
-            }
-        }
-
-        let history: LexUserHistory?
-        do {
-            let h = try LexUserHistory.open(path: historyPath)
-            NSLog("Lexime: User history loaded from %@", historyPath)
-            history = h
-        } catch {
-            NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")
-            history = nil
-        }
-
-        // Assemble engine (requires at least a dictionary)
-        if let dict {
-            self.engine = LexEngine(
-                dict: dict, conn: conn, history: history,
-                userDict: userDict)
-        } else {
-            self.engine = nil
-        }
-
-        // Load snippets (optional)
-        self.snippetStore = nil
-        do {
-            try reloadSnippets()
+            try config.reloadSnippets()
         } catch {
             NSLog("Lexime: snippets load error: %@", "\(error)")
         }
 
-        // Start monitoring for unexpected ABC input source switches
-        inputSourceMonitor.startMonitoring()
-    }
+        ui.startMonitoring()
 
-    /// Reload snippets from disk. Throws if the file exists but fails to load.
-    /// On success or missing file, updates `snippetStore` and posts notification.
-    func reloadSnippets() throws {
-        let snippetsPath = (supportDir as NSString).appendingPathComponent("snippets.toml")
-        if FileManager.default.fileExists(atPath: snippetsPath) {
-            let store = try snippetsLoad(path: snippetsPath)
-            NSLog("Lexime: Snippets reloaded from %@", snippetsPath)
-            self.snippetStore = store
-        } else {
-            self.snippetStore = nil
-        }
-        NotificationCenter.default.post(name: .snippetsDidReload, object: nil)
+        return ctx
     }
 }
