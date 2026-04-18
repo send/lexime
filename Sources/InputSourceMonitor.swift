@@ -117,13 +117,14 @@ final class InputSourceMonitor: NSObject {
 
     /// TISSelectInputSource can silently fail during wake or other input source
     /// transitions. Verify the switch took effect and retry if still on ABC.
+    /// Bails if the current source is no longer ABC — the user/system may have
+    /// moved off ABC during the caller's delay, and we must not force them back.
     private func revertFromAbcWithRetry(attempt: Int = 0) {
+        guard InputSource.isCurrentStandardABC() else { return }
         InputSource.select(id: LeximeInputSourceID.roman)
         guard attempt + 1 < Self.revertRetryMaxAttempts else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertRetryInterval) { [weak self] in
-            guard let self else { return }
-            guard InputSource.isCurrentStandardABC() else { return }
-            self.revertFromAbcWithRetry(attempt: attempt + 1)
+            self?.revertFromAbcWithRetry(attempt: attempt + 1)
         }
     }
 
