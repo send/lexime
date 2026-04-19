@@ -7,7 +7,7 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - State
 
-    private let candidateManager = CandidateManager()
+    private let candidateManager = CandidateManager(panel: AppContext.shared.candidatePanel)
     private let modeController = ModeController()
     private var coordinator: SessionCoordinator?
 

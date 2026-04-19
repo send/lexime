@@ -1,6 +1,16 @@
 import Cocoa
 import InputMethodKit
 
+/// Minimal surface CandidateManager needs from the candidate panel. Allows
+/// tests to inject a fake panel without touching NSPanel (which cannot be
+/// exercised in a headless swiftc-driven test binary).
+protocol CandidatePanelDisplaying: AnyObject {
+    var isVisible: Bool { get }
+    func show(candidates: [String], selectedIndex: Int, globalIndex: Int, totalCount: Int,
+              cursorRect: NSRect?)
+    func hide()
+}
+
 class CandidateManager {
 
     private(set) var candidates: [String] = []
@@ -11,6 +21,12 @@ class CandidateManager {
 
     /// Set when commit_text moves the cursor; forces panel to recalculate position on next show.
     private var needsReposition = false
+
+    private let panel: CandidatePanelDisplaying
+
+    init(panel: CandidatePanelDisplaying) {
+        self.panel = panel
+    }
 
     static let maxDisplay = 9
 
@@ -54,7 +70,7 @@ class CandidateManager {
         let pageCandidates = Array(candidates[pageStart..<pageEnd])
         let pageSelectedIndex = clampedIndex - pageStart
 
-        let panel = AppContext.shared.candidatePanel
+        let panel = self.panel
         let totalCount = candidates.count
 
         // Mozc style: don't recalculate position while panel is visible (prevents jitter)
@@ -80,7 +96,7 @@ class CandidateManager {
     }
 
     func hide() {
-        AppContext.shared.candidatePanel.hide()
+        panel.hide()
     }
 
     // MARK: - Cursor Rect

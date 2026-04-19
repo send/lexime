@@ -7,7 +7,9 @@ import InputMethodKit
 /// callback, dispatched onto the main thread.
 final class SessionCoordinator {
 
-    private let session: LexSession
+    // Held as the UniFFI-generated protocol so tests can inject a fake session
+    // without crossing the FFI boundary.
+    private let session: LexSessionProtocol
     private let candidateManager: CandidateManager
     private let onSwitchToAbc: () -> Void
 
@@ -18,7 +20,7 @@ final class SessionCoordinator {
     /// arrives between keystrokes and we need an IMKTextInput to apply events against.
     private weak var lastClient: IMKTextInput?
 
-    init(factory: (LexSessionEvents) -> LexSession,
+    init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
          onSwitchToAbc: @escaping () -> Void) {
         self.candidateManager = candidateManager
