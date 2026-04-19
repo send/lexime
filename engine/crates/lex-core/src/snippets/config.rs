@@ -8,17 +8,17 @@ pub enum SnippetConfigError {
     UndefinedVariable { key: String, name: String },
 }
 
-/// Parse a snippets.toml file (flat key = "body" format).
-/// Validates that all variable references in bodies refer to known variables.
-pub fn parse_snippets_toml(
-    toml_str: &str,
+/// Validate that every `$name`/`${name}` reference in the snippet bodies
+/// resolves against the provided known variable list.
+///
+/// TOML parsing now lives in the Swift FFI boundary; this function accepts
+/// already-parsed entries so it can be shared by tests and by the
+/// `snippets_build_store` FFI call.
+pub fn validate_snippet_entries(
+    entries: &HashMap<String, String>,
     known_variables: &[String],
-) -> Result<HashMap<String, String>, SnippetConfigError> {
-    let table: HashMap<String, String> =
-        toml::from_str(toml_str).map_err(|e| SnippetConfigError::Parse(e.to_string()))?;
-
-    // Validate variable references in all bodies
-    for (key, body) in &table {
+) -> Result<(), SnippetConfigError> {
+    for (key, body) in entries {
         for var_name in extract_variable_names(body) {
             if !known_variables.contains(&var_name) {
                 return Err(SnippetConfigError::UndefinedVariable {
@@ -28,7 +28,19 @@ pub fn parse_snippets_toml(
             }
         }
     }
+    Ok(())
+}
 
+/// Parse a snippets.toml file (flat `key = "body"` format) and validate
+/// variable references.  Kept for unit tests and any non-FFI callers; the
+/// Swift layer no longer routes through this.
+pub fn parse_snippets_toml(
+    toml_str: &str,
+    known_variables: &[String],
+) -> Result<HashMap<String, String>, SnippetConfigError> {
+    let table: HashMap<String, String> =
+        toml::from_str(toml_str).map_err(|e| SnippetConfigError::Parse(e.to_string()))?;
+    validate_snippet_entries(&table, known_variables)?;
     Ok(table)
 }
 
@@ -149,5 +161,20 @@ greeting = "Today: ${date}"
         let known = vec!["date".to_string()];
         let result = parse_snippets_toml(toml, &known).unwrap();
         assert_eq!(result["greeting"], "Today: ${date}");
+    }
+
+    #[test]
+    fn test_validate_entries_undefined() {
+        let mut entries = HashMap::new();
+        entries.insert("k".to_string(), "hello $nope".to_string());
+        let err = validate_snippet_entries(&entries, &[]).unwrap_err();
+        assert!(matches!(err, SnippetConfigError::UndefinedVariable { .. }));
+    }
+
+    #[test]
+    fn test_validate_entries_ok() {
+        let mut entries = HashMap::new();
+        entries.insert("k".to_string(), "hello $name".to_string());
+        validate_snippet_entries(&entries, &["name".to_string()]).unwrap();
     }
 }
