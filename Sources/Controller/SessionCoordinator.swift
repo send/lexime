@@ -3,8 +3,8 @@ import InputMethodKit
 
 /// Owns the Rust LexSession and translates IMKit key events into session calls,
 /// applying the resulting LexEvent stream to the IMKTextInput client and the
-/// candidate panel. Also owns the async poll timer that drains deferred
-/// session results between keystrokes.
+/// candidate panel. Async results are delivered via the `LexSessionEvents`
+/// callback, dispatched onto the main thread.
 final class SessionCoordinator {
 
     private let session: LexSession
@@ -14,19 +14,25 @@ final class SessionCoordinator {
     /// Tracks the currently displayed marked text so composedString stays in sync.
     private(set) var currentDisplay: String?
 
-    private var pollTimer: Timer?
-    private weak var pollClient: IMKTextInput?
+    /// Client captured by the most recent handleKey. Used when an async callback
+    /// arrives between keystrokes and we need an IMKTextInput to apply events against.
+    private weak var lastClient: IMKTextInput?
 
-    init(session: LexSession,
+    init(factory: (LexSessionEvents) -> LexSession,
          candidateManager: CandidateManager,
          onSwitchToAbc: @escaping () -> Void) {
-        self.session = session
         self.candidateManager = candidateManager
         self.onSwitchToAbc = onSwitchToAbc
+        // Build the listener first, then construct the session with it. The
+        // listener holds only a weak reference to `self`, breaking the retain
+        // cycle created by LexSession -> listener -> SessionCoordinator.
+        let listener = Listener()
+        self.session = factory(listener)
+        listener.coordinator = self
     }
 
     deinit {
-        pollTimer?.invalidate()
+        session.shutdown()
     }
 
     // MARK: - Session Passthrough
@@ -43,17 +49,8 @@ final class SessionCoordinator {
 
     // MARK: - Key Handling
 
-    /// Drain any pending async results before taking a new key event.
-    /// Safe to call on any incoming IMKit event; does not stop the poll loop,
-    /// so modifier-only events won't starve deferred candidate updates.
-    func drainPending(client: IMKTextInput) {
-        while let resp = session.poll() {
-            applyEvents(resp, client: client)
-        }
-    }
-
     func handleKey(_ keyEvent: LexKeyEvent, client: IMKTextInput) -> Bool {
-        cancelPollTimer()
+        lastClient = client
         candidateManager.invalidate()
         let resp = session.handleKey(event: keyEvent)
         applyEvents(resp, client: client)
@@ -61,6 +58,7 @@ final class SessionCoordinator {
     }
 
     func commit(client: IMKTextInput) {
+        lastClient = client
         let resp = session.commit()
         applyEvents(resp, client: client)
     }
@@ -72,12 +70,17 @@ final class SessionCoordinator {
     }
 
     func deactivate() {
-        cancelPollTimer()
         candidateManager.deactivate()
         currentDisplay = nil
+        lastClient = nil
     }
 
     // MARK: - Apply Events
+
+    fileprivate func applyAsyncResponse(_ resp: LexKeyResponse) {
+        guard let client = lastClient else { return }
+        applyEvents(resp, client: client)
+    }
 
     private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
         for event in resp.events {
@@ -96,8 +99,6 @@ final class SessionCoordinator {
                 candidateManager.hide()
             case .switchToAbc:
                 onSwitchToAbc()
-            case .schedulePoll:
-                schedulePollTimer(client: client)
             }
         }
     }
@@ -113,37 +114,20 @@ final class SessionCoordinator {
                              selectionRange: NSRange(location: len, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }
+}
 
-    // MARK: - Poll Timer
+/// Bridge object passed to `LexEngine.createSession`. Holds a weak reference
+/// back to the coordinator so the Rust-held listener does not keep the
+/// coordinator alive (breaking the retain cycle `LexSession` -> listener ->
+/// `SessionCoordinator` -> `LexSession`).
+private final class Listener: LexSessionEvents, @unchecked Sendable {
+    weak var coordinator: SessionCoordinator?
 
-    private func schedulePollTimer(client: IMKTextInput) {
-        pollClient = client
-        guard pollTimer == nil else { return }
-        var idleTicks = 0
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self, let client = self.pollClient else {
-                self?.cancelPollTimer()
-                return
-            }
-            var hadResult = false
-            while let resp = self.session.poll() {
-                self.applyEvents(resp, client: client)
-                hadResult = true
-            }
-            if hadResult {
-                idleTicks = 0
-            } else {
-                idleTicks += 1
-                if idleTicks >= 100 {
-                    self.cancelPollTimer()
-                }
-            }
+    func onAsyncResponse(response: LexKeyResponse) {
+        // Invoked on the Rust AsyncWorker thread; bounce to the main thread
+        // where UI / IMKit calls are safe.
+        DispatchQueue.main.async { [weak self] in
+            self?.coordinator?.applyAsyncResponse(response)
         }
-    }
-
-    private func cancelPollTimer() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-        pollClient = nil
     }
 }

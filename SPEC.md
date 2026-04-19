@@ -135,7 +135,6 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `ShowCandidates { surfaces, selected }` | 候補パネル表示 |
 | `HideCandidates` | 候補パネル非表示 |
 | `SwitchToAbc` | システム ABC 入力ソースに切替 |
-| `SchedulePoll` | ポールタイマー開始要求 |
 
 **トップレベル関数**:
 
@@ -157,11 +156,17 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 |---|---|
 | `handle_key(event)` | キー入力処理（`LexKeyEvent`）→ `LexKeyResponse` |
 | `commit()` | 現在の入力を確定 → `LexKeyResponse` |
-| `poll()` | 非同期結果をチェック → `Option<LexKeyResponse>` |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
 | `set_abc_passthrough(enabled)` | ABC パススルー設定 |
+| `shutdown()` | AsyncWorker スレッドを即時停止 |
+
+**LexSessionEvents** (foreign callback interface):
+
+| メソッド | 説明 |
+|---|---|
+| `on_async_response(response)` | 非同期候補結果を `LexKeyResponse` として受信（Worker スレッドから呼ばれる） |
 
 ## 入力モデル
 
@@ -333,15 +338,15 @@ english サブモードで入力された連続 ASCII セグメントは、1 文
 
 ## 非同期候補生成
 
-候補生成は Rust 側の `AsyncWorker` でバックグラウンド実行する。Swift はポーリングで結果を受け取る。
+候補生成は Rust 側の `AsyncWorker` でバックグラウンド実行し、完了時に `LexSessionEvents` コールバックで Swift に結果を push する。
 
 ### アーキテクチャ
 
 1. キー入力 → `LexSession::handle_key()` → セッションが `async_request` を返す
 2. `handle_key` 内で自動的に `AsyncWorker` にサブミット
-3. レスポンスに `SchedulePoll` イベントを含めて返す
-4. Swift 側の 50ms ポールタイマーが `LexSession::poll()` を呼び出し
-5. `poll()` が `AsyncWorker` のチャネルから結果を取得し、セッションに配信
+3. `AsyncWorker` のワーカースレッドが候補を生成
+4. 完了時に `LexSessionEvents::on_async_response` を呼び、セッションを更新した上で `LexKeyResponse` を Swift に渡す
+5. Swift 側は main thread に dispatch して IMKit / 候補パネルに反映
 6. 結果が stale（generation counter 不一致）なら破棄
 
 ### AsyncWorker
@@ -352,7 +357,8 @@ english サブモードで入力された連続 ASCII セグメントは、1 文
 
 - `AtomicU64` generation counter で staleness を管理
 - mpsc チャネルの drain-to-latest で最新リクエストのみ処理
-- ポールタイマーは 5 秒アイドルタイムアウトで自動停止
+- ワーカースレッドは `LexSession` Drop または `shutdown()` で join される
+- foreign callback 呼び出しは `catch_unwind` で保護
 
 ## 学習機能
 
