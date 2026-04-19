@@ -222,27 +222,31 @@ mod tests {
     fn sink_can_write_history_during_deliver() {
         struct WritingSink {
             history: Arc<RwLock<UserHistory>>,
-            done: mpsc::SyncSender<()>,
+            result: mpsc::SyncSender<bool>,
         }
         impl CandidateSink for WritingSink {
             fn deliver(&self, _result: CandidateResult) {
-                // Emulate `record_history` acquiring the write lock on the
-                // same RwLock the worker read from. This would deadlock if
-                // the worker still held its read guard.
-                let mut h = self
-                    .history
-                    .write()
-                    .expect("write lock must be acquirable inside deliver");
-                h.record_at(&[("きょう".to_string(), "今日".to_string())], 0);
-                let _ = self.done.send(());
+                // `try_write` here stands in for `record_history`'s blocking
+                // `write()`. Using `try_write` makes the regression fail
+                // deterministically (no hung thread) if the worker still
+                // holds its own read guard — the real code path would
+                // deadlock, which this fake reports as Err immediately.
+                let acquired = match self.history.try_write() {
+                    Ok(mut h) => {
+                        h.record_at(&[("きょう".to_string(), "今日".to_string())], 0);
+                        true
+                    }
+                    Err(_) => false,
+                };
+                let _ = self.result.send(acquired);
             }
         }
 
         let history = Arc::new(RwLock::new(UserHistory::new()));
-        let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
+        let (result_tx, result_rx) = mpsc::sync_channel::<bool>(1);
         let sink = WritingSink {
             history: Arc::clone(&history),
-            done: done_tx,
+            result: result_tx,
         };
 
         let (tx, rx) = mpsc::channel::<CandidateWork>();
@@ -265,15 +269,17 @@ mod tests {
         })
         .unwrap();
 
-        // Block until `deliver` finishes or the deadline elapses. If the
-        // worker is self-deadlocking on its own read guard, `recv_timeout`
-        // returns Timeout and we fail the test with a diagnostic message.
-        done_rx
+        // Bounded recv_timeout is a safety net; normally deliver signals
+        // within milliseconds.
+        let acquired = result_rx
             .recv_timeout(std::time::Duration::from_secs(2))
-            .expect(
-                "sink.deliver did not complete in time — worker is likely holding \
-                 the history read guard across the callback and self-deadlocking",
-            );
+            .expect("sink.deliver never ran — worker did not reach the callback");
+        assert!(
+            acquired,
+            "sink could not acquire write lock inside deliver — worker is holding \
+             the history read guard across the callback (would self-deadlock in \
+             production where record_history uses a blocking write)"
+        );
 
         drop(tx);
         worker.join().unwrap();
