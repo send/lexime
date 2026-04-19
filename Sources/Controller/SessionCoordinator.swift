@@ -102,6 +102,9 @@ final class SessionCoordinator {
         }
     }
 
+    /// Update inline marked text with the given display string.
+    /// Uses markedClauseSegment to prevent the client's text system from
+    /// applying its own transformations (e.g. Shift-triggered katakana conversion).
     private static func updateMarkedText(_ text: String, client: IMKTextInput) {
         let len = text.utf16.count
         let attrs: [NSAttributedString.Key: Any] = [.markedClauseSegment: 0]
