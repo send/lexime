@@ -122,8 +122,15 @@ fn snippets_build_store(
     let resolver = VariableResolver::new(settings.snippets.variables.clone());
     let known = resolver.known_names();
 
-    let map: std::collections::HashMap<String, String> =
-        entries.into_iter().map(|e| (e.key, e.body)).collect();
+    let mut map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for entry in entries {
+        if map.insert(entry.key.clone(), entry.body).is_some() {
+            return Err(LexError::InvalidData {
+                msg: format!("duplicate snippet key: {}", entry.key),
+            });
+        }
+    }
     validate_snippet_entries(&map, &known)
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
 

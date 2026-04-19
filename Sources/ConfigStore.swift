@@ -1,5 +1,13 @@
 import Foundation
 
+struct SnippetLoadError: LocalizedError {
+    let path: String
+    let underlying: any Error
+    var errorDescription: String? {
+        "snippets at \(path): \(underlying.localizedDescription)"
+    }
+}
+
 final class ConfigStore {
     let supportDir: String
     let userDictPath: String
@@ -17,11 +25,15 @@ final class ConfigStore {
     /// On success or missing file, updates `snippetStore` and posts notification.
     func reloadSnippets() throws {
         if FileManager.default.fileExists(atPath: snippetPath) {
-            let content = try String(contentsOfFile: snippetPath, encoding: .utf8)
-            let entries = try SnippetTOML.parse(content)
-            let store = try snippetsBuildStore(entries: entries)
-            NSLog("Lexime: Snippets reloaded from %@", snippetPath)
-            self.snippetStore = store
+            do {
+                let content = try String(contentsOfFile: snippetPath, encoding: .utf8)
+                let entries = try SnippetTOML.parse(content)
+                let store = try snippetsBuildStore(entries: entries)
+                NSLog("Lexime: Snippets reloaded from %@", snippetPath)
+                self.snippetStore = store
+            } catch {
+                throw SnippetLoadError(path: snippetPath, underlying: error)
+            }
         } else {
             self.snippetStore = nil
         }

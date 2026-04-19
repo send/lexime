@@ -48,9 +48,10 @@ enum SnippetTOML {
             skipInlineWhitespace(trimmed, cursor: &cursor)
 
             if cursor < trimmed.endIndex, trimmed[cursor] != "#" {
+                let column = trimmed.distance(from: trimmed.startIndex, to: cursor) + 1
                 throw ParseError(
                     line: lineNumber,
-                    message: "unexpected trailing content: \(String(trimmed[cursor...]))")
+                    message: "unexpected trailing content after value at column \(column)")
             }
 
             if seenKeys.contains(key) {
@@ -166,7 +167,6 @@ enum SnippetTOML {
                 case "r": out.append("\r")
                 case "b": out.append("\u{08}")
                 case "f": out.append("\u{0C}")
-                case "/": out.append("/")
                 case "u":
                     cursor = line.index(after: cursor)
                     out.append(try readHexUnicode(line, cursor: &cursor, digits: 4, line: lineNumber))

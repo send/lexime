@@ -7,7 +7,7 @@ func testSnippetTOML() {
     do {
         let source = """
             gh = "https://github.com/"
-            gmail = "kaz.july.7@gmail.com"
+            gmail = "user@example.com"
             now = "$datetime"
             today = "$date"
             wareki = "$wareki"
