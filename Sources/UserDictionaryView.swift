@@ -78,9 +78,16 @@ struct UserDictionaryView: View {
     private func addWord(reading: String, surface: String) {
         do {
             try service.register(reading: reading, surface: surface)
-            try service.save()
         } catch {
             NSLog("Lexime: Failed to register word: %@", "\(error)")
+            saveError = "単語の登録に失敗しました: \(error.localizedDescription)"
+            refresh()
+            return
+        }
+        do {
+            try service.save()
+        } catch {
+            NSLog("Lexime: Failed to save user dict after register: %@", "\(error)")
             saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
         }
         refresh()
@@ -91,9 +98,17 @@ struct UserDictionaryView: View {
         let word = words[index]
         do {
             try service.unregister(reading: word.reading, surface: word.surface)
-            try service.save()
         } catch {
             NSLog("Lexime: Failed to unregister word: %@", "\(error)")
+            saveError = "単語の削除に失敗しました: \(error.localizedDescription)"
+            selectedIndex = nil
+            refresh()
+            return
+        }
+        do {
+            try service.save()
+        } catch {
+            NSLog("Lexime: Failed to save user dict after unregister: %@", "\(error)")
             saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
         }
         selectedIndex = nil
