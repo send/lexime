@@ -42,7 +42,7 @@ impl From<LexKeyEvent> for KeyEvent {
     }
 }
 
-pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> LexKeyResponse {
+pub(super) fn convert_to_events(resp: KeyResponse) -> LexKeyResponse {
     let mut events = Vec::new();
 
     // 1. Commit
@@ -67,11 +67,6 @@ pub(super) fn convert_to_events(resp: KeyResponse, has_pending_work: bool) -> Le
     // 4. Side effects
     if resp.side_effects.switch_to_abc {
         events.push(LexEvent::SwitchToAbc);
-    }
-
-    // 5. Schedule poll
-    if has_pending_work {
-        events.push(LexEvent::SchedulePoll);
     }
 
     LexKeyResponse {
@@ -99,7 +94,7 @@ mod tests {
     #[test]
     fn test_convert_empty_response() {
         let resp = empty_response();
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert!(!result.consumed);
         assert!(result.events.is_empty());
     }
@@ -109,7 +104,7 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.commit = Some("テスト".to_string());
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert!(result.consumed);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::Commit { text } if text == "テスト"));
@@ -122,7 +117,7 @@ mod tests {
         resp.marked = Some(MarkedText {
             text: "かな".to_string(),
         });
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SetMarkedText { text } if text == "かな"));
     }
@@ -134,7 +129,7 @@ mod tests {
         resp.marked = Some(MarkedText {
             text: String::new(),
         });
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         // Empty marked text becomes SetMarkedText with empty string
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SetMarkedText { text } if text.is_empty()));
@@ -148,7 +143,7 @@ mod tests {
             surfaces: vec!["候補1".to_string(), "候補2".to_string()],
             selected: 0,
         };
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(
             &result.events[0],
@@ -162,17 +157,9 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.candidates = CandidateAction::Hide;
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::HideCandidates));
-    }
-
-    #[test]
-    fn test_convert_schedule_poll() {
-        let resp = empty_response();
-        let result = convert_to_events(resp, true);
-        assert_eq!(result.events.len(), 1);
-        assert!(matches!(&result.events[0], LexEvent::SchedulePoll));
     }
 
     #[test]
@@ -180,7 +167,7 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.side_effects.switch_to_abc = true;
-        let result = convert_to_events(resp, false);
+        let result = convert_to_events(resp);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SwitchToAbc));
     }
@@ -197,13 +184,12 @@ mod tests {
             surfaces: vec!["a".to_string()],
             selected: 0,
         };
-        let result = convert_to_events(resp, true);
+        let result = convert_to_events(resp);
         assert!(result.consumed);
-        // commit + marked + candidates + poll = 4
-        assert_eq!(result.events.len(), 4);
+        // commit + marked + candidates = 3
+        assert_eq!(result.events.len(), 3);
         assert!(matches!(&result.events[0], LexEvent::Commit { .. }));
         assert!(matches!(&result.events[1], LexEvent::SetMarkedText { .. }));
         assert!(matches!(&result.events[2], LexEvent::ShowCandidates { .. }));
-        assert!(matches!(&result.events[3], LexEvent::SchedulePoll));
     }
 }

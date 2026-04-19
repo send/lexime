@@ -54,7 +54,6 @@ pub enum LexEvent {
     },
     HideCandidates,
     SwitchToAbc,
-    SchedulePoll,
 }
 
 #[derive(uniffi::Enum)]
