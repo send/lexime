@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 
 use crate::candidates::CandidateResponse;
@@ -37,39 +37,39 @@ pub(crate) trait CandidateSink: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AsyncWorker {
-    candidate_tx: Option<mpsc::Sender<CandidateWork>>,
+    // Resources captured at construction and cloned into the worker thread
+    // when it is lazily spawned on the first `submit_candidates` call.
+    dict: Arc<dyn Dictionary>,
+    conn: Option<Arc<ConnectionMatrix>>,
+    history: Option<Arc<RwLock<UserHistory>>>,
+    sink: Arc<dyn CandidateSink>,
+
     candidate_gen: Arc<AtomicU64>,
+    inner: Mutex<WorkerInner>,
+}
+
+struct WorkerInner {
+    tx: Option<mpsc::Sender<CandidateWork>>,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl AsyncWorker {
-    pub fn new<S: CandidateSink>(
+    pub fn new(
         dict: Arc<dyn Dictionary>,
         conn: Option<Arc<ConnectionMatrix>>,
         history: Option<Arc<RwLock<UserHistory>>>,
-        sink: S,
+        sink: Arc<dyn CandidateSink>,
     ) -> Self {
-        let candidate_gen = Arc::new(AtomicU64::new(0));
-
-        // Candidate worker
-        let (work_tx, work_rx) = mpsc::channel::<CandidateWork>();
-        let handle = {
-            let dict = Arc::clone(&dict);
-            let conn = conn.clone();
-            let history = history.clone();
-            let gen = Arc::clone(&candidate_gen);
-            thread::Builder::new()
-                .name("lexime-candidates".into())
-                .spawn(move || {
-                    candidate_worker(work_rx, sink, gen, dict, conn, history);
-                })
-                .expect("failed to spawn candidate worker")
-        };
-
         Self {
-            candidate_tx: Some(work_tx),
-            candidate_gen,
-            thread_handle: Some(handle),
+            dict,
+            conn,
+            history,
+            sink,
+            candidate_gen: Arc::new(AtomicU64::new(0)),
+            inner: Mutex::new(WorkerInner {
+                tx: None,
+                thread_handle: None,
+            }),
         }
     }
 
@@ -80,7 +80,27 @@ impl AsyncWorker {
         lattice: Option<Arc<crate::converter::Lattice>>,
     ) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Some(ref tx) = self.candidate_tx {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.tx.is_none() {
+            // Lazy spawn: IMKit instantiates probe controllers that never
+            // request candidates, so we avoid spawning threads until the
+            // first real candidate request arrives.
+            let (tx, rx) = mpsc::channel::<CandidateWork>();
+            let dict = Arc::clone(&self.dict);
+            let conn = self.conn.clone();
+            let history = self.history.clone();
+            let sink = Arc::clone(&self.sink);
+            let gen_ref = Arc::clone(&self.candidate_gen);
+            let handle = thread::Builder::new()
+                .name("lexime-candidates".into())
+                .spawn(move || {
+                    candidate_worker(rx, sink, gen_ref, dict, conn, history);
+                })
+                .expect("failed to spawn candidate worker");
+            inner.tx = Some(tx);
+            inner.thread_handle = Some(handle);
+        }
+        if let Some(ref tx) = inner.tx {
             let _ = tx.send(CandidateWork {
                 reading,
                 dispatch,
@@ -98,8 +118,9 @@ impl AsyncWorker {
 impl Drop for AsyncWorker {
     fn drop(&mut self) {
         // Drop the sender first so the worker thread's recv() returns Err and exits.
-        self.candidate_tx.take();
-        if let Some(handle) = self.thread_handle.take() {
+        let mut inner = self.inner.lock().unwrap();
+        inner.tx.take();
+        if let Some(handle) = inner.thread_handle.take() {
             let _ = handle.join();
         }
     }
@@ -109,9 +130,9 @@ impl Drop for AsyncWorker {
 // Worker threads
 // ---------------------------------------------------------------------------
 
-fn candidate_worker<S: CandidateSink>(
+fn candidate_worker(
     rx: mpsc::Receiver<CandidateWork>,
-    sink: S,
+    sink: Arc<dyn CandidateSink>,
     gen: Arc<AtomicU64>,
     dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
@@ -244,10 +265,10 @@ mod tests {
 
         let history = Arc::new(RwLock::new(UserHistory::new()));
         let (result_tx, result_rx) = mpsc::sync_channel::<bool>(1);
-        let sink = WritingSink {
+        let sink: Arc<dyn CandidateSink> = Arc::new(WritingSink {
             history: Arc::clone(&history),
             result: result_tx,
-        };
+        });
 
         let (tx, rx) = mpsc::channel::<CandidateWork>();
         let gen = Arc::new(AtomicU64::new(0));
