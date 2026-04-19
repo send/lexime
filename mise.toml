@@ -225,7 +225,8 @@ depends = ["uniffi-gen"]
 # NOTE: Test files are listed explicitly because swiftc compiles all sources
 # into one binary. If you add a new test file under Tests/, add it here too.
 # Source files required by tests are also listed explicitly (SnippetTOML for
-# TestSnippetTOML).
+# TestSnippetTOML; CandidateManager/SessionCoordinator/ModeController/InputSource
+# for the controller tests).
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -234,7 +235,12 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -Lbuild -llex_engine \
   generated/lex_engine.swift \
   Sources/Services/SnippetTOML.swift \
+  Sources/InputSource.swift \
+  Sources/CandidateManager.swift \
+  Sources/Controller/SessionCoordinator.swift \
+  Sources/Controller/ModeController.swift \
   Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift Tests/TestSnippetTOML.swift \
+  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestSessionCoordinator.swift \
   -o build/test-runner && build/test-runner
 """
 

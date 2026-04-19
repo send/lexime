@@ -163,3 +163,7 @@ class CandidatePanel: NSPanel {
         )
     }
 }
+
+// NSPanel already provides `isVisible`; conformance just documents the seam
+// used by CandidateManager for dependency injection.
+extension CandidatePanel: CandidatePanelDisplaying {}

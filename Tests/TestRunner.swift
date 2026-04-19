@@ -34,6 +34,9 @@ struct TestMain {
         testDictFFI()
         testSessionFFI()
         testSnippetTOML()
+        testCandidateManager()
+        testModeController()
+        testSessionCoordinator()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")
         exit(testsFailed > 0 ? 1 : 0)
