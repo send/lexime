@@ -1,4 +1,3 @@
-import Carbon
 import Foundation
 
 // MARK: - UserDefaults Keys
