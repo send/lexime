@@ -38,9 +38,13 @@ impl CandidateSink for ListenerSink {
         };
         let listener = Arc::clone(&self.listener);
         // Isolate foreign-code panics so the worker thread keeps running.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             listener.on_async_response(resp);
-        }));
+        }))
+        .is_err()
+        {
+            tracing::error!("foreign LexSessionEvents.on_async_response panicked");
+        }
     }
 }
 

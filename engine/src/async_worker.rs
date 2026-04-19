@@ -183,7 +183,11 @@ fn candidate_worker<S: CandidateSink>(
             Some(lattice) => lattice.input.clone(),
             None => latest.reading,
         };
-        sink.deliver(CandidateResult { reading, response });
+        let result = CandidateResult { reading, response };
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.deliver(result))).is_err()
+        {
+            tracing::error!("candidate worker: CandidateSink::deliver panicked; dropping result");
+        }
     }
 }
 
