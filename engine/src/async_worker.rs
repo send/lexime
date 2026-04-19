@@ -222,7 +222,7 @@ mod tests {
     fn sink_can_write_history_during_deliver() {
         struct WritingSink {
             history: Arc<RwLock<UserHistory>>,
-            delivered: Arc<std::sync::Mutex<bool>>,
+            done: mpsc::SyncSender<()>,
         }
         impl CandidateSink for WritingSink {
             fn deliver(&self, _result: CandidateResult) {
@@ -234,15 +234,15 @@ mod tests {
                     .write()
                     .expect("write lock must be acquirable inside deliver");
                 h.record_at(&[("きょう".to_string(), "今日".to_string())], 0);
-                *self.delivered.lock().unwrap() = true;
+                let _ = self.done.send(());
             }
         }
 
         let history = Arc::new(RwLock::new(UserHistory::new()));
-        let delivered = Arc::new(std::sync::Mutex::new(false));
+        let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
         let sink = WritingSink {
             history: Arc::clone(&history),
-            delivered: Arc::clone(&delivered),
+            done: done_tx,
         };
 
         let (tx, rx) = mpsc::channel::<CandidateWork>();
@@ -265,20 +265,15 @@ mod tests {
         })
         .unwrap();
 
-        // Wait bounded time for the deliver to complete. If the guard is
-        // still held, the worker self-deadlocks and `delivered` stays false.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            if *delivered.lock().unwrap() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(
-            *delivered.lock().unwrap(),
-            "sink.deliver did not complete in time — worker is likely holding \
-             the history read guard across the callback and self-deadlocking"
-        );
+        // Block until `deliver` finishes or the deadline elapses. If the
+        // worker is self-deadlocking on its own read guard, `recv_timeout`
+        // returns Timeout and we fail the test with a diagnostic message.
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect(
+                "sink.deliver did not complete in time — worker is likely holding \
+                 the history read guard across the callback and self-deadlocking",
+            );
 
         drop(tx);
         worker.join().unwrap();
