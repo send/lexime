@@ -58,24 +58,13 @@ impl ConversionContext<'_> {
 
     /// 1-best conversion from a pre-built lattice.
     pub fn convert_from_lattice(&self, lattice: &Lattice) -> Vec<ConvertedSegment> {
-        if lattice.input.is_empty() {
-            return Vec::new();
-        }
-        let cost_fn = DefaultCostFunction::new(self.conn);
+        // 1-best uses a larger oversample floor than the N-best formula to give
+        // the reranker/history boost enough candidates to work with.
         let oversample = if self.history.is_some() { 30 } else { 10 };
-        let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-        postprocess(
-            &mut paths,
-            lattice,
-            self.conn,
-            Some(self.dict),
-            self.history,
-            &lattice.input,
-            1,
-        )
-        .into_iter()
-        .next()
-        .unwrap_or_default()
+        self.convert_lattice_impl(lattice, 1, oversample)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     /// N-best conversion from a pre-built lattice.
@@ -84,15 +73,25 @@ impl ConversionContext<'_> {
         lattice: &Lattice,
         n: usize,
     ) -> Vec<Vec<ConvertedSegment>> {
-        if lattice.input.is_empty() || n == 0 {
-            return Vec::new();
-        }
-        let cost_fn = DefaultCostFunction::new(self.conn);
         let oversample = if self.history.is_some() {
             (n * 3).max(50)
         } else {
             n * 3
         };
+        self.convert_lattice_impl(lattice, n, oversample)
+    }
+
+    /// Shared Viterbi + postprocess pipeline used by the 1-best and N-best wrappers.
+    fn convert_lattice_impl(
+        &self,
+        lattice: &Lattice,
+        n: usize,
+        oversample: usize,
+    ) -> Vec<Vec<ConvertedSegment>> {
+        if lattice.input.is_empty() || n == 0 {
+            return Vec::new();
+        }
+        let cost_fn = DefaultCostFunction::new(self.conn);
         let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
         postprocess(
             &mut paths,
