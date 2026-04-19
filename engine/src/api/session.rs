@@ -159,8 +159,11 @@ impl LexSession {
     /// IMKInputController teardown to guarantee the worker is joined before
     /// the last Arc to `LexSession` is dropped.
     fn shutdown(&self) {
-        let mut slot = self.worker.lock().unwrap();
-        *slot = None;
+        let worker = {
+            let mut slot = self.worker.lock().unwrap();
+            slot.take()
+        };
+        drop(worker);
     }
 }
 
