@@ -143,7 +143,7 @@ echo "Removed compiled dictionaries"
 description = "Build Lexime.app (universal binary)"
 depends = ["uniffi-gen", "dict", "conn"]
 sources = [
-  "Sources/*.swift",
+  "Sources/**/*.swift",
   "generated/lex_engine.swift",
   "generated/lex_engineFFI.h",
   "generated/lex_engineFFI.modulemap",
@@ -162,6 +162,7 @@ outputs = ["build/Lexime.app/Contents/MacOS/Lexime"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s globstar
 rm -f ~/Library/Logs/Lexime/lexime-trace.jsonl
 APP=build/Lexime.app
 MACOS=$APP/Contents/MacOS
@@ -172,9 +173,9 @@ LINK_FLAGS="-Lbuild -llex_engine"
 
 mkdir -p "$MACOS" "$RES"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
-  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-x86_64"
+  generated/lex_engine.swift Sources/**/*.swift -o "$MACOS/Lexime-x86_64"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target arm64-apple-macosx$MACOS_MIN \
-  generated/lex_engine.swift Sources/*.swift -o "$MACOS/Lexime-arm64"
+  generated/lex_engine.swift Sources/**/*.swift -o "$MACOS/Lexime-arm64"
 lipo -create "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64" -output "$MACOS/Lexime"
 rm "$MACOS/Lexime-x86_64" "$MACOS/Lexime-arm64"
 cp Info.plist "$APP/Contents/Info.plist"

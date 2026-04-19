@@ -7,34 +7,13 @@ class LeximeInputController: IMKInputController {
 
     // MARK: - State
 
-    private var session: LexSession?
-
-    /// Tracks the currently displayed marked text so composedString stays in sync.
-    private var currentDisplay: String?
-
-    var isComposing: Bool {
-        guard let session else { return false }
-        return session.isComposing()
-    }
-
-    let candidateManager = CandidateManager()
-
-    // IMKit mode IDs as declared in Info.plist's tsInputModeListKey.
-    // These match the values IMKit passes to setValue(_:forTag:client:).
-    // For TIS API lookups (TISCreateInputSourceList), use LeximeInputSourceID
-    // which includes the additional bundle ID prefix macOS adds at runtime.
-    private static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
-    private static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
+    private let candidateManager = CandidateManager()
+    private let modeController = ModeController()
+    private var coordinator: SessionCoordinator?
 
     private static var hasShownDictWarning = false
 
-    private var pollTimer: Timer?
-
     private lazy var cachedTrigger: LexTriggerKey? = snippetTriggerKey()
-
-    /// Set when ESC is pressed during composing, so commitComposition
-    /// can guard against macOS switching to standard ABC.
-    private var escapeCausedCommit = false
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -49,14 +28,19 @@ class LeximeInputController: IMKInputController {
             return
         }
 
-        session = engine.createSession()
-        guard let session else { return }
+        let session = engine.createSession()
         session.setDeferCandidates(enabled: true)
         session.setSnippetStore(store: AppContext.shared.snippetStore)
         let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
         if convMode == 1 {
             session.setConversionMode(mode: .predictive)
         }
+
+        let modeController = self.modeController
+        coordinator = SessionCoordinator(
+            session: session,
+            candidateManager: candidateManager,
+            onSwitchToAbc: { modeController.selectStandardABC() })
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(snippetsDidReload),
@@ -68,7 +52,7 @@ class LeximeInputController: IMKInputController {
     }
 
     @objc private func snippetsDidReload() {
-        session?.setSnippetStore(store: AppContext.shared.snippetStore)
+        coordinator?.setSnippetStore(AppContext.shared.snippetStore)
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
@@ -79,19 +63,15 @@ class LeximeInputController: IMKInputController {
     // MARK: - Key Handling
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let session, let event, let client = sender as? IMKTextInput else {
+        guard let coordinator, let event, let client = sender as? IMKTextInput else {
             return false
         }
 
-        // Poll for completed async results before handling new key
-        while let asyncResp = session.poll() {
-            applyEvents(asyncResp, client: client)
-        }
-        cancelPollTimer()
+        coordinator.drainPending(client: client)
 
         guard event.type == .keyDown else {
             // Consume modifier-only events while composing
-            return isComposing
+            return coordinator.isComposing
         }
 
         let dominated = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -99,113 +79,54 @@ class LeximeInputController: IMKInputController {
 
         let hasShift = dominated.contains(.shift)
         let hasModifier = !dominated.subtracting(.shift).isEmpty
-
-        // Invalidate any pending async candidate results
-        candidateManager.invalidate()
-
         let text = event.characters ?? ""
 
-        // Build platform-independent key event.
-        // Eisu/Kana are always mode-switch regardless of modifiers.
-        // For all other keys, modifier → commit + passthrough (ModifiedKey).
-        let keyEvent: LexKeyEvent
+        let keyEvent = buildKeyEvent(
+            event: event, dominated: dominated,
+            hasShift: hasShift, hasModifier: hasModifier, text: text)
+
+        if case .escape = keyEvent, coordinator.isComposing {
+            modeController.noteEscapeDuringCompose()
+        }
+
+        return coordinator.handleKey(keyEvent, client: client)
+    }
+
+    /// Build platform-independent key event.
+    /// Eisu/Kana are always mode-switch regardless of modifiers.
+    /// For all other keys, modifier → commit + passthrough (ModifiedKey).
+    private func buildKeyEvent(event: NSEvent,
+                               dominated: NSEvent.ModifierFlags,
+                               hasShift: Bool,
+                               hasModifier: Bool,
+                               text: String) -> LexKeyEvent {
         switch event.keyCode {
-        case 102: keyEvent = .switchToDirectInput
-        case 104: keyEvent = .switchToJapanese
+        case 102: return .switchToDirectInput
+        case 104: return .switchToJapanese
         default:
             if isSnippetTrigger(event: event, dominated: dominated) {
-                keyEvent = .snippetTrigger
-            } else if hasModifier {
-                keyEvent = .modifiedKey
-            } else {
-                switch event.keyCode {
-                case 36:  keyEvent = .enter
-                case 49:  keyEvent = .space
-                case 51:  keyEvent = .backspace
-                case 53:  keyEvent = .escape
-                case 48:  keyEvent = .tab
-                case 117: keyEvent = .forwardDelete
-                case 125: keyEvent = .arrowDown
-                case 126: keyEvent = .arrowUp
-                default:
-                    if let remapped = keymapGet(keyCode: event.keyCode, hasShift: hasShift) {
-                        keyEvent = .remapped(text: remapped, shift: hasShift)
-                    } else {
-                        keyEvent = .text(text: text, shift: hasShift)
-                    }
+                return .snippetTrigger
+            }
+            if hasModifier {
+                return .modifiedKey
+            }
+            switch event.keyCode {
+            case 36:  return .enter
+            case 49:  return .space
+            case 51:  return .backspace
+            case 53:  return .escape
+            case 48:  return .tab
+            case 117: return .forwardDelete
+            case 125: return .arrowDown
+            case 126: return .arrowUp
+            default:
+                if let remapped = keymapGet(keyCode: event.keyCode, hasShift: hasShift) {
+                    return .remapped(text: remapped, shift: hasShift)
                 }
-            }
-        }
-
-        // Track ESC during composing so commitComposition can guard
-        // against macOS switching to standard ABC (race condition).
-        if case .escape = keyEvent, isComposing {
-            escapeCausedCommit = true
-        }
-
-        let resp = session.handleKey(event: keyEvent)
-        applyEvents(resp, client: client)
-        return resp.consumed
-    }
-
-    // MARK: - Apply Events
-
-    private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
-        for event in resp.events {
-            switch event {
-            case .commit(let text):
-                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-                currentDisplay = nil
-                candidateManager.flagReposition()
-            case .setMarkedText(let text):
-                currentDisplay = text.isEmpty ? nil : text
-                updateMarkedText(text, client: client)
-            case .showCandidates(let surfaces, let selected):
-                candidateManager.update(surfaces: surfaces, selected: Int(selected))
-                candidateManager.show(client: client, currentDisplay: currentDisplay)
-            case .hideCandidates:
-                candidateManager.hide()
-            case .switchToAbc:
-                selectABCInputSource()
-            case .schedulePoll:
-                schedulePollTimer()
+                return .text(text: text, shift: hasShift)
             }
         }
     }
-
-    // MARK: - Poll Timer
-
-    private func schedulePollTimer() {
-        guard pollTimer == nil else { return }
-        var idleTicks = 0
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self, let session = self.session, let client = self.client() else {
-                self?.cancelPollTimer()
-                return
-            }
-            var hadResult = false
-            while let resp = session.poll() {
-                self.applyEvents(resp, client: client)
-                hadResult = true
-            }
-            if hadResult {
-                idleTicks = 0
-            } else {
-                idleTicks += 1
-                // Stop polling after ~5s of no results (100 * 50ms)
-                if idleTicks >= 100 {
-                    self.cancelPollTimer()
-                }
-            }
-        }
-    }
-
-    private func cancelPollTimer() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
-
-    // MARK: - Snippet Trigger
 
     private func isSnippetTrigger(event: NSEvent, dominated: NSEvent.ModifierFlags) -> Bool {
         guard let trigger = cachedTrigger else { return false }
@@ -214,18 +135,6 @@ class LeximeInputController: IMKInputController {
             && dominated.contains(.shift) == trigger.shift
             && dominated.contains(.option) == trigger.alt
             && dominated.contains(.command) == trigger.cmd
-    }
-
-    // MARK: - Helpers
-
-    private func selectABCInputSource() {
-        let conditions = [
-            kTISPropertyInputSourceID as String: "com.apple.keylayout.ABC"
-        ] as CFDictionary
-        guard let list = TISCreateInputSourceList(conditions, false)?.takeRetainedValue()
-                as? [TISInputSource],
-              let source = list.first else { return }
-        TISSelectInputSource(source)
     }
 
     // MARK: - Menu
@@ -249,56 +158,30 @@ class LeximeInputController: IMKInputController {
     // MARK: - IMKInputController Overrides
 
     override func composedString(_ sender: Any!) -> Any! {
-        return currentDisplay ?? ""
+        return coordinator?.currentDisplay ?? ""
     }
 
     override func originalString(_ sender: Any!) -> NSAttributedString! {
-        return NSAttributedString(string: currentDisplay ?? "")
+        return NSAttributedString(string: coordinator?.currentDisplay ?? "")
     }
 
     override func commitComposition(_ sender: Any!) {
-        guard let session, let client = sender as? IMKTextInput else { return }
-        let wasEscapeCommit = escapeCausedCommit
-        escapeCausedCommit = false
-        let resp = session.commit()
-        applyEvents(resp, client: client)
-
-        // Guard against macOS switching to standard ABC after ESC.
-        // Due to a race condition in IMKit, ESC during composing can
-        // sometimes cause the input source to switch to com.apple.keylayout.ABC
-        // even though we returned consumed=true.
+        guard let coordinator, let client = sender as? IMKTextInput else { return }
+        let wasEscapeCommit = modeController.takePendingEscapeCommit()
+        coordinator.commit(client: client)
         if wasEscapeCommit {
-            revertToLeximeWithRetry()
-        }
-    }
-
-    /// Check up to 5 times (at 50ms intervals) whether macOS switched to
-    /// standard ABC after ESC, and revert to Lexime Japanese if so.
-    /// The IMKit ABC race fires asynchronously so we keep checking each tick;
-    /// we also re-select on subsequent ticks if still ABC, to recover from a
-    /// silent TISSelectInputSource failure.
-    private func revertToLeximeWithRetry(attempt: Int = 0) {
-        let maxAttempts = 5
-        guard attempt < maxAttempts else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self else { return }
-            if InputSource.isCurrentStandardABC() {
-                InputSource.select(id: LeximeInputSourceID.japanese)
-            }
-            self.revertToLeximeWithRetry(attempt: attempt + 1)
+            modeController.revertToLeximeIfEscapeRaced()
         }
     }
 
     override func activateServer(_ sender: Any!) {
-        currentDisplay = nil
+        coordinator?.resetDisplay()
         candidateManager.reset()
         super.activateServer(sender)
     }
 
     override func deactivateServer(_ sender: Any!) {
-        cancelPollTimer()
-        candidateManager.deactivate()
-        currentDisplay = nil
+        coordinator?.deactivate()
         super.deactivateServer(sender)
     }
 
@@ -309,23 +192,21 @@ class LeximeInputController: IMKInputController {
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         let modeID = value as? String ?? ""
 
-        if modeID == Self.romanModeID {
-            if isComposing, let session, let client = sender as? IMKTextInput {
-                let resp = session.commit()
-                applyEvents(resp, client: client)
+        if modeID == ModeController.romanModeID {
+            if let coordinator, coordinator.isComposing, let client = sender as? IMKTextInput {
+                coordinator.commit(client: client)
             }
-            session?.setAbcPassthrough(enabled: true)
+            coordinator?.setAbcPassthrough(enabled: true)
             super.setValue(value, forTag: tag, client: sender)
             return
         }
-        if modeID == Self.japaneseModeID {
-            session?.setAbcPassthrough(enabled: false)
+        if modeID == ModeController.japaneseModeID {
+            coordinator?.setAbcPassthrough(enabled: false)
             super.setValue(value, forTag: tag, client: sender)
             return
         }
 
-        // Block other mode changes (Caps Lock etc.) during composing
-        if isComposing { return }
+        if coordinator?.isComposing == true { return }
         super.setValue(value, forTag: tag, client: sender)
     }
 }
