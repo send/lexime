@@ -124,11 +124,19 @@ fn snippets_build_store(
 
     let mut map: std::collections::HashMap<String, String> =
         std::collections::HashMap::with_capacity(entries.len());
-    for entry in entries {
-        if map.insert(entry.key.clone(), entry.body).is_some() {
-            return Err(LexError::InvalidData {
-                msg: format!("duplicate snippet key: \"{}\"", entry.key.escape_default()),
-            });
+    for LexSnippetEntry { key, body } in entries {
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(body);
+            }
+            std::collections::hash_map::Entry::Occupied(occupied) => {
+                return Err(LexError::InvalidData {
+                    msg: format!(
+                        "duplicate snippet key: \"{}\"",
+                        occupied.key().escape_default()
+                    ),
+                });
+            }
         }
     }
     validate_snippet_entries(&map, &known)
