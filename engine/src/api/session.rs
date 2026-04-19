@@ -79,10 +79,10 @@ impl LexSession {
         );
 
         let arc = Arc::new_cyclic(|weak: &std::sync::Weak<LexSession>| {
-            let sink = ListenerSink {
+            let sink: Arc<dyn CandidateSink> = Arc::new(ListenerSink {
                 session: weak.clone(),
                 listener,
-            };
+            });
             let worker = AsyncWorker::new(
                 Arc::clone(&dict.inner),
                 conn.as_ref().map(|c| Arc::clone(&c.inner)),
