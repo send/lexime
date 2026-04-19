@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::session::LexSessionEvents;
 use super::{
     LexConnection, LexDictionary, LexError, LexSession, LexUserDictionary, LexUserHistory,
     LexUserWord,
@@ -30,11 +31,12 @@ impl LexEngine {
         })
     }
 
-    fn create_session(&self) -> Arc<LexSession> {
+    fn create_session(&self, listener: Arc<dyn LexSessionEvents>) -> Arc<LexSession> {
         LexSession::new(
             Arc::clone(&self.dict),
             self.conn.as_ref().map(Arc::clone),
             self.history.as_ref().map(Arc::clone),
+            listener,
         )
     }
 

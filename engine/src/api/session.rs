@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::async_worker::AsyncWorker;
+use crate::async_worker::{AsyncWorker, CandidateResult, CandidateSink};
 use crate::converter::ConvertedSegment;
 use crate::session::{InputSession, LearningRecord};
 
@@ -9,6 +9,40 @@ use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::snippet_store::LexSnippetStore;
 use super::types::LexConversionMode;
 use super::{LexKeyEvent, LexKeyResponse};
+
+/// Listener for async session events delivered from the Rust worker thread.
+///
+/// Implementations must be `Send + Sync` (UniFFI requirement). The callback is
+/// invoked on the AsyncWorker thread — foreign implementations are responsible
+/// for dispatching onto their UI thread if needed.
+#[uniffi::export(with_foreign)]
+pub trait LexSessionEvents: Send + Sync {
+    fn on_async_response(&self, response: LexKeyResponse);
+}
+
+/// Bridge from the internal `CandidateSink` trait to the foreign `LexSessionEvents`.
+/// Also holds a weak reference back to the `LexSession` so results can be merged
+/// into session state without creating a retain cycle with the worker thread.
+struct ListenerSink {
+    session: std::sync::Weak<LexSession>,
+    listener: Arc<dyn LexSessionEvents>,
+}
+
+impl CandidateSink for ListenerSink {
+    fn deliver(&self, result: CandidateResult) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let Some(resp) = session.integrate_candidate_result(result) else {
+            return;
+        };
+        let listener = Arc::clone(&self.listener);
+        // Isolate foreign-code panics so the worker thread keeps running.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            listener.on_async_response(resp);
+        }));
+    }
+}
 
 /// IME session exposed to the Swift frontend via UniFFI.
 ///
@@ -22,7 +56,7 @@ use super::{LexKeyEvent, LexKeyResponse};
 pub struct LexSession {
     history: Option<Arc<LexUserHistory>>,
     session: Mutex<InputSession>,
-    worker: AsyncWorker,
+    worker: Mutex<Option<AsyncWorker>>,
 }
 
 #[uniffi::export]
@@ -32,42 +66,54 @@ impl LexSession {
         dict: Arc<LexDictionary>,
         conn: Option<Arc<LexConnection>>,
         history: Option<Arc<LexUserHistory>>,
+        listener: Arc<dyn LexSessionEvents>,
     ) -> Arc<Self> {
         let session = InputSession::new(
             Arc::clone(&dict.inner),
             conn.as_ref().map(|c| Arc::clone(&c.inner)),
             history.as_ref().map(|h| Arc::clone(&h.inner)),
         );
-        let worker = AsyncWorker::new(
-            Arc::clone(&dict.inner),
-            conn.as_ref().map(|c| Arc::clone(&c.inner)),
-            history.as_ref().map(|h| Arc::clone(&h.inner)),
-        );
-        Arc::new(Self {
-            history,
-            session: Mutex::new(session),
-            worker,
-        })
+
+        let arc = Arc::new_cyclic(|weak: &std::sync::Weak<LexSession>| {
+            let sink = ListenerSink {
+                session: weak.clone(),
+                listener,
+            };
+            let worker = AsyncWorker::new(
+                Arc::clone(&dict.inner),
+                conn.as_ref().map(|c| Arc::clone(&c.inner)),
+                history.as_ref().map(|h| Arc::clone(&h.inner)),
+                sink,
+            );
+            Self {
+                history,
+                session: Mutex::new(session),
+                worker: Mutex::new(Some(worker)),
+            }
+        });
+        arc
     }
 
     fn handle_key(&self, event: LexKeyEvent) -> LexKeyResponse {
         // Invalidate stale candidates from previous key events
-        self.worker.invalidate_candidates();
+        if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+            worker.invalidate_candidates();
+        }
 
         let mut session = self.session.lock().unwrap();
         let mut resp = session.handle_key(event.into());
 
         // Submit async candidate work internally
-        let has_pending_work = resp.async_request.is_some();
         if let Some(req) = resp.async_request.take() {
-            self.worker
-                .submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
+            if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+                worker.submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
+            }
         }
 
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, has_pending_work)
+        convert_to_events(resp)
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -76,30 +122,7 @@ impl LexSession {
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp, false)
-    }
-
-    fn poll(&self) -> Option<LexKeyResponse> {
-        if let Some(result) = self.worker.try_recv_candidate() {
-            let surfaces = result.response.surfaces;
-            let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
-
-            let mut session = self.session.lock().unwrap();
-            if let Some(mut resp) = session.receive_candidates(&result.reading, surfaces, paths) {
-                // Chain: submit any new async requests from the response
-                let has_pending_work = resp.async_request.is_some();
-                if let Some(req) = resp.async_request.take() {
-                    self.worker
-                        .submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
-                }
-                let records = session.take_history_records();
-                drop(session);
-                self.record_history(&records);
-                return Some(convert_to_events(resp, has_pending_work));
-            }
-        }
-
-        None
+        convert_to_events(resp)
     }
 
     fn is_composing(&self) -> bool {
@@ -131,9 +154,39 @@ impl LexSession {
             .unwrap()
             .set_snippet_store(store.map(|s| Arc::clone(&s.inner)));
     }
+
+    /// Stop the async worker thread eagerly. Called by the Swift side on
+    /// IMKInputController teardown to guarantee the worker is joined before
+    /// the last Arc to `LexSession` is dropped.
+    fn shutdown(&self) {
+        let mut slot = self.worker.lock().unwrap();
+        *slot = None;
+    }
 }
 
 impl LexSession {
+    /// Merge a candidate result returned by the worker into session state and
+    /// build the response that should be forwarded to the foreign listener.
+    /// Returns `None` if the result was stale.
+    fn integrate_candidate_result(&self, result: CandidateResult) -> Option<LexKeyResponse> {
+        let surfaces = result.response.surfaces;
+        let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
+
+        let mut session = self.session.lock().unwrap();
+        let mut resp = session.receive_candidates(&result.reading, surfaces, paths)?;
+
+        // Chain: submit any new async requests from the response
+        if let Some(req) = resp.async_request.take() {
+            if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+                worker.submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
+            }
+        }
+        let records = session.take_history_records();
+        drop(session);
+        self.record_history(&records);
+        Some(convert_to_events(resp))
+    }
+
     fn record_history(&self, records: &[LearningRecord]) {
         if records.is_empty() {
             return;

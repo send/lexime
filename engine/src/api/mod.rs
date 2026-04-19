@@ -12,7 +12,7 @@ mod user_dict;
 
 pub use engine::LexEngine;
 pub use resources::{LexConnection, LexDictionary, LexUserHistory};
-pub use session::LexSession;
+pub use session::{LexSession, LexSessionEvents};
 pub use snippet_store::LexSnippetStore;
 pub use types::{
     LexConversionMode, LexDictEntry, LexError, LexEvent, LexKeyEvent, LexKeyResponse,

@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 
 use crate::candidates::CandidateResponse;
@@ -25,28 +25,34 @@ pub(crate) struct CandidateResult {
     pub response: CandidateResponse,
 }
 
+/// Sink invoked by the worker thread when a candidate generation completes.
+/// Implementations must be cheap and non-blocking; heavy work should be
+/// dispatched to another thread from inside the sink.
+pub(crate) trait CandidateSink: Send + Sync + 'static {
+    fn deliver(&self, result: CandidateResult);
+}
+
 // ---------------------------------------------------------------------------
 // AsyncWorker
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AsyncWorker {
     candidate_tx: Option<mpsc::Sender<CandidateWork>>,
-    candidate_rx: Mutex<mpsc::Receiver<CandidateResult>>,
     candidate_gen: Arc<AtomicU64>,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl AsyncWorker {
-    pub fn new(
+    pub fn new<S: CandidateSink>(
         dict: Arc<dyn Dictionary>,
         conn: Option<Arc<ConnectionMatrix>>,
         history: Option<Arc<RwLock<UserHistory>>>,
+        sink: S,
     ) -> Self {
         let candidate_gen = Arc::new(AtomicU64::new(0));
 
         // Candidate worker
         let (work_tx, work_rx) = mpsc::channel::<CandidateWork>();
-        let (result_tx, result_rx) = mpsc::channel::<CandidateResult>();
         let handle = {
             let dict = Arc::clone(&dict);
             let conn = conn.clone();
@@ -55,14 +61,13 @@ impl AsyncWorker {
             thread::Builder::new()
                 .name("lexime-candidates".into())
                 .spawn(move || {
-                    candidate_worker(work_rx, result_tx, gen, dict, conn, history);
+                    candidate_worker(work_rx, sink, gen, dict, conn, history);
                 })
                 .expect("failed to spawn candidate worker")
         };
 
         Self {
             candidate_tx: Some(work_tx),
-            candidate_rx: Mutex::new(result_rx),
             candidate_gen,
             thread_handle: Some(handle),
         }
@@ -88,11 +93,6 @@ impl AsyncWorker {
     pub fn invalidate_candidates(&self) {
         self.candidate_gen.fetch_add(1, Ordering::SeqCst);
     }
-
-    pub fn try_recv_candidate(&self) -> Option<CandidateResult> {
-        let rx = self.candidate_rx.lock().ok()?;
-        rx.try_recv().ok()
-    }
 }
 
 impl Drop for AsyncWorker {
@@ -109,9 +109,9 @@ impl Drop for AsyncWorker {
 // Worker threads
 // ---------------------------------------------------------------------------
 
-fn candidate_worker(
+fn candidate_worker<S: CandidateSink>(
     rx: mpsc::Receiver<CandidateWork>,
-    tx: mpsc::Sender<CandidateResult>,
+    sink: S,
     gen: Arc<AtomicU64>,
     dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
@@ -183,7 +183,7 @@ fn candidate_worker(
             Some(lattice) => lattice.input,
             None => latest.reading,
         };
-        let _ = tx.send(CandidateResult { reading, response });
+        sink.deliver(CandidateResult { reading, response });
     }
 }
 
