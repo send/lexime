@@ -4,7 +4,7 @@ struct SnippetLoadError: LocalizedError {
     let path: String
     let underlying: any Error
     var errorDescription: String? {
-        "snippets at \(path): \(underlying.localizedDescription)"
+        "snippets at \(path): \(String(describing: underlying))"
     }
 }
 

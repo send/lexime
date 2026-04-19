@@ -16,10 +16,11 @@ import Foundation
 /// error and the UI will surface it.
 enum SnippetTOML {
 
-    struct ParseError: Error, CustomStringConvertible {
+    struct ParseError: Error, CustomStringConvertible, LocalizedError {
         let line: Int
         let message: String
         var description: String { "line \(line): \(message)" }
+        var errorDescription: String? { description }
     }
 
     /// Parse flat `key = "value"` TOML into snippet entries sorted by key.

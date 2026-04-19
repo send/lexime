@@ -127,7 +127,7 @@ fn snippets_build_store(
     for entry in entries {
         if map.insert(entry.key.clone(), entry.body).is_some() {
             return Err(LexError::InvalidData {
-                msg: format!("duplicate snippet key: {}", entry.key),
+                msg: format!("duplicate snippet key: \"{}\"", entry.key.escape_default()),
             });
         }
     }
