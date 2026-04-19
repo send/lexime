@@ -30,15 +30,13 @@ func testModeController() {
         assertTrue(mc.takePendingEscapeCommit(), "re-armable after clear")
     }
 
-    // revertToLeximeIfEscapeRaced with attempt >= max exits immediately
-    // (no asyncAfter scheduled, so this is safe to invoke in a headless test).
-    // We can't observe the guard directly, but we can assert the call doesn't
-    // throw / crash and returns synchronously.
+    // revertToLeximeIfEscapeRaced with attempt >= max exits immediately:
+    // no asyncAfter is scheduled, so calling it is safe in a headless test.
+    // We cannot observe the guard directly (no scheduler injection here), so
+    // this is a smoke check that the call returns synchronously without crashing.
     do {
         let mc = ModeController()
-        // attempt == max: guard fails, returns without scheduling.
         mc.revertToLeximeIfEscapeRaced(attempt: 100)
-        assertTrue(true, "revert guard returns without scheduling when attempt saturated")
     }
 
     // NOTE: The live retry path of `revertToLeximeIfEscapeRaced(attempt: 0)`
