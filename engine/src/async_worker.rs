@@ -172,6 +172,13 @@ fn candidate_worker<S: CandidateSink>(
             }
         };
 
+        // Release the history read guard BEFORE delivering the result.
+        // `sink.deliver` ultimately calls `LexSession::record_history`, which
+        // acquires a write lock on the same `UserHistory` RwLock. Holding a
+        // read guard here while asking for a write on the same thread would
+        // self-deadlock (std's RwLock is not reentrant).
+        drop(h_guard);
+
         // Check staleness after generation
         if latest.generation != gen.load(Ordering::SeqCst) {
             continue;
@@ -194,6 +201,7 @@ fn candidate_worker<S: CandidateSink>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::user_history::UserHistory;
 
     #[test]
     fn test_generation_counter_invalidation() {
@@ -203,5 +211,76 @@ mod tests {
         assert_eq!(gen.load(Ordering::SeqCst), 1);
         // Work with generation 0 is now stale
         assert_ne!(0u64, gen.load(Ordering::SeqCst));
+    }
+
+    /// Regression guard: the candidate worker must release its history read
+    /// guard before invoking the sink. Sinks call back into
+    /// `LexSession::record_history`, which acquires a write lock on the same
+    /// RwLock — holding the read guard there self-deadlocks on the worker
+    /// thread.
+    #[test]
+    fn sink_can_write_history_during_deliver() {
+        struct WritingSink {
+            history: Arc<RwLock<UserHistory>>,
+            delivered: Arc<std::sync::Mutex<bool>>,
+        }
+        impl CandidateSink for WritingSink {
+            fn deliver(&self, _result: CandidateResult) {
+                // Emulate `record_history` acquiring the write lock on the
+                // same RwLock the worker read from. This would deadlock if
+                // the worker still held its read guard.
+                let mut h = self
+                    .history
+                    .write()
+                    .expect("write lock must be acquirable inside deliver");
+                h.record_at(&[("きょう".to_string(), "今日".to_string())], 0);
+                *self.delivered.lock().unwrap() = true;
+            }
+        }
+
+        let history = Arc::new(RwLock::new(UserHistory::new()));
+        let delivered = Arc::new(std::sync::Mutex::new(false));
+        let sink = WritingSink {
+            history: Arc::clone(&history),
+            delivered: Arc::clone(&delivered),
+        };
+
+        let (tx, rx) = mpsc::channel::<CandidateWork>();
+        let gen = Arc::new(AtomicU64::new(0));
+        let dict: Arc<dyn crate::dict::Dictionary> =
+            Arc::new(crate::dict::TrieDictionary::from_entries(std::iter::empty()));
+
+        let worker = thread::spawn({
+            let gen = Arc::clone(&gen);
+            let history = Arc::clone(&history);
+            move || candidate_worker(rx, sink, gen, dict, None, Some(history))
+        });
+
+        let work_gen = gen.fetch_add(1, Ordering::SeqCst) + 1;
+        tx.send(CandidateWork {
+            reading: "きょう".to_string(),
+            dispatch: crate::session::CandidateDispatch::Standard,
+            generation: work_gen,
+            lattice: None,
+        })
+        .unwrap();
+
+        // Wait bounded time for the deliver to complete. If the guard is
+        // still held, the worker self-deadlocks and `delivered` stays false.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if *delivered.lock().unwrap() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            *delivered.lock().unwrap(),
+            "sink.deliver did not complete in time — worker is likely holding \
+             the history read guard across the callback and self-deadlocking"
+        );
+
+        drop(tx);
+        worker.join().unwrap();
     }
 }
