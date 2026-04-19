@@ -17,7 +17,9 @@ final class ConfigStore {
     /// On success or missing file, updates `snippetStore` and posts notification.
     func reloadSnippets() throws {
         if FileManager.default.fileExists(atPath: snippetPath) {
-            let store = try snippetsLoad(path: snippetPath)
+            let content = try String(contentsOfFile: snippetPath, encoding: .utf8)
+            let entries = try SnippetTOML.parse(content)
+            let store = try snippetsBuildStore(entries: entries)
             NSLog("Lexime: Snippets reloaded from %@", snippetPath)
             self.snippetStore = store
         } else {

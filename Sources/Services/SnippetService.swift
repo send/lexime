@@ -19,11 +19,11 @@ final class DefaultSnippetService: SnippetService {
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
             return []
         }
-        return try snippetsParse(content: content)
+        return try SnippetTOML.parse(content)
     }
 
     func save(_ entries: [LexSnippetEntry]) throws {
-        let toml = snippetsSerialize(entries: entries)
+        let toml = SnippetTOML.serialize(entries)
         try FileManager.default.createDirectory(
             atPath: config.supportDir, withIntermediateDirectories: true)
         try toml.write(toFile: config.snippetPath, atomically: true, encoding: .utf8)
