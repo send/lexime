@@ -1,5 +1,4 @@
-import Carbon
-import Cocoa
+import Foundation
 
 /// Handles input-source side effects around the session: switching to the
 /// system ABC layout when the engine asks for it, and recovering from the

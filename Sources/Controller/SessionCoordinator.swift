@@ -44,14 +44,16 @@ final class SessionCoordinator {
     // MARK: - Key Handling
 
     /// Drain any pending async results before taking a new key event.
+    /// Safe to call on any incoming IMKit event; does not stop the poll loop,
+    /// so modifier-only events won't starve deferred candidate updates.
     func drainPending(client: IMKTextInput) {
         while let resp = session.poll() {
             applyEvents(resp, client: client)
         }
-        cancelPollTimer()
     }
 
     func handleKey(_ keyEvent: LexKeyEvent, client: IMKTextInput) -> Bool {
+        cancelPollTimer()
         candidateManager.invalidate()
         let resp = session.handleKey(event: keyEvent)
         applyEvents(resp, client: client)
