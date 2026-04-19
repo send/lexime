@@ -37,8 +37,8 @@ pub(crate) trait CandidateSink: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AsyncWorker {
-    // Resources captured at construction; consumed when the worker thread
-    // is lazily spawned on the first `submit_candidates` call.
+    // Resources captured at construction and cloned into the worker thread
+    // when it is lazily spawned on the first `submit_candidates` call.
     dict: Arc<dyn Dictionary>,
     conn: Option<Arc<ConnectionMatrix>>,
     history: Option<Arc<RwLock<UserHistory>>>,
