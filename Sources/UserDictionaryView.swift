@@ -7,6 +7,12 @@ struct UserDictionaryView: View {
     @State private var selectedIndex: Int?
     @State private var saveError: String?
 
+    private let service: UserDictionaryService
+
+    init(service: UserDictionaryService? = nil) {
+        self.service = service ?? AppContext.shared.makeUserDictionaryService()
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if words.isEmpty {
@@ -66,34 +72,47 @@ struct UserDictionaryView: View {
     }
 
     private func refresh() {
-        words = AppContext.shared.engine?.listUserWords() ?? []
+        words = service.list()
     }
 
     private func addWord(reading: String, surface: String) {
-        guard let engine = AppContext.shared.engine else { return }
-        let added = engine.registerWord(reading: reading, surface: surface)
-        if added { saveUserDict() }
+        do {
+            try service.register(reading: reading, surface: surface)
+        } catch {
+            NSLog("Lexime: Failed to register word: %@", "\(error)")
+            saveError = "単語の登録に失敗しました: \(error.localizedDescription)"
+            refresh()
+            return
+        }
+        do {
+            try service.save()
+        } catch {
+            NSLog("Lexime: Failed to save user dict after register: %@", "\(error)")
+            saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
+        }
         refresh()
     }
 
     private func removeSelected() {
-        guard let engine = AppContext.shared.engine,
-              let index = selectedIndex, index < words.count else { return }
+        guard let index = selectedIndex, index < words.count else { return }
         let word = words[index]
-        _ = engine.unregisterWord(reading: word.reading, surface: word.surface)
-        saveUserDict()
-        selectedIndex = nil
-        refresh()
-    }
-
-    private func saveUserDict() {
-        guard let engine = AppContext.shared.engine else { return }
         do {
-            try engine.saveUserDict(path: AppContext.shared.userDictPath)
+            try service.unregister(reading: word.reading, surface: word.surface)
         } catch {
-            NSLog("Lexime: Failed to save user dict: %@", "\(error)")
+            NSLog("Lexime: Failed to unregister word: %@", "\(error)")
+            saveError = "単語の削除に失敗しました: \(error.localizedDescription)"
+            selectedIndex = nil
+            refresh()
+            return
+        }
+        do {
+            try service.save()
+        } catch {
+            NSLog("Lexime: Failed to save user dict after unregister: %@", "\(error)")
             saveError = "辞書の保存に失敗しました: \(error.localizedDescription)"
         }
+        selectedIndex = nil
+        refresh()
     }
 }
 

@@ -89,6 +89,21 @@ final class AppContext {
         try config.reloadSnippets()
     }
 
+    // MARK: - Service factories
+
+    func makeUserDictionaryService() -> UserDictionaryService {
+        DefaultUserDictionaryService(
+            container: engineContainer, userDictPath: config.userDictPath)
+    }
+
+    func makeSnippetService() -> SnippetService {
+        DefaultSnippetService(config: config)
+    }
+
+    func makeEngineControlService() -> EngineControlService {
+        DefaultEngineControlService(container: engineContainer)
+    }
+
     // MARK: - Bootstrap
 
     static func bootstrap() -> AppContext {

@@ -7,7 +7,11 @@ struct SnippetView: View {
     @State private var selectedKey: String?
     @State private var saveError: String?
 
-    private let supportDir = AppContext.shared.supportDir
+    private let service: SnippetService
+
+    init(service: SnippetService? = nil) {
+        self.service = service ?? AppContext.shared.makeSnippetService()
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,13 +75,8 @@ struct SnippetView: View {
     }
 
     private func refresh() {
-        let path = (supportDir as NSString).appendingPathComponent("snippets.toml")
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-            entries = []
-            return
-        }
         do {
-            entries = try snippetsParse(content: content)
+            entries = try service.load()
         } catch {
             NSLog("Lexime: Failed to parse snippets.toml: %@", "\(error)")
             saveError = "スニペットの読み込みに失敗しました: \(error.localizedDescription)"
@@ -89,23 +88,19 @@ struct SnippetView: View {
         entries.removeAll { $0.key == key }
         entries.append(LexSnippetEntry(key: key, body: body))
         entries.sort { $0.key < $1.key }
-        save()
+        persist()
     }
 
     private func removeSelected() {
         guard let key = selectedKey else { return }
         entries.removeAll { $0.key == key }
         selectedKey = nil
-        save()
+        persist()
     }
 
-    private func save() {
-        let toml = snippetsSerialize(entries: entries)
-        let path = (supportDir as NSString).appendingPathComponent("snippets.toml")
+    private func persist() {
         do {
-            try FileManager.default.createDirectory(
-                atPath: supportDir, withIntermediateDirectories: true)
-            try toml.write(toFile: path, atomically: true, encoding: .utf8)
+            try service.save(entries)
             NSLog("Lexime: Saved snippets.toml")
         } catch {
             NSLog("Lexime: Failed to save snippets.toml: %@", "\(error)")
@@ -113,7 +108,7 @@ struct SnippetView: View {
             return
         }
         do {
-            try AppContext.shared.reloadSnippets()
+            try service.reload()
         } catch {
             NSLog("Lexime: Failed to reload snippets.toml: %@", "\(error)")
             saveError = "保存は成功しましたが、再読み込みに失敗しました: \(error.localizedDescription)"

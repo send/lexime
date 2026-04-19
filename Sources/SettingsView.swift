@@ -31,7 +31,13 @@ struct DeveloperSettingsView: View {
     @State private var needsRestart = false
     @State private var showResetConfirm = false
 
-    private let supportDir = AppContext.shared.supportDir
+    private let supportDir: String
+    private let engineControl: EngineControlService
+
+    init(engineControl: EngineControlService? = nil, supportDir: String? = nil) {
+        self.engineControl = engineControl ?? AppContext.shared.makeEngineControlService()
+        self.supportDir = supportDir ?? AppContext.shared.supportDir
+    }
 
     private let editorHeight: CGFloat = 150
 
@@ -149,15 +155,11 @@ struct DeveloperSettingsView: View {
         NSLog("Lexime: Resetting all settings and history")
 
         // 1. Clear learning history via engine (closes WAL handle + deletes files)
-        if let engine = AppContext.shared.engine {
-            do {
-                try engine.clearHistory()
-                NSLog("Lexime: History cleared")
-            } catch {
-                NSLog("Lexime: Failed to clear history: %@", "\(error)")
-            }
-        } else {
-            NSLog("Lexime: Engine not available; skipping history clear")
+        do {
+            try engineControl.clearHistory()
+            NSLog("Lexime: History cleared")
+        } catch {
+            NSLog("Lexime: Failed to clear history: %@", "\(error)")
         }
 
         // 2. Delete config files
