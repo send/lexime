@@ -64,12 +64,10 @@ impl InputSession {
             c.candidates.selected = 0;
 
             let mut resp = build_marked_text(self.comp());
-            // AsyncCandidateRequest.lattice stays `Option<Lattice>` in this PR;
-            // PR #6 will switch it (and the worker) to `Arc<Lattice>`.
             resp.async_request = Some(AsyncCandidateRequest {
                 reading,
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
-                lattice: Some((*lattice).clone()),
+                lattice: Some(std::sync::Arc::clone(&lattice)),
             });
             return resp;
         } else {
