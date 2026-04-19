@@ -107,65 +107,41 @@ fn snippet_trigger_key() -> Option<LexTriggerKey> {
         })
 }
 
-/// Parse snippets.toml into a flat list for UI display.
+/// Build a `LexSnippetStore` from entries parsed by the Swift layer.
 ///
-/// This intentionally performs only TOML syntax parsing without variable
-/// validation.  Variable references are validated at load time by
-/// `snippets_load()`, which is called on save via `reloadSnippets()`.
-/// Keeping this function lightweight lets the settings UI display raw
-/// entries (including those with invalid variable references) so users
-/// can see and fix them.
+/// Swift now owns snippets.toml I/O and TOML parsing; Rust only validates
+/// variable references against settings-defined variables and wraps the
+/// entries in a resolver-equipped store.
 #[uniffi::export]
-fn snippets_parse(content: String) -> Result<Vec<LexSnippetEntry>, LexError> {
-    let table: std::collections::HashMap<String, String> =
-        toml::from_str(&content).map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
-    let mut entries: Vec<LexSnippetEntry> = table
-        .into_iter()
-        .map(|(key, body)| LexSnippetEntry { key, body })
-        .collect();
-    entries.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(entries)
-}
-
-#[uniffi::export]
-fn snippets_serialize(entries: Vec<LexSnippetEntry>) -> String {
-    let mut sorted = entries;
-    sorted.sort_by(|a, b| a.key.cmp(&b.key));
-    let mut out = String::new();
-    for entry in &sorted {
-        let key = if entry
-            .key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            && !entry.key.is_empty()
-        {
-            entry.key.clone()
-        } else {
-            format!("{}", toml::Value::String(entry.key.clone()))
-        };
-        out.push_str(&format!(
-            "{} = {}\n",
-            key,
-            toml::Value::String(entry.body.clone())
-        ));
-    }
-    out
-}
-
-#[uniffi::export]
-fn snippets_load(path: String) -> Result<std::sync::Arc<LexSnippetStore>, LexError> {
-    use lex_core::snippets::{parse_snippets_toml, SnippetStore, VariableResolver};
-
-    let content = std::fs::read_to_string(&path).map_err(|e| LexError::Io {
-        msg: format!("{path}: {e}"),
-    })?;
+fn snippets_build_store(
+    entries: Vec<LexSnippetEntry>,
+) -> Result<std::sync::Arc<LexSnippetStore>, LexError> {
+    use lex_core::snippets::{validate_snippet_entries, SnippetStore, VariableResolver};
 
     let settings = crate::settings::settings();
     let resolver = VariableResolver::new(settings.snippets.variables.clone());
     let known = resolver.known_names();
-    let entries = parse_snippets_toml(&content, &known)
+
+    let mut map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for LexSnippetEntry { key, body } in entries {
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(body);
+            }
+            std::collections::hash_map::Entry::Occupied(occupied) => {
+                return Err(LexError::InvalidData {
+                    msg: format!(
+                        "duplicate snippet key: \"{}\"",
+                        occupied.key().escape_default()
+                    ),
+                });
+            }
+        }
+    }
+    validate_snippet_entries(&map, &known)
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
 
-    let store = SnippetStore::new(entries, resolver);
+    let store = SnippetStore::new(map, resolver);
     Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
 }

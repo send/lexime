@@ -33,6 +33,7 @@ struct TestMain {
         testRomajiFFI()
         testDictFFI()
         testSessionFFI()
+        testSnippetTOML()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")
         exit(testsFailed > 0 ? 1 : 0)
