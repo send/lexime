@@ -265,10 +265,10 @@ mod tests {
 
         let history = Arc::new(RwLock::new(UserHistory::new()));
         let (result_tx, result_rx) = mpsc::sync_channel::<bool>(1);
-        let sink = WritingSink {
+        let sink: Arc<dyn CandidateSink> = Arc::new(WritingSink {
             history: Arc::clone(&history),
             result: result_tx,
-        };
+        });
 
         let (tx, rx) = mpsc::channel::<CandidateWork>();
         let gen = Arc::new(AtomicU64::new(0));
