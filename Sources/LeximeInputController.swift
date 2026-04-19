@@ -28,17 +28,18 @@ class LeximeInputController: IMKInputController {
             return
         }
 
-        let session = engine.createSession()
-        session.setDeferCandidates(enabled: true)
-        session.setSnippetStore(store: AppContext.shared.snippetStore)
-        let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
-        if convMode == 1 {
-            session.setConversionMode(mode: .predictive)
-        }
-
         let modeController = self.modeController
+        let convMode = UserDefaults.standard.integer(forKey: DefaultsKey.conversionMode)
         coordinator = SessionCoordinator(
-            session: session,
+            factory: { listener in
+                let session = engine.createSession(listener: listener)
+                session.setDeferCandidates(enabled: true)
+                session.setSnippetStore(store: AppContext.shared.snippetStore)
+                if convMode == 1 {
+                    session.setConversionMode(mode: .predictive)
+                }
+                return session
+            },
             candidateManager: candidateManager,
             onSwitchToAbc: { modeController.selectStandardABC() })
 
@@ -66,8 +67,6 @@ class LeximeInputController: IMKInputController {
         guard let coordinator, let event, let client = sender as? IMKTextInput else {
             return false
         }
-
-        coordinator.drainPending(client: client)
 
         guard event.type == .keyDown else {
             // Consume modifier-only events while composing
