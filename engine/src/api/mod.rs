@@ -3,6 +3,7 @@
 //! Each public type here maps to a generated Swift class, struct, or enum.
 
 mod engine;
+mod mapping;
 mod resources;
 mod session;
 mod snippet_store;

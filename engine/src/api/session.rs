@@ -4,9 +4,10 @@ use crate::async_worker::AsyncWorker;
 use crate::converter::ConvertedSegment;
 use crate::session::{InputSession, LearningRecord};
 
+use super::mapping::convert_to_events;
 use super::resources::{LexConnection, LexDictionary, LexUserHistory};
 use super::snippet_store::LexSnippetStore;
-use super::types::{convert_to_events, LexConversionMode};
+use super::types::LexConversionMode;
 use super::{LexKeyEvent, LexKeyResponse};
 
 /// IME session exposed to the Swift frontend via UniFFI.
