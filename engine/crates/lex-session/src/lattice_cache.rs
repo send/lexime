@@ -47,3 +47,99 @@ impl LatticeCache {
         arc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lex_core::dict::{DictEntry, TrieDictionary};
+
+    fn test_dict() -> TrieDictionary {
+        let entries = vec![
+            (
+                "きょう".to_string(),
+                vec![DictEntry {
+                    surface: "今日".to_string(),
+                    cost: 3000,
+                    left_id: 100,
+                    right_id: 100,
+                }],
+            ),
+            (
+                "は".to_string(),
+                vec![DictEntry {
+                    surface: "は".to_string(),
+                    cost: 2000,
+                    left_id: 200,
+                    right_id: 200,
+                }],
+            ),
+            (
+                "てんき".to_string(),
+                vec![DictEntry {
+                    surface: "天気".to_string(),
+                    cost: 4000,
+                    left_id: 400,
+                    right_id: 400,
+                }],
+            ),
+        ];
+        TrieDictionary::from_entries(entries)
+    }
+
+    #[test]
+    fn first_call_builds_fresh_lattice() {
+        let dict = test_dict();
+        let mut cache = LatticeCache::new();
+        let lattice = cache.get_or_build("きょう", &dict);
+        assert_eq!(lattice.input, "きょう");
+    }
+
+    #[test]
+    fn same_reading_returns_identical_arc() {
+        let dict = test_dict();
+        let mut cache = LatticeCache::new();
+        let a = cache.get_or_build("きょう", &dict);
+        let b = cache.get_or_build("きょう", &dict);
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "expected cached Arc reuse when reading matches exactly"
+        );
+    }
+
+    #[test]
+    fn suffix_append_extends_cached_lattice() {
+        let dict = test_dict();
+        let mut cache = LatticeCache::new();
+        let before = cache.get_or_build("きょう", &dict);
+        drop(before);
+        let extended = cache.get_or_build("きょうは", &dict);
+        assert_eq!(extended.input, "きょうは");
+    }
+
+    #[test]
+    fn prefix_mismatch_rebuilds_from_scratch() {
+        let dict = test_dict();
+        let mut cache = LatticeCache::new();
+        let first = cache.get_or_build("きょう", &dict);
+        let rebuilt = cache.get_or_build("てんき", &dict);
+        assert_eq!(rebuilt.input, "てんき");
+        assert!(
+            !Arc::ptr_eq(&first, &rebuilt),
+            "prefix mismatch should produce a fresh Arc, not reuse the old one"
+        );
+    }
+
+    #[test]
+    fn invalidate_forces_rebuild_on_same_reading() {
+        let dict = test_dict();
+        let mut cache = LatticeCache::new();
+        let before = cache.get_or_build("きょう", &dict);
+        cache.invalidate();
+        let after = cache.get_or_build("きょう", &dict);
+        assert_eq!(after.input, "きょう");
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "invalidate() followed by get_or_build should produce a fresh Arc"
+        );
+    }
+}
