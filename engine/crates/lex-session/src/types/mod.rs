@@ -106,7 +106,9 @@ pub struct AsyncCandidateRequest {
     pub candidate_dispatch: CandidateDispatch,
     /// Pre-built lattice for reuse by the async worker.
     /// `None` when the lattice is unavailable (e.g. auto-commit with new kana).
-    pub lattice: Option<lex_core::converter::Lattice>,
+    /// Shared via `Arc` so hand-off to the worker stays cheap — the session's
+    /// cache and the worker both hold references to the same lattice.
+    pub lattice: Option<std::sync::Arc<lex_core::converter::Lattice>>,
 }
 
 /// Orthogonal side-effects that accompany a response.

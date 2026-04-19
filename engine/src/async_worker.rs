@@ -17,7 +17,7 @@ pub(crate) struct CandidateWork {
     pub reading: String,
     pub dispatch: CandidateDispatch,
     pub generation: u64,
-    pub lattice: Option<crate::converter::Lattice>,
+    pub lattice: Option<Arc<crate::converter::Lattice>>,
 }
 
 pub(crate) struct CandidateResult {
@@ -72,7 +72,7 @@ impl AsyncWorker {
         &self,
         reading: String,
         dispatch: CandidateDispatch,
-        lattice: Option<crate::converter::Lattice>,
+        lattice: Option<Arc<crate::converter::Lattice>>,
     ) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(ref tx) = self.candidate_tx {
@@ -180,7 +180,7 @@ fn candidate_worker(
         // Use lattice.input as the canonical reading when a lattice was provided,
         // so the stale-check in receive_candidates matches the actual conversion.
         let reading = match latest.lattice {
-            Some(lattice) => lattice.input,
+            Some(lattice) => lattice.input.clone(),
             None => latest.reading,
         };
         let _ = tx.send(CandidateResult { reading, response });
