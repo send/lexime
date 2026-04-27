@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::dict::connection::ConnectionMatrix;
 use crate::numeric;
 use crate::unicode::{hiragana_to_katakana, is_hiragana, is_kanji, is_katakana};
 
@@ -335,42 +336,169 @@ impl KanjiVariantRewriter<'_> {
     }
 }
 
-/// Adds numeric candidates (half-width and full-width) when the reading is a
-/// Japanese number expression.
-pub(crate) struct NumericRewriter;
+/// Adds numeric candidates when the reading is a Japanese number expression.
+///
+/// Two recognition modes:
+/// 1. Pure number — entire reading parses as a number (e.g. `さんぜん` → 三千 / 3000 / ３０００).
+/// 2. Number + counter — reading splits into `<number><counter>` where the
+///    counter suffix is a `名詞,接尾,助数詞` POS in the lattice (e.g.
+///    `さんぜんえん` → 三千円 / 3000円 / ３０００円). Counter detection uses
+///    the dictionary's POS tagging via `ConnectionMatrix::is_counter`, so the
+///    counter set extends automatically as the dictionary grows.
+pub(crate) struct NumericRewriter<'a> {
+    pub lattice: Option<&'a Lattice>,
+    pub connection: Option<&'a ConnectionMatrix>,
+}
 
-impl Rewriter for NumericRewriter {
+impl Rewriter for NumericRewriter<'_> {
     fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
-        let Some(n) = numeric::parse_japanese_number(reading) else {
-            return Vec::new();
-        };
-        let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
-        let base_cost = worst_cost(paths).saturating_add(5000);
-
         let mut candidates = Vec::new();
 
-        // Kanji candidate
-        let kanji = numeric::to_kanji(n);
-        let is_compound = kanji.chars().count() > 1;
-        let kanji_cost = if is_compound { best_cost } else { base_cost };
-        candidates.push(ScoredPath::single(reading.to_string(), kanji, kanji_cost));
+        if let Some(n) = numeric::parse_japanese_number(reading) {
+            let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
+            let base_cost = worst_cost(paths).saturating_add(5000);
 
-        // Half-width Arabic digits
-        let halfwidth = numeric::to_halfwidth(n);
-        candidates.push(ScoredPath::single(
-            reading.to_string(),
-            halfwidth,
-            base_cost,
-        ));
+            // Kanji candidate
+            let kanji = numeric::to_kanji(n);
+            let is_compound = kanji.chars().count() > 1;
+            let kanji_cost = if is_compound { best_cost } else { base_cost };
+            candidates.push(ScoredPath::single(reading.to_string(), kanji, kanji_cost));
 
-        // Full-width Arabic digits
-        let fullwidth = numeric::to_fullwidth(n);
-        candidates.push(ScoredPath::single(
-            reading.to_string(),
-            fullwidth,
-            base_cost.saturating_add(1),
-        ));
+            // Half-width Arabic digits
+            let halfwidth = numeric::to_halfwidth(n);
+            candidates.push(ScoredPath::single(
+                reading.to_string(),
+                halfwidth,
+                base_cost,
+            ));
+
+            // Full-width Arabic digits
+            let fullwidth = numeric::to_fullwidth(n);
+            candidates.push(ScoredPath::single(
+                reading.to_string(),
+                fullwidth,
+                base_cost.saturating_add(1),
+            ));
+        }
+
+        if let (Some(lattice), Some(conn)) = (self.lattice, self.connection) {
+            self.append_counter_candidates(lattice, conn, paths, reading, &mut candidates);
+        }
 
         candidates
+    }
+}
+
+impl NumericRewriter<'_> {
+    /// Scan the lattice for counter (助数詞) nodes ending at the reading's tail.
+    /// For each unique counter surface, try to parse the kana prefix as a number,
+    /// and emit kanji / half-width / full-width counter compounds.
+    ///
+    /// Counter ambiguity is resolved by the counter node's own word cost: the
+    /// cheapest counter at the position anchors at `best_cost - 500` (so the
+    /// kanji compound surfaces above the existing top-1) and pricier counter
+    /// homophones get penalised by their cost difference. This mirrors what
+    /// Viterbi would do if a `<kanji_number><counter>` segmentation were
+    /// representable in the lattice.
+    fn append_counter_candidates(
+        &self,
+        lattice: &Lattice,
+        conn: &ConnectionMatrix,
+        paths: &[ScoredPath],
+        reading: &str,
+        out: &mut Vec<ScoredPath>,
+    ) {
+        let char_count = reading.chars().count();
+        if char_count < 2 {
+            return;
+        }
+        let byte_offsets: Vec<usize> = reading
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(reading.len()))
+            .collect();
+        let Some(end_nodes) = lattice.nodes_by_end.get(char_count) else {
+            return;
+        };
+
+        // Collect the cheapest counter node per surface, skipping pseudo
+        // kana-surface entries (e.g. an `えん` counter node whose surface is
+        // also `えん` — useful in a kana lattice but never the right thing to
+        // pair with a kanji number).
+        struct Cand<'a> {
+            start: usize,
+            surface: &'a str,
+            cost: i16,
+        }
+        let mut by_surface: std::collections::HashMap<&str, Cand<'_>> =
+            std::collections::HashMap::new();
+        for &idx in end_nodes {
+            if !conn.is_counter(lattice.left_id(idx)) {
+                continue;
+            }
+            let counter_start = lattice.start(idx);
+            if counter_start == 0 {
+                continue;
+            }
+            let surface = lattice.surface(idx);
+            let reading_kana = lattice.reading(idx);
+            if surface == reading_kana || surface.chars().all(is_hiragana) {
+                continue;
+            }
+            let cost = lattice.cost(idx);
+            by_surface
+                .entry(surface)
+                .and_modify(|c| {
+                    if cost < c.cost {
+                        c.cost = cost;
+                        c.start = counter_start;
+                    }
+                })
+                .or_insert(Cand {
+                    start: counter_start,
+                    surface,
+                    cost,
+                });
+        }
+        if by_surface.is_empty() {
+            return;
+        }
+
+        let cheapest = by_surface.values().map(|c| c.cost).min().unwrap_or(0);
+        let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
+        let base_cost = worst_cost(paths).saturating_add(5000);
+        // Discount keeps the most-likely number+counter compound above the
+        // current Viterbi top-1, since this segmentation isn't representable
+        // in the lattice (no `三千` dictionary entry).
+        let kanji_anchor = best_cost.saturating_sub(500);
+
+        for cand in by_surface.values() {
+            let prefix = &reading[..byte_offsets[cand.start]];
+            let Some(n) = numeric::parse_japanese_number(prefix) else {
+                continue;
+            };
+            let cost_offset = (cand.cost - cheapest) as i64;
+
+            let kanji = format!("{}{}", numeric::to_kanji(n), cand.surface);
+            out.push(ScoredPath::single(
+                reading.to_string(),
+                kanji,
+                kanji_anchor.saturating_add(cost_offset),
+            ));
+
+            let halfwidth = format!("{}{}", numeric::to_halfwidth(n), cand.surface);
+            out.push(ScoredPath::single(
+                reading.to_string(),
+                halfwidth,
+                base_cost.saturating_add(cost_offset),
+            ));
+
+            let fullwidth = format!("{}{}", numeric::to_fullwidth(n), cand.surface);
+            out.push(ScoredPath::single(
+                reading.to_string(),
+                fullwidth,
+                base_cost.saturating_add(1).saturating_add(cost_offset),
+            ));
+        }
     }
 }

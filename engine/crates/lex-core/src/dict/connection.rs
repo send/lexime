@@ -88,13 +88,20 @@ impl ConnectionMatrix {
         self.roles.get(id as usize).copied().unwrap_or(0)
     }
 
-    /// Check whether a POS ID is a suffix (接尾, role == 2).
+    /// Check whether a POS ID is a suffix (接尾, role == 2 or counter == 7).
+    /// Counters (助数詞) are a narrower kind of suffix and report `true` here.
     pub fn is_suffix(&self, id: u16) -> bool {
-        self.role(id) == 2
+        let r = self.role(id);
+        r == 2 || r == 7
     }
 
     /// Check whether a POS ID is a prefix (接頭詞, role == 3).
     pub fn is_prefix(&self, id: u16) -> bool {
         self.role(id) == 3
+    }
+
+    /// Check whether a POS ID is a counter (助数詞, role == 7).
+    pub fn is_counter(&self, id: u16) -> bool {
+        self.role(id) == 7
     }
 }

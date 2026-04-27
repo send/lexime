@@ -227,6 +227,7 @@ fn test_roles_roundtrip() {
     assert_eq!(m.role(2), 2);
     assert_eq!(m.role(3), 3);
     assert!(m.is_suffix(2));
+    assert!(!m.is_counter(2));
     assert!(m.is_prefix(3));
     assert!(m.is_function_word(1));
 
@@ -246,6 +247,24 @@ fn test_roles_roundtrip() {
             assert_eq!(m.cost(left, right), m2.cost(left, right));
         }
     }
+}
+
+#[test]
+fn test_counter_role() {
+    let text = "5 5\n";
+    let costs_text: String = (0..25).map(|i| format!("{}\n", i * 10)).collect::<String>();
+    let full_text = format!("{text}{costs_text}");
+    let roles = vec![0, 2, 3, 7, 0]; // content, suffix, prefix, counter, content
+    let m = ConnectionMatrix::from_text_with_roles(&full_text, 0, 0, roles).unwrap();
+
+    assert!(!m.is_counter(0));
+    assert!(!m.is_counter(1));
+    assert!(m.is_counter(3));
+    // Counter is-a suffix.
+    assert!(m.is_suffix(3));
+    assert!(m.is_suffix(1));
+    assert!(!m.is_suffix(0));
+    assert!(!m.is_prefix(3));
 }
 
 #[test]

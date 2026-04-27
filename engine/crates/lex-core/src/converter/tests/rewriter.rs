@@ -4,6 +4,19 @@ use crate::converter::rewriter::{
     NumericRewriter, PartialHiraganaRewriter, Rewriter,
 };
 use crate::converter::viterbi::{RichSegment, ScoredPath};
+use crate::dict::connection::ConnectionMatrix;
+
+/// Build a tiny ConnectionMatrix where POS id 7 is tagged as counter (role 7).
+/// Other ids default to ContentWord (role 0).
+fn counter_test_conn(num_ids: u16, counter_id: u16) -> ConnectionMatrix {
+    let n = num_ids as usize;
+    let header = format!("{n} {n}\n");
+    let costs: String = (0..(n * n)).map(|_| "0\n".to_string()).collect();
+    let text = format!("{header}{costs}");
+    let mut roles = vec![0u8; n];
+    roles[counter_id as usize] = 7; // ROLE_COUNTER
+    ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
+}
 
 #[test]
 fn test_katakana_rewriter_generates_candidate() {
@@ -122,7 +135,10 @@ fn test_run_rewriters_dedup_across_rewriters() {
 #[test]
 fn test_run_rewriters_cost_ordered_insertion() {
     // Compound kanji (best_cost) should be inserted at position 0
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "にじゅうさん".into(),
@@ -143,7 +159,10 @@ fn test_run_rewriters_cost_ordered_insertion() {
 
 #[test]
 fn test_numeric_rewriter_generates_candidates() {
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "にじゅうさん".into(),
@@ -168,7 +187,10 @@ fn test_numeric_rewriter_generates_candidates() {
 
 #[test]
 fn test_numeric_rewriter_kanji_duplicate_skip() {
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "にじゅうさん".into(),
@@ -191,7 +213,10 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
 
 #[test]
 fn test_numeric_rewriter_single_char_kanji_low_priority() {
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "じゅう".into(),
@@ -213,7 +238,10 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
 
 #[test]
 fn test_numeric_rewriter_skips_non_numeric() {
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "きょう".into(),
@@ -235,7 +263,10 @@ fn test_numeric_rewriter_skips_non_numeric() {
 
 #[test]
 fn test_numeric_rewriter_skips_duplicate() {
-    let rw = NumericRewriter;
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "いち".into(),
@@ -937,4 +968,153 @@ fn test_kanji_variant_reading_scan_skips_edges() {
         result.is_empty(),
         "should not produce variants at reading edges"
     );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// NumericRewriter: counter (助数詞) mode
+// ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_numeric_counter_generates_kanji_compound() {
+    // Reading: さんぜんえん (3000円). Lattice has the counter node 円(えん)
+    // ending at the tail. Expect a kanji compound 三千円 to be generated.
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let lattice = Lattice::from_test_nodes(
+        "さんぜんえん",
+        &[
+            // (start, end, reading, surface, cost, left_id, right_id)
+            (4, 6, "えん", "円", 1000, counter_id, counter_id),
+            (4, 6, "えん", "園", 1500, 1, 1), // non-counter homophone
+        ],
+    );
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "さんぜんえん".into(),
+            surface: "産前園".into(),
+            left_id: 1,
+            right_id: 1,
+            word_cost: 0,
+        }],
+        viterbi_cost: 5000,
+    }];
+
+    let result = rw.generate(&paths, "さんぜんえん");
+
+    let kanji = result
+        .iter()
+        .find(|p| p.surface_key() == "三千円")
+        .expect("should generate 三千円");
+    // Cheapest counter at the position is anchored at best_cost - 500
+    // (lifts the kanji compound above the existing top-1).
+    assert_eq!(kanji.viterbi_cost, 4500);
+    assert!(result.iter().any(|p| p.surface_key() == "3000円"));
+    assert!(result.iter().any(|p| p.surface_key() == "３０００円"));
+    // Non-counter homophone 園 should NOT spawn a number candidate.
+    assert!(!result.iter().any(|p| p.surface_key() == "三千園"));
+}
+
+#[test]
+fn test_numeric_counter_dedupes_multi_pos_counter() {
+    // Same surface 円 with two counter POS variants — only one set of
+    // candidates should be emitted.
+    let counter_id_a: u16 = 7;
+    let counter_id_b: u16 = 5;
+    let mut conn = counter_test_conn(8, counter_id_a);
+    // Patch the second POS id to also be a counter.
+    let n = conn.num_ids() as usize;
+    let header = format!("{n} {n}\n");
+    let costs: String = (0..(n * n)).map(|_| "0\n".to_string()).collect();
+    let text = format!("{header}{costs}");
+    let mut roles = vec![0u8; n];
+    roles[counter_id_a as usize] = 7;
+    roles[counter_id_b as usize] = 7;
+    conn = ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap();
+    let lattice = Lattice::from_test_nodes(
+        "ごえん",
+        &[
+            (1, 3, "えん", "円", 1000, counter_id_a, counter_id_a),
+            (1, 3, "えん", "円", 2000, counter_id_b, counter_id_b),
+        ],
+    );
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "ごえん".into(),
+            surface: "ご縁".into(),
+            left_id: 1,
+            right_id: 1,
+            word_cost: 0,
+        }],
+        viterbi_cost: 4000,
+    }];
+
+    let result = rw.generate(&paths, "ごえん");
+
+    let kanji_count = result.iter().filter(|p| p.surface_key() == "五円").count();
+    assert_eq!(
+        kanji_count, 1,
+        "duplicate counter POS variants should dedupe"
+    );
+}
+
+#[test]
+fn test_numeric_counter_skips_when_prefix_not_a_number() {
+    // Reading: あいえん — counter 円 at tail, but prefix "あい" doesn't parse
+    // as a number, so no counter candidate should be generated.
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let lattice = Lattice::from_test_nodes(
+        "あいえん",
+        &[(2, 4, "えん", "円", 1000, counter_id, counter_id)],
+    );
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "あいえん".into(),
+            surface: "愛縁".into(),
+            left_id: 1,
+            right_id: 1,
+            word_cost: 0,
+        }],
+        viterbi_cost: 4000,
+    }];
+
+    let result = rw.generate(&paths, "あいえん");
+
+    assert!(result.iter().all(|p| !p.surface_key().contains('円')));
+}
+
+#[test]
+fn test_numeric_counter_disabled_without_lattice_or_conn() {
+    // No lattice/connection → counter mode must not fire (only pure-number
+    // path runs, and "さんぜんえん" doesn't parse as a pure number).
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "さんぜんえん".into(),
+            surface: "産前園".into(),
+            left_id: 0,
+            right_id: 0,
+            word_cost: 0,
+        }],
+        viterbi_cost: 5000,
+    }];
+
+    let result = rw.generate(&paths, "さんぜんえん");
+
+    assert!(result.is_empty());
 }
