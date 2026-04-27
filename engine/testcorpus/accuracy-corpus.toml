@@ -392,8 +392,24 @@ reading = "さんぜんえん"
 expected = "三千円"
 category = "numeric"
 tags = ["counter"]
-skip = true
-issue = "さんぜんえん parsed as 産前園 — numeric+counter not in dictionary"
+
+[[cases]]
+reading = "じゅうえん"
+expected = "十円"
+category = "numeric"
+tags = ["counter"]
+
+[[cases]]
+reading = "ごねん"
+expected = "五年"
+category = "numeric"
+tags = ["counter"]
+
+[[cases]]
+reading = "いちまんえん"
+expected = "一万円"
+category = "numeric"
+tags = ["counter", "large"]
 
 # ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)

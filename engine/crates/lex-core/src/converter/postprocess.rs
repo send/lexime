@@ -130,7 +130,10 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     // Truncate Viterbi paths to n before rewriters so that rewriter-added
     // candidates (numeric, katakana) are not immediately pruned.
     top.truncate(ctx.n);
-    let numeric_rw = rewriter::NumericRewriter;
+    let numeric_rw = rewriter::NumericRewriter {
+        lattice: Some(ctx.lattice),
+        connection: ctx.conn,
+    };
     let katakana_rw = rewriter::KatakanaRewriter;
     let kanji_rw = rewriter::KanjiVariantRewriter {
         lattice: ctx.lattice,
@@ -161,9 +164,8 @@ pub(super) fn group_segments(segments: &mut Vec<RichSegment>, conn: &ConnectionM
     let mut pending_prefix = false;
 
     for seg in segments.drain(..) {
-        let role = conn.role(seg.left_id);
         let is_fw = conn.is_function_word(seg.left_id);
-        let attach_to_prev = is_fw || role == 2; // FunctionWord or Suffix
+        let attach_to_prev = is_fw || conn.is_suffix(seg.left_id); // FunctionWord, Suffix, or Counter
 
         if attach_to_prev {
             // Merge into current group if one exists
@@ -175,7 +177,7 @@ pub(super) fn group_segments(segments: &mut Vec<RichSegment>, conn: &ConnectionM
                 // No preceding group — standalone
                 grouped.push(seg);
             }
-        } else if role == 3 {
+        } else if conn.is_prefix(seg.left_id) {
             // Prefix: flush current group, start new one that will absorb next CW
             if let Some(cur) = current.take() {
                 grouped.push(cur);

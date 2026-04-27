@@ -85,6 +85,7 @@ pub const ROLE_PREFIX: u8 = 3;
 pub const ROLE_NON_INDEPENDENT: u8 = 4;
 pub const ROLE_PRONOUN: u8 = 5;
 pub const ROLE_PERSON_NAME: u8 = 6;
+pub const ROLE_COUNTER: u8 = 7;
 
 /// Parse Mozc `id.def` and classify each POS ID into a morpheme role.
 ///
@@ -96,6 +97,7 @@ pub const ROLE_PERSON_NAME: u8 = 6;
 /// - `4` (NonIndependent): 非自立 (e.g., 名詞,非自立 / 動詞,非自立 / 形容詞,非自立)
 /// - `5` (Pronoun): 代名詞 (e.g., 名詞,代名詞)
 /// - `6` (PersonName): 人名 (e.g., 名詞,固有名詞,人名,姓 / 名詞,固有名詞,人名,名)
+/// - `7` (Counter): 助数詞 (e.g., 名詞,接尾,助数詞) — narrower than Suffix
 pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
     let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
     let mut max_id: u16 = 0;
@@ -120,7 +122,11 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
             } else if fields[0] == "接頭詞" {
                 ROLE_PREFIX
             } else if fields[1] == "接尾" {
-                ROLE_SUFFIX
+                if fields.len() >= 3 && fields[2] == "助数詞" {
+                    ROLE_COUNTER
+                } else {
+                    ROLE_SUFFIX
+                }
             } else if fields[1] == "非自立" {
                 ROLE_NON_INDEPENDENT
             } else if fields[1] == "代名詞" {
@@ -256,6 +262,8 @@ mod tests {
                 "1922 名詞,固有名詞,人名,一般,*,*,*",
                 "1923 名詞,固有名詞,人名,姓,*,*,*",
                 "1924 名詞,固有名詞,人名,名,*,*,*",
+                "2010 名詞,接尾,助数詞,*,*,*,*",
+                "2013 名詞,接尾,助数詞,*,*,*,回",
             ]),
         )
         .unwrap();
@@ -278,6 +286,8 @@ mod tests {
         assert_eq!(roles[1922], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,一般
         assert_eq!(roles[1923], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,姓
         assert_eq!(roles[1924], ROLE_PERSON_NAME); // 名詞,固有名詞,人名,名
+        assert_eq!(roles[2010], ROLE_COUNTER); // 名詞,接尾,助数詞 (generic)
+        assert_eq!(roles[2013], ROLE_COUNTER); // 名詞,接尾,助数詞 (specific: 回)
 
         fs::remove_dir_all(&dir).ok();
     }
