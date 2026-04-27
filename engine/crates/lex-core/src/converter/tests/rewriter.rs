@@ -1118,3 +1118,87 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
 
     assert!(result.is_empty());
 }
+
+#[test]
+fn test_numeric_counter_deterministic_order_on_cost_tie() {
+    // Two counter surfaces with identical word_cost. Sorting by
+    // (cost, surface) must produce a deterministic emit order — without it,
+    // HashMap iteration could swap the top candidate run-to-run.
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let lattice = Lattice::from_test_nodes(
+        "ごねん",
+        &[
+            (1, 3, "ねん", "年", 100, counter_id, counter_id),
+            (1, 3, "ねん", "念", 100, counter_id, counter_id),
+        ],
+    );
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "ごねん".into(),
+            surface: "ご年".into(),
+            left_id: 1,
+            right_id: 1,
+            word_cost: 0,
+        }],
+        viterbi_cost: 4000,
+    }];
+
+    let mut emit_orders: Vec<Vec<String>> = Vec::new();
+    for _ in 0..5 {
+        let result = rw.generate(&paths, "ごねん");
+        let kanji_order: Vec<String> = result
+            .iter()
+            .filter(|p| p.surface_key().starts_with("五"))
+            .map(|p| p.surface_key())
+            .collect();
+        emit_orders.push(kanji_order);
+    }
+    let first = &emit_orders[0];
+    assert!(
+        emit_orders.iter().all(|o| o == first),
+        "emit order must be stable across runs, got: {emit_orders:?}"
+    );
+    // Sort key is surface (lexicographic). 念 (U+5FF5) > 年 (U+5E74), so
+    // 五年 emits before 五念.
+    assert_eq!(first, &vec!["五年".to_string(), "五念".to_string()]);
+}
+
+#[test]
+fn test_numeric_counter_extreme_cost_no_overflow() {
+    // i16::MAX counter and i16::MIN+ counter — the (cand.cost - cheapest)
+    // diff would overflow as plain i16 subtraction. Widening to i64 first
+    // keeps the rewriter safe on extreme dictionary costs.
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let lattice = Lattice::from_test_nodes(
+        "ごえん",
+        &[
+            (1, 3, "えん", "円", i16::MIN + 1, counter_id, counter_id),
+            (1, 3, "えん", "園", i16::MAX, counter_id, counter_id),
+        ],
+    );
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+    };
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "ごえん".into(),
+            surface: "ご縁".into(),
+            left_id: 1,
+            right_id: 1,
+            word_cost: 0,
+        }],
+        viterbi_cost: 4000,
+    }];
+
+    // Should not panic; should still emit candidates for both counters.
+    let result = rw.generate(&paths, "ごえん");
+    assert!(result.iter().any(|p| p.surface_key() == "五円"));
+    assert!(result.iter().any(|p| p.surface_key() == "五園"));
+}

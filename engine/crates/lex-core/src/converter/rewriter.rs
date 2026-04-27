@@ -464,7 +464,12 @@ impl NumericRewriter<'_> {
             return;
         }
 
-        let cheapest = by_surface.values().map(|c| c.cost).min().unwrap_or(0);
+        // HashMap iteration is nondeterministic; sort by (cost, surface) so
+        // tied counter candidates emit in a stable, reproducible order.
+        let mut cands: Vec<Cand<'_>> = by_surface.into_values().collect();
+        cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
+
+        let cheapest = cands.first().map(|c| c.cost).unwrap_or(0);
         let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
         let base_cost = worst_cost(paths).saturating_add(5000);
         // Discount keeps the most-likely number+counter compound above the
@@ -472,12 +477,14 @@ impl NumericRewriter<'_> {
         // in the lattice (no `三千` dictionary entry).
         let kanji_anchor = best_cost.saturating_sub(500);
 
-        for cand in by_surface.values() {
+        for cand in &cands {
             let prefix = &reading[..byte_offsets[cand.start]];
             let Some(n) = numeric::parse_japanese_number(prefix) else {
                 continue;
             };
-            let cost_offset = (cand.cost - cheapest) as i64;
+            // Widen to i64 before subtraction: i16 - i16 can overflow if the
+            // dictionary contains extreme positive/negative costs.
+            let cost_offset = cand.cost as i64 - cheapest as i64;
 
             let kanji = format!("{}{}", numeric::to_kanji(n), cand.surface);
             out.push(ScoredPath::single(
