@@ -1,0 +1,17 @@
+# Lexime curated extras: IT / business vocabulary not covered by Mozc UT.
+#
+# Format: reading[TAB]surface[TAB]cost(optional)
+#   - reading: hiragana
+#   - cost: i16. Default 5000 (mid). Lower = higher rank.
+# Comment lines start with '#'. Blank lines are ignored.
+#
+# All entries use POS id 1852 (名詞,一般). When that's wrong (e.g. proper
+# nouns), tune via cost rather than POS for now — POS overrides are out of
+# scope for the curated layer.
+
+# --- 数学 / CS ---
+べきとう	冪等
+
+# --- 業務 / スクラム ---
+あさかい	朝会
+しかかり	仕掛

@@ -105,14 +105,27 @@ sources = [
 outputs = ["engine/data/symbols-raw/.stamp"]
 run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source symbols data/symbols-raw"
 
+[tasks.fetch-dict-extras]
+description = "Materialize bundled curated domain TSVs (IT, food, geography, ...)"
+sources = [
+  "engine/crates/lex-cli/src/bin/dictool.rs",
+  "engine/crates/lex-cli/src/dict_source/mod.rs",
+  "engine/crates/lex-cli/src/dict_source/extras.rs",
+  "engine/crates/lex-cli/src/dict_source/extras/*.tsv",
+]
+outputs = ["engine/data/extras-raw/.stamp"]
+run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source extras data/extras-raw"
+
 [tasks.dict]
-description = "Build merged dictionary (Mozc + bundled symbols)"
-depends = ["fetch-dict-mozc", "fetch-dict-symbols"]
+description = "Build merged dictionary (Mozc + bundled symbols + curated extras)"
+depends = ["fetch-dict-mozc", "fetch-dict-symbols", "fetch-dict-extras"]
 sources = [
   "engine/data/mozc-raw/.stamp",
   "engine/data/mozc-raw/id.def",
   "engine/data/symbols-raw/.stamp",
+  "engine/data/extras-raw/.stamp",
   "engine/crates/lex-cli/src/dict_source/symbols.tsv",
+  "engine/crates/lex-cli/src/dict_source/extras/*.tsv",
   "engine/crates/**/*.rs",
   "engine/crates/**/*.toml",
   "engine/Cargo.toml",
@@ -128,6 +141,7 @@ target/release/dictool compile \
   --source mozc \
   --id-def data/mozc-raw/id.def \
   --extra-source symbols:data/symbols-raw \
+  --extra-source extras:data/extras-raw \
   data/mozc-raw data/lexime.dict
 """
 
