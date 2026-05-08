@@ -57,12 +57,15 @@ impl DictSource for ExtrasSource {
                 if !is_hiragana(reading) {
                     return None;
                 }
-                let cost = fields
-                    .get(2)
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| s.parse::<i16>().ok())
-                    .unwrap_or(DEFAULT_COST);
+                // Cost is optional — empty / missing falls back to DEFAULT_COST,
+                // but a present-but-malformed value (typo, out-of-i16-range)
+                // skips the line so authoring mistakes don't silently demote
+                // the entry to default ranking. Mirrors parse_id_cost's
+                // strictness for the other sources.
+                let cost = match fields.get(2).map(|s| s.trim()) {
+                    None | Some("") => DEFAULT_COST,
+                    Some(s) => s.parse::<i16>().ok()?,
+                };
                 Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
@@ -165,6 +168,35 @@ mod tests {
         let entries = ExtrasSource.parse_dir(&dir).unwrap();
         let asakai = entries.get("あさかい").unwrap();
         assert_eq!(asakai[0].cost, 3000);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn skips_line_on_unparsable_cost() {
+        // Out-of-i16-range value (40000 > i16::MAX = 32767) and a non-numeric
+        // typo must skip the line, not fall back to default. Empty / missing
+        // cost stays as default-cost behavior (covered by bundled_tsvs_parse).
+        let dir = std::env::temp_dir().join("lexime_test_extras_bad_cost");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("bad.tsv"),
+            "あさかい\t朝会\t40000\n\
+             べきとう\t冪等\tabc\n\
+             しかかり\t仕掛\n",
+        )
+        .unwrap();
+
+        let entries = ExtrasSource.parse_dir(&dir).unwrap();
+        // Out-of-range and non-numeric lines are dropped.
+        assert!(!entries.contains_key("あさかい"));
+        assert!(!entries.contains_key("べきとう"));
+        // Missing-cost line still produces an entry with default cost.
+        let shikakari = entries
+            .get("しかかり")
+            .expect("missing-cost line keeps entry");
+        assert_eq!(shikakari[0].cost, DEFAULT_COST);
 
         fs::remove_dir_all(&dir).ok();
     }
