@@ -412,6 +412,56 @@ category = "numeric"
 tags = ["counter", "large"]
 
 # ═══════════════════════════════════════════════════════════════════
+# Curated domain extras (engine/data/extras-raw)
+# ═══════════════════════════════════════════════════════════════════
+# These come from the curated `extras` dict source, not Mozc UT.
+# When this category fails, check engine/crates/lex-cli/src/dict_source/extras/
+# for the corresponding TSV.
+
+[[cases]]
+reading = "べきとう"
+expected = "冪等"
+category = "extras"
+tags = ["it"]
+
+[[cases]]
+reading = "あさかい"
+expected = "朝会"
+category = "extras"
+tags = ["it", "domain-reading"]
+note = "Mozc は ちょうかい→朝会 のみ。あさかい はスクラム慣用読み"
+
+[[cases]]
+reading = "しかかり"
+expected = "仕掛"
+category = "extras"
+tags = ["it", "business"]
+
+[[cases]]
+reading = "たんじゃお"
+expected = "藤椒"
+category = "extras"
+tags = ["food", "domain-reading"]
+
+[[cases]]
+reading = "ほわじゃお"
+expected = "花椒"
+category = "extras"
+tags = ["food", "domain-reading"]
+
+[[cases]]
+reading = "いっぽどう"
+expected = "一保堂"
+category = "extras"
+tags = ["food", "brand"]
+
+[[cases]]
+reading = "きららざか"
+expected = "雲母坂"
+category = "extras"
+tags = ["geography", "domain-reading"]
+
+# ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)
 # ═══════════════════════════════════════════════════════════════════
 

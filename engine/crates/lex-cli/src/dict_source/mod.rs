@@ -1,3 +1,4 @@
+mod extras;
 mod mozc;
 pub mod pos_map;
 mod symbols;
@@ -17,6 +18,7 @@ type SourceCtor = fn() -> Box<dyn DictSource>;
 const SOURCES: &[(&str, SourceCtor)] = &[
     ("mozc", || Box::new(mozc::MozcSource)),
     ("symbols", || Box::new(symbols::SymbolsSource)),
+    ("extras", || Box::new(extras::ExtrasSource)),
 ];
 
 /// Comma-separated list of source names recognized by [`from_name`]. Shown in

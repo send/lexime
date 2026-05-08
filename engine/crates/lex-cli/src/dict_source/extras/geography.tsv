@@ -1,0 +1,8 @@
+# Lexime curated extras: place names & geography vocabulary (regional
+# place readings, cartographic terms) not covered by Mozc UT.
+#
+# Format: reading[TAB]surface[TAB]cost(optional)
+# Comment lines start with '#'. See it.tsv for full format spec.
+
+# --- 京都の地名 ---
+きららざか	雲母坂

@@ -1,0 +1,12 @@
+# Lexime curated extras: food & drink vocabulary (ingredients, brands,
+# culinary terms across cuisines) not covered by Mozc UT.
+#
+# Format: reading[TAB]surface[TAB]cost(optional)
+# Comment lines start with '#'. See it.tsv for full format spec.
+
+# --- 中華料理 (調味料・スパイス) ---
+たんじゃお	藤椒
+ほわじゃお	花椒
+
+# --- 日本茶ブランド ---
+いっぽどう	一保堂
