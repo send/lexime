@@ -43,7 +43,12 @@ impl DictSource for ExtrasSource {
         parse_dict_files(
             dir,
             "extras *.tsv",
-            |name| name.ends_with(".tsv"),
+            // Only parse files that are still registered in DOMAINS. This
+            // prevents stale TSVs (e.g. a renamed/removed domain whose old
+            // file lingers in the gitignored extras-raw/ dir) from silently
+            // leaking entries into the merged dict and making builds
+            // non-deterministic. Mirrors symbols.rs's exact-name match.
+            |name| DOMAINS.iter().any(|(n, _)| *n == name),
             '\t',
             |fields| {
                 if fields.len() < 2 {
@@ -144,8 +149,10 @@ mod tests {
         let dir = std::env::temp_dir().join("lexime_test_extras_invalid");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        // Use a real registered domain name so the strict file-name filter
+        // accepts it; the test still validates per-line filtering.
         fs::write(
-            dir.join("bad.tsv"),
+            dir.join("food.tsv"),
             "Tanjao\t藤椒\n\
              たんじゃお\t藤椒\n",
         )
@@ -163,11 +170,37 @@ mod tests {
         let dir = std::env::temp_dir().join("lexime_test_extras_cost");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("custom.tsv"), "あさかい\t朝会\t3000\n").unwrap();
+        fs::write(dir.join("it.tsv"), "あさかい\t朝会\t3000\n").unwrap();
 
         let entries = ExtrasSource.parse_dir(&dir).unwrap();
         let asakai = entries.get("あさかい").unwrap();
         assert_eq!(asakai[0].cost, 3000);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ignores_unregistered_tsv_files() {
+        // A stale TSV left over from a renamed/removed domain (or any file
+        // that's not in DOMAINS) must NOT contribute entries — that would
+        // make builds non-deterministic.
+        let dir = std::env::temp_dir().join("lexime_test_extras_stale");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Pretend a 'cooking-chinese.tsv' (no longer registered) lingers
+        // alongside a registered domain file.
+        fs::write(dir.join("cooking-chinese.tsv"), "ぱくちー\t香菜\n").unwrap();
+        fs::write(dir.join("it.tsv"), "べきとう\t冪等\n").unwrap();
+
+        let entries = ExtrasSource.parse_dir(&dir).unwrap();
+        assert!(
+            entries.contains_key("べきとう"),
+            "registered file's entries must be picked up"
+        );
+        assert!(
+            !entries.contains_key("ぱくちー"),
+            "unregistered file must be ignored, not silently merged"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -181,7 +214,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("bad.tsv"),
+            dir.join("it.tsv"),
             "あさかい\t朝会\t40000\n\
              べきとう\t冪等\tabc\n\
              しかかり\t仕掛\n",
