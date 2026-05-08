@@ -134,8 +134,8 @@ mod tests {
         assert!(kirarazaka.iter().any(|e| e.surface == "雲母坂"));
 
         // All entries use the default POS id.
-        for entries in entries.values() {
-            for entry in entries {
+        for entry_list in entries.values() {
+            for entry in entry_list {
                 assert_eq!(entry.left_id, DEFAULT_POS);
                 assert_eq!(entry.right_id, DEFAULT_POS);
             }
