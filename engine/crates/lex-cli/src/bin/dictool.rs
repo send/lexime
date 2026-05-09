@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
-use lex_cli::commands::{config_ops, convert_ops, dict_ops, user_dict_ops};
+use lex_cli::commands::{candidates_ops, config_ops, convert_ops, dict_ops, user_dict_ops};
 
 /// Parse a `SOURCE:DIR` pair for `--extra-source`.
 fn parse_extra_source(raw: &str) -> Result<(String, String), String> {
@@ -146,6 +146,16 @@ enum Command {
         #[command(subcommand)]
         action: UserDictAction,
     },
+    /// Mine candidates for the curated `extras` dict layer (out-of-build).
+    ///
+    /// Downloads SudachiDict-full, diffs against the merged build dict, and
+    /// writes per-bucket candidate TSVs to `engine/data/extras-candidates/`.
+    /// Output is gitignored — review by hand and promote useful rows into
+    /// `engine/crates/lex-cli/src/dict_source/extras/<domain>.tsv`.
+    Candidates {
+        #[command(subcommand)]
+        action: CandidatesAction,
+    },
     /// Score N-best candidates with neural model (requires --features neural)
     #[cfg(feature = "neural")]
     NeuralScore {
@@ -228,6 +238,25 @@ enum UserDictAction {
     List,
 }
 
+#[derive(Subcommand)]
+enum CandidatesAction {
+    /// Fetch SudachiDict, diff against build dict, write per-bucket candidate TSVs.
+    Mine {
+        /// Build dict to diff against. Default: engine/data/lexime.dict
+        #[arg(long)]
+        build_dict: Option<String>,
+        /// SudachiDict download cache. Default: engine/data/.sudachi-cache
+        #[arg(long)]
+        cache_dir: Option<String>,
+        /// Output dir. Default: engine/data/extras-candidates
+        #[arg(long)]
+        out_dir: Option<String>,
+        /// Wipe the output dir before writing.
+        #[arg(long)]
+        clean: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -286,6 +315,34 @@ fn main() {
         Command::RomajiValidate { file } => config_ops::romaji_validate(&file),
         Command::SettingsExport => config_ops::settings_export(),
         Command::SettingsValidate { file } => config_ops::settings_validate(&file),
+        Command::Candidates { action } => match action {
+            CandidatesAction::Mine {
+                build_dict,
+                cache_dir,
+                out_dir,
+                clean,
+            } => {
+                let cache = cache_dir
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(candidates_ops::default_cache_dir);
+                let out = out_dir
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(candidates_ops::default_out_dir);
+                let dict = build_dict
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(candidates_ops::default_build_dict);
+                if clean {
+                    if let Err(e) = candidates_ops::clean_out_dir(&out) {
+                        eprintln!("clean: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                if let Err(e) = candidates_ops::mine(&cache, &dict, &out) {
+                    eprintln!("mine: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
         Command::UserDict { file, action } => {
             let path_str = file.unwrap_or_else(user_dict_ops::default_user_dict_path);
             let path = Path::new(&path_str);
