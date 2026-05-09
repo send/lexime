@@ -461,6 +461,20 @@ expected = "雲母坂"
 category = "extras"
 tags = ["geography", "domain-reading"]
 
+[[cases]]
+reading = "ろうちゅう"
+expected = "老抽"
+category = "extras"
+tags = ["food", "chinese-cuisine"]
+note = "Mozc 既存の top-1 は 郎中。老抽 (中華の濃口醤油) は extras 層で補完"
+
+[[cases]]
+reading = "ぷーあーるちゃ"
+expected = "プーアール茶"
+category = "extras"
+tags = ["food", "tea"]
+note = "Mozc 単語は無く、lattice では プーアール+ちゃ の mixed-script が top-1。compound 単語化で正しく茶に固定"
+
 # ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)
 # ═══════════════════════════════════════════════════════════════════
