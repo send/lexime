@@ -456,12 +456,6 @@ category = "extras"
 tags = ["food", "brand"]
 
 [[cases]]
-reading = "きららざか"
-expected = "雲母坂"
-category = "extras"
-tags = ["geography", "domain-reading"]
-
-[[cases]]
 reading = "ろうちゅう"
 expected = "老抽"
 category = "extras"
@@ -474,6 +468,12 @@ expected = "プーアール茶"
 category = "extras"
 tags = ["food", "tea"]
 note = "Mozc 単語は無く、lattice では プーアール+ちゃ の mixed-script が top-1。compound 単語化で正しく茶に固定"
+
+[[cases]]
+reading = "きららざか"
+expected = "雲母坂"
+category = "extras"
+tags = ["geography", "domain-reading"]
 
 # ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)
