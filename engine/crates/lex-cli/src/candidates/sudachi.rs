@@ -147,25 +147,6 @@ pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<CandidateRow>>, Candi
                 skipped += 1;
                 continue;
             }
-            let fields: Vec<&str> = line.split(',').collect();
-            // Need at least cols 0..=11 (surface, ids, cost, POS×6, reading).
-            if fields.len() < 12 {
-                skipped += 1;
-                continue;
-            }
-            let surface = fields[0];
-            let cost: i32 = match fields[3].parse() {
-                Ok(c) => c,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let reading = kata_to_hira(fields[11]);
-            if reading.is_empty() || !is_hiragana(&reading) || surface.is_empty() {
-                skipped += 1;
-                continue;
-            }
             // Sudachi 18-col CSV layout:
             //   0  surface
             //   1-3  left_id, right_id, cost
@@ -173,12 +154,47 @@ pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<CandidateRow>>, Candi
             //   5-10 POS hierarchy (主, 細分類1, 細分類2, 細分類3, 活用型, 活用形)
             //   11  reading (katakana)
             //   12+  base form, pronunciation, ID, ...
-            let pos = fields[5..11]
-                .iter()
-                .filter(|s| !s.is_empty() && **s != "*")
-                .copied()
-                .collect::<Vec<_>>()
-                .join("-");
+            //
+            // Walk the split iterator instead of `collect()`-ing a Vec per
+            // line — at full-Sudachi scale that's ~3M Vec allocations on
+            // the hot path.
+            let mut iter = line.split(',');
+            let mut surface = "";
+            let mut cost_str = "";
+            let mut reading_kata: Option<&str> = None;
+            // POS slots 5..=10 are at most 6 entries; keep them as a small
+            // fixed-size buffer so we don't allocate per row.
+            let mut pos_parts: [&str; 6] = [""; 6];
+            let mut pos_count = 0usize;
+            for (i, field) in (&mut iter).enumerate() {
+                match i {
+                    0 => surface = field,
+                    3 => cost_str = field,
+                    5..=10 if !field.is_empty() && field != "*" => {
+                        pos_parts[pos_count] = field;
+                        pos_count += 1;
+                    }
+                    11 => {
+                        reading_kata = Some(field);
+                        break; // cols 12..17 not needed
+                    }
+                    _ => {}
+                }
+            }
+            let Some(reading_kata) = reading_kata else {
+                skipped += 1; // line had < 12 columns
+                continue;
+            };
+            let Ok(cost): Result<i32, _> = cost_str.parse() else {
+                skipped += 1;
+                continue;
+            };
+            let reading = kata_to_hira(reading_kata);
+            if reading.is_empty() || !is_hiragana(&reading) || surface.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let pos = pos_parts[..pos_count].join("-");
             entries.entry(reading).or_default().push(CandidateRow {
                 surface: surface.to_string(),
                 cost,
@@ -293,8 +309,16 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
             .to_string_lossy()
             .into_owned();
         let out_path = dest.join(&basename);
-        let mut out = fs::File::create(&out_path)?;
-        io::copy(&mut file, &mut out)?;
+        // Stage the extraction to a per-process unique temp file then
+        // atomically rename so two parallel `mine` runs against the same
+        // cache dir don't interleave half-written CSVs (the prior
+        // exists-check-then-create pattern was TOCTOU-racy).
+        let extract_tmp = dest.join(format!(".{}.extract.{}", basename, std::process::id()));
+        {
+            let mut out = fs::File::create(&extract_tmp)?;
+            io::copy(&mut file, &mut out)?;
+        }
+        fs::rename(&extract_tmp, &out_path)?;
         eprintln!("    → {basename}");
         count += 1;
     }

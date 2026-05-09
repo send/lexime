@@ -38,11 +38,15 @@ pub fn mine(
     let mut total_upstream = 0usize;
     let mut already_covered = 0usize;
 
-    for (reading, rows) in &upstream {
+    // Consume upstream by value so each row's `surface` / `pos` String can
+    // be moved into Candidate instead of cloned. Reading is still cloned
+    // once per row (the HashMap key remains the canonical owner across the
+    // outer loop), but per-row body strings move.
+    for (reading, rows) in upstream {
         // For a typical reading the build dict yields a handful of entries
         // (homophones), so a linear scan is faster than building a HashSet
         // and avoids cloning every surface up front.
-        let existing = dict.lookup(reading);
+        let existing = dict.lookup(&reading);
         for row in rows {
             total_upstream += 1;
             if existing.iter().any(|e| e.surface == row.surface) {
@@ -50,9 +54,7 @@ pub fn mine(
                 continue;
             }
             // Dedupe in case Sudachi has multiple POS variants for the same
-            // (reading, surface) — we don't care which POS won here. Reading
-            // is the outer key; cloning happens once here on dedupe insert
-            // (not per row in the parser, see CandidateRow doc).
+            // (reading, surface).
             if !seen.insert((reading.clone(), row.surface.clone())) {
                 continue;
             }
@@ -63,9 +65,9 @@ pub fn mine(
                 bucket,
                 Candidate {
                     reading: reading.clone(),
-                    surface: row.surface.clone(),
+                    surface: row.surface,
                     cost: row.cost,
-                    pos: row.pos.clone(),
+                    pos: row.pos,
                 },
             ));
         }
