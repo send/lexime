@@ -31,4 +31,5 @@ windows_x86_64_gnullvm
 windows_x86_64_msvc
 wit-bindgen
 zerocopy
+zip
 zmij
