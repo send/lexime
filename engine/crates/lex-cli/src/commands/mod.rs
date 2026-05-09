@@ -1,3 +1,4 @@
+pub mod candidates_ops;
 pub mod config_ops;
 pub mod convert_ops;
 pub mod dict_ops;

@@ -20,6 +20,20 @@ use lex_core::dict::DictEntry;
 /// File format:
 ///   reading[TAB]surface[TAB]cost(optional, default 5000)
 /// Comment lines (starting with `#`) and blank lines are skipped.
+///
+/// ## Adding entries
+///
+/// Two paths:
+///
+/// 1. **From friction**: when conversion fails for you, register in user_dict
+///    (`dictool user-dict add`), use it for a while, then promote stable
+///    entries to the appropriate domain TSV here.
+/// 2. **Proactive mining**: run `dictool candidates mine` (see
+///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
+///    build dict, and writes per-bucket candidate TSVs under
+///    `engine/data/extras-candidates/`. Scan those by hand and copy useful
+///    rows into `extras/<domain>.tsv`. Mining output never auto-merges into
+///    the build dict — promotion is always explicit.
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
