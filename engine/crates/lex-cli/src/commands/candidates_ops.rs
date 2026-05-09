@@ -73,9 +73,11 @@ pub fn mine(
     Ok(())
 }
 
-/// Default cache dir for the working SudachiDict download. Lives outside
-/// `engine/data/` (which is for build artifacts) to make it clear this is
-/// scratch space.
+/// Default cache dir for the working SudachiDict download. Sits under
+/// `engine/data/` like the other dict artifacts, but with a leading dot so
+/// it sorts away from the production caches (`mozc-raw/`, `extras-raw/`)
+/// and signals "internal scratch — `dictool candidates mine` owns it".
+/// Gitignored alongside the rest of `engine/data/`.
 pub fn default_cache_dir() -> PathBuf {
     PathBuf::from("engine/data/.sudachi-cache")
 }

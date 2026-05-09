@@ -123,7 +123,14 @@ pub fn write_candidates(
             .map(|(_, c)| c)
             .collect();
         // Lower Sudachi cost = more common = scan-priority first.
-        sorted.sort_by_key(|c| (c.cost, c.surface.clone(), c.reading.clone()));
+        // Compare borrowed strings — at full-Sudachi scale (~1.9M rows) the
+        // sort_by_key clone variant adds millions of String allocations.
+        sorted.sort_by(|a, b| {
+            a.cost
+                .cmp(&b.cost)
+                .then_with(|| a.surface.as_str().cmp(b.surface.as_str()))
+                .then_with(|| a.reading.as_str().cmp(b.reading.as_str()))
+        });
 
         let mut out = String::new();
         out.push_str(&format!(

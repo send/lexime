@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Cursor};
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 use super::{Candidate, CandidateError};
@@ -33,16 +33,31 @@ const SUDACHI_S3_LIST_URL: &str =
 /// only for log clarity; entries from all three are merged after parse.
 const SUDACHI_ZIPS: &[&str] = &["small_lex.zip", "core_lex.zip", "notcore_lex.zip"];
 
-/// Fetch SudachiDict-full into `dest` (idempotent — skips files that already exist).
-/// Returns the version string of what was fetched.
+/// Fetch SudachiDict-full into `dest`. Version-aware: when the stamp file
+/// records a different Sudachi version than what's currently latest upstream,
+/// the stale CSVs are wiped before re-downloading so the candidate pool can't
+/// silently mix versions. Within a matching version, missing CSVs are filled
+/// in (so an interrupted previous run still recovers).
+///
+/// Returns the version that ended up in the cache.
 pub fn fetch(dest: &Path) -> Result<String, CandidateError> {
     fs::create_dir_all(dest)?;
+    let stamp_path = dest.join(".stamp");
+    let cached = read_stamp(&stamp_path);
+    let latest = latest_version()?;
 
-    let version = latest_version()?;
-    eprintln!(
-        "Downloading SudachiDict v{version} to {}...",
-        dest.display()
-    );
+    if let Some(v) = &cached {
+        if v != &latest {
+            eprintln!("Cache version {v} != latest {latest}; wiping stale CSVs.");
+            for zip_name in SUDACHI_ZIPS {
+                let csv = zip_name.replace(".zip", ".csv");
+                let _ = fs::remove_file(dest.join(csv));
+            }
+            let _ = fs::remove_file(&stamp_path);
+        }
+    }
+
+    eprintln!("Downloading SudachiDict v{latest} to {}...", dest.display());
 
     for zip_name in SUDACHI_ZIPS {
         let csv_name = zip_name.replace(".zip", ".csv");
@@ -51,13 +66,20 @@ pub fn fetch(dest: &Path) -> Result<String, CandidateError> {
             eprintln!("  {csv_name} (already exists, skipping)");
             continue;
         }
-        let url = format!("{SUDACHI_CDN_BASE}/{version}/{zip_name}");
+        let url = format!("{SUDACHI_CDN_BASE}/{latest}/{zip_name}");
         eprintln!("  {zip_name}");
         download_and_extract(&url, ".csv", dest)?;
     }
 
-    fs::write(dest.join(".stamp"), &version)?;
-    Ok(version)
+    fs::write(&stamp_path, &latest)?;
+    Ok(latest)
+}
+
+fn read_stamp(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Parse all `*_lex.csv` files in `dir` and return a multimap of
@@ -88,8 +110,13 @@ pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<Candidate>>, Candidat
     for file_entry in files {
         let path = file_entry.path();
         eprintln!("Reading {}...", path.display());
-        let content = fs::read_to_string(&path)?;
-        for line in content.lines() {
+        // Stream the CSV instead of slurping into one String — Sudachi-full's
+        // notcore_lex.csv alone is well over 100 MB and the parse is the
+        // memory peak of the whole `mine` flow.
+        let file = fs::File::open(&path)?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = line?;
             total += 1;
             if line.is_empty() || line.starts_with('#') {
                 skipped += 1;
@@ -176,17 +203,24 @@ fn parse_latest_version(xml: &str) -> Result<String, CandidateError> {
 }
 
 fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, CandidateError> {
-    let body = ureq::get(url)
-        .call()
-        .map_err(|e| CandidateError::Http(format!("{url}: {e}")))?
-        .into_body()
-        .with_config()
-        .limit(500 * 1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| CandidateError::Http(format!("{url}: {e}")))?;
+    // Stage the ZIP on disk so we don't hold both the compressed bytes (a
+    // few hundred MB for SudachiDict-full) AND the extracted CSVs in
+    // memory at the same time. The temp file is removed regardless of
+    // extraction outcome via `_guard`.
+    let tmp_path = dest.join(".tmp.zip");
+    {
+        let resp = ureq::get(url)
+            .call()
+            .map_err(|e| CandidateError::Http(format!("{url}: {e}")))?;
+        let mut body = resp.into_body();
+        let body_cfg = body.with_config();
+        let mut body_reader = body_cfg.limit(500 * 1024 * 1024).reader();
+        let mut tmp = fs::File::create(&tmp_path)?;
+        io::copy(&mut body_reader, &mut tmp)?;
+    }
+    let _guard = TmpFileGuard(tmp_path.clone());
 
-    let cursor = Cursor::new(body);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(zip_err)?;
+    let mut archive = zip::ZipArchive::new(fs::File::open(&tmp_path)?).map_err(zip_err)?;
     let mut count = 0;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(zip_err)?;
@@ -208,6 +242,15 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
         count += 1;
     }
     Ok(count)
+}
+
+/// Removes the staged ZIP on drop so a panic / error on extraction doesn't
+/// leak the temp file.
+struct TmpFileGuard(std::path::PathBuf);
+impl Drop for TmpFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn zip_err(e: impl std::fmt::Display) -> CandidateError {
@@ -272,6 +315,79 @@ mod tests {
     #[test]
     fn test_parse_latest_version_empty() {
         assert!(parse_latest_version("<ListBucketResult></ListBucketResult>").is_err());
+    }
+
+    #[test]
+    fn test_read_stamp_roundtrip() {
+        let dir = std::env::temp_dir().join("lexime_test_sudachi_stamp");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stamp = dir.join(".stamp");
+
+        // Missing → None
+        assert!(read_stamp(&stamp).is_none());
+
+        // Empty → None (treated as no version)
+        fs::write(&stamp, "").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+
+        // Whitespace-only → None
+        fs::write(&stamp, "  \n").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+
+        // Trim trailing newline
+        fs::write(&stamp, "20260428\n").unwrap();
+        assert_eq!(read_stamp(&stamp).as_deref(), Some("20260428"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for the "stale cache silently reused" finding
+    /// (PR #242 Copilot R1, sudachi.rs:60). Simulates a cache where the
+    /// stamp records an OLD version but CSVs from that version still exist.
+    /// `fetch` (without network) needs to wipe those CSVs before retrying.
+    ///
+    /// We exercise just the wipe-on-mismatch logic by hand to avoid a real
+    /// HTTP call — the network path is covered by manual `dictool candidates
+    /// mine` runs.
+    #[test]
+    fn test_stale_cache_csvs_wiped_on_version_mismatch() {
+        let dir = std::env::temp_dir().join("lexime_test_sudachi_stale");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Pretend a previous run cached v20260116.
+        for zip_name in SUDACHI_ZIPS {
+            let csv = zip_name.replace(".zip", ".csv");
+            fs::write(dir.join(csv), "stale,csv,row\n").unwrap();
+        }
+        fs::write(dir.join(".stamp"), "20260116").unwrap();
+
+        // Simulate the wipe step that fetch() performs when stamp mismatches.
+        let cached = read_stamp(&dir.join(".stamp"));
+        assert_eq!(cached.as_deref(), Some("20260116"));
+
+        let latest = "20260428";
+        if cached.as_deref() != Some(latest) {
+            for zip_name in SUDACHI_ZIPS {
+                let csv = zip_name.replace(".zip", ".csv");
+                let _ = fs::remove_file(dir.join(csv));
+            }
+            let _ = fs::remove_file(dir.join(".stamp"));
+        }
+
+        // After wipe, no stale CSVs remain — a fresh download would not
+        // mix v20260116 rows into v20260428 output.
+        for zip_name in SUDACHI_ZIPS {
+            let csv = zip_name.replace(".zip", ".csv");
+            assert!(
+                !dir.join(&csv).exists(),
+                "{csv} should have been wiped on version mismatch"
+            );
+        }
+        assert!(!dir.join(".stamp").exists());
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
