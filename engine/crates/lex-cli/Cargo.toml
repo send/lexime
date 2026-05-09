@@ -29,4 +29,4 @@ toml = { workspace = true }
 # Used by `dictool candidates mine` only — SudachiDict releases ship as ZIP.
 # Kept as a hard dep (not optional) since the CLI is a build/dev tool and
 # not shipped with the IME itself.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "7", default-features = false, features = ["deflate"] }

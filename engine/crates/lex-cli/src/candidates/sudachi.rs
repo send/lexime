@@ -33,28 +33,36 @@ const SUDACHI_S3_LIST_URL: &str =
 /// only for log clarity; entries from all three are merged after parse.
 const SUDACHI_ZIPS: &[&str] = &["small_lex.zip", "core_lex.zip", "notcore_lex.zip"];
 
-/// Fetch SudachiDict-full into `dest`. Version-aware: when the stamp file
-/// records a different Sudachi version than what's currently latest upstream,
-/// the stale CSVs are wiped before re-downloading so the candidate pool can't
-/// silently mix versions. Within a matching version, missing CSVs are filled
-/// in (so an interrupted previous run still recovers).
+/// Fetch SudachiDict-full into `dest`. Single rule for cache validity:
+/// **the stamp file must equal the latest upstream version exactly**.
+/// Anything else (stamp missing, empty, mismatched, OR no stamp + stale
+/// CSVs left over) triggers a clean wipe + full re-download. This kills
+/// three classes of stale-cache bug at once:
+///
+/// - `.stamp` records an old version while CSVs from that version still
+///   exist (PR #242 R1: silent reuse + new version label).
+/// - `.stamp` is missing/empty but old `*_lex.csv` are still on disk
+///   (PR #242 R2: interrupted run, manual cleanup, legacy pre-stamp cache).
+/// - Anything in between.
+///
+/// Within a still-valid cache, individual missing CSVs are downloaded
+/// (so a run that fails mid-extraction recovers).
 ///
 /// Returns the version that ended up in the cache.
 pub fn fetch(dest: &Path) -> Result<String, CandidateError> {
     fs::create_dir_all(dest)?;
     let stamp_path = dest.join(".stamp");
-    let cached = read_stamp(&stamp_path);
     let latest = latest_version()?;
+    let cached = read_stamp(&stamp_path);
+    let cache_valid = cached.as_deref() == Some(latest.as_str());
 
-    if let Some(v) = &cached {
-        if v != &latest {
+    if !cache_valid {
+        if let Some(v) = &cached {
             eprintln!("Cache version {v} != latest {latest}; wiping stale CSVs.");
-            for zip_name in SUDACHI_ZIPS {
-                let csv = zip_name.replace(".zip", ".csv");
-                let _ = fs::remove_file(dest.join(csv));
-            }
-            let _ = fs::remove_file(&stamp_path);
+        } else if any_csv_exists(dest) {
+            eprintln!("Cache has no .stamp but stale CSVs present; wiping.");
         }
+        wipe_cache(dest, &stamp_path);
     }
 
     eprintln!("Downloading SudachiDict v{latest} to {}...", dest.display());
@@ -73,6 +81,21 @@ pub fn fetch(dest: &Path) -> Result<String, CandidateError> {
 
     fs::write(&stamp_path, &latest)?;
     Ok(latest)
+}
+
+fn any_csv_exists(dest: &Path) -> bool {
+    SUDACHI_ZIPS.iter().any(|z| {
+        let csv = z.replace(".zip", ".csv");
+        dest.join(csv).exists()
+    })
+}
+
+fn wipe_cache(dest: &Path, stamp_path: &Path) {
+    for zip_name in SUDACHI_ZIPS {
+        let csv = zip_name.replace(".zip", ".csv");
+        let _ = fs::remove_file(dest.join(csv));
+    }
+    let _ = fs::remove_file(stamp_path);
 }
 
 fn read_stamp(path: &Path) -> Option<String> {
@@ -342,14 +365,68 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// Regression test for the "stale cache silently reused" finding
-    /// (PR #242 Copilot R1, sudachi.rs:60). Simulates a cache where the
-    /// stamp records an OLD version but CSVs from that version still exist.
-    /// `fetch` (without network) needs to wipe those CSVs before retrying.
-    ///
-    /// We exercise just the wipe-on-mismatch logic by hand to avoid a real
-    /// HTTP call — the network path is covered by manual `dictool candidates
-    /// mine` runs.
+    /// Regression test for the "stale cache silently reused" findings
+    /// (PR #242 Copilot R1 sudachi.rs:60 + R2 sudachi.rs:68). Validates the
+    /// cache_valid predicate that drives wipe decisions — covers both
+    /// version-mismatch and missing-stamp-with-stale-CSVs cases. Network
+    /// path is exercised by manual `dictool candidates mine` runs.
+    #[test]
+    fn test_stale_cache_invariant() {
+        // Helper that re-implements the cache_valid + wipe decision so the
+        // test pins the invariant without needing a live HTTP call.
+        fn should_wipe(dest: &Path, latest: &str) -> bool {
+            let stamp_path = dest.join(".stamp");
+            let cached = read_stamp(&stamp_path);
+            cached.as_deref() != Some(latest)
+        }
+
+        let dir = std::env::temp_dir().join("lexime_test_sudachi_invariant");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Case 1: stamp matches → no wipe.
+        fs::write(dir.join(".stamp"), "20260428").unwrap();
+        assert!(!should_wipe(&dir, "20260428"));
+
+        // Case 2: stamp records old version → wipe.
+        fs::write(dir.join(".stamp"), "20260116").unwrap();
+        assert!(should_wipe(&dir, "20260428"));
+
+        // Case 3: stamp missing entirely → wipe.
+        fs::remove_file(dir.join(".stamp")).unwrap();
+        assert!(should_wipe(&dir, "20260428"));
+
+        // Case 4: stamp empty → wipe (read_stamp returns None for empty/whitespace).
+        fs::write(dir.join(".stamp"), "").unwrap();
+        assert!(should_wipe(&dir, "20260428"));
+
+        // Case 5: stamp whitespace-only → wipe.
+        fs::write(dir.join(".stamp"), "   \n").unwrap();
+        assert!(should_wipe(&dir, "20260428"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Verify any_csv_exists detects orphan CSVs across the SUDACHI_ZIPS set.
+    #[test]
+    fn test_any_csv_exists_detects_orphans() {
+        let dir = std::env::temp_dir().join("lexime_test_sudachi_orphan");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        assert!(!any_csv_exists(&dir), "empty dir → no orphan CSV");
+
+        // Drop a single core_lex.csv (no stamp) — the missing-stamp + stale
+        // CSV scenario from R2.
+        fs::write(dir.join("core_lex.csv"), "stale").unwrap();
+        assert!(any_csv_exists(&dir));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Original R1 regression — kept for explicit coverage of the version
+    /// mismatch wipe path. The test_stale_cache_invariant test above is
+    /// the broader companion.
     #[test]
     fn test_stale_cache_csvs_wiped_on_version_mismatch() {
         let dir = std::env::temp_dir().join("lexime_test_sudachi_stale");

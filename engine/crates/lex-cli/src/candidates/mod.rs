@@ -40,7 +40,7 @@
 pub mod sudachi;
 
 use std::fs;
-use std::io;
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
@@ -91,7 +91,7 @@ impl Bucket {
 
 /// Classify a Sudachi POS tuple into a candidate bucket.
 ///
-/// Sudachi POS columns (CSV col 4..=9):
+/// Sudachi POS columns (CSV col 5..=10; col 4 is normalized surface, not POS):
 /// `主品詞, 品詞細分類1, 品詞細分類2, 品詞細分類3, 活用型, 活用形`
 pub fn classify(pos: &[&str]) -> Bucket {
     if pos.len() < 3 {
@@ -132,8 +132,14 @@ pub fn write_candidates(
                 .then_with(|| a.reading.as_str().cmp(b.reading.as_str()))
         });
 
-        let mut out = String::new();
-        out.push_str(&format!(
+        // Stream rows directly to a buffered writer instead of building a
+        // single 100MB+ String first — at full-Sudachi scale that doubled
+        // peak RSS (candidates Vec + giant output buffer).
+        let path = dest.join(bucket.filename());
+        let file = fs::File::create(&path)?;
+        let mut w = BufWriter::new(file);
+        writeln!(
+            w,
             "# Candidate pool for the curated `extras/` layer.\n\
              # Source: SudachiDict v{sudachi_version} (Apache-2.0)\n\
              # Bucket: {bucket:?}  ({} entries)\n\
@@ -142,23 +148,14 @@ pub fn write_candidates(
              # (most common first). Promote useful rows to extras/<domain>.tsv\n\
              # by hand. This file is gitignored.\n\
              #\n\
-             # format: reading\\tsurface\\tcost\\tpos\n",
+             # format: reading\\tsurface\\tcost\\tpos",
             sorted.len()
-        ));
-        for c in sorted {
-            out.push_str(&format!(
-                "{}\t{}\t{}\t{}\n",
-                c.reading, c.surface, c.cost, c.pos
-            ));
+        )?;
+        for c in &sorted {
+            writeln!(w, "{}\t{}\t{}\t{}", c.reading, c.surface, c.cost, c.pos)?;
         }
-
-        let path = dest.join(bucket.filename());
-        fs::write(&path, out)?;
-        eprintln!(
-            "  {} ({} entries)",
-            path.display(),
-            candidates.iter().filter(|(b, _)| *b == bucket).count()
-        );
+        w.flush()?;
+        eprintln!("  {} ({} entries)", path.display(), sorted.len());
     }
 
     Ok(())

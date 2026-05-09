@@ -39,15 +39,13 @@ pub fn mine(
     let mut already_covered = 0usize;
 
     for (reading, cands) in &upstream {
-        let existing_surfaces: HashSet<String> = dict
-            .lookup(reading)
-            .into_iter()
-            .map(|e| e.surface)
-            .collect();
-
+        // For a typical reading the build dict yields a handful of entries
+        // (homophones), so a linear scan is faster than building a HashSet
+        // and avoids cloning every surface up front.
+        let existing = dict.lookup(reading);
         for cand in cands {
             total_upstream += 1;
-            if existing_surfaces.contains(&cand.surface) {
+            if existing.iter().any(|e| e.surface == cand.surface) {
                 already_covered += 1;
                 continue;
             }
