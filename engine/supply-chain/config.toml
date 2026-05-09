@@ -64,6 +64,13 @@ criteria = "safe-to-deploy"
 version = "2.11.0"
 criteria = "safe-to-deploy"
 
+# Raised from `safe-to-run` to `safe-to-deploy` in PR #242 because the
+# zip ZIP-extraction tool (used by `dictool candidates mine`) introduced
+# a new dep path that cargo-vet evaluates at deploy-grade. Note the IME
+# runtime itself does not use bumpalo at runtime — it's pulled in by
+# build-side proc-macro tooling (wasm-bindgen-macro-support via
+# candle-core) — but cargo-vet doesn't distinguish, so the elevated
+# trust level is required for `cargo vet check` to pass.
 [[exemptions.bumpalo]]
 version = "3.19.1"
 criteria = "safe-to-deploy"

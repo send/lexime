@@ -213,7 +213,7 @@ fn parse_latest_version(xml: &str) -> Result<String, CandidateError> {
         if let Some(rest) = segment.strip_prefix(prefix) {
             if let Some(end) = rest.find("</Prefix>") {
                 let dir = rest[..end].trim_end_matches('/');
-                if !dir.is_empty() && dir.chars().all(|c| c.is_ascii_digit()) {
+                if is_sudachi_version(dir) {
                     versions.push(dir);
                 }
             }
@@ -224,6 +224,37 @@ fn parse_latest_version(xml: &str) -> Result<String, CandidateError> {
         .last()
         .map(|v| v.to_string())
         .ok_or_else(|| CandidateError::Http("no versions found in S3 listing".to_string()))
+}
+
+/// Sudachi release directories are dated `YYYYMMDD` and occasionally carry
+/// an underscore-suffixed disambiguator like `20201023_2` (re-cut of the same
+/// day). Reject anything else so XML noise can't slip in.
+///
+/// Lexicographic ordering on these strings happens to match release order:
+/// - "20201023" < "20201023_2" < "20210608" (date prefix differs)
+/// - "20260116" < "20260116_2" < "20260117"
+///
+/// so `versions.sort().last()` still picks the newest.
+fn is_sudachi_version(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    let mut seen_underscore = false;
+    let mut digits_after_underscore = 0;
+    for &b in &bytes[1..] {
+        if b.is_ascii_digit() {
+            if seen_underscore {
+                digits_after_underscore += 1;
+            }
+        } else if b == b'_' && !seen_underscore {
+            seen_underscore = true;
+        } else {
+            return false;
+        }
+    }
+    // If an underscore was present, require ≥1 digit after it (`20201023_` is invalid).
+    !seen_underscore || digits_after_underscore > 0
 }
 
 fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, CandidateError> {
@@ -341,6 +372,35 @@ mod tests {
     #[test]
     fn test_parse_latest_version_empty() {
         assert!(parse_latest_version("<ListBucketResult></ListBucketResult>").is_err());
+    }
+
+    #[test]
+    fn test_parse_latest_version_underscore_suffix_wins() {
+        // Regression for PR #242 R4 sudachi.rs:225 — a re-cut release
+        // (`YYYYMMDD_N`) at the top of the listing must NOT be filtered out.
+        // Otherwise the next day's release wins by default and we silently
+        // mine outdated SudachiDict.
+        let xml = r#"<ListBucketResult>
+  <CommonPrefixes><Prefix>sudachidict-raw/20210608/</Prefix></CommonPrefixes>
+  <CommonPrefixes><Prefix>sudachidict-raw/20260601/</Prefix></CommonPrefixes>
+  <CommonPrefixes><Prefix>sudachidict-raw/20260601_2/</Prefix></CommonPrefixes>
+</ListBucketResult>"#;
+        assert_eq!(parse_latest_version(xml).unwrap(), "20260601_2");
+    }
+
+    #[test]
+    fn test_is_sudachi_version_filters_noise() {
+        // Accept: dated, dated+suffix
+        assert!(is_sudachi_version("20260116"));
+        assert!(is_sudachi_version("20201023_2"));
+        // Reject: empty, non-digit lead, double underscore, dangling underscore,
+        // alpha noise from XML.
+        assert!(!is_sudachi_version(""));
+        assert!(!is_sudachi_version("abc"));
+        assert!(!is_sudachi_version("_20260116"));
+        assert!(!is_sudachi_version("20260116_"));
+        assert!(!is_sudachi_version("20260116__2"));
+        assert!(!is_sudachi_version("20260116-2"));
     }
 
     #[test]
@@ -478,11 +538,17 @@ mod tests {
         // Sudachi 18-col format:
         //   0=surface, 1-3=ids/cost, 4=normalized,
         //   5-10=POS, 11=reading (katakana), 12+=metadata
+        //
+        // Use `concat!` of separate string literals so source-code
+        // indentation doesn't leak into the fixture (which would land in
+        // surface and silently corrupt the assertion below).
         fs::write(
             dir.join("core_lex.csv"),
-            "藤椒,1847,1847,8000,藤椒,名詞,普通名詞,一般,*,*,*,タンジャオ,藤椒,*,A,*,*,*,1\n\
-             東京都,1847,1847,4500,東京都,名詞,固有名詞,地名,一般,*,*,トウキョウト,東京都,*,A,*,*,*,2\n\
-             ABC,100,100,3000,ABC,名詞,普通名詞,一般,*,*,*,ABC,ABC,*,A,*,*,*,3\n",
+            concat!(
+                "藤椒,1847,1847,8000,藤椒,名詞,普通名詞,一般,*,*,*,タンジャオ,藤椒,*,A,*,*,*,1\n",
+                "東京都,1847,1847,4500,東京都,名詞,固有名詞,地名,一般,*,*,トウキョウト,東京都,*,A,*,*,*,2\n",
+                "ABC,100,100,3000,ABC,名詞,普通名詞,一般,*,*,*,ABC,ABC,*,A,*,*,*,3\n",
+            ),
         )
         .unwrap();
 
@@ -496,6 +562,9 @@ mod tests {
         assert_eq!(tanjao[0].pos, "名詞-普通名詞-一般");
 
         let toukyou = entries.get("とうきょうと").unwrap();
+        // Asserting surface verifies the CSV had no leading whitespace; pre-fix
+        // tests passed without checking surface and could have hidden corruption.
+        assert_eq!(toukyou[0].surface, "東京都");
         assert_eq!(toukyou[0].pos, "名詞-固有名詞-地名-一般");
 
         fs::remove_dir_all(&dir).ok();
