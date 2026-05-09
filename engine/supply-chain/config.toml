@@ -812,6 +812,10 @@ criteria = "safe-to-deploy"
 version = "7.2.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.zlib-rs]]
+version = "0.6.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.zopfli]]
 version = "0.8.3"
 criteria = "safe-to-deploy"

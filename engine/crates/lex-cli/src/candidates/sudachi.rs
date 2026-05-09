@@ -20,7 +20,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
-use super::{Candidate, CandidateError};
+use super::{CandidateError, CandidateRow};
 
 /// Sudachi CDN serving the dictionary CSVs. Mirrors `sudachi.s3.ap-northeast-1`.
 const SUDACHI_CDN_BASE: &str = "https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw";
@@ -106,10 +106,12 @@ fn read_stamp(path: &Path) -> Option<String> {
 }
 
 /// Parse all `*_lex.csv` files in `dir` and return a multimap of
-/// `reading -> [Candidate]`. Each row that fails the basic shape check
+/// `reading -> [CandidateRow]`. The reading lives only in the map key, not
+/// repeated in each row, so peak memory at full-Sudachi scale (~1.9M rows)
+/// is meaningfully lower. Each row that fails the basic shape check
 /// (column count, hiragana-able reading, non-empty surface) is skipped.
-pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<Candidate>>, CandidateError> {
-    let mut entries: HashMap<String, Vec<Candidate>> = HashMap::new();
+pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<CandidateRow>>, CandidateError> {
+    let mut entries: HashMap<String, Vec<CandidateRow>> = HashMap::new();
     let mut total = 0u64;
     let mut skipped = 0u64;
 
@@ -171,14 +173,13 @@ pub fn parse_dir(dir: &Path) -> Result<HashMap<String, Vec<Candidate>>, Candidat
             //   5-10 POS hierarchy (主, 細分類1, 細分類2, 細分類3, 活用型, 活用形)
             //   11  reading (katakana)
             //   12+  base form, pronunciation, ID, ...
-            let pos = fields[5..11.min(fields.len())]
+            let pos = fields[5..11]
                 .iter()
                 .filter(|s| !s.is_empty() && **s != "*")
                 .copied()
                 .collect::<Vec<_>>()
                 .join("-");
-            entries.entry(reading.clone()).or_default().push(Candidate {
-                reading,
+            entries.entry(reading).or_default().push(CandidateRow {
                 surface: surface.to_string(),
                 cost,
                 pos,
@@ -228,9 +229,12 @@ fn parse_latest_version(xml: &str) -> Result<String, CandidateError> {
 fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, CandidateError> {
     // Stage the ZIP on disk so we don't hold both the compressed bytes (a
     // few hundred MB for SudachiDict-full) AND the extracted CSVs in
-    // memory at the same time. The temp file is removed regardless of
-    // extraction outcome via `_guard`.
-    let tmp_path = dest.join(".tmp.zip");
+    // memory at the same time. Use a per-process unique tmp name so two
+    // parallel `mine` runs against the same cache dir don't clobber each
+    // other's tmp file. Install the guard BEFORE the download so a failed
+    // io::copy doesn't leak a partial tmp.
+    let tmp_path = dest.join(format!(".tmp.{}.zip", std::process::id()));
+    let _guard = TmpFileGuard(tmp_path.clone());
     {
         let resp = ureq::get(url)
             .call()
@@ -241,7 +245,6 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
         let mut tmp = fs::File::create(&tmp_path)?;
         io::copy(&mut body_reader, &mut tmp)?;
     }
-    let _guard = TmpFileGuard(tmp_path.clone());
 
     let mut archive = zip::ZipArchive::new(fs::File::open(&tmp_path)?).map_err(zip_err)?;
     let mut count = 0;

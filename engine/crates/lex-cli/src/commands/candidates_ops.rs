@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use lex_core::dict::{Dictionary, TrieDictionary};
 
 use crate::candidates::sudachi;
-use crate::candidates::{classify, write_candidates, Bucket, Candidate, CandidateError};
+use crate::candidates::{classify_pos_string, write_candidates, Bucket, Candidate, CandidateError};
 
 /// Mine extras candidates from SudachiDict.
 ///
@@ -38,25 +38,36 @@ pub fn mine(
     let mut total_upstream = 0usize;
     let mut already_covered = 0usize;
 
-    for (reading, cands) in &upstream {
+    for (reading, rows) in &upstream {
         // For a typical reading the build dict yields a handful of entries
         // (homophones), so a linear scan is faster than building a HashSet
         // and avoids cloning every surface up front.
         let existing = dict.lookup(reading);
-        for cand in cands {
+        for row in rows {
             total_upstream += 1;
-            if existing.iter().any(|e| e.surface == cand.surface) {
+            if existing.iter().any(|e| e.surface == row.surface) {
                 already_covered += 1;
                 continue;
             }
             // Dedupe in case Sudachi has multiple POS variants for the same
-            // (reading, surface) — we don't care which POS won here.
-            if !seen.insert((cand.reading.clone(), cand.surface.clone())) {
+            // (reading, surface) — we don't care which POS won here. Reading
+            // is the outer key; cloning happens once here on dedupe insert
+            // (not per row in the parser, see CandidateRow doc).
+            if !seen.insert((reading.clone(), row.surface.clone())) {
                 continue;
             }
-            let pos_fields: Vec<&str> = cand.pos.split('-').collect();
-            let bucket = classify(&pos_fields);
-            candidates.push((bucket, cand.clone()));
+            // Classify directly from the dash-joined POS string to skip the
+            // per-row `Vec<&str>` allocation that `classify(&[..])` requires.
+            let bucket = classify_pos_string(&row.pos);
+            candidates.push((
+                bucket,
+                Candidate {
+                    reading: reading.clone(),
+                    surface: row.surface.clone(),
+                    cost: row.cost,
+                    pos: row.pos.clone(),
+                },
+            ));
         }
     }
 
