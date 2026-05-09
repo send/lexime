@@ -312,8 +312,12 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
         // Stage the extraction to a per-process unique temp file then
         // atomically rename so two parallel `mine` runs against the same
         // cache dir don't interleave half-written CSVs (the prior
-        // exists-check-then-create pattern was TOCTOU-racy).
+        // exists-check-then-create pattern was TOCTOU-racy). The guard
+        // wipes the temp on any error path before we reach the rename;
+        // a successful rename leaves nothing at extract_tmp for the
+        // guard to remove.
         let extract_tmp = dest.join(format!(".{}.extract.{}", basename, std::process::id()));
+        let _extract_guard = TmpFileGuard(extract_tmp.clone());
         {
             let mut out = fs::File::create(&extract_tmp)?;
             io::copy(&mut file, &mut out)?;

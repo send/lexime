@@ -34,7 +34,6 @@ pub fn mine(
     })?;
 
     let mut candidates: Vec<(Bucket, Candidate)> = Vec::new();
-    let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut total_upstream = 0usize;
     let mut already_covered = 0usize;
 
@@ -47,15 +46,19 @@ pub fn mine(
         // (homophones), so a linear scan is faster than building a HashSet
         // and avoids cloning every surface up front.
         let existing = dict.lookup(&reading);
+        // Dedupe per reading: surfaces are only repeated when Sudachi has
+        // several POS variants for the same (reading, surface), which is a
+        // local property. Scoping `seen` to one reading drops the global
+        // (reading, surface) HashSet that previously grew to O(rows) and
+        // held reading clones across the entire mine.
+        let mut seen: HashSet<String> = HashSet::new();
         for row in rows {
             total_upstream += 1;
             if existing.iter().any(|e| e.surface == row.surface) {
                 already_covered += 1;
                 continue;
             }
-            // Dedupe in case Sudachi has multiple POS variants for the same
-            // (reading, surface).
-            if !seen.insert((reading.clone(), row.surface.clone())) {
+            if !seen.insert(row.surface.clone()) {
                 continue;
             }
             // Classify directly from the dash-joined POS string to skip the
