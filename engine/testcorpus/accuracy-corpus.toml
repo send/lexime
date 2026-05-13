@@ -411,6 +411,27 @@ expected = "一万円"
 category = "numeric"
 tags = ["counter", "large"]
 
+[[cases]]
+reading = "ちょうさ"
+expected = "調査"
+category = "regression"
+tags = ["numeric-rewriter", "bare-multiplier"]
+note = "NumericRewriter が `ちょう→1兆` + `さ→差` を合成し `一兆差` が top-1 になっていた (bare 多倍数 implicit-1 を削除して修正)"
+
+[[cases]]
+reading = "まんねん"
+expected = "万年"
+category = "regression"
+tags = ["numeric-rewriter", "bare-multiplier"]
+note = "同上 — `まん→1万` + `ねん→年` で `一万年` が top-1 になっていた"
+
+[[cases]]
+reading = "おくねん"
+expected = "憶念"
+category = "regression"
+tags = ["numeric-rewriter", "bare-multiplier"]
+note = "同上 — `おく→1億` + `ねん→年` で `一億年` が top-1 になっていた"
+
 # ═══════════════════════════════════════════════════════════════════
 # Curated domain extras (engine/data/extras-raw)
 # ═══════════════════════════════════════════════════════════════════
