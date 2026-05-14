@@ -64,16 +64,6 @@ criteria = "safe-to-deploy"
 version = "2.11.0"
 criteria = "safe-to-deploy"
 
-# Raised from `safe-to-run` to `safe-to-deploy` in PR #242. Two paths now
-# pull bumpalo as a transitive dependency:
-#   - `zip 7` → `zopfli` → `bumpalo`  (used by `dictool candidates mine`'s
-#     ZIP-extraction code; reachable from a CLI tool we may distribute).
-#   - `candle-core` → wasm-bindgen-macro-support → `bumpalo`  (proc-macro
-#     side, only with the neural feature).
-# Either path alone would be enough for cargo-vet to demand `safe-to-deploy`
-# evaluation. The IME runtime itself doesn't directly use bumpalo at
-# runtime (the dictool CLI is a separate binary), but the elevated trust
-# level is required for `cargo vet check` to pass on the workspace graph.
 [[exemptions.bumpalo]]
 version = "3.19.1"
 criteria = "safe-to-deploy"
@@ -88,6 +78,14 @@ criteria = "safe-to-deploy"
 
 [[exemptions.bytes]]
 version = "1.11.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.bzip2]]
+version = "0.4.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.bzip2-sys]]
+version = "0.1.13+1.0.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.camino]]
