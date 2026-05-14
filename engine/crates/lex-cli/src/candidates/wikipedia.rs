@@ -48,8 +48,16 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
     } else {
         Box::new(file)
     };
-    let buffered = BufReader::with_capacity(1 << 20, reader);
+    extract_kanji_freqs_from_reader(BufReader::with_capacity(1 << 20, reader), true)
+}
 
+/// Pure-stream variant of `extract_kanji_freqs`. Public-in-crate so tests
+/// can exercise the parse loop without touching the filesystem (avoids
+/// flaky tempfile races in parallel runs).
+pub(crate) fn extract_kanji_freqs_from_reader<R: BufRead>(
+    reader: R,
+    progress: bool,
+) -> Result<HashMap<String, u32>, CandidateError> {
     let mut freqs: HashMap<String, u32> = HashMap::new();
     let mut in_text = false;
     let mut buf = String::new();
@@ -69,20 +77,23 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
     // still get scanned.
     let mut current_page_is_article = true;
 
-    for line_res in buffered.lines() {
+    for line_res in reader.lines() {
         let line = line_res?;
         bytes_seen += line.len() as u64 + 1;
 
         // Reset at each <page> boundary so a non-article page doesn't
         // poison the next page when no explicit <ns> is provided.
-        // Also reset markup-skip state: a page with unbalanced `{{...` or
-        // `<ref ...` (real dumps contain these) would otherwise drag its
-        // open-block state into the next page and silently skip everything
-        // that follows.
+        // Also reset markup-skip state: a page with unbalanced `{{...`,
+        // `<ref ...`, or `<text` (without matching close) would otherwise
+        // drag its open-block state into the next page and silently skip
+        // everything that follows. `in_text` is reset here too — a stray
+        // self-closing/unclosed `<text` on a non-article page must not
+        // make us treat subsequent XML metadata of the NEXT page as prose.
         if line.contains("<page>") {
             current_page_is_article = true;
             tmpl_depth = 0;
             in_ref = false;
+            in_text = false;
             buf.clear();
         }
         // Parse <ns>NUM</ns>. Filter to ns=0 (main article namespace).
@@ -97,12 +108,30 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
             }
         }
 
-        // Flip in_text on `<text` (any attrs OK), reset on `</text>`. We
-        // tolerate <text> opening / closing on the same line.
+        // Detect the `<text` opening tag, with three flavours to handle:
+        //   `<text>body</text>`      single line (close after open)
+        //   `<text>body`             open continues to next line
+        //   `<text ... />`           self-closing, empty body (rare but
+        //                            present in real dumps for redirect /
+        //                            stub pages)
         let text_open = line.find("<text");
         let text_close = line.find("</text>");
-        let scan_slice: &str = match (in_text, text_open, text_close) {
-            (false, Some(o), Some(c)) if c > o => {
+        let text_self_closing = text_open.is_some_and(|o| {
+            // Self-closing iff the first `>` after `<text` is preceded by `/`.
+            line[o..]
+                .find('>')
+                .is_some_and(|rel| rel > 0 && line.as_bytes()[o + rel - 1] == b'/')
+        });
+        let scan_slice: &str = match (in_text, text_open, text_close, text_self_closing) {
+            (false, Some(_), _, true) => {
+                // Self-closing `<text ... />` — page seen, nothing to scan.
+                pages_seen += 1;
+                if current_page_is_article {
+                    pages_scanned += 1;
+                }
+                ""
+            }
+            (false, Some(o), Some(c), false) if c > o => {
                 // Whole text on one line.
                 pages_seen += 1;
                 if current_page_is_article {
@@ -112,7 +141,7 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
                 let body_start = after_open.find('>').map(|p| o + p + 1).unwrap_or(o);
                 &line[body_start..c]
             }
-            (false, Some(o), None) => {
+            (false, Some(o), None, false) => {
                 in_text = true;
                 pages_seen += 1;
                 if current_page_is_article {
@@ -122,11 +151,11 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
                 let body_start = after_open.find('>').map(|p| o + p + 1).unwrap_or(o);
                 &line[body_start..]
             }
-            (true, _, Some(c)) => {
+            (true, _, Some(c), _) => {
                 in_text = false;
                 &line[..c]
             }
-            (true, _, None) => &line[..],
+            (true, _, None, _) => &line[..],
             _ => "",
         };
 
@@ -140,7 +169,7 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
             );
         }
 
-        if last_progress.elapsed().as_secs() >= 10 {
+        if progress && last_progress.elapsed().as_secs() >= 10 {
             eprintln!(
                 "  ... {} pages ({} articles scanned), ~{} MB, {} surfaces",
                 pages_seen,
@@ -152,13 +181,15 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
         }
     }
 
-    eprintln!(
-        "Done. {} pages, {} articles scanned, ~{} MB, {} unique surfaces",
-        pages_seen,
-        pages_scanned,
-        bytes_seen >> 20,
-        freqs.len()
-    );
+    if progress {
+        eprintln!(
+            "Done. {} pages, {} articles scanned, ~{} MB, {} unique surfaces",
+            pages_seen,
+            pages_scanned,
+            bytes_seen >> 20,
+            freqs.len()
+        );
+    }
     Ok(freqs)
 }
 
@@ -506,18 +537,24 @@ mod prose_tests {
         assert!(!freqs.contains_key("未閉"));
     }
 
-    /// Test helper: drive `extract_kanji_freqs` with an in-memory dump.
+    #[test]
+    fn self_closing_text_tag_is_handled() {
+        // `<text ... />` (empty content, e.g. for redirect / stub pages)
+        // must NOT flip in_text to true — otherwise subsequent XML metadata
+        // lines of the next page would be scanned as prose.
+        let dump = "<page>\n<ns>0</ns>\n<text bytes=\"0\" />\n</page>\n\
+                    <page>\n<ns>0</ns>\n<title>普通記事</title>\n<text>本文文章</text>\n</page>";
+        let freqs = extract_kanji_freqs_from_str(dump).unwrap();
+        // 本文文章 from the second page must be counted.
+        assert_eq!(freqs.get("本文文章"), Some(&1));
+        // The XML metadata of page 2 (`<title>普通記事</title>`) must NOT
+        // be counted as prose — would leak if in_text stuck true.
+        assert!(!freqs.contains_key("普通記事"));
+    }
+
+    /// Test helper: drive the stream parser with an in-memory dump.
+    /// Avoids tempfile flakiness in parallel test runs.
     fn extract_kanji_freqs_from_str(s: &str) -> Result<HashMap<String, u32>, CandidateError> {
-        let tmp = std::env::temp_dir().join(format!(
-            "lexime_test_dump_{}.xml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&tmp, s)?;
-        let r = extract_kanji_freqs(&tmp);
-        let _ = std::fs::remove_file(&tmp);
-        r
+        extract_kanji_freqs_from_reader(std::io::Cursor::new(s.as_bytes()), false)
     }
 }
