@@ -48,11 +48,17 @@ pub fn parse_japanese_number(kana: &str) -> Option<u64> {
             if pos != 0 {
                 return None;
             }
-            rest = &rest[unit_kana.len()..];
-            // If group is 0 before a large unit, it means the unit stands alone (e.g. まん = 10000)
+            // Require an explicit leading digit. Bare `まん` / `おく` /
+            // `ちょう` overwhelmingly mean something other than the bare
+            // numeric value (万年, 億劫, 兆候, 調査, ...) — accepting them
+            // as implicit-1 lets the number+counter rewriter generate
+            // spurious top-1 candidates like `ちょうさ → 一兆差` that
+            // outrank natural Viterbi top-1 like `調査`. Multiplier-only
+            // input remains a typing error if it ever reaches us.
             if group == 0 {
-                group = 1;
+                return None;
             }
+            rest = &rest[unit_kana.len()..];
             result += group * unit_val;
             group = parse_group(&mut rest);
         }
@@ -357,6 +363,20 @@ mod tests {
         assert_eq!(parse_japanese_number("いちおく"), Some(100_000_000));
         assert_eq!(parse_japanese_number("いっちょう"), None); // いっちょう not supported
         assert_eq!(parse_japanese_number("いちちょう"), Some(1_000_000_000_000));
+    }
+
+    #[test]
+    fn test_bare_large_units_rejected() {
+        // Bare large multipliers must NOT parse — otherwise the number+counter
+        // rewriter generates spurious top-1 like `ちょうさ → 一兆差` that
+        // outranks `調査` (real user bug).
+        assert_eq!(parse_japanese_number("まん"), None);
+        assert_eq!(parse_japanese_number("おく"), None);
+        assert_eq!(parse_japanese_number("ちょう"), None);
+        // Compound forms with a real leading group must still work.
+        assert_eq!(parse_japanese_number("ひゃくまん"), Some(1_000_000));
+        assert_eq!(parse_japanese_number("じゅうおく"), Some(1_000_000_000));
+        assert_eq!(parse_japanese_number("にちょう"), Some(2_000_000_000_000));
     }
 
     #[test]
