@@ -211,13 +211,15 @@ fn scan_prose_kanji_runs(
 ) {
     let bytes = s.as_bytes();
     let mut i = 0;
-    let mut prose_start = 0; // start of the current prose run (when not inside a block)
+    // start of the current prose run (when not inside a block).
+    //
     // UTF-8 safety: this loop is byte-indexed, but `&s[prose_start..i]`
-    // slicing is always at a char boundary because every advance of
-    // either index happens just past an ASCII delimiter byte (`{`, `}`,
-    // `<`, `>`, `/`, or whitespace — all 0x00-0x7F). UTF-8 continuation
-    // bytes are strictly 0x80-0xBF, so multi-byte chars (kanji etc.)
-    // cannot contribute a byte that matches any of our ASCII branches.
+    // slicing is always at a char boundary because every advance of either
+    // index happens just past an ASCII delimiter byte (`{`, `}`, `<`, `>`,
+    // `/`, or whitespace — all 0x00-0x7F). UTF-8 continuation bytes are
+    // strictly 0x80-0xBF, so multi-byte chars (kanji etc.) cannot
+    // contribute a byte that matches any of our ASCII branches.
+    let mut prose_start = 0;
     while i < bytes.len() {
         // Inline match on 2-byte ASCII pairs and `<ref` / `</ref>` headers.
         // Using as_bytes lets us peek without UTF-8 decoding overhead;
