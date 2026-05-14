@@ -2,6 +2,7 @@ use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
+use lex_cli::candidates::wikipedia;
 use lex_cli::commands::{candidates_ops, config_ops, convert_ops, dict_ops, user_dict_ops};
 
 /// Parse a `SOURCE:DIR` pair for `--extra-source`.
@@ -255,6 +256,26 @@ enum CandidatesAction {
         #[arg(long)]
         clean: bool,
     },
+    /// Mine kanji-run candidates from a Wikipedia XML dump (.xml or .xml.bz2).
+    ///
+    /// Writes `wikipedia.tsv` with `surface\tfreq` rows for surfaces NOT in
+    /// the build dict, sorted by frequency descending. Reading-assignment is
+    /// done by hand on the top-N rows before promoting to `extras/`.
+    Corpus {
+        /// Path to the Wikipedia dump (.xml or .xml.bz2). User-supplied —
+        /// download from https://dumps.wikimedia.org/jawiki/latest/ first.
+        dump: String,
+        /// Build dict to diff against. Default: engine/data/lexime.dict
+        #[arg(long)]
+        build_dict: Option<String>,
+        /// Output dir. Default: engine/data/extras-candidates
+        #[arg(long)]
+        out_dir: Option<String>,
+        /// Drop surfaces with frequency below this. Default tracks
+        /// `candidates::wikipedia::DEFAULT_MIN_FREQ` so this stays in sync.
+        #[arg(long, default_value_t = wikipedia::DEFAULT_MIN_FREQ)]
+        min_freq: u32,
+    },
 }
 
 fn main() {
@@ -339,6 +360,24 @@ fn main() {
                 }
                 if let Err(e) = candidates_ops::mine(&cache, &dict, &out) {
                     eprintln!("mine: {e}");
+                    std::process::exit(1);
+                }
+            }
+            CandidatesAction::Corpus {
+                dump,
+                build_dict,
+                out_dir,
+                min_freq,
+            } => {
+                let out = out_dir
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(candidates_ops::default_out_dir);
+                let dict = build_dict
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(candidates_ops::default_build_dict);
+                let dump_path = std::path::PathBuf::from(dump);
+                if let Err(e) = candidates_ops::corpus(&dump_path, &dict, &out, min_freq) {
+                    eprintln!("corpus: {e}");
                     std::process::exit(1);
                 }
             }

@@ -38,6 +38,7 @@
 //!   rarely useful for extras but kept for completeness.
 
 pub mod sudachi;
+pub mod wikipedia;
 
 use std::fs;
 use std::io::{self, BufWriter, Write};
