@@ -198,9 +198,10 @@ pub(crate) fn extract_kanji_freqs_from_reader<R: BufRead>(
 /// stay closed.
 ///
 /// `tmpl_depth` increases on `{{`, decreases on `}}`. `in_ref` toggles on
-/// `<ref` / `</ref>`. Outside-block characters are appended to a small local
-/// buffer that's flushed to `scan_kanji_runs` when a block opens/closes or at
-/// the end of the slice.
+/// `<ref` / `</ref>`. Outside-block byte ranges are passed by reference
+/// (`&s[prose_start..i]`) directly to `scan_kanji_runs` whenever a block
+/// opens, closes, or the slice ends — no intermediate copy of the prose
+/// itself; only the per-run `buf` inside `scan_kanji_runs` is reused.
 fn scan_prose_kanji_runs(
     s: &str,
     buf: &mut String,
