@@ -2,6 +2,7 @@ use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
+use lex_cli::candidates::wikipedia;
 use lex_cli::commands::{candidates_ops, config_ops, convert_ops, dict_ops, user_dict_ops};
 
 /// Parse a `SOURCE:DIR` pair for `--extra-source`.
@@ -270,8 +271,9 @@ enum CandidatesAction {
         /// Output dir. Default: engine/data/extras-candidates
         #[arg(long)]
         out_dir: Option<String>,
-        /// Drop surfaces with frequency below this (default: 3).
-        #[arg(long, default_value_t = 3)]
+        /// Drop surfaces with frequency below this. Default tracks
+        /// `candidates::wikipedia::DEFAULT_MIN_FREQ` so this stays in sync.
+        #[arg(long, default_value_t = wikipedia::DEFAULT_MIN_FREQ)]
         min_freq: u32,
     },
 }

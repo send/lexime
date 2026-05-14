@@ -75,8 +75,15 @@ pub fn extract_kanji_freqs(dump_path: &Path) -> Result<HashMap<String, u32>, Can
 
         // Reset at each <page> boundary so a non-article page doesn't
         // poison the next page when no explicit <ns> is provided.
+        // Also reset markup-skip state: a page with unbalanced `{{...` or
+        // `<ref ...` (real dumps contain these) would otherwise drag its
+        // open-block state into the next page and silently skip everything
+        // that follows.
         if line.contains("<page>") {
             current_page_is_article = true;
+            tmpl_depth = 0;
+            in_ref = false;
+            buf.clear();
         }
         // Parse <ns>NUM</ns>. Filter to ns=0 (main article namespace).
         // Skips Wikipedia: / User: / File: / Template: / Category: pages
@@ -203,7 +210,7 @@ fn scan_prose_kanji_runs(
             }
             continue;
         }
-        if !in_block && b == b'<' && s[i..].starts_with("<ref") {
+        if !in_block && b == b'<' && is_ref_open(&s[i..], bytes, i) {
             // Self-closing `<ref ... />` is one shot; full `<ref>...</ref>`
             // is multi-token. Cheaply check the next `>`.
             if i > prose_start {
@@ -241,6 +248,23 @@ fn scan_prose_kanji_runs(
     }
     if !*in_ref && *tmpl_depth == 0 && prose_start < bytes.len() {
         scan_kanji_runs(&s[prose_start..], buf, freqs);
+    }
+}
+
+/// Distinguish `<ref>` / `<ref ...>` / `<ref/>` from `<references>` and
+/// `<refer...>` etc. `<references>` closes with `</references>` (not
+/// `</ref>`), so naive `starts_with("<ref")` traps `in_ref` permanently
+/// — the rest of the page (and worse, subsequent pages) silently drop.
+fn is_ref_open(slice: &str, bytes: &[u8], i: usize) -> bool {
+    if !slice.starts_with("<ref") {
+        return false;
+    }
+    // 4 = len("<ref"). Char after "<ref" must terminate the tag name.
+    match bytes.get(i + 4) {
+        Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'>') | Some(b'/') => true,
+        // EOF after "<ref" — treat as opening (line break inside attrs).
+        None => true,
+        _ => false,
     }
 }
 
@@ -445,5 +469,55 @@ mod prose_tests {
         assert_eq!(f.get("終了文章"), Some(&1));
         assert!(!f.contains_key("内容"));
         assert!(!f.contains_key("更に"));
+    }
+
+    #[test]
+    fn references_tag_does_not_trap_in_ref() {
+        // `<references>` (and `<references/>` / `<references xml:space="..."/>`)
+        // closes with `</references>`, NOT `</ref>`. Naive `<ref` matching
+        // would trap in_ref true forever, silently dropping the rest of the
+        // page. We must NOT enter in_ref state for this tag.
+        let f = scan_one("先頭文章<references/>末尾文章");
+        assert_eq!(f.get("先頭文章"), Some(&1));
+        assert_eq!(f.get("末尾文章"), Some(&1));
+
+        let f2 = scan_one("先頭文章<references>引用集</references>末尾文章");
+        assert_eq!(f2.get("先頭文章"), Some(&1));
+        assert_eq!(f2.get("末尾文章"), Some(&1));
+        // The <references> body content here happens to look like prose
+        // since we didn't treat it as a block — that's fine; we trade
+        // theoretical "block body" purity for not losing the rest of the
+        // page when </ref> never arrives.
+    }
+
+    #[test]
+    fn page_boundary_resets_block_state() {
+        // A page with unbalanced `{{...` (no closing `}}`) leaves
+        // tmpl_depth > 0. The driver loop resets state at <page>
+        // boundaries — verify that the SECOND page is fully scanned.
+        let dump = "<page>\n<ns>0</ns>\n<text>第一段{{壊れ|未閉</text>\n</page>\n\
+                    <page>\n<ns>0</ns>\n<text>第二段文章</text>\n</page>";
+        let freqs = extract_kanji_freqs_from_str(dump).unwrap();
+        // 第一段 must be present (scanned before the open `{{`).
+        assert_eq!(freqs.get("第一段"), Some(&1));
+        // 第二段文章 must be present — would be missing if state leaked.
+        assert_eq!(freqs.get("第二段文章"), Some(&1));
+        // The unclosed-template body must NOT leak through.
+        assert!(!freqs.contains_key("未閉"));
+    }
+
+    /// Test helper: drive `extract_kanji_freqs` with an in-memory dump.
+    fn extract_kanji_freqs_from_str(s: &str) -> Result<HashMap<String, u32>, CandidateError> {
+        let tmp = std::env::temp_dir().join(format!(
+            "lexime_test_dump_{}.xml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&tmp, s)?;
+        let r = extract_kanji_freqs(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        r
     }
 }
