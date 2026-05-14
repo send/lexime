@@ -1,4 +1,5 @@
 anyhow
+bzip2-sys
 camino
 crc32fast
 crossbeam-utils
