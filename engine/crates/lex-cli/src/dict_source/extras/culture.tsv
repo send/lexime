@@ -1,0 +1,35 @@
+# Lexime curated extras: culture & media vocabulary (publishers, music
+# producers/artists, popular culture) not covered by Mozc UT.
+#
+# Format: reading[TAB]surface[TAB]cost(optional)
+# Comment lines start with '#'. See it.tsv for full format spec.
+#
+# Sourcing: surfaces below were sampled from `dictool candidates corpus`
+# output on a Japanese Wikipedia dump and verified via `lextool explain`
+# to ensure each entry fills a real Mozc gap (top-1 was gibberish or an
+# obscure homophone) rather than duplicating an existing dict entry.
+
+# --- 出版社・文庫 ---
+しんちょうぶんこ	新潮文庫
+ちゅうこうぶんこ	中公文庫
+ちゅうおうこうろんしんしゃ	中央公論新社
+とうきょうだいがくしゅっぱんかい	東京大学出版会
+せいぶんどうしんこうしゃ	誠文堂新光社
+こうぶんどう	弘文堂
+かどかわにほんちめいだいじてん	角川日本地名大辞典
+こくしだいじてん	国史大辞典
+
+# --- 作詞家・作曲家・アーティスト ---
+こむろてつや	小室哲哉
+あきもとやすし	秋元康
+まつとうやゆみ	松任谷由実
+あむろなみえ	安室奈美恵
+さわだけんじ	沢田研二
+つつみきょうへい	筒美京平
+まつもとたかし	松本隆
+みずきなな	水樹奈々
+# 阿久悠: 悪友 (final_cost ~11800) を top-1 に残すため cost を上げる
+あくゆう	阿久悠	8000
+
+# --- 作品名 ---
+うちゅうせんかん	宇宙戦艦

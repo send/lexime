@@ -496,6 +496,99 @@ expected = "雲母坂"
 category = "extras"
 tags = ["geography", "domain-reading"]
 
+# --- history: 元号 / 位階 / 古典 / 歴史人物 ---
+# Mozc UT に surface 自体が無く、lattice top-1 が gibberish になる ----
+
+[[cases]]
+reading = "えいろく"
+expected = "永禄"
+category = "extras"
+tags = ["history", "era"]
+note = "Mozc top-1 は 栄禄 (obscure)。Wikipedia corpus mining で発見"
+
+[[cases]]
+reading = "じゅごい"
+expected = "従五位"
+category = "extras"
+tags = ["history", "court-rank"]
+
+[[cases]]
+reading = "しょくにほんぎ"
+expected = "続日本紀"
+category = "extras"
+tags = ["history", "classical-work"]
+
+[[cases]]
+reading = "せんしそうしょ"
+expected = "戦史叢書"
+category = "extras"
+tags = ["history", "classical-work"]
+note = "Mozc top-1 は 戦士叢書 (同音異字)"
+
+[[cases]]
+reading = "ほくぎ"
+expected = "北魏"
+category = "extras"
+tags = ["history", "dynasty"]
+
+# 共存ケース: extras に追加した surface が Mozc top-1 を上書きしないこと
+# (寛保/元亀/曹操 を入れたが、常用語の 漢方/元気/早々 が top-1 を維持)
+
+[[cases]]
+reading = "かんぽう"
+expected = "漢方"
+category = "extras"
+tags = ["history", "era", "cost-conflict"]
+note = "extras に 寛保 を追加したが、常用の 漢方 が top-1 を維持 (cost 7000 で調整)"
+
+[[cases]]
+reading = "げんき"
+expected = "元気"
+category = "extras"
+tags = ["history", "era", "cost-conflict"]
+note = "extras に 元亀 を追加したが、常用の 元気 が top-1 を維持 (default cost で OK)"
+
+[[cases]]
+reading = "そうそう"
+expected = "早々"
+category = "extras"
+tags = ["history", "person", "cost-conflict"]
+note = "extras に 曹操 を追加したが、常用の 早々 が top-1 を維持 (cost 8000 で調整)"
+
+# --- culture: 出版社 / 音楽人 / 作品名 ---
+
+[[cases]]
+reading = "しんちょうぶんこ"
+expected = "新潮文庫"
+category = "extras"
+tags = ["culture", "publisher"]
+
+[[cases]]
+reading = "かどかわにほんちめいだいじてん"
+expected = "角川日本地名大辞典"
+category = "extras"
+tags = ["culture", "publisher"]
+
+[[cases]]
+reading = "こむろてつや"
+expected = "小室哲哉"
+category = "extras"
+tags = ["culture", "person"]
+
+[[cases]]
+reading = "うちゅうせんかん"
+expected = "宇宙戦艦"
+category = "extras"
+tags = ["culture", "work"]
+note = "Mozc top-1 は 宇宙船感 (gibberish)"
+
+[[cases]]
+reading = "あくゆう"
+expected = "悪友"
+category = "extras"
+tags = ["culture", "person", "cost-conflict"]
+note = "extras に 阿久悠 を追加したが、常用の 悪友 が top-1 を維持 (cost 8000 で調整)"
+
 # ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)
 # ═══════════════════════════════════════════════════════════════════

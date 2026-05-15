@@ -38,6 +38,8 @@ const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
     ("geography.tsv", include_str!("extras/geography.tsv")),
+    ("history.tsv", include_str!("extras/history.tsv")),
+    ("culture.tsv", include_str!("extras/culture.tsv")),
 ];
 
 /// Default cost for entries that don't specify one. Mid-range so curated
@@ -146,6 +148,19 @@ mod tests {
             .get("きららざか")
             .expect("きららざか must map to 雲母坂");
         assert!(kirarazaka.iter().any(|e| e.surface == "雲母坂"));
+
+        // history domain
+        let eiroku = entries.get("えいろく").expect("えいろく must map to 永禄");
+        assert!(eiroku.iter().any(|e| e.surface == "永禄"));
+        // Cost override on a history entry (寛保 cost=7000) must round-trip.
+        let kanpou = entries.get("かんぽう").expect("かんぽう must map to 寛保");
+        assert!(kanpou.iter().any(|e| e.surface == "寛保" && e.cost == 7000));
+
+        // culture domain
+        let komuro = entries
+            .get("こむろてつや")
+            .expect("こむろてつや must map to 小室哲哉");
+        assert!(komuro.iter().any(|e| e.surface == "小室哲哉"));
 
         // All entries use the default POS id.
         for entry_list in entries.values() {
