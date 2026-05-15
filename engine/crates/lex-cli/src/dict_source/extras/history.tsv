@@ -1,0 +1,38 @@
+# Lexime curated extras: historical vocabulary (era names, court ranks,
+# classical works, historical figures and organizations) not covered by
+# Mozc UT.
+#
+# Format: reading[TAB]surface[TAB]cost(optional)
+# Comment lines start with '#'. See it.tsv for full format spec.
+#
+# Sourcing: surfaces below were sampled from `dictool candidates corpus`
+# output on a Japanese Wikipedia dump and verified via `lextool explain`
+# to ensure each entry fills a real Mozc gap (top-1 was gibberish or an
+# obscure homophone) rather than duplicating an existing dict entry.
+
+# --- 元号 (戦国〜江戸) ---
+えいろく	永禄
+じょうがん	貞観
+ほうれき	宝暦
+げんき	元亀
+えんきょう	延享
+きょうろく	享禄
+# 寛保: 漢方 (final_cost ~10500) を top-1 に残すため cost を上げる
+かんぽう	寛保	7000
+
+# --- 位階 ---
+じゅごい	従五位
+じゅさんみ	従三位
+しょうごい	正五位
+しょうしい	正四位
+
+# --- 古典・古書 ---
+しょくにほんぎ	続日本紀
+かんせいちょうしゅうしょかふ	寛政重修諸家譜
+せんしそうしょ	戦史叢書
+
+# --- 歴史人物・国家 ---
+ぶてい	武帝
+ほくぎ	北魏
+# 曹操: 早々 (final_cost ~10600) を top-1 に残すため cost を上げる
+そうそう	曹操	8000
