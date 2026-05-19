@@ -12,6 +12,7 @@ use super::cost::{conn_cost, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
+use super::reranker::{compute_history_boost, HistoryBoostBreakdown};
 use super::viterbi::{viterbi_nbest, ScoredPath};
 
 /// Full diagnostic result for a single reading.
@@ -57,7 +58,9 @@ pub struct ExplainPath {
     pub viterbi_cost: i64,
     /// Cost delta from structure reranking.
     pub rerank_delta: i64,
-    /// Total history boost applied (negative = better).
+    /// Per-component history boost (raw sums + whole-path × 5).
+    pub history_breakdown: HistoryBoostBreakdown,
+    /// History boost actually subtracted from the cost (post-normalization).
     pub history_boost: i64,
     /// Final cost after all adjustments.
     pub final_cost: i64,
@@ -231,6 +234,7 @@ pub fn explain(
     };
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
 
+    let now = crate::user_history::now_epoch();
     let paths: Vec<ExplainPath> = final_paths
         .iter()
         .map(|scored| {
@@ -246,11 +250,15 @@ pub fn explain(
                 .copied()
                 .unwrap_or(original);
             let rerank_delta = post_rerank - original;
-            let history_boost = post_rerank - scored.viterbi_cost;
+            let history_breakdown = history
+                .map(|h| compute_history_boost(scored, h, now))
+                .unwrap_or_default();
+            let history_boost = history_breakdown.applied(scored.segments.len());
             ExplainPath {
                 segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
                 rerank_delta,
+                history_breakdown,
                 history_boost,
                 final_cost: scored.viterbi_cost,
             }
@@ -364,6 +372,16 @@ pub fn format_text(result: &ExplainResult) -> String {
             "    viterbi={:<8} rerank={:<+8} history={:<+8} -> final={}\n",
             path.viterbi_cost, path.rerank_delta, -path.history_boost, path.final_cost,
         ));
+        let hb = &path.history_breakdown;
+        if hb.unigram_sum != 0 || hb.bigram_sum != 0 || hb.whole_path_boost != 0 {
+            out.push_str(&format!(
+                "      history: uni_sum={:<+7} bi_sum={:<+7} whole×5={:<+7} (/{} segs)\n",
+                -hb.unigram_sum,
+                -hb.bigram_sum,
+                -hb.whole_path_boost,
+                path.segments.len(),
+            ));
+        }
     }
 
     out
@@ -419,6 +437,29 @@ mod tests {
                 wh.final_cost < w.final_cost,
                 "final cost should be lower with history boost"
             );
+            // Single-segment きょう→京: whole-path is the only contributor.
+            // Per-segment unigram is also recorded (same reading+surface), so
+            // unigram_sum is also nonzero, but bigram_sum should be 0.
+            assert!(
+                wh.history_breakdown.whole_path_boost > 0,
+                "whole-path boost should fire for explicit full-input selection"
+            );
+            assert_eq!(
+                wh.history_breakdown.bigram_sum, 0,
+                "single-segment path has no bigram pairs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_history_breakdown_empty_without_history() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "きょう", 5);
+        for path in &result.paths {
+            assert_eq!(path.history_boost, 0);
+            assert_eq!(path.history_breakdown.unigram_sum, 0);
+            assert_eq!(path.history_breakdown.bigram_sum, 0);
+            assert_eq!(path.history_breakdown.whole_path_boost, 0);
         }
     }
 
