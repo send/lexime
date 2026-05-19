@@ -1,7 +1,7 @@
-use crate::converter::reranker::{history_rerank, rerank};
+use crate::converter::reranker::{history_rerank_at, rerank};
 use crate::converter::viterbi::{RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
-use crate::user_history::UserHistory;
+use crate::user_history::{now_epoch, UserHistory};
 
 #[test]
 fn test_rerank_penalizes_fragmented_path() {
@@ -258,7 +258,7 @@ fn test_history_rerank_unigram_boost_reorders() {
         },
     ];
 
-    history_rerank(&mut paths, &h);
+    history_rerank_at(&mut paths, &h, now_epoch());
 
     // "京" should be boosted to first place
     assert_eq!(paths[0].segments[0].surface, "京");
@@ -312,7 +312,7 @@ fn test_history_rerank_bigram_boost() {
         },
     ];
 
-    history_rerank(&mut paths, &h);
+    history_rerank_at(&mut paths, &h, now_epoch());
 
     // "今日は" path should be boosted (both unigram + bigram) to first
     assert_eq!(paths[0].segments[0].surface, "今日");
@@ -345,7 +345,7 @@ fn test_history_rerank_empty_history_preserves_order() {
         },
     ];
 
-    history_rerank(&mut paths, &h);
+    history_rerank_at(&mut paths, &h, now_epoch());
 
     assert_eq!(paths[0].segments[0].surface, "亜");
     assert_eq!(paths[0].viterbi_cost, 1000);
@@ -357,8 +357,42 @@ fn test_history_rerank_empty_history_preserves_order() {
 fn test_history_rerank_empty_paths() {
     let h = UserHistory::new();
     let mut paths: Vec<ScoredPath> = Vec::new();
-    history_rerank(&mut paths, &h);
+    history_rerank_at(&mut paths, &h, now_epoch());
     assert!(paths.is_empty());
+}
+
+#[test]
+fn test_history_rerank_at_matches_compute_history_boost() {
+    // Contract: `history_rerank_at` must subtract exactly the value reported
+    // by `compute_history_boost(...).applied(seg_count)` when given the same
+    // `now`. The `explain` observer relies on this so its precomputed
+    // breakdown matches what the pipeline actually applied. Regression for
+    // PR #247 R3.
+    use crate::converter::reranker::compute_history_boost;
+
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "京".into())]);
+    let now = 1_700_000_000;
+
+    let path_before = ScoredPath {
+        segments: vec![RichSegment {
+            reading: "きょう".into(),
+            surface: "京".into(),
+            left_id: 0,
+            right_id: 0,
+            word_cost: 0,
+        }],
+        viterbi_cost: 10_000,
+    };
+    let expected_applied =
+        compute_history_boost(&path_before, &h, now).applied(path_before.segments.len());
+
+    let initial_cost = path_before.viterbi_cost;
+    let mut paths = vec![path_before];
+    history_rerank_at(&mut paths, &h, now);
+    let actual_applied = initial_cost - paths[0].viterbi_cost;
+
+    assert_eq!(actual_applied, expected_applied);
 }
 
 /// Build a connection matrix where all transitions cost the given value.

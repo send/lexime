@@ -287,6 +287,7 @@ pub fn explain(
         history,
         kana,
         n,
+        now,
     };
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
 

@@ -123,7 +123,7 @@ impl HistoryBoostBreakdown {
 
 /// Compute the history boost breakdown for a single path without mutating it.
 ///
-/// Mirrors the contribution logic used by [`history_rerank`] so callers
+/// Mirrors the contribution logic used by [`history_rerank_at`] so callers
 /// (e.g. `explain`) can inspect each component.
 pub fn compute_history_boost(
     path: &ScoredPath,
@@ -148,7 +148,12 @@ pub fn compute_history_boost(
     }
 }
 
-/// Apply user-history boosts to N-best paths, then re-sort.
+/// Apply user-history boosts to N-best paths using the given `now`, then re-sort.
+///
+/// Callers that also want to inspect the breakdown (e.g. `explain`) should pass
+/// the same `now` they used with [`compute_history_boost`]; otherwise the
+/// stored breakdown can drift from the boost actually subtracted here when
+/// execution crosses a second boundary.
 ///
 /// Unigram and bigram boosts are subtracted from each path's cost so that
 /// learned candidates float to the top. Because this operates on complete
@@ -161,12 +166,11 @@ pub fn compute_history_boost(
 /// compound paths. The whole-path boost is the strongest signal and is not
 /// normalized — it only fires when the full reading→surface was explicitly
 /// selected.
-pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
+pub fn history_rerank_at(paths: &mut [ScoredPath], history: &UserHistory, now: u64) {
     let _span = debug_span!("history_rerank", paths_count = paths.len()).entered();
     if paths.is_empty() {
         return;
     }
-    let now = crate::user_history::now_epoch();
     for path in paths.iter_mut() {
         let breakdown = compute_history_boost(path, history, now);
         path.viterbi_cost -= breakdown.applied(path.segments.len());
