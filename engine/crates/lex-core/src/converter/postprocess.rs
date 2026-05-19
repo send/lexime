@@ -42,6 +42,10 @@ pub(crate) struct PostprocessContext<'a> {
     pub history: Option<&'a UserHistory>,
     pub kana: &'a str,
     pub n: usize,
+    /// Timestamp passed to `history_rerank_at`. Pinning it here lets diagnostic
+    /// observers compute breakdowns against the exact value the pipeline will
+    /// use, avoiding sub-second drift across the second boundary.
+    pub now: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +69,7 @@ pub(super) fn postprocess(
         history,
         kana,
         n,
+        now: crate::user_history::now_epoch(),
     };
     postprocess_observed(paths, &ctx, &mut NoopObserver)
         .into_iter()
@@ -112,7 +117,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     };
 
     if let Some(h) = ctx.history {
-        reranker::history_rerank(paths, h);
+        reranker::history_rerank_at(paths, h, ctx.now);
     }
     let mut top: Vec<ScoredPath> = paths.drain(..ctx.n.min(paths.len())).collect();
 

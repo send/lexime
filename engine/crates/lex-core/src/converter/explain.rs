@@ -12,7 +12,13 @@ use super::cost::{conn_cost, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
+use super::reranker::compute_history_boost;
 use super::viterbi::{viterbi_nbest, ScoredPath};
+
+// Re-export so downstream crates (e.g. lex-cli) can name the type behind
+// `ExplainPath::history_breakdown` — the definition lives in the crate-private
+// `reranker` module.
+pub use super::reranker::HistoryBoostBreakdown;
 
 /// Full diagnostic result for a single reading.
 #[derive(Debug, Serialize)]
@@ -57,8 +63,14 @@ pub struct ExplainPath {
     pub viterbi_cost: i64,
     /// Cost delta from structure reranking.
     pub rerank_delta: i64,
-    /// Total history boost applied (negative = better).
+    /// Per-component history boost (raw sums + whole-path × 5).
+    pub history_breakdown: HistoryBoostBreakdown,
+    /// History boost actually subtracted from the cost (post-normalization).
     pub history_boost: i64,
+    /// Segment count `history_rerank` used as the normalization denominator.
+    /// May differ from `segments.len()` when `group_segments` later merged
+    /// adjacent segments — keep this value when reporting `/N segs`.
+    pub history_segment_count: usize,
     /// Final cost after all adjustments.
     pub final_cost: i64,
 }
@@ -91,38 +103,84 @@ pub struct ExplainSegment {
 // Observer that captures cost snapshots for explain diagnostics
 // ---------------------------------------------------------------------------
 
-/// Build a key string from a ScoredPath for cost tracking across pipeline stages.
-/// Uses ASCII control characters (US=\x1f, RS=\x1e) as delimiters to avoid
-/// collisions with any reading/surface content.
-fn path_key(path: &ScoredPath) -> String {
-    path.segments
-        .iter()
-        .map(|s| format!("{}\x1f{}", s.reading, s.surface))
-        .collect::<Vec<_>>()
-        .join("\x1e")
+/// Snapshot of one path's state at the post-rerank / pre-history-rerank stage.
+///
+/// Captured here (and not after history_rerank) so the recorded breakdown is
+/// computed on the same segments that history_rerank actually scored — the
+/// pipeline later runs rewriters that add new candidates and `group_segments`
+/// that merges adjacent segments, both of which would invalidate a recompute
+/// against the final path.
+#[derive(Default, Clone, Copy)]
+struct PreHistorySnapshot {
+    /// Cost after resegment + rerank, before any history adjustment.
+    cost: i64,
+    /// Per-component history boost (raw sums + whole-path × 5).
+    breakdown: HistoryBoostBreakdown,
+    /// Boost actually subtracted from `cost` by `history_rerank`.
+    applied_boost: i64,
+    /// Segment count at the moment `history_rerank` saw the path. May differ
+    /// from the final `segments.len()` after `group_segments` merges adjacent
+    /// segments — kept here so the displayed `/N segs` matches the denominator
+    /// actually used during normalization.
+    segment_count: usize,
 }
 
-#[derive(Default)]
-struct ExplainObserver {
+/// Diagnostic observer.
+///
+/// Keys are `ScoredPath::surface_key()` — i.e. the concatenated surface — so
+/// that lookups survive `group_segments` (which merges adjacent segments but
+/// preserves the overall surface). Paths that only appear after history_rerank
+/// (rewriter-added candidates: numeric, katakana, kanji variants) are absent
+/// from these maps and fall back to zero in the caller.
+struct ExplainObserver<'a> {
+    history: Option<&'a UserHistory>,
+    now: u64,
     /// viterbi_cost before resegment/rerank — the raw Viterbi output.
     original_costs: HashMap<String, i64>,
-    /// viterbi_cost after resegment + rerank (before history_rerank).
-    post_rerank_costs: HashMap<String, i64>,
+    /// State at the post-rerank / pre-history-rerank boundary.
+    pre_history: HashMap<String, PreHistorySnapshot>,
 }
 
-impl PostprocessObserver for ExplainObserver {
+impl<'a> ExplainObserver<'a> {
+    fn new(history: Option<&'a UserHistory>, now: u64) -> Self {
+        Self {
+            history,
+            now,
+            original_costs: HashMap::new(),
+            pre_history: HashMap::new(),
+        }
+    }
+}
+
+impl PostprocessObserver for ExplainObserver<'_> {
     fn after_viterbi(&mut self, paths: &[ScoredPath]) {
         self.original_costs = paths
             .iter()
-            .map(|p| (path_key(p), p.viterbi_cost))
+            .map(|p| (p.surface_key(), p.viterbi_cost))
             .collect();
     }
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
-        self.post_rerank_costs = paths
-            .iter()
-            .map(|p| (path_key(p), p.viterbi_cost))
-            .collect();
+        self.pre_history.clear();
+        for p in paths {
+            let (breakdown, applied) = match self.history {
+                Some(h) => {
+                    let b = compute_history_boost(p, h, self.now);
+                    let a = b.applied(p.segments.len());
+                    (b, a)
+                }
+                None => (HistoryBoostBreakdown::default(), 0),
+            };
+            self.pre_history.insert(
+                p.surface_key(),
+                PreHistorySnapshot {
+                    cost: p.viterbi_cost,
+                    breakdown,
+                    applied_boost: applied,
+                    segment_count: p.segments.len(),
+                },
+            );
+        }
     }
 }
 
@@ -220,7 +278,8 @@ pub fn explain(
     let oversample = (n * 3).max(50);
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
-    let mut observer = ExplainObserver::default();
+    let now = crate::user_history::now_epoch();
+    let mut observer = ExplainObserver::new(history, now);
     let ctx = PostprocessContext {
         lattice: &lattice,
         conn,
@@ -228,30 +287,40 @@ pub fn explain(
         history,
         kana,
         n,
+        now,
     };
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
         .map(|scored| {
-            let key = path_key(scored);
+            let key = scored.surface_key();
+            // Look up snapshots by surface_key — preserved through group_segments.
+            // Rewriter-added candidates (numeric / katakana / kanji variants) are
+            // synthesised after history_rerank and have no snapshot, so they fall
+            // back to zero history boost and use the final cost for `viterbi_cost`.
             let original = observer
                 .original_costs
                 .get(&key)
                 .copied()
                 .unwrap_or(scored.viterbi_cost);
-            let post_rerank = observer
-                .post_rerank_costs
+            let snapshot = observer
+                .pre_history
                 .get(&key)
                 .copied()
-                .unwrap_or(original);
-            let rerank_delta = post_rerank - original;
-            let history_boost = post_rerank - scored.viterbi_cost;
+                .unwrap_or(PreHistorySnapshot {
+                    cost: original,
+                    breakdown: HistoryBoostBreakdown::default(),
+                    applied_boost: 0,
+                    segment_count: scored.segments.len(),
+                });
             ExplainPath {
                 segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
-                rerank_delta,
-                history_boost,
+                rerank_delta: snapshot.cost - original,
+                history_breakdown: snapshot.breakdown,
+                history_boost: snapshot.applied_boost,
+                history_segment_count: snapshot.segment_count,
                 final_cost: scored.viterbi_cost,
             }
         })
@@ -364,6 +433,13 @@ pub fn format_text(result: &ExplainResult) -> String {
             "    viterbi={:<8} rerank={:<+8} history={:<+8} -> final={}\n",
             path.viterbi_cost, path.rerank_delta, -path.history_boost, path.final_cost,
         ));
+        let hb = &path.history_breakdown;
+        if hb.unigram_sum != 0 || hb.bigram_sum != 0 || hb.whole_path_boost != 0 {
+            out.push_str(&format!(
+                "      history: uni_sum={:<+7} bi_sum={:<+7} whole×5={:<+7} (/{} segs)\n",
+                -hb.unigram_sum, -hb.bigram_sum, -hb.whole_path_boost, path.history_segment_count,
+            ));
+        }
     }
 
     out
@@ -419,6 +495,86 @@ mod tests {
                 wh.final_cost < w.final_cost,
                 "final cost should be lower with history boost"
             );
+            // Single-segment きょう→京: whole-path is the only contributor.
+            // Per-segment unigram is also recorded (same reading+surface), so
+            // unigram_sum is also nonzero, but bigram_sum should be 0.
+            assert!(
+                wh.history_breakdown.whole_path_boost > 0,
+                "whole-path boost should fire for explicit full-input selection"
+            );
+            assert_eq!(
+                wh.history_breakdown.bigram_sum, 0,
+                "single-segment path has no bigram pairs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_history_breakdown_empty_without_history() {
+        let dict = test_dict();
+        let result = explain(&dict, None, None, "きょう", 5);
+        for path in &result.paths {
+            assert_eq!(path.history_boost, 0);
+            assert_eq!(path.history_breakdown.unigram_sum, 0);
+            assert_eq!(path.history_breakdown.bigram_sum, 0);
+            assert_eq!(path.history_breakdown.whole_path_boost, 0);
+        }
+    }
+
+    #[test]
+    fn test_explain_history_segment_count_consistent_with_boost() {
+        // The reported `history_segment_count` is the denominator that
+        // `history_rerank` used at normalization time. Without `group_segments`
+        // (no conn passed here) the pre-history and final segmentation match,
+        // so the field must equal `segments.len()` AND
+        // `history_breakdown.applied(history_segment_count)` must reproduce
+        // the displayed `history_boost`. Regression for PR #247 R2.
+        let dict = test_dict();
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let result = explain(&dict, None, Some(&h), "きょう", 5);
+        for path in &result.paths {
+            assert_eq!(
+                path.history_segment_count,
+                path.segments.len(),
+                "without grouping, history_segment_count should equal segments.len()",
+            );
+            assert_eq!(
+                path.history_boost,
+                path.history_breakdown.applied(path.history_segment_count),
+                "history_boost must equal applied(history_segment_count)",
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_unrelated_paths_have_zero_history_boost() {
+        // Paths whose surface does NOT match the recorded history must show a
+        // zero breakdown regardless of how they entered the final candidate set:
+        //   - Real Viterbi paths that simply don't match (lookup hit, zero score).
+        //   - Rewriter-added paths (katakana / kanji variants) that were
+        //     synthesised after history_rerank, so the observer never saw them.
+        //
+        // Regression for the PR #247 R1 review: previously the breakdown was
+        // recomputed against the final (post-grouping / post-rewriter) path,
+        // which could produce non-zero values for paths that never received
+        // an actual boost in `history_rerank`.
+        let dict = test_dict();
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let result = explain(&dict, None, Some(&h), "きょう", 10);
+        for path in result.paths.iter().filter(|p| p.surface() != "京") {
+            assert_eq!(
+                path.history_boost,
+                0,
+                "non-matching surface {:?} must not receive a history boost",
+                path.surface(),
+            );
+            assert_eq!(path.history_breakdown.unigram_sum, 0);
+            assert_eq!(path.history_breakdown.bigram_sum, 0);
+            assert_eq!(path.history_breakdown.whole_path_boost, 0);
         }
     }
 

@@ -98,41 +98,82 @@ pub fn rerank(
     debug!(paths_out = paths.len());
 }
 
-/// Apply user-history boosts to N-best paths, then re-sort.
+/// Breakdown of the history boost contributions for a single path.
+///
+/// Per-segment unigram/bigram sums are raw (pre-normalization). The actually
+/// applied boost is `(unigram_sum + bigram_sum) / max(seg_count, 1) + whole_path_boost`,
+/// available via [`Self::applied`].
+#[derive(Debug, Default, Clone, Copy, serde::Serialize)]
+pub struct HistoryBoostBreakdown {
+    /// Sum of per-segment unigram boosts (before /seg_count normalization).
+    pub unigram_sum: i64,
+    /// Sum of per-pair bigram boosts (before /seg_count normalization).
+    pub bigram_sum: i64,
+    /// Whole-path unigram boost × 5 (not normalized).
+    pub whole_path_boost: i64,
+}
+
+impl HistoryBoostBreakdown {
+    /// Boost actually subtracted from viterbi_cost, given the path's segment count.
+    pub fn applied(&self, seg_count: usize) -> i64 {
+        let n = (seg_count.max(1)) as i64;
+        (self.unigram_sum + self.bigram_sum) / n + self.whole_path_boost
+    }
+}
+
+/// Compute the history boost breakdown for a single path without mutating it.
+///
+/// Mirrors the contribution logic used by [`history_rerank_at`] so callers
+/// (e.g. `explain`) can inspect each component.
+pub fn compute_history_boost(
+    path: &ScoredPath,
+    history: &UserHistory,
+    now: u64,
+) -> HistoryBoostBreakdown {
+    let mut unigram_sum: i64 = 0;
+    for seg in &path.segments {
+        unigram_sum += history.unigram_boost(&seg.reading, &seg.surface, now);
+    }
+    let mut bigram_sum: i64 = 0;
+    for pair in path.segments.windows(2) {
+        bigram_sum +=
+            history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface, now);
+    }
+    let whole_path_boost =
+        history.unigram_boost(&path.full_reading(), &path.surface_key(), now) * 5;
+    HistoryBoostBreakdown {
+        unigram_sum,
+        bigram_sum,
+        whole_path_boost,
+    }
+}
+
+/// Apply user-history boosts to N-best paths using the given `now`, then re-sort.
+///
+/// Callers that also want to inspect the breakdown (e.g. `explain`) should pass
+/// the same `now` they used with [`compute_history_boost`]; otherwise the
+/// stored breakdown can drift from the boost actually subtracted here when
+/// execution crosses a second boundary.
 ///
 /// Unigram and bigram boosts are subtracted from each path's cost so that
 /// learned candidates float to the top. Because this operates on complete
 /// paths (not individual lattice nodes), it cannot cause the fragmentation
 /// problems that in-Viterbi boosting could.
-pub fn history_rerank(paths: &mut [ScoredPath], history: &UserHistory) {
+///
+/// Per-segment boosts are normalized by segment count: fragmented paths
+/// (e.g. き→機 + が + し + ます) would otherwise accumulate boosts from common
+/// particles across ALL prior conversions, gaining a structural advantage over
+/// compound paths. The whole-path boost is the strongest signal and is not
+/// normalized — it only fires when the full reading→surface was explicitly
+/// selected.
+pub fn history_rerank_at(paths: &mut [ScoredPath], history: &UserHistory, now: u64) {
     let _span = debug_span!("history_rerank", paths_count = paths.len()).entered();
     if paths.is_empty() {
         return;
     }
-    let now = crate::user_history::now_epoch();
     for path in paths.iter_mut() {
-        // Per-segment boosts normalized by segment count. Fragmented paths
-        // (e.g. き→機 + が + し + ます) accumulate boosts from common particles
-        // (が, し, は, etc.) across ALL prior conversions, giving them a structural
-        // advantage over compound paths. Dividing by segment count neutralizes this.
-        let seg_count = path.segments.len().max(1) as i64;
-        let mut seg_boost: i64 = 0;
-        for seg in &path.segments {
-            seg_boost += history.unigram_boost(&seg.reading, &seg.surface, now);
-        }
-        for pair in path.segments.windows(2) {
-            seg_boost +=
-                history.bigram_boost(&pair[0].surface, &pair[1].reading, &pair[1].surface, now);
-        }
-        let mut boost = seg_boost / seg_count;
-
-        // Whole-path boost (not normalized): reward paths whose full reading→surface
-        // has been explicitly selected. This is the strongest learning signal and is
-        // not subject to cross-reading contamination.
-        let full_reading = path.full_reading();
-        let full_surface = path.surface_key();
-        boost += history.unigram_boost(&full_reading, &full_surface, now) * 5;
-        path.viterbi_cost -= boost;
+        let breakdown = compute_history_boost(path, history, now);
+        path.viterbi_cost -= breakdown.applied(path.segments.len());
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
