@@ -67,6 +67,10 @@ pub struct ExplainPath {
     pub history_breakdown: HistoryBoostBreakdown,
     /// History boost actually subtracted from the cost (post-normalization).
     pub history_boost: i64,
+    /// Segment count `history_rerank` used as the normalization denominator.
+    /// May differ from `segments.len()` when `group_segments` later merged
+    /// adjacent segments — keep this value when reporting `/N segs`.
+    pub history_segment_count: usize,
     /// Final cost after all adjustments.
     pub final_cost: i64,
 }
@@ -114,6 +118,11 @@ struct PreHistorySnapshot {
     breakdown: HistoryBoostBreakdown,
     /// Boost actually subtracted from `cost` by `history_rerank`.
     applied_boost: i64,
+    /// Segment count at the moment `history_rerank` saw the path. May differ
+    /// from the final `segments.len()` after `group_segments` merges adjacent
+    /// segments — kept here so the displayed `/N segs` matches the denominator
+    /// actually used during normalization.
+    segment_count: usize,
 }
 
 /// Diagnostic observer.
@@ -168,6 +177,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
                     cost: p.viterbi_cost,
                     breakdown,
                     applied_boost: applied,
+                    segment_count: p.segments.len(),
                 },
             );
         }
@@ -301,6 +311,7 @@ pub fn explain(
                     cost: original,
                     breakdown: HistoryBoostBreakdown::default(),
                     applied_boost: 0,
+                    segment_count: scored.segments.len(),
                 });
             ExplainPath {
                 segments: explain_segments(scored, conn, dict),
@@ -308,6 +319,7 @@ pub fn explain(
                 rerank_delta: snapshot.cost - original,
                 history_breakdown: snapshot.breakdown,
                 history_boost: snapshot.applied_boost,
+                history_segment_count: snapshot.segment_count,
                 final_cost: scored.viterbi_cost,
             }
         })
@@ -424,10 +436,7 @@ pub fn format_text(result: &ExplainResult) -> String {
         if hb.unigram_sum != 0 || hb.bigram_sum != 0 || hb.whole_path_boost != 0 {
             out.push_str(&format!(
                 "      history: uni_sum={:<+7} bi_sum={:<+7} whole×5={:<+7} (/{} segs)\n",
-                -hb.unigram_sum,
-                -hb.bigram_sum,
-                -hb.whole_path_boost,
-                path.segments.len(),
+                -hb.unigram_sum, -hb.bigram_sum, -hb.whole_path_boost, path.history_segment_count,
             ));
         }
     }
@@ -508,6 +517,33 @@ mod tests {
             assert_eq!(path.history_breakdown.unigram_sum, 0);
             assert_eq!(path.history_breakdown.bigram_sum, 0);
             assert_eq!(path.history_breakdown.whole_path_boost, 0);
+        }
+    }
+
+    #[test]
+    fn test_explain_history_segment_count_consistent_with_boost() {
+        // The reported `history_segment_count` is the denominator that
+        // `history_rerank` used at normalization time. Without `group_segments`
+        // (no conn passed here) the pre-history and final segmentation match,
+        // so the field must equal `segments.len()` AND
+        // `history_breakdown.applied(history_segment_count)` must reproduce
+        // the displayed `history_boost`. Regression for PR #247 R2.
+        let dict = test_dict();
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "京".into())]);
+
+        let result = explain(&dict, None, Some(&h), "きょう", 5);
+        for path in &result.paths {
+            assert_eq!(
+                path.history_segment_count,
+                path.segments.len(),
+                "without grouping, history_segment_count should equal segments.len()",
+            );
+            assert_eq!(
+                path.history_boost,
+                path.history_breakdown.applied(path.history_segment_count),
+                "history_boost must equal applied(history_segment_count)",
+            );
         }
     }
 
