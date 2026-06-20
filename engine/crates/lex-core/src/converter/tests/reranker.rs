@@ -41,6 +41,7 @@ fn test_rerank_penalizes_fragmented_path() {
                 },
             ],
             viterbi_cost: 1000,
+            history_boost: 0,
         },
         // Single segment path: 0 transitions → 0 structure cost
         ScoredPath {
@@ -52,6 +53,7 @@ fn test_rerank_penalizes_fragmented_path() {
                 word_cost: 0,
             }],
             viterbi_cost: 1040,
+            history_boost: 0,
         },
     ];
 
@@ -82,6 +84,7 @@ fn test_rerank_no_conn_no_structure_penalty() {
                 },
             ],
             viterbi_cost: 1000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -92,6 +95,7 @@ fn test_rerank_no_conn_no_structure_penalty() {
                 word_cost: 0,
             }],
             viterbi_cost: 2000,
+            history_boost: 0,
         },
     ];
 
@@ -113,6 +117,7 @@ fn test_rerank_single_path_noop() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     rerank(&mut paths, None, None);
@@ -151,6 +156,7 @@ fn test_rerank_penalizes_uneven_segments() {
                 },
             ],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
         // Even: readings 2 + 2 chars → sum_sq_dev=0, penalty=0
         ScoredPath {
@@ -171,6 +177,7 @@ fn test_rerank_penalizes_uneven_segments() {
                 },
             ],
             viterbi_cost: 6500,
+            history_boost: 0,
         },
     ];
 
@@ -202,6 +209,7 @@ fn test_rerank_applies_script_cost() {
                 word_cost: 0,
             }],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         // Hiragana path: たら (no script penalty)
         ScoredPath {
@@ -213,6 +221,7 @@ fn test_rerank_applies_script_cost() {
                 word_cost: 0,
             }],
             viterbi_cost: 7000,
+            history_boost: 0,
         },
     ];
 
@@ -245,6 +254,7 @@ fn test_history_rerank_unigram_boost_reorders() {
                 word_cost: 0,
             }],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -255,6 +265,7 @@ fn test_history_rerank_unigram_boost_reorders() {
                 word_cost: 0,
             }],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
     ];
 
@@ -289,6 +300,7 @@ fn test_history_rerank_bigram_boost() {
                 },
             ],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
         // Path with bigram match: "今日" → "は"
         ScoredPath {
@@ -309,6 +321,7 @@ fn test_history_rerank_bigram_boost() {
                 },
             ],
             viterbi_cost: 7000,
+            history_boost: 0,
         },
     ];
 
@@ -332,6 +345,7 @@ fn test_history_rerank_empty_history_preserves_order() {
                 word_cost: 0,
             }],
             viterbi_cost: 1000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -342,6 +356,7 @@ fn test_history_rerank_empty_history_preserves_order() {
                 word_cost: 0,
             }],
             viterbi_cost: 2000,
+            history_boost: 0,
         },
     ];
 
@@ -383,6 +398,7 @@ fn test_history_rerank_at_matches_compute_history_boost() {
             word_cost: 0,
         }],
         viterbi_cost: 10_000,
+        history_boost: 0,
     };
     let expected_applied =
         compute_history_boost(&path_before, &h, now).applied(path_before.segments.len());
@@ -393,6 +409,10 @@ fn test_history_rerank_at_matches_compute_history_boost() {
     let actual_applied = initial_cost - paths[0].viterbi_cost;
 
     assert_eq!(actual_applied, expected_applied);
+    // The applied boost must also be stored on the path so that candidate
+    // generators running after history_rerank can recover the pre-boost cost
+    // via `pre_history_cost()`. Locks the `history_boost` field contract.
+    assert_eq!(paths[0].history_boost, expected_applied);
 }
 
 /// Build a connection matrix where all transitions cost the given value.
@@ -425,6 +445,7 @@ fn test_filter_drops_fragmented_paths() {
                 word_cost: 0,
             }],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![
@@ -444,6 +465,7 @@ fn test_filter_drops_fragmented_paths() {
                 },
             ],
             viterbi_cost: 4000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![
@@ -484,6 +506,7 @@ fn test_filter_drops_fragmented_paths() {
                 },
             ],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
     ];
 
@@ -524,6 +547,7 @@ fn test_filter_keeps_all_when_all_exceed() {
                 seg("え", "絵"),
             ],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![
@@ -533,6 +557,7 @@ fn test_filter_keeps_all_when_all_exceed() {
                 seg("え", "江"),
             ],
             viterbi_cost: 4000,
+            history_boost: 0,
         },
     ];
 
@@ -583,6 +608,7 @@ fn test_filter_preserves_minimum_path() {
                 },
             ],
             viterbi_cost: 1000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -593,6 +619,7 @@ fn test_filter_preserves_minimum_path() {
                 word_cost: 0,
             }],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
     ];
 
@@ -662,6 +689,7 @@ fn test_prefix_floor_prevents_low_baseline() {
                 },
             ],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         // Path B: content → content → content (sc = 8000)
         // Without floor this would be dropped (8000 > 6100).
@@ -691,6 +719,7 @@ fn test_prefix_floor_prevents_low_baseline() {
                 },
             ],
             viterbi_cost: 4000,
+            history_boost: 0,
         },
     ];
 

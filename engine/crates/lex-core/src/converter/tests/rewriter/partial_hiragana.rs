@@ -22,6 +22,7 @@ fn test_partial_hiragana_basic() {
             },
         ],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "したほう");
@@ -61,6 +62,7 @@ fn test_partial_hiragana_multiple_kanji() {
             },
         ],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "したほうが");
@@ -93,6 +95,7 @@ fn test_partial_hiragana_dedup_via_run_rewriters() {
                 },
             ],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         // This path already has the surface "した方"
         ScoredPath {
@@ -113,6 +116,7 @@ fn test_partial_hiragana_dedup_via_run_rewriters() {
                 },
             ],
             viterbi_cost: 5000,
+            history_boost: 0,
         },
     ];
 
@@ -144,6 +148,7 @@ fn test_partial_hiragana_all_hiragana_no_variants() {
             },
         ],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "したほう");
@@ -175,6 +180,7 @@ fn test_partial_hiragana_keeps_katakana() {
             },
         ],
         viterbi_cost: 2000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "てすとちゅう");
@@ -196,6 +202,7 @@ fn test_partial_hiragana_single_segment_skip() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "した");

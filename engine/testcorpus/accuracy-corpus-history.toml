@@ -62,6 +62,10 @@ repeat = 5
 segments = [["せんせい", "先生"], ["に", "に"], ["しつもん", "質問"], ["し", "し"], ["た", "た"]]
 repeat = 5
 
+[[history]]
+segments = [["おねがいします", "お願いします"]]
+repeat = 5
+
 # ═══════════════════════════════════════════════════════════════════
 # Word-level history override
 # ═══════════════════════════════════════════════════════════════════
@@ -125,3 +129,16 @@ baseline = "先生に質問した"
 category = "phrase"
 tags = ["history", "suru-verb"]
 note = "1-char variance exclusion により baseline が質問した に改善; 履歴なしでも正しい"
+
+# ═══════════════════════════════════════════════════════════════════
+# Regression: post-history rewriter must not inherit whole-path boost
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "おねがいします"
+expected = "お願いします"
+baseline = "おねがいします"
+category = "regression"
+tags = ["history", "whole-path", "rewriter"]
+note = "学習済み お願いします が候補上位に出る。以前は history_rerank 後の KanjiVariantRewriter が boost 済みひらがなパスから漢字バリアントを量産し、その継承コストで お願いします を2ページ目に押し下げていた (pre_history_cost で修正)"
+pr = "#248"

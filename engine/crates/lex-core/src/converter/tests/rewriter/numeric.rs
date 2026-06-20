@@ -34,6 +34,7 @@ fn test_numeric_rewriter_generates_candidates() {
             word_cost: 0,
         }],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "にじゅうさん");
@@ -62,6 +63,7 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
             word_cost: 0,
         }],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "にじゅうさん");
@@ -88,6 +90,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
             word_cost: 0,
         }],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "じゅう");
@@ -113,6 +116,7 @@ fn test_numeric_rewriter_skips_non_numeric() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "きょう");
@@ -138,6 +142,7 @@ fn test_numeric_rewriter_skips_duplicate() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "いち");
@@ -181,6 +186,7 @@ fn test_numeric_counter_generates_kanji_compound() {
             word_cost: 0,
         }],
         viterbi_cost: 5000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "さんぜんえん");
@@ -232,6 +238,7 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
             word_cost: 0,
         }],
         viterbi_cost: 4000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "ごえん");
@@ -266,6 +273,7 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
             word_cost: 0,
         }],
         viterbi_cost: 4000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "あいえん");
@@ -290,6 +298,7 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
             word_cost: 0,
         }],
         viterbi_cost: 5000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "さんぜんえん");
@@ -324,6 +333,7 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
             word_cost: 0,
         }],
         viterbi_cost: 4000,
+        history_boost: 0,
     }];
 
     let mut emit_orders: Vec<Vec<String>> = Vec::new();
@@ -373,6 +383,7 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
             word_cost: 0,
         }],
         viterbi_cost: 4000,
+        history_boost: 0,
     }];
 
     // Should not panic; should still emit candidates for both counters.

@@ -16,6 +16,7 @@ fn test_run_rewriters_applies_all() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "あ");
@@ -50,6 +51,7 @@ fn test_run_rewriters_dedup_across_rewriters() {
             },
         ],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&hiragana_rw, &partial_rw], &mut paths, "されます");
@@ -78,6 +80,7 @@ fn test_run_rewriters_cost_ordered_insertion() {
             word_cost: 0,
         }],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "にじゅうさん");
