@@ -409,6 +409,10 @@ fn test_history_rerank_at_matches_compute_history_boost() {
     let actual_applied = initial_cost - paths[0].viterbi_cost;
 
     assert_eq!(actual_applied, expected_applied);
+    // The applied boost must also be stored on the path so that candidate
+    // generators running after history_rerank can recover the pre-boost cost
+    // via `pre_history_cost()`. Locks the `history_boost` field contract.
+    assert_eq!(paths[0].history_boost, expected_applied);
 }
 
 /// Build a connection matrix where all transitions cost the given value.
