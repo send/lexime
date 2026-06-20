@@ -36,6 +36,7 @@ fn test_hiragana_variant_replaces_kanji() {
             },
         ],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "りだいれくとされますか");
@@ -66,6 +67,7 @@ fn test_hiragana_variant_skips_all_hiragana() {
             },
         ],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "されます");
@@ -89,6 +91,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
                 word_cost: 0,
             }],
             viterbi_cost: 3000,
+            history_boost: 0,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -99,6 +102,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
                 word_cost: 0,
             }],
             viterbi_cost: 4000,
+            history_boost: 0,
         },
     ];
 
@@ -128,6 +132,7 @@ fn test_hiragana_variant_keeps_katakana() {
             },
         ],
         viterbi_cost: 2000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "てすとちゅう");

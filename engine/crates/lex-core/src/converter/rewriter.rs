@@ -29,9 +29,17 @@ pub(crate) trait Rewriter {
     fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath>;
 }
 
-/// Worst (highest) Viterbi cost among paths, or 0 if empty.
+/// Worst (highest) pre-history Viterbi cost among paths, or 0 if empty.
+///
+/// Uses `pre_history_cost` so that rewriters running after `history_rerank`
+/// derive fallback costs from the intrinsic Viterbi cost, not from a
+/// history-boosted (possibly large-negative) cost.
 fn worst_cost(paths: &[ScoredPath]) -> i64 {
-    paths.iter().map(|p| p.viterbi_cost).max().unwrap_or(0)
+    paths
+        .iter()
+        .map(|p| p.pre_history_cost())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Run all rewriters in sequence, deduplicating and inserting in cost order.
@@ -138,7 +146,8 @@ impl Rewriter for PartialHiraganaRewriter {
 
                 new_paths.push(ScoredPath {
                     segments: new_segments,
-                    viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                    viterbi_cost: path.pre_history_cost().saturating_add(2000),
+                    history_boost: 0,
                 });
             }
         }
@@ -206,7 +215,7 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                 && p.segments[0].surface == p.segments[0].reading
                 && p.segments[0].surface.chars().all(is_hiragana)
         }) {
-            self.kanji_variants_from_reading(reading, base.viterbi_cost, &mut new_paths);
+            self.kanji_variants_from_reading(reading, base.pre_history_cost(), &mut new_paths);
         }
 
         new_paths
@@ -243,7 +252,8 @@ impl KanjiVariantRewriter<'_> {
             new_segments[seg.idx] = self.lattice.to_rich_segment(idx);
             new_paths.push(ScoredPath {
                 segments: new_segments,
-                viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                viterbi_cost: path.pre_history_cost().saturating_add(2000),
+                history_boost: 0,
             });
         }
     }
@@ -291,7 +301,8 @@ impl KanjiVariantRewriter<'_> {
             new_segments.insert(seg.idx + 1, right_seg);
             new_paths.push(ScoredPath {
                 segments: new_segments,
-                viterbi_cost: path.viterbi_cost.saturating_add(2000),
+                viterbi_cost: path.pre_history_cost().saturating_add(2000),
+                history_boost: 0,
             });
         }
     }
@@ -355,7 +366,11 @@ impl Rewriter for NumericRewriter<'_> {
         let mut candidates = Vec::new();
 
         if let Some(n) = numeric::parse_japanese_number(reading) {
-            let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
+            let best_cost = paths
+                .iter()
+                .map(|p| p.pre_history_cost())
+                .min()
+                .unwrap_or(0);
             let base_cost = worst_cost(paths).saturating_add(5000);
 
             // Kanji candidate
@@ -470,7 +485,11 @@ impl NumericRewriter<'_> {
         cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
 
         let cheapest = cands.first().map(|c| c.cost).unwrap_or(0);
-        let best_cost = paths.iter().map(|p| p.viterbi_cost).min().unwrap_or(0);
+        let best_cost = paths
+            .iter()
+            .map(|p| p.pre_history_cost())
+            .min()
+            .unwrap_or(0);
         let base_cost = worst_cost(paths).saturating_add(5000);
         // Discount keeps the most-likely number+counter compound above the
         // current Viterbi top-1, since this segmentation isn't representable

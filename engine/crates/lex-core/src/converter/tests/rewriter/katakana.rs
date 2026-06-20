@@ -13,6 +13,7 @@ fn test_katakana_rewriter_generates_candidate() {
             word_cost: 0,
         }],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "きょう");
@@ -34,6 +35,7 @@ fn test_katakana_dedup_via_run_rewriters() {
             word_cost: 0,
         }],
         viterbi_cost: 5000,
+        history_boost: 0,
     }];
 
     run_rewriters(&[&rw], &mut paths, "きょう");

@@ -47,6 +47,7 @@ fn test_kanji_variant_replaces_2char_hiragana() {
             },
         ],
         viterbi_cost: 20000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "あったほうが");
@@ -57,6 +58,70 @@ fn test_kanji_variant_replaces_2char_hiragana() {
     assert!(result.iter().any(|p| p.surface_key() == "あった法が"));
     // All variants should have +2000 penalty
     assert!(result.iter().all(|p| p.viterbi_cost == 22000));
+}
+
+#[test]
+fn test_kanji_variant_does_not_inherit_history_boost() {
+    // Regression: KanjiVariantRewriter runs AFTER history_rerank, so a base
+    // path that received a large whole-path boost has a deeply negative
+    // viterbi_cost. Variants derived from it must use the PRE-boost cost
+    // (`pre_history_cost`), otherwise they inherit a boost for surfaces that
+    // were never confirmed and bury genuinely-boosted candidates.
+    let lattice = Lattice::from_test_nodes(
+        "あったほうが",
+        &[
+            (3, 5, "ほう", "ほう", 0, 0, 0),
+            (3, 5, "ほう", "方", 733, 0, 0),
+        ],
+    );
+    let rw = KanjiVariantRewriter { lattice: &lattice };
+
+    // pre_history_cost = 20000; history_rerank subtracted a 50000 boost.
+    let paths = vec![ScoredPath {
+        segments: vec![
+            RichSegment {
+                reading: "あっ".into(),
+                surface: "あっ".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            },
+            RichSegment {
+                reading: "た".into(),
+                surface: "た".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            },
+            RichSegment {
+                reading: "ほう".into(),
+                surface: "ほう".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            },
+            RichSegment {
+                reading: "が".into(),
+                surface: "が".into(),
+                left_id: 0,
+                right_id: 0,
+                word_cost: 0,
+            },
+        ],
+        viterbi_cost: -30000,
+        history_boost: 50000,
+    }];
+
+    let result = rw.generate(&paths, "あったほうが");
+
+    assert!(result.iter().any(|p| p.surface_key() == "あった方が"));
+    // Variant cost = pre_history_cost (20000) + 2000, NOT the boosted
+    // viterbi_cost (-30000) + 2000.
+    assert!(
+        result.iter().all(|p| p.viterbi_cost == 22000),
+        "variants must derive from pre_history_cost, got {:?}",
+        result.iter().map(|p| p.viterbi_cost).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -83,6 +148,7 @@ fn test_kanji_variant_skips_single_char() {
             },
         ],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "した");
@@ -104,6 +170,7 @@ fn test_kanji_variant_skips_single_segment() {
             word_cost: 0,
         }],
         viterbi_cost: 1000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "ほう");
@@ -135,6 +202,7 @@ fn test_kanji_variant_skips_kanji_segments() {
             },
         ],
         viterbi_cost: 3000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "したほう");
@@ -176,6 +244,7 @@ fn test_kanji_variant_skips_3char_segments_no_2char_kanji() {
             },
         ],
         viterbi_cost: 5000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "たほうが");
@@ -225,6 +294,7 @@ fn test_kanji_variant_subsplit_3char_segment() {
             },
         ],
         viterbi_cost: 20000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "あったほうが");
@@ -270,6 +340,7 @@ fn test_kanji_variant_subsplit_only_2char_prefix() {
             },
         ],
         viterbi_cost: 10000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "ほうがくが");
@@ -302,6 +373,7 @@ fn test_kanji_variant_reading_scan_single_segment() {
             word_cost: 0,
         }],
         viterbi_cost: 30000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "しておいたほうが");
@@ -331,6 +403,7 @@ fn test_kanji_variant_reading_scan_skips_edges() {
             word_cost: 0,
         }],
         viterbi_cost: 10000,
+        history_boost: 0,
     }];
 
     let result = rw.generate(&paths, "ほうが");

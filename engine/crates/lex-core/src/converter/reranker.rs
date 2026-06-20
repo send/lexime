@@ -173,7 +173,13 @@ pub fn history_rerank_at(paths: &mut [ScoredPath], history: &UserHistory, now: u
     }
     for path in paths.iter_mut() {
         let breakdown = compute_history_boost(path, history, now);
-        path.viterbi_cost -= breakdown.applied(path.segments.len());
+        let applied = breakdown.applied(path.segments.len());
+        path.viterbi_cost -= applied;
+        // Remember the boost so candidate generators running after this step
+        // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`)
+        // and avoid inheriting this path's whole-path boost into derived
+        // surfaces that were never actually confirmed.
+        path.history_boost = applied;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
@@ -207,6 +213,7 @@ mod tests {
         ScoredPath {
             segments,
             viterbi_cost: cost,
+            history_boost: 0,
         }
     }
 

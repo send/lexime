@@ -265,6 +265,7 @@ mod tests {
                 },
             ],
             viterbi_cost: 5000,
+            history_boost: 0,
         };
 
         let segments = scored_path_to_segments(&path);

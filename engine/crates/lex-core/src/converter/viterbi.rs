@@ -23,10 +23,20 @@ pub(crate) struct RichSegment {
 }
 
 /// A scored path from N-best Viterbi, carrying enough info for reranking.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ScoredPath {
     pub segments: Vec<RichSegment>,
     pub viterbi_cost: i64,
+    /// History boost subtracted from `viterbi_cost` by `history_rerank_at`
+    /// (0 before history reranking, or when no history is applied).
+    ///
+    /// Kept so that candidate generators running *after* history_rerank can
+    /// recover the pre-boost cost via [`Self::pre_history_cost`]. Without this,
+    /// rewriters that derive a new candidate's cost from a base path would
+    /// inherit the base's whole-path boost into surfaces that were never
+    /// actually confirmed (e.g. kanji variants of a boosted hiragana path),
+    /// burying genuinely-boosted candidates below junk.
+    pub history_boost: i64,
 }
 
 impl ScoredPath {
@@ -41,7 +51,18 @@ impl ScoredPath {
                 word_cost: 0,
             }],
             viterbi_cost: cost,
+            history_boost: 0,
         }
+    }
+
+    /// Cost before any history boost was applied.
+    ///
+    /// `history_rerank_at` subtracts the boost from `viterbi_cost`; adding it
+    /// back recovers the intrinsic Viterbi/rerank cost. Candidate generators
+    /// that derive a new path's cost from a base path should use this so the
+    /// base's whole-path history boost does not leak into the derived surface.
+    pub fn pre_history_cost(&self) -> i64 {
+        self.viterbi_cost.saturating_add(self.history_boost)
     }
 
     /// Convert to public ConvertedSegment, dropping POS metadata.
@@ -176,6 +197,7 @@ pub(crate) fn viterbi_nbest<C: CostFunction>(
         let scored = ScoredPath {
             segments,
             viterbi_cost: total_cost,
+            history_boost: 0,
         };
         if seen_surfaces.insert(scored.surface_key()) {
             results.push(scored);

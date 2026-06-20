@@ -107,6 +107,7 @@ pub(super) fn resegment(
                     let candidate = ScoredPath {
                         segments: new_segs,
                         viterbi_cost: cost,
+                        history_boost: 0,
                     };
 
                     // Dedup against existing paths and already-generated candidates
