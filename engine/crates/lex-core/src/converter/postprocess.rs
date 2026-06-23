@@ -117,7 +117,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     };
 
     if let Some(h) = ctx.history {
-        reranker::history_rerank_at(paths, h, ctx.now);
+        reranker::history_rerank_at(paths, h, ctx.conn, ctx.now);
     }
     let mut top: Vec<ScoredPath> = paths.drain(..ctx.n.min(paths.len())).collect();
 
