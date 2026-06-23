@@ -128,10 +128,22 @@ impl HistoryBoostBreakdown {
 pub fn compute_history_boost(
     path: &ScoredPath,
     history: &UserHistory,
+    conn: Option<&ConnectionMatrix>,
     now: u64,
 ) -> HistoryBoostBreakdown {
     let mut unigram_sum: i64 = 0;
     for seg in &path.segments {
+        // Skip per-segment unigram boost for function-word segments (particles
+        // like に/は/が, auxiliaries). These are grammatical glue, not lexical
+        // choices: the user confirms them in nearly every sentence, so their
+        // unigram boost saturates and would inflate ANY fragmented
+        // mis-segmentation that isolates the particle (e.g. 代/に/段 for
+        // だいにだん), burying the correct compound. Restricting per-segment
+        // unigram boost to content words keeps it a homophone-disambiguation
+        // signal. Whole-path and bigram boosts are unaffected.
+        if conn.is_some_and(|c| c.is_function_word(seg.left_id)) {
+            continue;
+        }
         unigram_sum += history.unigram_boost(&seg.reading, &seg.surface, now);
     }
     let mut bigram_sum: i64 = 0;
@@ -160,19 +172,25 @@ pub fn compute_history_boost(
 /// paths (not individual lattice nodes), it cannot cause the fragmentation
 /// problems that in-Viterbi boosting could.
 ///
-/// Per-segment boosts are normalized by segment count: fragmented paths
-/// (e.g. き→機 + が + し + ます) would otherwise accumulate boosts from common
-/// particles across ALL prior conversions, gaining a structural advantage over
-/// compound paths. The whole-path boost is the strongest signal and is not
+/// Per-segment unigram boosts skip function-word segments (see
+/// [`compute_history_boost`]) and are normalized by segment count, so
+/// fragmented paths (e.g. き→機 + が + し + ます) cannot gain a structural
+/// advantage by accumulating common-particle boosts across ALL prior
+/// conversions. The whole-path boost is the strongest signal and is not
 /// normalized — it only fires when the full reading→surface was explicitly
 /// selected.
-pub fn history_rerank_at(paths: &mut [ScoredPath], history: &UserHistory, now: u64) {
+pub fn history_rerank_at(
+    paths: &mut [ScoredPath],
+    history: &UserHistory,
+    conn: Option<&ConnectionMatrix>,
+    now: u64,
+) {
     let _span = debug_span!("history_rerank", paths_count = paths.len()).entered();
     if paths.is_empty() {
         return;
     }
     for path in paths.iter_mut() {
-        let breakdown = compute_history_boost(path, history, now);
+        let breakdown = compute_history_boost(path, history, conn, now);
         let applied = breakdown.applied(path.segments.len());
         path.viterbi_cost -= applied;
         // Remember the boost so candidate generators running after this step

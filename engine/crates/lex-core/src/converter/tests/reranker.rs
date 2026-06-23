@@ -269,7 +269,7 @@ fn test_history_rerank_unigram_boost_reorders() {
         },
     ];
 
-    history_rerank_at(&mut paths, &h, now_epoch());
+    history_rerank_at(&mut paths, &h, None, now_epoch());
 
     // "京" should be boosted to first place
     assert_eq!(paths[0].segments[0].surface, "京");
@@ -325,7 +325,7 @@ fn test_history_rerank_bigram_boost() {
         },
     ];
 
-    history_rerank_at(&mut paths, &h, now_epoch());
+    history_rerank_at(&mut paths, &h, None, now_epoch());
 
     // "今日は" path should be boosted (both unigram + bigram) to first
     assert_eq!(paths[0].segments[0].surface, "今日");
@@ -360,7 +360,7 @@ fn test_history_rerank_empty_history_preserves_order() {
         },
     ];
 
-    history_rerank_at(&mut paths, &h, now_epoch());
+    history_rerank_at(&mut paths, &h, None, now_epoch());
 
     assert_eq!(paths[0].segments[0].surface, "亜");
     assert_eq!(paths[0].viterbi_cost, 1000);
@@ -372,7 +372,7 @@ fn test_history_rerank_empty_history_preserves_order() {
 fn test_history_rerank_empty_paths() {
     let h = UserHistory::new();
     let mut paths: Vec<ScoredPath> = Vec::new();
-    history_rerank_at(&mut paths, &h, now_epoch());
+    history_rerank_at(&mut paths, &h, None, now_epoch());
     assert!(paths.is_empty());
 }
 
@@ -401,11 +401,11 @@ fn test_history_rerank_at_matches_compute_history_boost() {
         history_boost: 0,
     };
     let expected_applied =
-        compute_history_boost(&path_before, &h, now).applied(path_before.segments.len());
+        compute_history_boost(&path_before, &h, None, now).applied(path_before.segments.len());
 
     let initial_cost = path_before.viterbi_cost;
     let mut paths = vec![path_before];
-    history_rerank_at(&mut paths, &h, now);
+    history_rerank_at(&mut paths, &h, None, now);
     let actual_applied = initial_cost - paths[0].viterbi_cost;
 
     assert_eq!(actual_applied, expected_applied);
@@ -413,6 +413,62 @@ fn test_history_rerank_at_matches_compute_history_boost() {
     // generators running after history_rerank can recover the pre-boost cost
     // via `pre_history_cost()`. Locks the `history_boost` field contract.
     assert_eq!(paths[0].history_boost, expected_applied);
+}
+
+#[test]
+fn test_compute_history_boost_skips_function_word_unigram() {
+    // Per-segment unigram boost must NOT count function-word segments
+    // (particles). A particle like に is confirmed in nearly every sentence, so
+    // its unigram boost saturates and would inflate any fragmented
+    // mis-segmentation that isolates it (e.g. 代/に/段 for だいにだん), burying
+    // the correct compound. Regression for だいにだん → 第二弾.
+    use crate::converter::reranker::compute_history_boost;
+
+    // POS IDs: 1 = content word, 2 = function word (fw_min=fw_max=2).
+    let text = format!("3 3\n{}", "0\n".repeat(9));
+    let conn = ConnectionMatrix::from_text_with_roles(&text, 2, 2, vec![0, 0, 0]).unwrap();
+    assert!(conn.is_function_word(2));
+    assert!(!conn.is_function_word(1));
+
+    let mut h = UserHistory::new();
+    h.record(&[("だい".into(), "代".into())]);
+    for _ in 0..5 {
+        h.record(&[("に".into(), "に".into())]);
+    }
+    let now = now_epoch();
+
+    let path = ScoredPath {
+        segments: vec![
+            RichSegment {
+                reading: "だい".into(),
+                surface: "代".into(),
+                left_id: 1,
+                right_id: 1,
+                word_cost: 0,
+            },
+            RichSegment {
+                reading: "に".into(),
+                surface: "に".into(),
+                left_id: 2,
+                right_id: 2,
+                word_cost: 0,
+            },
+        ],
+        viterbi_cost: 0,
+        history_boost: 0,
+    };
+
+    let content_boost = h.unigram_boost("だい", "代", now);
+    let particle_boost = h.unigram_boost("に", "に", now);
+    assert!(particle_boost > 0, "precondition: particle is boosted");
+
+    // Without conn: both content word and particle contribute.
+    let without = compute_history_boost(&path, &h, None, now);
+    assert_eq!(without.unigram_sum, content_boost + particle_boost);
+
+    // With conn: the function-word particle is excluded from per-segment boost.
+    let with = compute_history_boost(&path, &h, Some(&conn), now);
+    assert_eq!(with.unigram_sum, content_boost);
 }
 
 /// Build a connection matrix where all transitions cost the given value.

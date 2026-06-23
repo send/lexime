@@ -134,6 +134,9 @@ struct PreHistorySnapshot {
 /// from these maps and fall back to zero in the caller.
 struct ExplainObserver<'a> {
     history: Option<&'a UserHistory>,
+    /// Needed so the displayed breakdown matches `history_rerank`'s
+    /// function-word exclusion for per-segment unigram boosts.
+    conn: Option<&'a ConnectionMatrix>,
     now: u64,
     /// viterbi_cost before resegment/rerank — the raw Viterbi output.
     original_costs: HashMap<String, i64>,
@@ -142,9 +145,10 @@ struct ExplainObserver<'a> {
 }
 
 impl<'a> ExplainObserver<'a> {
-    fn new(history: Option<&'a UserHistory>, now: u64) -> Self {
+    fn new(history: Option<&'a UserHistory>, conn: Option<&'a ConnectionMatrix>, now: u64) -> Self {
         Self {
             history,
+            conn,
             now,
             original_costs: HashMap::new(),
             pre_history: HashMap::new(),
@@ -165,7 +169,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
         for p in paths {
             let (breakdown, applied) = match self.history {
                 Some(h) => {
-                    let b = compute_history_boost(p, h, self.now);
+                    let b = compute_history_boost(p, h, self.conn, self.now);
                     let a = b.applied(p.segments.len());
                     (b, a)
                 }
@@ -279,7 +283,7 @@ pub fn explain(
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
     let now = crate::user_history::now_epoch();
-    let mut observer = ExplainObserver::new(history, now);
+    let mut observer = ExplainObserver::new(history, conn, now);
     let ctx = PostprocessContext {
         lattice: &lattice,
         conn,
