@@ -367,7 +367,7 @@ version = "2.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.memmap2]]
-version = "0.9.9"
+version = "0.9.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.minimal-lexical]]
