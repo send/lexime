@@ -14,7 +14,7 @@ toml = "0.8"
 name = "lex_engine"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
