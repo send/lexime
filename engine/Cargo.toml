@@ -10,11 +10,14 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 
+[workspace.package]
+rust-version = "1.85"
+
 [package]
 name = "lex_engine"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
