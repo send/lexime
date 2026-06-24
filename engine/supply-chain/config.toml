@@ -342,10 +342,8 @@ criteria = "safe-to-deploy"
 version = "1.0.1"
 criteria = "safe-to-deploy"
 
-# Held at 2.13.0: indexmap 2.14 requires Rust 1.85+, but the workspace
-# advertises rust-version = "1.77". Revisit when the MSRV is raised.
 [[exemptions.indexmap]]
-version = "2.13.0"
+version = "2.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.is-terminal]]
