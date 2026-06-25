@@ -36,6 +36,7 @@ jobs:
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
+              - '.github/workflows/ci.yml'
             session:
               - 'engine/crates/lex-session/**'
             ffi:
@@ -69,6 +70,31 @@ jobs:
 
       - run: cd engine && cargo fmt --all --check
       - run: cd engine && cargo clippy --workspace --all-features -- -D warnings
+
+  msrv:
+    needs: changes
+    if: >-
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.session == 'true' ||
+      needs.changes.outputs.ffi == 'true' ||
+      needs.changes.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Enforce the declared MSRV. Keep this version in sync with
+      # `rust-version` in engine/Cargo.toml ([workspace.package]): a dependency
+      # bump or code change that needs a newer Rust fails here even though every
+      # other job builds on stable. Default features only — the optional
+      # `neural` feature pulls candle, whose MSRV is tracked separately.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: msrv
+
+      - run: cd engine && cargo check --workspace --locked
 
   test-core:
     needs: [changes, lint]
