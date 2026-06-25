@@ -36,6 +36,7 @@ jobs:
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
+              - '.github/workflows/ci.yml'
             session:
               - 'engine/crates/lex-session/**'
             ffi:
