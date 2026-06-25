@@ -11,7 +11,7 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 
 [workspace.package]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [package]
 name = "lex_engine"

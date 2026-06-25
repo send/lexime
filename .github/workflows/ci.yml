@@ -87,7 +87,7 @@ jobs:
       # bump or code change that needs a newer Rust fails here even though every
       # other job builds on stable. Default features only — the optional
       # `neural` feature pulls candle, whose MSRV is tracked separately.
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
 
       - uses: Swatinem/rust-cache@v2
         with:
