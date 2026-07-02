@@ -54,7 +54,8 @@ const DEFAULT_COST: i16 = 5000;
 ///
 /// NOTE: this id is only valid for the id.def snapshot pinned in
 /// `engine/data/mozc-pin.txt`. Re-verify on every pin bump (e.g.
-/// `grep '名詞,一般,\*,\*,\*,\*,\*$' data/mozc-raw/id.def`).
+/// `grep '名詞,一般,\*,\*,\*,\*,\*$' engine/data/mozc-raw/id.def` from the
+/// repo root).
 const DEFAULT_POS: u16 = 1851;
 
 pub struct ExtrasSource;
