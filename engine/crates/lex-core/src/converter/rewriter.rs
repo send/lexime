@@ -52,9 +52,29 @@ pub(crate) fn run_rewriters(
     for rw in rewriters {
         let candidates = rw.generate(paths, reading);
         for candidate in candidates {
-            if seen.insert(candidate.surface_key()) {
+            let key = candidate.surface_key();
+            if seen.insert(key.clone()) {
                 let pos = paths.partition_point(|p| p.viterbi_cost < candidate.viterbi_cost);
                 paths.insert(pos, candidate);
+            } else if let Some(i) = paths.iter().position(|p| p.surface_key() == key) {
+                // Same surface already in the list (e.g. a retained identity
+                // path) at a worse cost: adopt the cheaper rewriter price so
+                // the surface ranks where the fallback intended. Keep the
+                // richer segmentation of the two (a real multi-segment path
+                // beats a synthetic single) so committing it records
+                // per-segment history. The adopted price is synthetic and
+                // un-boosted, so any stale whole-path boost is cleared.
+                if candidate.viterbi_cost < paths[i].viterbi_cost {
+                    let mut existing = paths.remove(i);
+                    if candidate.segments.len() > existing.segments.len() {
+                        existing = candidate;
+                    } else {
+                        existing.viterbi_cost = candidate.viterbi_cost;
+                        existing.history_boost = 0;
+                    }
+                    let pos = paths.partition_point(|p| p.viterbi_cost < existing.viterbi_cost);
+                    paths.insert(pos, existing);
+                }
             }
         }
     }
@@ -110,11 +130,15 @@ impl Rewriter for HiraganaVariantRewriter {
             return Vec::new();
         }
 
-        let wc = worst_cost(paths);
+        // Anchor to the BEST path, not the worst: the kana variant is the
+        // rescue candidate when the cost model kanjifies wrongly (#263), so
+        // it must land mid-list where it is visible and history-boostable.
+        // Bottom-anchored (worst+5000) it could never be reached once the
+        // n-best filled with 20 lattice paths.
         vec![ScoredPath::single(
             combined_reading,
             combined_surface,
-            wc.saturating_add(5000),
+            best.pre_history_cost().saturating_add(4000),
         )]
     }
 }
@@ -127,14 +151,22 @@ pub(crate) struct PartialHiraganaRewriter;
 
 impl Rewriter for PartialHiraganaRewriter {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
-        let source_count = paths.len().min(5);
         let mut new_paths = Vec::new();
 
-        for path in paths.iter().take(source_count) {
-            if path.segments.len() <= 1 {
-                continue;
-            }
-
+        // Select the 5 cheapest paths that can actually yield variants BEFORE
+        // limiting: injected single-segment fallbacks and repriced identity
+        // paths (no replaceable segment) sort into the top 5 and must not
+        // displace a real kanji-bearing source path.
+        for path in paths
+            .iter()
+            .filter(|p| {
+                p.segments.len() > 1
+                    && p.segments
+                        .iter()
+                        .any(|s| s.surface != s.reading && !s.surface.chars().all(is_katakana))
+            })
+            .take(5)
+        {
             for seg_idx in 0..path.segments.len() {
                 let seg = &path.segments[seg_idx];
                 if seg.surface == seg.reading || seg.surface.chars().all(is_katakana) {

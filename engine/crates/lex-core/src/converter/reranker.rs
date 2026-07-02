@@ -66,8 +66,13 @@ pub fn rerank(
     let mut kept_sc: Vec<i64> = Vec::new();
     {
         let mut i = 0;
-        paths.retain(|_| {
-            let keep = structure_costs[i] <= threshold;
+        paths.retain(|p| {
+            // Identity paths (surface == reading throughout) are exempt: they
+            // are the user's typed input and must stay selectable so history
+            // learning can rescue readings the cost model gets wrong (#263).
+            // Their fragmented FW chains otherwise trip the structure filter.
+            let identity = p.segments.iter().all(|s| s.surface == s.reading);
+            let keep = identity || structure_costs[i] <= threshold;
             if keep {
                 kept_sc.push(structure_costs[i]);
             }

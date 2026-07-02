@@ -43,7 +43,8 @@ fn test_hiragana_variant_replaces_kanji() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].surface_key(), "リダイレクトされますか");
-    assert_eq!(result[0].viterbi_cost, 3000 + 5000);
+    // Anchored to the best path (+4000), not the worst (#263)
+    assert_eq!(result[0].viterbi_cost, 3000 + 4000);
 }
 
 #[test]

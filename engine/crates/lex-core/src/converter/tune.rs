@@ -186,7 +186,12 @@ fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64, 
         .unwrap_or(0);
     let threshold = min_sc + filter;
 
-    paired.retain(|(_, f)| f.structure_cost <= threshold);
+    // Identity paths (surface == reading throughout) are exempt, mirroring
+    // the production filter in reranker step 2 (#263) — the tuner must
+    // optimize against the same candidate set production keeps.
+    paired.retain(|(p, f)| {
+        p.segments.iter().all(|s| s.surface == s.reading) || f.structure_cost <= threshold
+    });
 }
 
 // ---------------------------------------------------------------------------
