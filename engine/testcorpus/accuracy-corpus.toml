@@ -772,9 +772,8 @@ reading = "ねすてっど"
 expected = "ネステッド"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "ねステッド と部分変換される"
+note = "ねステッド と部分変換されていた (ネステッド が辞書に不在)。extras 追加で fix"
 
 [[cases]]
 reading = "さいとりすと"
@@ -1011,9 +1010,8 @@ reading = "みこみっと"
 expected = "未コミット"
 category = "compound"
 tags = ["history-audit", "it", "prefix-loanword"]
-skip = true
 issue = "#263"
-note = "見込みっと が top-1。未+外来語 の複合が組めない"
+note = "見込みっと が top-1 だった (未+外来語 が組めない)。extras 追加で fix"
 
 [[cases]]
 reading = "めもりないに"
