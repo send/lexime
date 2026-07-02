@@ -1081,8 +1081,15 @@ fn remove_recovery_artifacts_wipes_backup_and_quarantine() {
         b"y",
     )
     .unwrap();
+    // Both temp-name generations: v2 appends ".tmp" to the full name; the
+    // v1 writer's with_extension("tmp") produced "user_history.tmp", which
+    // can hold a full pre-upgrade history copy.
+    fs::write(f.cp.with_file_name("user_history.lxud.tmp"), b"t2").unwrap();
+    fs::write(f.cp.with_file_name("user_history.tmp"), b"t1").unwrap();
 
     remove_recovery_artifacts(&f.cp).unwrap();
     assert!(!v1_backup_path(&f.cp).exists());
     assert_eq!(quarantine_count(&f), 0);
+    assert!(!f.cp.with_file_name("user_history.lxud.tmp").exists());
+    assert!(!f.cp.with_file_name("user_history.tmp").exists());
 }

@@ -300,6 +300,10 @@ pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     for path in [
         v1_backup_path(checkpoint_path),
         suffixed(checkpoint_path, ".tmp"),
+        // The v1 writer used `with_extension("tmp")` (`user_history.tmp`):
+        // a pre-upgrade crash before rename can leave a full serialized
+        // history copy under that name.
+        checkpoint_path.with_extension("tmp"),
     ] {
         match fs::remove_file(&path) {
             Ok(()) => {}
