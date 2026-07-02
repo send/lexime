@@ -182,16 +182,23 @@ impl LexUserHistory {
         // compactor that cloned a pre-clear snapshot must not save it after
         // the files are removed, or the privacy wipe would be undone. Holding
         // the flag also makes spawn_compact a no-op for the duration.
-        // (PR2 replaces this spin idiom with a parking compact_gate Mutex.)
+        self.acquire_compacting();
+        let _guard = CompactingGuard(&self.compacting);
+        self.clear_locked()
+    }
+
+    /// Acquire the `compacting` flag, sleeping briefly between attempts —
+    /// a compaction holds the flag across multi-ms checkpoint I/O, so a
+    /// tight yield-loop would burn CPU. (PR2 replaces this idiom with a
+    /// parking compact_gate Mutex.)
+    fn acquire_compacting(&self) {
         while self
             .compacting
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let _guard = CompactingGuard(&self.compacting);
-        self.clear_locked()
     }
 
     fn clear_locked(&self) -> Result<(), LexError> {
@@ -320,14 +327,7 @@ impl LexUserHistory {
     /// Force an immediate compaction (used after history deletion to persist changes).
     /// Acquires the compacting guard to serialize with background compaction.
     pub(super) fn force_compact(&self) {
-        // Acquire the compacting flag, spinning if a background compaction is in flight.
-        while self
-            .compacting
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::thread::yield_now();
-        }
+        self.acquire_compacting();
         let _guard = CompactingGuard(&self.compacting);
         // Unconditional truncate on the deletion path: skipping it could
         // leave a racing Committed frame for the just-deleted entry in the
