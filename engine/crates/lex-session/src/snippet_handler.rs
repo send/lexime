@@ -139,7 +139,6 @@ impl InputSession {
 
         let (_key, body) = s.matches[s.selected].clone();
 
-        self.committed_context.push_str(&body);
         self.reset_state();
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();

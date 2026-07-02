@@ -88,7 +88,6 @@ impl InputSession {
             // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
             KeyEvent::Remapped { text, .. } => {
                 if self.abc_passthrough {
-                    self.committed_context.push_str(&text);
                     let mut r = KeyResponse::consumed();
                     r.commit = Some(text);
                     r
@@ -100,7 +99,6 @@ impl InputSession {
                         r
                     } else {
                         // Not handled by trie/romaji (e.g. \) — commit directly
-                        self.committed_context.push_str(&text);
                         let mut r = KeyResponse::consumed();
                         r.commit = Some(text);
                         r
@@ -110,7 +108,6 @@ impl InputSession {
 
             // ABC passthrough: Space is printable but comes as KeyEvent::Space, not Text.
             KeyEvent::Space if self.abc_passthrough => {
-                self.committed_context.push(' ');
                 let mut r = KeyResponse::consumed();
                 r.commit = Some(" ".to_string());
                 r
@@ -120,10 +117,8 @@ impl InputSession {
             // Text and special keys in ABC mode.
             KeyEvent::Text { ref text, .. } if self.abc_passthrough => match text.chars().next() {
                 Some(c) if (' '..='~').contains(&c) => {
-                    let text = text.clone();
-                    self.committed_context.push_str(&text);
                     let mut r = KeyResponse::consumed();
-                    r.commit = Some(text);
+                    r.commit = Some(text.clone());
                     r
                 }
                 _ => KeyResponse::not_consumed(),

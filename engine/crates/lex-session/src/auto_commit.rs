@@ -101,9 +101,6 @@ impl InputSession {
         // Include prefix in the committed text
         let committed_text = format!("{}{}", prefix_text, committed_surface);
 
-        // Accumulate committed text for context
-        self.committed_context.push_str(&committed_text);
-
         let mut resp = KeyResponse::consumed();
         resp.commit = Some(committed_text);
 
