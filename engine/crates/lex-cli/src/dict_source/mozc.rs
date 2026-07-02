@@ -276,11 +276,13 @@ fn remove_if_exists(path: &Path) -> Result<(), DictSourceError> {
 /// prevent. The caller must abort the fetch (Codex review on PR #266).
 fn wipe_cache(dest: &Path, stamp_path: &Path, manifest: &[String]) -> Result<(), DictSourceError> {
     if manifest.is_empty() {
-        if let Ok(rd) = fs::read_dir(dest) {
-            for entry in rd.filter_map(|e| e.ok()) {
-                if is_upstream_file_name(&entry.file_name().to_string_lossy()) {
-                    remove_if_exists(&entry.path())?;
-                }
+        // Propagate scan errors: silently skipping unreadable entries could
+        // leave stale upstream-named files behind and reintroduce the
+        // cross-snapshot mixing this wipe exists to prevent.
+        for entry in fs::read_dir(dest).map_err(DictSourceError::Io)? {
+            let entry = entry.map_err(DictSourceError::Io)?;
+            if is_upstream_file_name(&entry.file_name().to_string_lossy()) {
+                remove_if_exists(&entry.path())?;
             }
         }
     } else {
@@ -306,6 +308,10 @@ fn write_stamp(path: &Path, sha: &str, manifest: &[String]) -> Result<(), DictSo
     let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
+    // Guard cleans the temp up if the write or rename fails (no-op after a
+    // successful rename). rename-onto-existing is atomic on POSIX; this tool
+    // only targets macOS (the IME's sole platform).
+    let _guard = TmpFileGuard(tmp.clone());
     fs::write(&tmp, contents).map_err(DictSourceError::Io)?;
     fs::rename(&tmp, path).map_err(DictSourceError::Io)
 }
