@@ -142,7 +142,9 @@ fn is_upstream_file_name(name: &str) -> bool {
 /// file must exist); a legacy SHA-only stamp cannot, so it returns false
 /// and the caller falls back to weaker heuristics or a re-download.
 fn cache_complete(stamp: &Stamp, dest: &Path) -> bool {
-    !stamp.manifest.is_empty() && stamp.manifest.iter().all(|f| dest.join(f).exists())
+    // is_file(), not exists(): a directory squatting on an artifact name must
+    // not count as a cached file (it would poison the fast path).
+    !stamp.manifest.is_empty() && stamp.manifest.iter().all(|f| dest.join(f).is_file())
 }
 
 /// True if the files required by downstream consumers are all present:
@@ -157,13 +159,14 @@ fn cache_complete(stamp: &Stamp, dest: &Path) -> bool {
 fn required_files_present(dest: &Path) -> bool {
     let any_dictionary = fs::read_dir(dest)
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .any(|e| is_numbered_dictionary(&e.file_name().to_string_lossy()))
+            rd.filter_map(|e| e.ok()).any(|e| {
+                is_numbered_dictionary(&e.file_name().to_string_lossy()) && e.path().is_file()
+            })
         })
         .unwrap_or(false);
     any_dictionary
-        && dest.join("id.def").exists()
-        && dest.join("connection_single_column.txt").exists()
+        && dest.join("id.def").is_file()
+        && dest.join("connection_single_column.txt").is_file()
 }
 
 /// True if any upstream-named fetched file exists in `dest`.
@@ -398,7 +401,7 @@ impl DictSource for MozcSource {
         // new snapshot.
         for (name, url) in &remote_files {
             let file_path = dest.join(name);
-            if cache_valid && file_path.exists() {
+            if cache_valid && file_path.is_file() {
                 eprintln!("  {name} (already exists, skipping)");
                 continue;
             }
@@ -408,7 +411,7 @@ impl DictSource for MozcSource {
 
         // Download connection matrix
         let connection = dest.join("connection_single_column.txt");
-        if cache_valid && connection.exists() {
+        if cache_valid && connection.is_file() {
             eprintln!("  connection_single_column.txt (already exists, skipping)");
         } else {
             eprintln!("  connection_single_column.txt");
@@ -420,7 +423,7 @@ impl DictSource for MozcSource {
 
         // Download LICENSE
         let license = dest.join("LICENSE");
-        if cache_valid && license.exists() {
+        if cache_valid && license.is_file() {
             eprintln!("  LICENSE (already exists, skipping)");
         } else {
             eprintln!("  LICENSE");
@@ -657,6 +660,14 @@ mod tests {
 
         fs::write(dir.join("id.def"), "x").unwrap();
         assert!(cache_complete(&st, &dir));
+
+        // A directory squatting on an artifact name is not a cached file.
+        fs::remove_file(dir.join("id.def")).unwrap();
+        fs::create_dir(dir.join("id.def")).unwrap();
+        assert!(
+            !cache_complete(&st, &dir),
+            "directory in place of a file → incomplete"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
