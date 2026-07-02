@@ -437,7 +437,14 @@ impl LexUserHistory {
         // snapshot was cloned, truncation is skipped — the seq filter keeps
         // replay correct either way, and the entry count stays above the
         // threshold so the next compaction retries soon.
-        if let Ok(mut wal) = self.wal.lock() {
+        let wal = match self.wal.lock() {
+            Ok(w) => Some(w),
+            Err(e) => {
+                warn!("WAL lock poisoned; skipping truncation after checkpoint: {e}");
+                None
+            }
+        };
+        if let Some(mut wal) = wal {
             // Truncation destroys frames whose only other copy is the new
             // checkpoint; if the rename's durability was not confirmed, a
             // power loss could roll back to the previous checkpoint while
@@ -466,7 +473,7 @@ impl LexUserHistory {
                     UNCONFIRMED_TRUNCATE_CAP_BYTES
                 );
             }
-            if !rename_confirmed {
+            if !covered_only && !rename_confirmed {
                 // Deletion path: prioritize the privacy wipe (matching v1,
                 // which had no dir fsync at all) over the rollback window.
                 warn!("checkpoint rename durability unconfirmed; truncating anyway for deletion");
