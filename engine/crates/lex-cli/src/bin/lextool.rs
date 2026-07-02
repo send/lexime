@@ -755,7 +755,20 @@ fn main() {
             let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
             let conn = conn.expect("connection matrix is required for history-audit");
 
-            let (hist, _wal) = lex_core::user_history::wal::open_with_wal(Path::new(&history_file))
+            // open_with_wal silently returns an empty history for a missing
+            // checkpoint; a mistyped path must fail instead of reporting a
+            // plausible-looking zero-reading audit.
+            let checkpoint_path = Path::new(&history_file);
+            let wal_path = checkpoint_path.with_extension("lxud.wal");
+            if !checkpoint_path.exists() && !wal_path.exists() {
+                eprintln!(
+                    "User history not found: neither {} nor {} exists",
+                    checkpoint_path.display(),
+                    wal_path.display()
+                );
+                process::exit(1);
+            }
+            let (hist, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint_path)
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to open user history at {}: {}", history_file, e);
                     process::exit(1);
@@ -777,7 +790,10 @@ fn main() {
             let mut agree = 0usize;
 
             for (reading, mut surfaces) in by_reading {
-                surfaces.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+                // Tie-break by surface text: frequency and last_used can both
+                // collide (records in one batch share the same second), and
+                // HashMap order would make the dominant pick non-deterministic.
+                surfaces.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(b.0)));
                 let (dominant, frequency, _) = surfaces[0];
                 if frequency < min_freq {
                     continue;
@@ -807,7 +823,14 @@ fn main() {
                     continue;
                 }
 
-                let rank = joined.iter().position(|s| s == dominant).map(|i| i + 1);
+                // Post-Viterbi rewriters can append candidates beyond the
+                // requested depth, so paths may exceed n; scan only the first
+                // n to keep "rank" and "not in top-n" semantics uniform.
+                let rank = joined
+                    .iter()
+                    .take(n)
+                    .position(|s| s == dominant)
+                    .map(|i| i + 1);
                 let hist_top1: String =
                     convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
                         .first()
