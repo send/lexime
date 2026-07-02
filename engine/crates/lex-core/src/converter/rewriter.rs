@@ -110,11 +110,15 @@ impl Rewriter for HiraganaVariantRewriter {
             return Vec::new();
         }
 
-        let wc = worst_cost(paths);
+        // Anchor to the BEST path, not the worst: the kana variant is the
+        // rescue candidate when the cost model kanjifies wrongly (#263), so
+        // it must land mid-list where it is visible and history-boostable.
+        // Bottom-anchored (worst+5000) it could never be reached once the
+        // n-best filled with 20 lattice paths.
         vec![ScoredPath::single(
             combined_reading,
             combined_surface,
-            wc.saturating_add(5000),
+            best.viterbi_cost.saturating_add(4000),
         )]
     }
 }
