@@ -553,11 +553,18 @@ pub(super) fn scan_v2(data: &[u8], history: &mut UserHistory) -> V2Scan {
         let expected_crc =
             u32::from_le_bytes(data[pos + 4..pos + 8].try_into().expect("4-byte field"));
         let seq = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().expect("8-byte field"));
-        let end = pos + FRAME_HEADER_LEN + payload_len;
-        if payload_len == 0 || end > data.len() {
-            scan.truncated_tail = true;
-            break;
-        }
+        // Checked arithmetic: on 32-bit targets a corrupt payload_len near
+        // u32::MAX could wrap `usize` and slip past the bounds check.
+        let end = pos
+            .checked_add(FRAME_HEADER_LEN)
+            .and_then(|v| v.checked_add(payload_len));
+        let end = match end {
+            Some(end) if payload_len != 0 && end <= data.len() => end,
+            _ => {
+                scan.truncated_tail = true;
+                break;
+            }
+        };
         if crc32fast::hash(&data[pos + 8..end]) != expected_crc {
             scan.truncated_tail = true;
             break;
@@ -622,11 +629,17 @@ pub(super) fn scan_legacy(data: &[u8], history: &mut UserHistory) -> LegacyScan 
             u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4-byte field")) as usize;
         let expected_crc =
             u32::from_le_bytes(data[pos + 4..pos + 8].try_into().expect("4-byte field"));
-        if length == 0 || pos + 8 + length > data.len() {
-            scan.truncated_tail = true;
-            break;
-        }
-        let payload = &data[pos + 8..pos + 8 + length];
+        // Checked arithmetic: see scan_v2 — a corrupt length near u32::MAX
+        // could wrap `usize` on 32-bit targets.
+        let end = pos.checked_add(8).and_then(|v| v.checked_add(length));
+        let end = match end {
+            Some(end) if length != 0 && end <= data.len() => end,
+            _ => {
+                scan.truncated_tail = true;
+                break;
+            }
+        };
+        let payload = &data[pos + 8..end];
         if crc32fast::hash(payload) != expected_crc {
             scan.truncated_tail = true;
             break;
@@ -649,7 +662,7 @@ pub(super) fn scan_legacy(data: &[u8], history: &mut UserHistory) -> LegacyScan 
                 break;
             }
         }
-        pos += 8 + length;
+        pos = end;
     }
     scan
 }
