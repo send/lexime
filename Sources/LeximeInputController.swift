@@ -169,11 +169,10 @@ class LeximeInputController: IMKInputController {
                     comment: "Engine failure alert body"),
                 detail)
             alert.runModal()
-            // Restore the background-process policy unless another Lexime
-            // window (e.g. Settings) is currently visible.
-            if !NSApp.windows.contains(where: { $0.isVisible }) {
-                NSApp.setActivationPolicy(.prohibited)
-            }
+            // Restore the background-process policy. SettingsWindowController
+            // owns the policy while its window is alive (visible, miniaturized,
+            // or hidden), so defer the decision to its shared logic.
+            SettingsWindowController.shared.restoreBackgroundActivationPolicy()
         }
     }
 
