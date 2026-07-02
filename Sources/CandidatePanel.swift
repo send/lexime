@@ -113,8 +113,11 @@ class CandidatePanel: NSPanel {
         if let cursorRect {
             var origin = NSPoint(x: cursorRect.origin.x, y: cursorRect.origin.y - panelSize.height)
 
-            // Clamp to screen
-            if let screen = NSScreen.main ?? NSScreen.screens.first {
+            // Clamp to the screen containing the cursor — cursorRect is in
+            // global coordinates, so NSScreen.main would clamp to the wrong
+            // display when the caret is on a secondary screen.
+            let cursorScreen = NSScreen.screens.first { $0.frame.contains(cursorRect.origin) }
+            if let screen = cursorScreen ?? NSScreen.main ?? NSScreen.screens.first {
                 let screenFrame = screen.visibleFrame
 
                 // If below screen bottom, flip above cursor
