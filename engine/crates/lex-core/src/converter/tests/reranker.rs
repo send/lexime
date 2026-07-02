@@ -197,9 +197,11 @@ fn test_rerank_penalizes_uneven_segments() {
 
 #[test]
 fn test_rerank_applies_script_cost() {
-    // Katakana surface should receive +5000 penalty from script_cost
+    // All-katakana surfaces receive the katakana_penalty (default 150) from
+    // script_cost. Since #261 it is a tie-breaker: it decides near-ties in
+    // favor of hiragana but must not override a clear dictionary-cost lead.
     let mut paths = vec![
-        // Katakana path: タラ (katakana) → +5000 script penalty
+        // Katakana path: タラ (katakana) → +150 script penalty
         ScoredPath {
             segments: vec![RichSegment {
                 reading: "たら".into(),
@@ -211,7 +213,7 @@ fn test_rerank_applies_script_cost() {
             viterbi_cost: 3000,
             history_boost: 0,
         },
-        // Hiragana path: たら (no script penalty)
+        // Hiragana path: たら (no script penalty), raw cost 100 higher
         ScoredPath {
             segments: vec![RichSegment {
                 reading: "たら".into(),
@@ -220,20 +222,20 @@ fn test_rerank_applies_script_cost() {
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 7000,
+            viterbi_cost: 3100,
             history_boost: 0,
         },
     ];
 
     rerank(&mut paths, None, None);
 
-    // Katakana: 3000 + 5000 = 8000
-    // Hiragana: 7000 + 0    = 7000
-    // Hiragana should be ranked first
+    // Katakana: 3000 + 150 = 3150
+    // Hiragana: 3100 + 0   = 3100
+    // Hiragana wins the near-tie
     assert_eq!(paths[0].segments[0].surface, "たら");
-    assert_eq!(paths[0].viterbi_cost, 7000);
+    assert_eq!(paths[0].viterbi_cost, 3100);
     assert_eq!(paths[1].segments[0].surface, "タラ");
-    assert_eq!(paths[1].viterbi_cost, 8000);
+    assert_eq!(paths[1].viterbi_cost, 3150);
 }
 
 #[test]
