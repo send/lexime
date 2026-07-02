@@ -118,7 +118,7 @@ impl Rewriter for HiraganaVariantRewriter {
         vec![ScoredPath::single(
             combined_reading,
             combined_surface,
-            best.viterbi_cost.saturating_add(4000),
+            best.pre_history_cost().saturating_add(4000),
         )]
     }
 }
