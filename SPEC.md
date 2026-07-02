@@ -397,7 +397,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 ### 保存（WAL + Checkpoint、LXUD v2）
 
-- **Checkpoint**: LXUD v2（32 バイト固定ヘッダ: マジック `LXUD` + version 2 + `applied_seq` + created_at + body_len + body CRC32、body は bincode）。v1（マジック + version 1 + bincode）の reader を保持し、起動時に一回で v2 へ migration（元 v1 は `.v1.bak` へ best-effort 退避）
+- **Checkpoint**: LXUD v2（32 バイト固定ヘッダ: マジック `LXUD` + version 2 + `applied_seq` + created_at + body_len + CRC32、body は bincode。CRC はヘッダ先頭 28 バイト + body を保護 — `applied_seq` は replay filter を駆動するため無防備な bit flip を許さない）。v1（マジック + version 1 + bincode）の reader を保持し、起動時に一回で v2 へ migration（元 v1 は `.v1.bak` へ best-effort 退避）
 - **WAL**: `user_history.lxud.wal`（8 バイトファイルヘッダ `LXWL` + version 2。フレーム形式: payload_len + CRC32(seq+payload) + seq + bincode(`WalRecord::Committed|Tombstone`)）
 - **seq**: WAL フレームは単調増加の連番を持ち、checkpoint ヘッダの `applied_seq` が「効果を含む最後の seq」を記録。replay は `seq > applied_seq` のフレームのみ適用するため、checkpoint 書き込みと WAL truncate の間でクラッシュしても二重適用が構造的に起きない
 - **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`、Tombstone は毎回 `F_FULLFSYNC`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync で書き出し + WAL truncate）

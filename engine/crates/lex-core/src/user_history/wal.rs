@@ -339,8 +339,20 @@ impl HistoryWal {
     /// resurrects even across power loss. Committed frames take a write
     /// barrier every [`BARRIER_EVERY_FRAMES`] frames instead.
     ///
-    /// On write failure the assigned seq is consumed; gaps in the sequence
-    /// are legal (§3) and replay only warns about them.
+    /// Failure semantics:
+    /// - `Err` before the frame write: nothing on disk; the assigned seq is
+    ///   consumed (gaps are legal, §3, replay only warns).
+    /// - Frame write failure: a partial frame may sit at the tail, and any
+    ///   later append would land after unreadable bytes and be lost to
+    ///   replay (problem A at runtime) — so the WAL freezes until a
+    ///   truncation (post-checkpoint) re-establishes appendable form.
+    /// - Committed barrier failure: logged, still `Ok` — the frame is in
+    ///   the file (callers must count it as covered or a crash would
+    ///   double-apply it); only the power-loss window widens.
+    /// - Tombstone `sync_full` failure: `Err`, because the immediate
+    ///   durability is the operation's contract. The frame remains appended
+    ///   and uncovered, which is safe: re-applying a Tombstone on replay is
+    ///   idempotent.
     pub fn append_record(&mut self, record: &WalRecord) -> io::Result<u64> {
         if self.frozen {
             return Err(io::Error::other(
@@ -365,7 +377,10 @@ impl HistoryWal {
         frame.extend_from_slice(&crc.to_le_bytes());
         frame.extend_from_slice(&seq.to_le_bytes());
         frame.extend_from_slice(&payload);
-        self.io.append(&frame)?;
+        if let Err(e) = self.io.append(&frame) {
+            self.frozen = true;
+            return Err(e);
+        }
 
         self.last_appended_seq = seq;
         self.entry_count += 1;
@@ -373,14 +388,16 @@ impl HistoryWal {
 
         match record {
             WalRecord::Tombstone { .. } => {
-                self.io.sync_full()?;
                 self.frames_since_barrier = 0;
+                self.io.sync_full()?;
             }
             WalRecord::Committed { .. } => {
                 self.frames_since_barrier += 1;
                 if self.frames_since_barrier >= BARRIER_EVERY_FRAMES {
-                    self.io.sync_barrier()?;
                     self.frames_since_barrier = 0;
+                    if let Err(e) = self.io.sync_barrier() {
+                        warn!("WAL barrier sync failed (frame is written, durability window widens): {e}");
+                    }
                 }
             }
         }

@@ -140,12 +140,22 @@ impl LexUserHistory {
             path: cp.with_file_name("commit-log.jsonl"),
             file: None,
         };
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
             compacting: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
-        }))
+        });
+        // Startup compaction (§5.1-6): checkpoint recovery results early so
+        // the next startup is clean. This is also the heal path for a
+        // frozen WAL (failed tail repair / failed migration commit): the
+        // checkpoint covers memory, so the truncation that follows it
+        // restores appendable v2 form — without this, appends would keep
+        // failing and threshold-based compaction would never trigger.
+        if report.compaction_recommended {
+            this.spawn_compact();
+        }
+        Ok(this)
     }
 
     /// Clear all learning history (in-memory + WAL + checkpoint files).
@@ -194,31 +204,46 @@ impl LexUserHistory {
     }
 
     /// Append a WAL entry. Does not block on compaction.
-    pub(super) fn append_wal(&self, segments: &[(String, String)], timestamp: u64) {
-        let mut wal = match self.wal.lock() {
-            Ok(w) => w,
-            Err(e) => {
-                warn!("WAL lock poisoned: {e}");
-                return;
-            }
-        };
-        match wal.append(segments, timestamp) {
-            Ok(seq) => {
-                // Advance applied_seq while still holding the wal mutex
-                // (lock order: wal -> inner). The in-memory effect of this
-                // frame was applied in record_history phase 1, so once the
-                // frame is on disk a checkpoint snapshot may claim coverage
-                // of `seq`. A snapshot racing between phase 1 and here only
-                // under-reports applied_seq — the safe direction (bounded
-                // re-apply after a crash, never loss).
-                if let Ok(mut h) = self.inner.write() {
-                    h.advance_applied_seq(seq);
+    pub(super) fn append_wal(self: &Arc<Self>, segments: &[(String, String)], timestamp: u64) {
+        let failed = {
+            let mut wal = match self.wal.lock() {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("WAL lock poisoned: {e}");
+                    return;
+                }
+            };
+            match wal.append(segments, timestamp) {
+                Ok(seq) => {
+                    // Advance applied_seq while still holding the wal mutex
+                    // (lock order: wal -> inner). The in-memory effect of this
+                    // frame was applied in record_history phase 1, so once the
+                    // frame is on disk a checkpoint snapshot may claim coverage
+                    // of `seq`. A snapshot racing between phase 1 and here only
+                    // under-reports applied_seq — the safe direction (bounded
+                    // re-apply after a crash, never loss).
+                    if let Ok(mut h) = self.inner.write() {
+                        h.advance_applied_seq(seq);
+                    }
+                    false
+                }
+                // Memory keeps the record (§5.2): the next checkpoint is a full
+                // snapshot, so a recovered disk picks it up; the frame's absence
+                // makes double-apply impossible.
+                Err(e) => {
+                    warn!("WAL append failed: {e}");
+                    true
                 }
             }
-            // Memory keeps the record (§5.2): the next checkpoint is a full
-            // snapshot, so a recovered disk picks it up; the frame's absence
-            // makes double-apply impossible.
-            Err(e) => warn!("WAL append failed: {e}"),
+        };
+        // An append failure freezes the WAL (partial frame at the tail);
+        // only a post-checkpoint truncation restores appendable form, and
+        // the entry-count threshold can no longer reach it. Attempt the
+        // heal directly (guarded by `compacting`, checkpoint write may
+        // still fail under a persistent disk problem — retried on the next
+        // record).
+        if failed {
+            self.spawn_compact();
         }
     }
 
@@ -246,6 +271,12 @@ impl LexUserHistory {
         if !needs {
             return;
         }
+        self.spawn_compact();
+    }
+
+    /// Spawn an unconditional background compaction attempt (startup
+    /// recovery, WAL-append-failure healing). No-op if one is in flight.
+    fn spawn_compact(self: &Arc<Self>) {
         // Prevent concurrent compactions
         if self.compacting.swap(true, Ordering::Acquire) {
             return;
@@ -292,9 +323,14 @@ impl LexUserHistory {
             return;
         }
 
-        // 3. Truncate WAL (brief lock)
+        // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
+        // provably covered by the durable checkpoint (seq <= applied_seq at
+        // snapshot time) may be destroyed. If a session appended after the
+        // snapshot was cloned, truncation is skipped — the seq filter keeps
+        // replay correct either way, and the entry count stays above the
+        // threshold so the next compaction retries soon.
         if let Ok(mut wal) = self.wal.lock() {
-            if let Err(e) = wal.truncate_wal() {
+            if let Err(e) = wal.truncate_covered(snapshot.applied_seq()) {
                 warn!("WAL truncate failed: {e}");
             }
         }

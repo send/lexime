@@ -10,8 +10,12 @@
 //! | 8      | 8    | applied_seq | u64 LE — last WAL seq covered by the body  |
 //! | 16     | 8    | created_at  | u64 LE epoch secs, diagnostics only        |
 //! | 24     | 4    | body_len    | u32 LE                                     |
-//! | 28     | 4    | body_crc32  | u32 LE, crc32fast over the whole body      |
+//! | 28     | 4    | crc32       | u32 LE, crc32fast over bytes 0..28 + body  |
 //! | 32     | —    | body        | bincode(`UserHistoryData`) — same as v1    |
+//!
+//! The CRC covers the header prefix as well as the body: `applied_seq`
+//! drives the replay filter, and an unprotected bit flip there would
+//! silently skip (or re-apply) WAL frames instead of quarantining.
 //!
 //! v1 (retained reader, ~30 lines): `LXUD` + version byte `1` + bincode body.
 
@@ -133,7 +137,12 @@ impl UserHistory {
         buf.extend_from_slice(&self.applied_seq.to_le_bytes());
         buf.extend_from_slice(&super::now_epoch().to_le_bytes());
         buf.extend_from_slice(&body_len.to_le_bytes());
-        buf.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
+        // CRC over the header prefix + body (see module docs: applied_seq
+        // must not be trusted unprotected).
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&buf);
+        hasher.update(&body);
+        buf.extend_from_slice(&hasher.finalize().to_le_bytes());
         buf.extend_from_slice(&body);
         Ok(buf)
     }
@@ -179,8 +188,11 @@ impl UserHistory {
             )));
         }
         let body = &bytes[HEADER_LEN..];
-        if crc32fast::hash(body) != expected_crc {
-            return Err(invalid("body CRC mismatch"));
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[0..28]);
+        hasher.update(body);
+        if hasher.finalize() != expected_crc {
+            return Err(invalid("checkpoint CRC mismatch"));
         }
         let data: UserHistoryData = bincode_reader(body_len)
             .deserialize(body)

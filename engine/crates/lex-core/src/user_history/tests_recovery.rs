@@ -488,13 +488,34 @@ fn t4_bitflip_fuzz_checkpoint() {
         fs::write(&f.wal, &wal_master).unwrap();
         let (h, _, report) = open_recovering(&f.cp)
             .unwrap_or_else(|e| panic!("open must not fail on bit flip at {i}: {e}"));
-        // Flips in reserved/created_at/applied_seq are tolerated by design
-        // (no header CRC); everything else must quarantine, in which case
-        // the WAL tail still gets recovered.
-        if report.checkpoint_state == CheckpointState::Quarantined {
-            assert!(present(&h, C), "WAL recovery after quarantine, flip at {i}");
-        }
+        // The CRC covers the header prefix (magic/version flips fail their
+        // own checks) and the body: every single-byte flip must quarantine,
+        // and the WAL tail must still be recovered.
+        assert_eq!(
+            report.checkpoint_state,
+            CheckpointState::Quarantined,
+            "flip at byte {i} must not pass validation"
+        );
+        assert!(present(&h, C), "WAL recovery after quarantine, flip at {i}");
     }
+}
+
+#[test]
+fn t4_applied_seq_bitflip_is_detected() {
+    // applied_seq drives the replay filter: an unprotected flip raising it
+    // would silently skip live WAL frames. The header CRC must catch it.
+    let f = fx();
+    build_v2_state(&f, false);
+    let mut data = fs::read(&f.cp).unwrap();
+    data[14] ^= 0xFF; // high-ish byte of applied_seq → huge value
+    fs::write(&f.cp, &data).unwrap();
+
+    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
+    assert!(report.data_loss_suspected());
+    // WAL frames are replayed, not silently skipped by the corrupt seq
+    assert_contents(&h, &[C, D, E], &[A, B]);
+    assert_eq!(report.frames_replayed, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -870,6 +891,80 @@ fn quarantine_rotation_keeps_newest_three() {
         "newest must survive rotation"
     );
     assert_eq!(quarantine_count(&f), 3, "rotation keeps the newest 3");
+}
+
+/// Mock WalIo for write/sync failure injection (the full syscall-order
+/// matrix is T6, PR2 — these cover the failure semantics PR1 relies on).
+struct FailingIo {
+    appended: Vec<u8>,
+    fail_append: bool,
+    fail_barrier: bool,
+}
+
+impl super::wal::WalIo for FailingIo {
+    fn append(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        if self.fail_append {
+            return Err(std::io::Error::other("injected append failure"));
+        }
+        self.appended.extend_from_slice(buf);
+        Ok(())
+    }
+    fn sync_barrier(&mut self) -> std::io::Result<()> {
+        if self.fail_barrier {
+            return Err(std::io::Error::other("injected barrier failure"));
+        }
+        Ok(())
+    }
+    fn sync_full(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn truncate_to_header(&mut self) -> std::io::Result<()> {
+        self.appended.clear();
+        Ok(())
+    }
+}
+
+#[test]
+fn committed_barrier_failure_still_returns_seq() {
+    // A failed barrier after a successful frame write must not surface as
+    // an append failure: the frame is durable enough to be replayed, so the
+    // caller has to count it as covered (advance applied_seq) or a crash
+    // would double-apply it.
+    let f = fx();
+    let io = FailingIo {
+        appended: Vec::new(),
+        fail_append: false,
+        fail_barrier: true,
+    };
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    for i in 1..=60u64 {
+        // Frame 50 crosses the barrier interval with a failing barrier
+        assert_eq!(wal.append(&seg(A), T0 + i).unwrap(), i, "append {i}");
+    }
+    assert_eq!(wal.entry_count(), 60);
+    assert!(!wal.is_frozen());
+}
+
+#[test]
+fn append_write_failure_freezes_until_truncate() {
+    // A failed frame write can leave a partial frame at the tail; further
+    // appends would land after unreadable bytes and be lost to replay.
+    let f = fx();
+    let io = FailingIo {
+        appended: Vec::new(),
+        fail_append: true,
+        fail_barrier: false,
+    };
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    assert!(wal.append(&seg(A), T0).is_err());
+    assert!(wal.is_frozen(), "append failure must freeze the WAL");
+    assert!(
+        wal.append(&seg(B), T0 + 1).is_err(),
+        "appends stay rejected while frozen"
+    );
+    // The post-checkpoint truncation re-establishes appendable form
+    wal.truncate_wal().unwrap();
+    assert!(!wal.is_frozen());
 }
 
 #[test]
