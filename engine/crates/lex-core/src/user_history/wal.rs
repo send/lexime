@@ -144,6 +144,12 @@ impl FileWalIo {
                 // page is lost, and recovery would misclassify the file as
                 // headerless and quarantine otherwise-recoverable frames.
                 barrier_fsync(&f)?;
+                // A freshly created file's directory entry needs a parent
+                // fsync to be durable — otherwise a power loss could drop
+                // the whole file, frames included, past the barrier bound.
+                if !super::persistence::sync_parent_dir(&self.path) {
+                    warn!("WAL parent dir sync failed; new file's durability unconfirmed");
+                }
             } else {
                 // Validate the existing header: appending after unreadable
                 // header bytes (external edit, on-disk rot) would get the
@@ -216,6 +222,11 @@ impl WalIo for FileWalIo {
         let mut f = File::create(&self.path)?;
         f.write_all(&WAL_HEADER)?;
         f.sync_data()?;
+        // If create() made a new directory entry (file was removed
+        // externally), it needs a parent fsync to be durable.
+        if !super::persistence::sync_parent_dir(&self.path) {
+            warn!("WAL parent dir sync failed after truncation; durability unconfirmed");
+        }
         Ok(())
     }
 }
