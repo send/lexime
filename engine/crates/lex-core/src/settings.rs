@@ -314,7 +314,7 @@ mod tests {
         let s = parse_settings_toml(DEFAULT_SETTINGS_TOML).unwrap();
         assert_eq!(s.cost.segment_penalty, 5000);
         assert_eq!(s.cost.mixed_script_bonus, 3000);
-        assert_eq!(s.cost.katakana_penalty, 5000);
+        assert_eq!(s.cost.katakana_penalty, 150);
         assert_eq!(s.cost.pure_kanji_bonus, 1000);
         assert_eq!(s.cost.latin_penalty, 20000);
         assert_eq!(s.cost.unknown_word_cost, 10000);

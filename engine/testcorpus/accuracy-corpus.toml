@@ -714,18 +714,16 @@ reading = "ましん"
 expected = "マシン"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "麻しん が top-1、マシン は rank 5"
+note = "麻しん が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "えんじん"
 expected = "エンジン"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "円陣 が top-1、エンジン は rank 6"
+note = "円陣 が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "だめです"
@@ -741,18 +739,16 @@ reading = "ばぐを"
 expected = "バグを"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "馬具を が top-1"
+note = "馬具を が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "ぱす"
 expected = "パス"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "ひらがな ぱす のままが top-1"
+note = "ひらがな ぱす のままが top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "まじで"
@@ -768,9 +764,8 @@ reading = "とれいと"
 expected = "トレイト"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "トレイと (トレイ+と) が top-1"
+note = "トレイと (トレイ+と) が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "ねすてっど"
@@ -786,9 +781,8 @@ reading = "さいとりすと"
 expected = "サイトリスト"
 category = "loanword"
 tags = ["history-audit", "it", "compound"]
-skip = true
 issue = "#261"
-note = "再トリスト が top-1"
+note = "再トリスト が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "すれ"
@@ -813,18 +807,16 @@ reading = "どる"
 expected = "ドル"
 category = "loanword"
 tags = ["history-audit"]
-skip = true
 issue = "#261"
-note = "取る が top-1 (読み不一致)、ドル は rank 4"
+note = "取る (連濁読みエントリ) が top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "ぷろだくしょんに"
 expected = "プロダクションに"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#261"
-note = "ひらがなのままが top-1"
+note = "ひらがなのままが top-1 だった。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "はいつ"
@@ -993,9 +985,8 @@ reading = "こえたふぁいるはありませんか"
 expected = "超えたファイルはありませんか"
 category = "phrase"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#263"
-note = "超え他ファイルはありませんか と 他 が混入"
+note = "超え他ファイル と 他 が混入していた。katakana_penalty 5000→150 で fix"
 
 [[cases]]
 reading = "にしたほうがいい"
@@ -1041,3 +1032,29 @@ tags = ["history-audit", "it", "suffix-loanword"]
 skip = true
 issue = "#263"
 note = "レビュー死に が top-1。外来語+時 の複合が組めない"
+
+# ── katakana policy guards (#261: katakana_penalty 5000→150) ──
+# 現代慣用でカタカナ表記が標準の語は penalty 縮小後にカタカナが top-1。
+# かっこ→カッコ は設計判断 (履歴 1 回で 括弧 に戻る) として許容を明文化。
+
+[[cases]]
+reading = "めも"
+expected = "メモ"
+category = "loanword"
+tags = ["katakana-policy"]
+issue = "#261"
+
+[[cases]]
+reading = "ぺん"
+expected = "ペン"
+category = "loanword"
+tags = ["katakana-policy"]
+issue = "#261"
+
+[[cases]]
+reading = "かっこ"
+expected = "カッコ"
+category = "loanword"
+tags = ["katakana-policy"]
+issue = "#261"
+note = "設計判断: 括弧 rank 2 を許容 (#261 Q1)。漢字が欲しい場合は履歴学習で flip"

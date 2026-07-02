@@ -1,7 +1,12 @@
 [cost]
 segment_penalty = 5000
 mixed_script_bonus = 3000
-katakana_penalty = 5000
+# Tie-breaker only. Was 5000, which overrode the dictionary's own cost
+# ordering: in 9 of the 14 katakana misses mined in #261 the katakana path
+# had the lowest raw Viterbi cost and lost purely to this penalty (vs the
+# mixed-script bonus on the kanji competitor). 150 keeps hiragana ahead on
+# near-ties but lets the dictionary decide otherwise. Measurements: #261.
+katakana_penalty = 150
 pure_kanji_bonus = 1000
 latin_penalty = 20000
 unknown_word_cost = 10000
