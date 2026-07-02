@@ -7,10 +7,8 @@ use super::{
 };
 use lex_core::dict::DictEntry;
 
-const MOZC_CONTENTS_URL: &str =
-    "https://api.github.com/repos/google/mozc/contents/src/data/dictionary_oss";
-const MOZC_LICENSE_URL: &str = "https://raw.githubusercontent.com/google/mozc/master/LICENSE";
-const MOZC_CONNECTION_URL: &str = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/connection_single_column.txt";
+const MOZC_API_BASE: &str = "https://api.github.com/repos/google/mozc";
+const MOZC_RAW_BASE: &str = "https://raw.githubusercontent.com/google/mozc";
 
 /// Mozc TSV dictionary source.
 ///
@@ -30,10 +28,26 @@ impl MozcSource {
         Ok(())
     }
 
-    /// List dictionary files via GitHub Contents API and return (name, download_url) pairs
-    /// for `dictionary*.txt` and `id.def`.
-    fn list_remote_files() -> Result<Vec<(String, String)>, DictSourceError> {
-        let body = ureq::get(MOZC_CONTENTS_URL)
+    /// Resolve the latest commit SHA of `master` via the GitHub Commits API.
+    /// All raw-file downloads in a fetch run are pinned to this single SHA so
+    /// the cached snapshot can never mix files from two upstream states.
+    fn latest_commit_sha() -> Result<String, DictSourceError> {
+        let url = format!("{MOZC_API_BASE}/commits/master");
+        let body = ureq::get(&url)
+            .call()
+            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?
+            .into_body()
+            .read_to_string()
+            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?;
+        parse_commit_sha(&body)
+    }
+
+    /// List dictionary files via GitHub Contents API **pinned to `sha`** and
+    /// return (name, download_url) pairs for `dictionary*.txt` and `id.def`.
+    /// The returned `download_url`s point at the same pinned SHA.
+    fn list_remote_files(sha: &str) -> Result<Vec<(String, String)>, DictSourceError> {
+        let url = format!("{MOZC_API_BASE}/contents/src/data/dictionary_oss?ref={sha}");
+        let body = ureq::get(&url)
             .call()
             .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?
             .into_body()
@@ -41,6 +55,62 @@ impl MozcSource {
             .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?;
         parse_remote_files(&body)
     }
+}
+
+/// Extract and validate the commit SHA from a GitHub Commits API response.
+fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| DictSourceError::Parse(format!("GitHub commit JSON: {e}")))?;
+    let sha = v["sha"]
+        .as_str()
+        .ok_or_else(|| DictSourceError::Parse("GitHub commit JSON: missing sha".to_string()))?;
+    // A full commit SHA is 40 hex chars; reject anything else so a malformed
+    // response can't end up embedded in raw URLs or the stamp file.
+    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(DictSourceError::Parse(format!(
+            "GitHub commit JSON: invalid sha {sha:?}"
+        )));
+    }
+    Ok(sha.to_string())
+}
+
+/// Read the version stamp. Missing / empty / whitespace-only stamps (including
+/// the legacy pre-versioning empty `.stamp`) all count as "no version".
+fn read_stamp(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// True if `name` is one of the files this source fetches into the cache dir.
+fn is_fetched_file(name: &str) -> bool {
+    (name.starts_with("dictionary") && name.ends_with(".txt"))
+        || name == "id.def"
+        || name == "connection_single_column.txt"
+        || name == "LICENSE"
+}
+
+/// True if any previously fetched file exists in `dest`.
+fn any_fetched_file_exists(dest: &Path) -> bool {
+    fs::read_dir(dest)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| is_fetched_file(&e.file_name().to_string_lossy()))
+        })
+        .unwrap_or(false)
+}
+
+/// Remove all fetched files plus the stamp so a re-download starts clean.
+fn wipe_cache(dest: &Path, stamp_path: &Path) {
+    if let Ok(rd) = fs::read_dir(dest) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            if is_fetched_file(&entry.file_name().to_string_lossy()) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = fs::remove_file(stamp_path);
 }
 
 /// Parse GitHub Contents API JSON and return (name, download_url) pairs
@@ -100,12 +170,62 @@ impl DictSource for MozcSource {
         )
     }
 
+    /// Fetch the Mozc dictionary snapshot into `dest`. Same cache discipline
+    /// as the SudachiDict fetcher (`candidates/sudachi.rs`, PR #242): **the
+    /// stamp file must equal the resolved upstream version exactly**, here
+    /// the latest commit SHA of `google/mozc` master. Anything else (stamp
+    /// missing, legacy empty stamp, mismatched SHA — with or without leftover
+    /// files) triggers a clean wipe + full re-download.
+    ///
+    /// Crucially, every download in a run is pinned to that one SHA via
+    /// `raw.githubusercontent.com/google/mozc/<sha>/...`, so `id.def` and
+    /// `dictionary*.txt` can never come from two different upstream states —
+    /// neither across runs (stale per-file cache) nor within a run (upstream
+    /// moving while we fetch). A skew there silently shifts POS ids and
+    /// corrupts conversion quality without any visible error.
+    ///
+    /// Within a still-valid cache (stamp == latest SHA), individual missing
+    /// files are re-downloaded from that same SHA, so an interrupted run
+    /// recovers without re-fetching everything.
+    ///
+    /// Offline behavior: if the SHA can't be resolved but a complete cached
+    /// snapshot exists (non-empty stamp — only written after a fully
+    /// successful fetch), warn and keep using it; otherwise fail.
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
+        let stamp_path = dest.join(".stamp");
+        let cached = read_stamp(&stamp_path);
 
-        eprintln!("Downloading Mozc dictionary files to {}...", dest.display());
+        let sha = match Self::latest_commit_sha() {
+            Ok(sha) => sha,
+            Err(e) => {
+                if let Some(v) = &cached {
+                    eprintln!(
+                        "Warning: could not resolve latest mozc commit ({e}); \
+                         using cached snapshot {v}."
+                    );
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        };
 
-        let remote_files = Self::list_remote_files()?;
+        let cache_valid = cached.as_deref() == Some(sha.as_str());
+        if !cache_valid {
+            if let Some(v) = &cached {
+                eprintln!("Cache commit {v} != latest {sha}; wiping stale files.");
+            } else if any_fetched_file_exists(dest) {
+                eprintln!("Cache has no version stamp but files present; wiping.");
+            }
+            wipe_cache(dest, &stamp_path);
+        }
+
+        eprintln!(
+            "Downloading Mozc dictionary files (commit {sha}) to {}...",
+            dest.display()
+        );
+
+        let remote_files = Self::list_remote_files(&sha)?;
         for (name, url) in &remote_files {
             let file_path = dest.join(name);
             if file_path.exists() {
@@ -122,7 +242,10 @@ impl DictSource for MozcSource {
             eprintln!("  connection_single_column.txt (already exists, skipping)");
         } else {
             eprintln!("  connection_single_column.txt");
-            Self::download_file(MOZC_CONNECTION_URL, &connection)?;
+            let url = format!(
+                "{MOZC_RAW_BASE}/{sha}/src/data/dictionary_oss/connection_single_column.txt"
+            );
+            Self::download_file(&url, &connection)?;
         }
 
         // Download LICENSE
@@ -131,11 +254,12 @@ impl DictSource for MozcSource {
             eprintln!("  LICENSE (already exists, skipping)");
         } else {
             eprintln!("  LICENSE");
-            Self::download_file(MOZC_LICENSE_URL, &license)?;
+            let url = format!("{MOZC_RAW_BASE}/{sha}/LICENSE");
+            Self::download_file(&url, &license)?;
         }
 
-        // Create stamp file
-        fs::write(dest.join(".stamp"), "").map_err(DictSourceError::Io)?;
+        // Record the snapshot version only after every file landed.
+        fs::write(&stamp_path, &sha).map_err(DictSourceError::Io)?;
         eprintln!("Done. Files saved to {}", dest.display());
         Ok(())
     }
@@ -230,5 +354,132 @@ mod tests {
         let files = parse_remote_files(json).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, "dictionary00.txt");
+    }
+
+    #[test]
+    fn test_parse_commit_sha() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let json = format!(r#"{{"sha": "{sha}", "commit": {{}}}}"#);
+        assert_eq!(parse_commit_sha(&json).unwrap(), sha);
+    }
+
+    #[test]
+    fn test_parse_commit_sha_rejects_malformed() {
+        // Missing sha field
+        assert!(parse_commit_sha(r#"{"commit": {}}"#).is_err());
+        // Not JSON
+        assert!(parse_commit_sha("not json").is_err());
+        // Wrong length
+        assert!(parse_commit_sha(r#"{"sha": "abc123"}"#).is_err());
+        // Right length but non-hex (could smuggle path segments into raw URLs)
+        assert!(
+            parse_commit_sha(r#"{"sha": "0123456789abcdef0123456789abcdef0123456z"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn test_read_stamp_roundtrip() {
+        let dir = std::env::temp_dir().join("lexime_test_mozc_stamp");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stamp = dir.join(".stamp");
+
+        // Missing → None
+        assert!(read_stamp(&stamp).is_none());
+
+        // Legacy empty stamp (pre-versioning marker) → None, so it triggers
+        // a wipe + re-download instead of being trusted as current.
+        fs::write(&stamp, "").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+
+        // Whitespace-only → None
+        fs::write(&stamp, "  \n").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+
+        // Trim trailing newline
+        fs::write(&stamp, "0123456789abcdef0123456789abcdef01234567\n").unwrap();
+        assert_eq!(
+            read_stamp(&stamp).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pins the cache_valid predicate that drives wipe decisions — the mozc
+    /// counterpart of `candidates/sudachi.rs::test_stale_cache_invariant`
+    /// (PR #242). Covers SHA mismatch, missing stamp, and the legacy empty
+    /// stamp left behind by the pre-versioning fetch. Network path is
+    /// exercised by manual `dictool fetch --source mozc` runs.
+    #[test]
+    fn test_stale_cache_invariant() {
+        fn should_wipe(dest: &Path, latest: &str) -> bool {
+            let cached = read_stamp(&dest.join(".stamp"));
+            cached.as_deref() != Some(latest)
+        }
+
+        let dir = std::env::temp_dir().join("lexime_test_mozc_invariant");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let latest = "0123456789abcdef0123456789abcdef01234567";
+        let older = "fedcba9876543210fedcba9876543210fedcba98";
+
+        // Case 1: stamp matches latest SHA → no wipe.
+        fs::write(dir.join(".stamp"), latest).unwrap();
+        assert!(!should_wipe(&dir, latest));
+
+        // Case 2: stamp records an older SHA → wipe.
+        fs::write(dir.join(".stamp"), older).unwrap();
+        assert!(should_wipe(&dir, latest));
+
+        // Case 3: stamp missing entirely → wipe.
+        fs::remove_file(dir.join(".stamp")).unwrap();
+        assert!(should_wipe(&dir, latest));
+
+        // Case 4: legacy empty stamp → wipe.
+        fs::write(dir.join(".stamp"), "").unwrap();
+        assert!(should_wipe(&dir, latest));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A SHA mismatch must remove every fetched artifact — leaving id.def from
+    /// snapshot A next to dictionary*.txt from snapshot B silently shifts POS
+    /// ids and corrupts conversion quality.
+    #[test]
+    fn test_wipe_cache_removes_all_fetched_files() {
+        let dir = std::env::temp_dir().join("lexime_test_mozc_wipe");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let fetched = [
+            "dictionary00.txt",
+            "dictionary09.txt",
+            "id.def",
+            "connection_single_column.txt",
+            "LICENSE",
+        ];
+        for name in fetched {
+            fs::write(dir.join(name), "stale").unwrap();
+        }
+        fs::write(
+            dir.join(".stamp"),
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+        .unwrap();
+        // A user-placed file must survive the wipe.
+        fs::write(dir.join("notes.md"), "keep me").unwrap();
+
+        assert!(any_fetched_file_exists(&dir));
+        wipe_cache(&dir, &dir.join(".stamp"));
+
+        for name in fetched {
+            assert!(!dir.join(name).exists(), "{name} should have been wiped");
+        }
+        assert!(!dir.join(".stamp").exists());
+        assert!(dir.join("notes.md").exists());
+        assert!(!any_fetched_file_exists(&dir));
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
