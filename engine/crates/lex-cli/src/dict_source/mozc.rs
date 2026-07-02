@@ -36,24 +36,25 @@ impl MozcSource {
         let url = format!("{MOZC_API_BASE}/commits/master");
         let body = ureq::get(&url)
             .call()
-            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
             .into_body()
             .read_to_string()
-            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?;
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
         parse_commit_sha(&body)
     }
 
     /// List dictionary files via GitHub Contents API **pinned to `sha`** and
-    /// return (name, download_url) pairs for `dictionary*.txt` and `id.def`.
+    /// return (name, download_url) pairs for the upstream-numbered shards
+    /// (`dictionary<digits>.txt`) and `id.def`.
     /// The returned `download_url`s point at the same pinned SHA.
     fn list_remote_files(sha: &str) -> Result<Vec<(String, String)>, DictSourceError> {
         let url = format!("{MOZC_API_BASE}/contents/src/data/dictionary_oss?ref={sha}");
         let body = ureq::get(&url)
             .call()
-            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
             .into_body()
             .read_to_string()
-            .map_err(|e| DictSourceError::Http(format!("GitHub API: {e}")))?;
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
         parse_remote_files(&body)
     }
 }
@@ -240,7 +241,7 @@ fn write_stamp(path: &Path, sha: &str, manifest: &[String]) -> Result<(), DictSo
 }
 
 /// Parse GitHub Contents API JSON and return (name, download_url) pairs
-/// for `dictionary*.txt` and `id.def`.
+/// for the upstream-numbered shards (`dictionary<digits>.txt`) and `id.def`.
 fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceError> {
     let entries: Vec<serde_json::Value> = serde_json::from_str(json)
         .map_err(|e| DictSourceError::Parse(format!("GitHub API JSON: {e}")))?;
