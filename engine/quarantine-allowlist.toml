@@ -3,6 +3,8 @@
 # Format: name = "version"
 
 [allow]
+# Security patch: RUSTSEC-2026-0190 (unsound Error::context + downcast_mut).
+anyhow = "1.0.103"
 candle-core = "0.10.2"
 candle-nn = "0.10.2"
 # Own crate — TrieError non_exhaustive + InvalidVersion(u8) + InvalidStructure
