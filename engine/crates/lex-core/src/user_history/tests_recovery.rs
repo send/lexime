@@ -990,6 +990,16 @@ fn strict_replay_errors_on_unreadable_wal_formats() {
     fs::write(&f.wal, v1_wal_bytes(&[(seg(B), T0)])).unwrap();
     let (h, _) = super::wal::open_with_wal(&f.cp).unwrap();
     assert_eq!(frequency(&h, B), 1, "from checkpoint only, not re-applied");
+
+    // Corrupted magic with a *missing* checkpoint must also fail loudly:
+    // the whole uncheckpointed tail would otherwise be silently ignored.
+    let f = fx();
+    build_v2_state(&f, false);
+    fs::remove_file(&f.cp).unwrap();
+    let mut data = fs::read(&f.wal).unwrap();
+    data[0] ^= 0xFF;
+    fs::write(&f.wal, &data).unwrap();
+    assert!(super::wal::open_with_wal(&f.cp).is_err());
 }
 
 #[test]

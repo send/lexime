@@ -179,26 +179,34 @@ impl LexUserHistory {
     }
 
     /// Clear all learning history (in-memory + WAL + checkpoint files).
-    fn clear(&self) -> Result<(), LexError> {
+    fn clear(self: Arc<Self>) -> Result<(), LexError> {
         self.clear_impl()
     }
 }
 
 impl LexUserHistory {
-    pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+    pub(super) fn clear_impl(self: &Arc<Self>) -> Result<(), LexError> {
         // Serialize with compactions (startup recovery / background): a
         // compactor that cloned a pre-clear snapshot must not save it after
         // the files are removed, or the privacy wipe would be undone. Holding
         // the flag also makes spawn_compact a no-op for the duration.
         self.acquire_compacting();
-        let _guard = CompactingGuard(&self.compacting);
-        // Clearing supersedes queued compaction requests: it truncates the
-        // WAL (unfreezing it) and empties memory, so there is nothing left
-        // for a queued heal to persist. A request racing in after this point
-        // targets the post-clear state and self-heals on the next commit
-        // (every failed append re-issues spawn_compact).
-        self.compact_pending.store(false, Ordering::SeqCst);
-        self.clear_locked()
+        let result = {
+            let _guard = CompactingGuard(&self.compacting);
+            // Clearing supersedes requests queued so far: it truncates the
+            // WAL (unfreezing it) and empties memory, so there is nothing
+            // left for a queued heal to persist.
+            self.compact_pending.store(false, Ordering::SeqCst);
+            self.clear_locked()
+        };
+        // Drain requests that raced in while this thread held the flag
+        // (e.g. a commit recorded mid-clear whose WAL append failed): they
+        // target the post-clear state and would otherwise wait for an
+        // unrelated future commit.
+        if self.compact_pending.load(Ordering::SeqCst) {
+            self.spawn_compact();
+        }
+        result
     }
 
     /// Acquire the `compacting` flag, sleeping briefly between attempts —

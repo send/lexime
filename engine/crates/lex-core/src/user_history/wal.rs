@@ -338,15 +338,18 @@ impl HistoryWal {
                  recovery path or inspect the file",
             )),
             WalFormat::Legacy => {
+                if legacy_valid_prefix(&data) == 0 {
+                    // Not readable as v1 either — most likely a v2 WAL with
+                    // corrupted magic. Silently reporting nothing would make
+                    // an offline audit plausible-but-incomplete regardless
+                    // of the checkpoint's version, so fail loudly for every
+                    // origin.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "headerless WAL with no readable v1 frame",
+                    ));
+                }
                 if origin == CheckpointOrigin::V2 {
-                    if legacy_valid_prefix(&data) == 0 {
-                        // Not readable as v1 either — most likely a v2 WAL
-                        // with corrupted magic, not migration residue.
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "headerless WAL with no readable v1 frame",
-                        ));
-                    }
                     // Migration-crash residue: already covered by the v2
                     // checkpoint (§2.3) — do not replay.
                     self.adopt_empty(history.applied_seq());
