@@ -81,6 +81,11 @@ pub struct LexUserHistory {
     pub(crate) inner: Arc<RwLock<UserHistory>>,
     wal: Mutex<HistoryWal>,
     compacting: AtomicBool,
+    /// A compaction request that arrived while one was in flight (the
+    /// in-flight snapshot may predate the state the requester needs
+    /// persisted, e.g. a WAL-append-failure heal). The finishing compactor
+    /// re-checks this and runs again.
+    compact_pending: AtomicBool,
     /// Append-only JSONL log of commit events (rank, top-1 acceptance),
     /// stored next to the checkpoint. Local diagnostics only; mined offline
     /// by lextool to track the real-world top-1 acceptance rate. The mutex
@@ -156,6 +161,7 @@ impl LexUserHistory {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
             compacting: AtomicBool::new(false),
+            compact_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
@@ -311,16 +317,39 @@ impl LexUserHistory {
     }
 
     /// Spawn an unconditional background compaction attempt (startup
-    /// recovery, WAL-append-failure healing). No-op if one is in flight.
+    /// recovery, WAL-append-failure healing). If one is already in flight,
+    /// the request is queued via `compact_pending` rather than dropped: the
+    /// in-flight snapshot may predate the state this request needs
+    /// persisted. SeqCst keeps the missed-wakeup reasoning simple; these
+    /// paths are rare.
     fn spawn_compact(self: &Arc<Self>) {
-        // Prevent concurrent compactions
-        if self.compacting.swap(true, Ordering::Acquire) {
+        self.compact_pending.store(true, Ordering::SeqCst);
+        if self.compacting.swap(true, Ordering::SeqCst) {
+            // The in-flight compactor re-checks compact_pending after
+            // releasing the flag (see the loop below), so this request is
+            // picked up even if it raced that release.
             return;
         }
         let this = Arc::clone(self);
-        std::thread::spawn(move || {
-            let _guard = CompactingGuard(&this.compacting);
-            this.run_compact();
+        std::thread::spawn(move || loop {
+            {
+                // Guard scope: released at the end of each iteration, and —
+                // via Drop — on panic, so the flag can never stick.
+                let _guard = CompactingGuard(&this.compacting);
+                if this.compact_pending.swap(false, Ordering::SeqCst) {
+                    this.run_compact();
+                }
+            }
+            // Missed-wakeup re-check: a request may have landed between the
+            // pending swap above and the guard release. If re-acquisition
+            // fails, whoever holds the flag next will observe
+            // compact_pending itself.
+            if !this.compact_pending.load(Ordering::SeqCst) {
+                break;
+            }
+            if this.compacting.swap(true, Ordering::SeqCst) {
+                break;
+            }
         });
     }
 
@@ -329,6 +358,10 @@ impl LexUserHistory {
     pub(super) fn force_compact(&self) {
         self.acquire_compacting();
         let _guard = CompactingGuard(&self.compacting);
+        // A full checkpoint supersedes any queued background request; a
+        // request racing in after this swap stays pending and is handled by
+        // the next spawn_compact.
+        self.compact_pending.store(false, Ordering::SeqCst);
         // Unconditional truncate on the deletion path: skipping it could
         // leave a racing Committed frame for the just-deleted entry in the
         // WAL, uncovered by the checkpoint written here, and the next replay
