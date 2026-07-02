@@ -368,7 +368,15 @@ fn commit_staged(
             ))
         })?;
     }
-    let _ = fs::remove_dir_all(staging);
+    // Cleanup failure must not fail the fetch — the snapshot is already
+    // committed and valid, and the next run removes a leftover `.staging`
+    // at startup. Warn for visibility instead of failing or staying silent.
+    if let Err(e) = fs::remove_dir_all(staging) {
+        eprintln!(
+            "Warning: could not remove staging dir {}: {e}",
+            staging.display()
+        );
+    }
     write_stamp(stamp_path, sha, new_manifest)
 }
 
