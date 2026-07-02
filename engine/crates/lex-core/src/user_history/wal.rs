@@ -119,12 +119,19 @@ struct FileWalIo {
     file: Option<File>,
 }
 
+/// `create_dir_all` for the parent, tolerating bare relative paths whose
+/// parent is "" (the current directory — nothing to create).
+fn ensure_parent_dir(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => fs::create_dir_all(p),
+        _ => Ok(()),
+    }
+}
+
 impl FileWalIo {
     fn open_file(&mut self) -> io::Result<&mut File> {
         if self.file.is_none() {
-            if let Some(parent) = self.path.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            ensure_parent_dir(&self.path)?;
             let mut f = OpenOptions::new()
                 .read(true)
                 .create(true)
@@ -155,7 +162,9 @@ impl FileWalIo {
                 f.seek(SeekFrom::Start(0))?;
                 f.read_exact(&mut header)?;
                 // O_APPEND writes always go to EOF; no seek-back needed.
-                if header != WAL_HEADER {
+                // Match classify_wal: magic + version only, reserved bytes
+                // are "ignored on read" by the format spec.
+                if &header[0..4] != WAL_MAGIC || header[4] != WAL_VERSION {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "WAL header mismatch; refusing to append",
@@ -210,9 +219,7 @@ impl WalIo for FileWalIo {
         // remove the file right after, and a retained handle would make a
         // later append write to an unlinked inode.
         self.file = None;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_parent_dir(&self.path)?;
         let mut f = File::create(&self.path)?;
         f.write_all(&WAL_HEADER)?;
         f.sync_data()?;
