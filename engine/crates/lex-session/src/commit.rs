@@ -75,6 +75,7 @@ impl InputSession {
             rank,
             top1,
             auto: false,
+            learn: true,
         });
     }
 

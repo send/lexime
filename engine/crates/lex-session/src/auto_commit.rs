@@ -77,17 +77,19 @@ impl InputSession {
             )
         };
 
-        // Record to history (comp() borrow is dropped)
-        if committed_surface != committed_reading {
-            self.history_records.push(LearningRecord::Committed {
-                reading: committed_reading.clone(),
-                surface: committed_surface.clone(),
-                segments: seg_pairs,
-                rank: 0,
-                top1: None,
-                auto: true,
-            });
-        }
+        // Record to history (comp() borrow is dropped). Identity commits
+        // (surface == reading) are still recorded for the commit log's
+        // acceptance denominator, but with learn = false so history never
+        // learns no-op mappings.
+        self.history_records.push(LearningRecord::Committed {
+            reading: committed_reading.clone(),
+            surface: committed_surface.clone(),
+            segments: seg_pairs,
+            rank: 0,
+            top1: None,
+            auto: true,
+            learn: committed_surface != committed_reading,
+        });
 
         // Remove committed reading from kana.
         // Safety: starts_with check above guarantees the byte offset is a valid

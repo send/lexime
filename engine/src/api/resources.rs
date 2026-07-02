@@ -83,8 +83,36 @@ pub struct LexUserHistory {
     compacting: AtomicBool,
     /// Append-only JSONL log of commit events (rank, top-1 acceptance),
     /// stored next to the checkpoint. Local diagnostics only; mined offline
-    /// by lextool to track the real-world top-1 acceptance rate.
-    commit_log_path: PathBuf,
+    /// by lextool to track the real-world top-1 acceptance rate. The mutex
+    /// serializes appends across all sessions sharing this history so
+    /// concurrent commits cannot interleave partial lines.
+    commit_log: Mutex<CommitLog>,
+}
+
+/// Lazily-opened append handle for the commit log, mirroring HistoryWal.
+struct CommitLog {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl CommitLog {
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        if self.file.is_none() {
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)?,
+            );
+        }
+        let f = self.file.as_mut().expect("file set by preceding lines");
+        // Single write_all per line (payload + newline in one buffer) so a
+        // line can never be split even if the file handle is shared.
+        let mut buf = Vec::with_capacity(line.len() + 1);
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+        f.write_all(&buf)
+    }
 }
 
 #[uniffi::export]
@@ -93,12 +121,15 @@ impl LexUserHistory {
     fn open(path: String) -> Result<Arc<Self>, LexError> {
         let cp = Path::new(&path);
         let (history, wal) = crate::user_history::wal::open_with_wal(cp)?;
-        let commit_log_path = cp.with_file_name("commit-log.jsonl");
+        let commit_log = CommitLog {
+            path: cp.with_file_name("commit-log.jsonl"),
+            file: None,
+        };
         Ok(Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
             compacting: AtomicBool::new(false),
-            commit_log_path,
+            commit_log: Mutex::new(commit_log),
         }))
     }
 
@@ -116,6 +147,16 @@ impl LexUserHistory {
             })?;
             *h = UserHistory::new();
         }
+        // Drop the commit-log handle before removing the file so a later
+        // append reopens (re-creates) it instead of writing to an unlinked
+        // inode.
+        let commit_log_path = {
+            let mut log = self.commit_log.lock().map_err(|e| LexError::Io {
+                msg: format!("commit-log lock poisoned: {e}"),
+            })?;
+            log.file = None;
+            log.path.clone()
+        };
         let mut wal = self.wal.lock().map_err(|e| LexError::Io {
             msg: format!("WAL lock poisoned: {e}"),
         })?;
@@ -123,7 +164,7 @@ impl LexUserHistory {
         for path in [
             wal.wal_path(),
             wal.checkpoint_path(),
-            self.commit_log_path.as_path(),
+            commit_log_path.as_path(),
         ] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -151,17 +192,15 @@ impl LexUserHistory {
     /// Append one JSONL line to the commit log. Failures are logged and
     /// swallowed — diagnostics must never break the commit path.
     pub(super) fn append_commit_log(&self, line: &str) {
-        let open = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.commit_log_path);
-        match open {
-            Ok(mut f) => {
-                if let Err(e) = writeln!(f, "{line}") {
-                    warn!("commit-log append failed: {e}");
-                }
+        let mut log = match self.commit_log.lock() {
+            Ok(l) => l,
+            Err(e) => {
+                warn!("commit-log lock poisoned: {e}");
+                return;
             }
-            Err(e) => warn!("commit-log open failed: {e}"),
+        };
+        if let Err(e) = log.append(line) {
+            warn!("commit-log append failed: {e}");
         }
     }
 

@@ -201,6 +201,10 @@ pub enum LearningRecord {
         /// True when produced by auto-commit (the user kept typing past a
         /// stable prefix, which implies acceptance of top-1).
         auto: bool,
+        /// Whether this commit should update history learning. False for
+        /// identity auto-commits (surface == reading), which are logged for
+        /// acceptance-rate tracking but must not learn no-op mappings.
+        learn: bool,
     },
     /// User requested deletion of history for this reading→surface.
     Deletion { segments: Vec<(String, String)> },

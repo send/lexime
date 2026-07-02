@@ -247,13 +247,16 @@ impl LexSession {
                         rank,
                         top1,
                         auto,
+                        learn,
                     } => {
-                        let segs = vec![(reading.clone(), surface.clone())];
-                        hist.record_at(&segs, now);
-                        wal_entries.push(segs);
-                        if let Some(sub_segs) = segments {
-                            hist.record_at(sub_segs, now);
-                            wal_entries.push(sub_segs.clone());
+                        if *learn {
+                            let segs = vec![(reading.clone(), surface.clone())];
+                            hist.record_at(&segs, now);
+                            wal_entries.push(segs);
+                            if let Some(sub_segs) = segments {
+                                hist.record_at(sub_segs, now);
+                                wal_entries.push(sub_segs.clone());
+                            }
                         }
                         log_lines.push(commit_log_line(
                             now,
