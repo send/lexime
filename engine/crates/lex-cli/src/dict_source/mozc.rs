@@ -79,20 +79,53 @@ fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
     Ok(sha.to_string())
 }
 
-/// Read the version stamp. Only a well-formed commit SHA counts as a version:
-/// missing / empty / legacy pre-versioning empty `.stamp` / corrupted or
-/// hand-edited contents all return `None`, which the caller treats as
-/// "no version" (wipe + full re-download).
-fn read_stamp(path: &Path) -> Option<String> {
-    fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| is_valid_sha(s))
+/// A parsed version stamp: line 1 is the pinned commit SHA, lines 2+ are the
+/// manifest — the names of the files that fetch run downloaded. The manifest
+/// is what `wipe_cache` deletes, so user-placed files (e.g. a hand-added
+/// `dictionary-custom.txt`, which `parse_dir`'s `dictionary*.txt` glob happily
+/// reads) are never deleted just because upstream moved. A legacy SHA-only
+/// stamp yields an empty manifest.
+struct Stamp {
+    sha: String,
+    manifest: Vec<String>,
 }
 
-/// True if `name` is one of the files this source fetches into the cache dir.
-fn is_fetched_file(name: &str) -> bool {
-    (name.starts_with("dictionary") && name.ends_with(".txt"))
+/// Read the version stamp. Only a stamp whose first line is a well-formed
+/// commit SHA counts: missing / empty / legacy pre-versioning empty `.stamp` /
+/// corrupted or hand-edited contents all return `None`, which the caller
+/// treats as "no version" (wipe + full re-download). Manifest entries are
+/// restricted to plain file names — anything containing a path separator or
+/// `..` is dropped so a tampered stamp cannot direct the wipe outside the
+/// cache dir.
+fn read_stamp(path: &Path) -> Option<Stamp> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    let sha = lines.next()?.trim();
+    if !is_valid_sha(sha) {
+        return None;
+    }
+    let manifest = lines
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.contains('/') && !l.contains('\\') && *l != "..")
+        .map(str::to_string)
+        .collect();
+    Some(Stamp {
+        sha: sha.to_string(),
+        manifest,
+    })
+}
+
+/// True if `name` matches the exact upstream naming of the files this source
+/// fetches: `dictionary<digits>.txt`, `id.def`, `connection_single_column.txt`
+/// or `LICENSE`. Deliberately narrower than the `dictionary*.txt` glob that
+/// `parse_dir` accepts, so a user-placed `dictionary-custom.txt` is never
+/// mistaken for a fetched artifact (Codex review on PR #266).
+fn is_upstream_file_name(name: &str) -> bool {
+    let is_numbered_dictionary = name
+        .strip_prefix("dictionary")
+        .and_then(|rest| rest.strip_suffix(".txt"))
+        .is_some_and(|mid| !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_digit()));
+    is_numbered_dictionary
         || name == "id.def"
         || name == "connection_single_column.txt"
         || name == "LICENSE"
@@ -117,23 +150,33 @@ fn required_files_present(dest: &Path) -> bool {
         && dest.join("connection_single_column.txt").exists()
 }
 
-/// True if any previously fetched file exists in `dest`.
+/// True if any upstream-named fetched file exists in `dest`.
 fn any_fetched_file_exists(dest: &Path) -> bool {
     fs::read_dir(dest)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
-                .any(|e| is_fetched_file(&e.file_name().to_string_lossy()))
+                .any(|e| is_upstream_file_name(&e.file_name().to_string_lossy()))
         })
         .unwrap_or(false)
 }
 
-/// Remove all fetched files plus the stamp so a re-download starts clean.
-fn wipe_cache(dest: &Path, stamp_path: &Path) {
-    if let Ok(rd) = fs::read_dir(dest) {
-        for entry in rd.filter_map(|e| e.ok()) {
-            if is_fetched_file(&entry.file_name().to_string_lossy()) {
-                let _ = fs::remove_file(entry.path());
+/// Remove fetched files plus the stamp so a re-download starts clean.
+/// Deletes exactly the files recorded in the stamp's manifest when one is
+/// available; without a manifest (legacy SHA-only stamp, no stamp at all)
+/// it falls back to the exact upstream naming pattern. Either way,
+/// user-placed files like `dictionary-custom.txt` survive.
+fn wipe_cache(dest: &Path, stamp_path: &Path, manifest: &[String]) {
+    if manifest.is_empty() {
+        if let Ok(rd) = fs::read_dir(dest) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if is_upstream_file_name(&entry.file_name().to_string_lossy()) {
+                    let _ = fs::remove_file(entry.path());
+                }
             }
+        }
+    } else {
+        for name in manifest {
+            let _ = fs::remove_file(dest.join(name));
         }
     }
     let _ = fs::remove_file(stamp_path);
@@ -217,8 +260,12 @@ impl DictSource for MozcSource {
     ///
     /// Offline behavior: if the SHA can't be resolved but a cached snapshot
     /// exists (valid stamp — only written after a fully successful fetch) and
-    /// the required artifacts are still on disk, warn and keep using it;
-    /// otherwise fail.
+    /// its artifacts are still on disk, warn and keep using it; otherwise
+    /// fail.
+    ///
+    /// The stamp records, after the SHA, the manifest of files this fetch
+    /// downloaded; a later wipe deletes exactly those, so user-placed files
+    /// in the cache dir survive version bumps.
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
         let stamp_path = dest.join(".stamp");
@@ -227,17 +274,27 @@ impl DictSource for MozcSource {
         let sha = match Self::latest_commit_sha() {
             Ok(sha) => sha,
             Err(e) => {
-                if let Some(v) = &cached {
-                    if required_files_present(dest) {
+                if let Some(st) = &cached {
+                    // A stamp alone is not enough — verify the artifacts it
+                    // vouches for are still on disk (manifest when recorded,
+                    // required-file heuristic for legacy SHA-only stamps).
+                    let complete = if st.manifest.is_empty() {
+                        required_files_present(dest)
+                    } else {
+                        st.manifest.iter().all(|f| dest.join(f).exists())
+                    };
+                    if complete {
                         eprintln!(
                             "Warning: could not resolve latest mozc commit ({e}); \
-                             using cached snapshot {v}."
+                             using cached snapshot {}.",
+                            st.sha
                         );
                         return Ok(());
                     }
                     return Err(DictSourceError::Http(format!(
-                        "could not resolve latest mozc commit ({e}) and cached snapshot {v} \
+                        "could not resolve latest mozc commit ({e}) and cached snapshot {} \
                          in {} is missing required files",
+                        st.sha,
                         dest.display()
                     )));
                 }
@@ -245,14 +302,21 @@ impl DictSource for MozcSource {
             }
         };
 
-        let cache_valid = cached.as_deref() == Some(sha.as_str());
+        let cache_valid = cached.as_ref().map(|s| s.sha.as_str()) == Some(sha.as_str());
         if !cache_valid {
-            if let Some(v) = &cached {
-                eprintln!("Cache commit {v} != latest {sha}; wiping stale files.");
+            if let Some(st) = &cached {
+                eprintln!(
+                    "Cache commit {} != latest {sha}; wiping stale files.",
+                    st.sha
+                );
             } else if any_fetched_file_exists(dest) {
                 eprintln!("Cache has no version stamp but files present; wiping.");
             }
-            wipe_cache(dest, &stamp_path);
+            let manifest = cached
+                .as_ref()
+                .map(|s| s.manifest.as_slice())
+                .unwrap_or(&[]);
+            wipe_cache(dest, &stamp_path, manifest);
         }
 
         eprintln!(
@@ -261,6 +325,12 @@ impl DictSource for MozcSource {
         );
 
         let remote_files = Self::list_remote_files(&sha)?;
+        // Manifest of everything this snapshot owns — written into the stamp
+        // so a future wipe removes exactly these files and nothing else.
+        let mut manifest: Vec<String> = remote_files.iter().map(|(n, _)| n.clone()).collect();
+        manifest.push("connection_single_column.txt".to_string());
+        manifest.push("LICENSE".to_string());
+
         for (name, url) in &remote_files {
             let file_path = dest.join(name);
             if file_path.exists() {
@@ -293,8 +363,13 @@ impl DictSource for MozcSource {
             Self::download_file(&url, &license)?;
         }
 
-        // Record the snapshot version only after every file landed.
-        fs::write(&stamp_path, &sha).map_err(DictSourceError::Io)?;
+        // Record the snapshot version + manifest only after every file landed.
+        let mut stamp_contents = sha.clone();
+        for name in &manifest {
+            stamp_contents.push('\n');
+            stamp_contents.push_str(name);
+        }
+        fs::write(&stamp_path, &stamp_contents).map_err(DictSourceError::Io)?;
         eprintln!("Done. Files saved to {}", dest.display());
         Ok(())
     }
@@ -452,14 +527,50 @@ mod tests {
         fs::write(&stamp, "0123456789abcdef0123456789abcdef0123456z\n").unwrap();
         assert!(read_stamp(&stamp).is_none());
 
-        // Trim trailing newline
+        // Legacy SHA-only stamp (no manifest) → sha parsed, empty manifest.
         fs::write(&stamp, "0123456789abcdef0123456789abcdef01234567\n").unwrap();
-        assert_eq!(
-            read_stamp(&stamp).as_deref(),
-            Some("0123456789abcdef0123456789abcdef01234567")
-        );
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.sha, "0123456789abcdef0123456789abcdef01234567");
+        assert!(st.manifest.is_empty());
+
+        // SHA + manifest roundtrip.
+        fs::write(
+            &stamp,
+            "0123456789abcdef0123456789abcdef01234567\ndictionary00.txt\nid.def\n",
+        )
+        .unwrap();
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.sha, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(st.manifest, vec!["dictionary00.txt", "id.def"]);
+
+        // Tampered manifest entries with path separators / `..` are dropped
+        // so a wipe can never escape the cache dir.
+        fs::write(
+            &stamp,
+            "0123456789abcdef0123456789abcdef01234567\n../evil\nsub/dir.txt\n..\nid.def\n",
+        )
+        .unwrap();
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.manifest, vec!["id.def"]);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_is_upstream_file_name() {
+        // Exact upstream names are matched.
+        assert!(is_upstream_file_name("dictionary00.txt"));
+        assert!(is_upstream_file_name("dictionary09.txt"));
+        assert!(is_upstream_file_name("id.def"));
+        assert!(is_upstream_file_name("connection_single_column.txt"));
+        assert!(is_upstream_file_name("LICENSE"));
+        // User-placed dictionaries that parse_dir's glob would read must NOT
+        // be treated as fetched artifacts (Codex review on PR #266).
+        assert!(!is_upstream_file_name("dictionary-custom.txt"));
+        assert!(!is_upstream_file_name("dictionary.txt"));
+        assert!(!is_upstream_file_name("dictionary_backup01.txt"));
+        assert!(!is_upstream_file_name("notes.md"));
+        assert!(!is_upstream_file_name(".stamp"));
     }
 
     /// Pins the cache_valid predicate that drives wipe decisions — the mozc
@@ -471,7 +582,7 @@ mod tests {
     fn test_stale_cache_invariant() {
         fn should_wipe(dest: &Path, latest: &str) -> bool {
             let cached = read_stamp(&dest.join(".stamp"));
-            cached.as_deref() != Some(latest)
+            cached.as_ref().map(|s| s.sha.as_str()) != Some(latest)
         }
 
         let dir = std::env::temp_dir().join("lexime_test_mozc_invariant");
@@ -532,9 +643,11 @@ mod tests {
 
     /// A SHA mismatch must remove every fetched artifact — leaving id.def from
     /// snapshot A next to dictionary*.txt from snapshot B silently shifts POS
-    /// ids and corrupts conversion quality.
+    /// ids and corrupts conversion quality. With a manifest in the stamp, the
+    /// wipe deletes exactly the recorded files; user-placed files survive
+    /// (Codex review on PR #266).
     #[test]
-    fn test_wipe_cache_removes_all_fetched_files() {
+    fn test_wipe_cache_manifest_mode_spares_user_files() {
         let dir = std::env::temp_dir().join("lexime_test_mozc_wipe");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -549,23 +662,67 @@ mod tests {
         for name in fetched {
             fs::write(dir.join(name), "stale").unwrap();
         }
-        fs::write(
-            dir.join(".stamp"),
-            "fedcba9876543210fedcba9876543210fedcba98",
-        )
-        .unwrap();
-        // A user-placed file must survive the wipe.
+        let stamp_contents = format!(
+            "fedcba9876543210fedcba9876543210fedcba98\n{}",
+            fetched.join("\n")
+        );
+        fs::write(dir.join(".stamp"), &stamp_contents).unwrap();
+        // User-placed files must survive the wipe — including one that
+        // parse_dir's dictionary*.txt glob matches.
         fs::write(dir.join("notes.md"), "keep me").unwrap();
+        fs::write(dir.join("dictionary-custom.txt"), "user entries").unwrap();
 
         assert!(any_fetched_file_exists(&dir));
-        wipe_cache(&dir, &dir.join(".stamp"));
+        let st = read_stamp(&dir.join(".stamp")).unwrap();
+        wipe_cache(&dir, &dir.join(".stamp"), &st.manifest);
 
         for name in fetched {
             assert!(!dir.join(name).exists(), "{name} should have been wiped");
         }
         assert!(!dir.join(".stamp").exists());
         assert!(dir.join("notes.md").exists());
+        assert!(dir.join("dictionary-custom.txt").exists());
         assert!(!any_fetched_file_exists(&dir));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a manifest (legacy SHA-only stamp, or no stamp at all) the
+    /// wipe falls back to the exact upstream naming pattern — which still
+    /// spares user-placed files like dictionary-custom.txt.
+    #[test]
+    fn test_wipe_cache_legacy_mode_spares_user_files() {
+        let dir = std::env::temp_dir().join("lexime_test_mozc_wipe_legacy");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let fetched = [
+            "dictionary00.txt",
+            "dictionary09.txt",
+            "id.def",
+            "connection_single_column.txt",
+            "LICENSE",
+        ];
+        for name in fetched {
+            fs::write(dir.join(name), "stale").unwrap();
+        }
+        // Legacy stamp: SHA only, no manifest.
+        fs::write(
+            dir.join(".stamp"),
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+        .unwrap();
+        fs::write(dir.join("notes.md"), "keep me").unwrap();
+        fs::write(dir.join("dictionary-custom.txt"), "user entries").unwrap();
+
+        wipe_cache(&dir, &dir.join(".stamp"), &[]);
+
+        for name in fetched {
+            assert!(!dir.join(name).exists(), "{name} should have been wiped");
+        }
+        assert!(!dir.join(".stamp").exists());
+        assert!(dir.join("notes.md").exists());
+        assert!(dir.join("dictionary-custom.txt").exists());
 
         fs::remove_dir_all(&dir).ok();
     }
