@@ -416,7 +416,10 @@ impl LexUserHistory {
         };
         let cp_path = match self.wal.lock() {
             Ok(wal) => wal.checkpoint_path().to_path_buf(),
-            Err(_) => return,
+            Err(e) => {
+                warn!("WAL lock poisoned during compaction: {e}");
+                return;
+            }
         };
 
         // 2. Write checkpoint (no locks held, slow I/O)
