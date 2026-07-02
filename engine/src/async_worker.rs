@@ -17,11 +17,18 @@ pub(crate) struct CandidateWork {
     pub reading: String,
     pub dispatch: CandidateDispatch,
     pub generation: u64,
+    /// Session epoch snapshot from the originating `AsyncCandidateRequest`,
+    /// passed through opaquely to `CandidateResult`.
+    pub epoch: u64,
     pub lattice: Option<Arc<crate::converter::Lattice>>,
 }
 
 pub(crate) struct CandidateResult {
     pub reading: String,
+    /// Session epoch snapshot from the originating request. Checked by
+    /// `InputSession::receive_candidates` under the session lock — this is
+    /// the authoritative staleness gate.
+    pub epoch: u64,
     pub response: CandidateResponse,
 }
 
@@ -44,6 +51,14 @@ pub(crate) struct AsyncWorker {
     history: Option<Arc<RwLock<UserHistory>>>,
     sink: Arc<dyn CandidateSink>,
 
+    /// Best-effort computation-skip optimization, NOT a correctness
+    /// mechanism. Bumped on every `invalidate_candidates` / `submit_candidates`
+    /// so the worker can skip stale work before/after the expensive N-best
+    /// generation. Stale-response *rejection* is owned by the session epoch
+    /// (`InputSession::receive_candidates` compares it under the session
+    /// lock); this atomic is checked outside that lock and is therefore
+    /// inherently racy — a response passing this check can still be rejected
+    /// by the epoch gate.
     candidate_gen: Arc<AtomicU64>,
     inner: Mutex<WorkerInner>,
 }
@@ -78,6 +93,7 @@ impl AsyncWorker {
         reading: String,
         dispatch: CandidateDispatch,
         lattice: Option<Arc<crate::converter::Lattice>>,
+        epoch: u64,
     ) {
         let gen = self.candidate_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let mut inner = self.inner.lock().unwrap();
@@ -105,6 +121,7 @@ impl AsyncWorker {
                 reading,
                 dispatch,
                 generation: gen,
+                epoch,
                 lattice,
             });
         }
@@ -206,18 +223,24 @@ fn candidate_worker(
         // self-deadlock (std's RwLock is not reentrant).
         drop(h_guard);
 
-        // Check staleness after generation
+        // Check staleness after generation (optimization only — the session
+        // epoch carried in the result is the authoritative gate).
         if latest.generation != gen.load(Ordering::SeqCst) {
             continue;
         }
 
         // Use lattice.input as the canonical reading when a lattice was provided,
         // so the stale-check in receive_candidates matches the actual conversion.
+        let epoch = latest.epoch;
         let reading = match latest.lattice {
             Some(lattice) => lattice.input.clone(),
             None => latest.reading,
         };
-        let result = CandidateResult { reading, response };
+        let result = CandidateResult {
+            reading,
+            epoch,
+            response,
+        };
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.deliver(result))).is_err()
         {
             tracing::error!("candidate worker: CandidateSink::deliver panicked; dropping result");
@@ -292,6 +315,7 @@ mod tests {
             reading: "きょう".to_string(),
             dispatch: crate::session::CandidateDispatch::Standard,
             generation: work_gen,
+            epoch: 0,
             lattice: None,
         })
         .unwrap();

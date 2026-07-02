@@ -144,6 +144,7 @@ impl InputSession {
             // Store provisional candidates in session state so that candidate
             // navigation (Space / Arrow) works during the async phase.
             c.candidates.surfaces.clone_from(&provisional);
+            c.candidates.provisional = true;
 
             // prefix.text was already consumed into commit via std::mem::take
             // above, so it is empty here — no need to prepend it.
@@ -154,6 +155,7 @@ impl InputSession {
                 reading: c.kana.clone(),
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
                 lattice: None, // kana changed after commit; worker rebuilds
+                epoch: self.epoch,
             });
             resp.candidates = CandidateAction::Show {
                 surfaces: provisional,

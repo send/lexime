@@ -110,7 +110,9 @@ fn execute_action(
             }
             let mode = session.config.conversion_mode;
             let cand = mode.generate_candidates(dict, None, None, &reading, 20);
-            session.receive_candidates(&reading, cand.surfaces, cand.paths)
+            // Simulate a fresh (non-stale) response: snapshot the current epoch.
+            let epoch = session.epoch;
+            session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
         }
         Action::SetPredictiveMode => {
             session.set_conversion_mode(ConversionMode::Predictive);

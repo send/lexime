@@ -37,6 +37,15 @@ pub struct LexRomajiConvert {
 #[derive(uniffi::Record)]
 pub struct LexKeyResponse {
     pub consumed: bool,
+    /// Session epoch this response reflects (monotonic, stamped under the
+    /// session lock). The Rust-side epoch gate guarantees session *state*
+    /// consistency, but async responses are re-queued onto the platform main
+    /// thread while synchronous key responses are applied inline — so an
+    /// already-accepted async response can reach the UI *after* a newer key
+    /// response. The frontend must track the highest epoch it has applied
+    /// and silently drop any async response with a lower epoch.
+    #[uniffi(default = 0)]
+    pub epoch: u64,
     pub events: Vec<LexEvent>,
 }
 

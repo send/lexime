@@ -42,7 +42,12 @@ impl From<LexKeyEvent> for KeyEvent {
     }
 }
 
-pub(super) fn convert_to_events(resp: KeyResponse) -> LexKeyResponse {
+/// Convert an internal `KeyResponse` into the FFI event stream.
+///
+/// `epoch` is the session epoch this response reflects. It must be read via
+/// `InputSession::epoch()` while still holding the session lock that produced
+/// `resp`, so the frontend can order responses on its UI thread.
+pub(super) fn convert_to_events(resp: KeyResponse, epoch: u64) -> LexKeyResponse {
     let mut events = Vec::new();
 
     // 1. Commit
@@ -71,6 +76,7 @@ pub(super) fn convert_to_events(resp: KeyResponse) -> LexKeyResponse {
 
     LexKeyResponse {
         consumed: resp.consumed,
+        epoch,
         events,
     }
 }
@@ -94,9 +100,16 @@ mod tests {
     #[test]
     fn test_convert_empty_response() {
         let resp = empty_response();
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert!(!result.consumed);
         assert!(result.events.is_empty());
+    }
+
+    #[test]
+    fn test_convert_stamps_epoch() {
+        let resp = empty_response();
+        let result = convert_to_events(resp, 42);
+        assert_eq!(result.epoch, 42);
     }
 
     #[test]
@@ -104,7 +117,7 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.commit = Some("テスト".to_string());
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert!(result.consumed);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::Commit { text } if text == "テスト"));
@@ -117,7 +130,7 @@ mod tests {
         resp.marked = Some(MarkedText {
             text: "かな".to_string(),
         });
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SetMarkedText { text } if text == "かな"));
     }
@@ -129,7 +142,7 @@ mod tests {
         resp.marked = Some(MarkedText {
             text: String::new(),
         });
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         // Empty marked text becomes SetMarkedText with empty string
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SetMarkedText { text } if text.is_empty()));
@@ -143,7 +156,7 @@ mod tests {
             surfaces: vec!["候補1".to_string(), "候補2".to_string()],
             selected: 0,
         };
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(
             &result.events[0],
@@ -157,7 +170,7 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.candidates = CandidateAction::Hide;
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::HideCandidates));
     }
@@ -167,7 +180,7 @@ mod tests {
         let mut resp = empty_response();
         resp.consumed = true;
         resp.side_effects.switch_to_abc = true;
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert_eq!(result.events.len(), 1);
         assert!(matches!(&result.events[0], LexEvent::SwitchToAbc));
     }
@@ -184,7 +197,7 @@ mod tests {
             surfaces: vec!["a".to_string()],
             selected: 0,
         };
-        let result = convert_to_events(resp);
+        let result = convert_to_events(resp, 0);
         assert!(result.consumed);
         // commit + marked + candidates = 3
         assert_eq!(result.events.len(), 3);

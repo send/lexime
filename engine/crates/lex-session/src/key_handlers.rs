@@ -20,6 +20,15 @@ impl InputSession {
     /// If `skip_current` is true and selected==0, jump directly to 1.
     fn navigate_candidates(&mut self, delta: i32, skip_current: bool) -> KeyResponse {
         self.ensure_candidates();
+        // Provisional candidates hold only the deferred-mode interim result
+        // (sync 1-best / post-auto-commit remainders). The async N-best that
+        // would replace them may already have been invalidated by this very
+        // key press, so no refresh is guaranteed to arrive — without a
+        // fallback, navigation would cycle the interim list forever. Generate
+        // the full list synchronously instead.
+        if self.comp().candidates.provisional {
+            self.update_candidates();
+        }
         let c = self.comp();
         if !c.candidates.is_empty() {
             if skip_current && c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
@@ -40,6 +49,12 @@ impl InputSession {
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let _span = debug_span!("handle_key", ?event).entered();
+
+        // Every key event starts a new epoch so that in-flight async
+        // candidate responses are rejected — including responses racing with
+        // kana-preserving keys (Space/Escape/ForwardDelete) that the
+        // reading-match check in `receive_candidates` cannot detect.
+        self.bump_epoch();
 
         // Snippet trigger: enter snippet mode (commit composing first if needed)
         if matches!(event, KeyEvent::SnippetTrigger) {
