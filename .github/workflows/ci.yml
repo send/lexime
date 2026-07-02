@@ -215,7 +215,13 @@ jobs:
       # changed).
       - name: Read pinned Mozc SHA
         id: mozc-pin
-        run: echo "sha=$(grep -oE -m1 '^[[:space:]]*[0-9a-fA-F]{40}[[:space:]]*$' engine/data/mozc-pin.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+        run: |
+          sha=$(grep -oE -m1 '^[[:space:]]*[0-9a-fA-F]{40}[[:space:]]*$' engine/data/mozc-pin.txt | tr -d '[:space:]' || true)
+          if [ -z "$sha" ]; then
+            echo "::error file=engine/data/mozc-pin.txt::no 40-hex SHA line found in the pin file" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Restore Mozc dictionary snapshot
         id: mozc-restore
