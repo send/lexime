@@ -927,6 +927,37 @@ fn strict_open_errors_on_corruption_and_never_mutates() {
 }
 
 #[test]
+fn strict_replay_errors_on_unreadable_wal_formats() {
+    // Whole-file format mismatches must fail loudly for offline tooling:
+    // a silent empty replay would make audits plausible-but-incomplete.
+    // (Torn tails keep the silent-prefix semantics — expected residue.)
+
+    // Unknown WAL version
+    let f = fx();
+    build_v2_state(&f, false);
+    let mut data = fs::read(&f.wal).unwrap();
+    data[4] = 9;
+    fs::write(&f.wal, &data).unwrap();
+    assert!(super::wal::open_with_wal(&f.cp).is_err());
+
+    // Corrupted magic (classifies Legacy but parses as zero v1 frames)
+    let f = fx();
+    build_v2_state(&f, false);
+    let mut data = fs::read(&f.wal).unwrap();
+    data[0] ^= 0xFF;
+    fs::write(&f.wal, &data).unwrap();
+    assert!(super::wal::open_with_wal(&f.cp).is_err());
+
+    // Genuine migration residue (readable v1 WAL beside a v2 checkpoint)
+    // stays a silent skip: the checkpoint already contains its content.
+    let f = fx();
+    build_v2_state(&f, false);
+    fs::write(&f.wal, v1_wal_bytes(&[(seg(B), T0)])).unwrap();
+    let (h, _) = super::wal::open_with_wal(&f.cp).unwrap();
+    assert_eq!(frequency(&h, B), 1, "from checkpoint only, not re-applied");
+}
+
+#[test]
 fn quarantine_rotation_keeps_newest_three() {
     let f = fx();
     build_v2_state(&f, false);

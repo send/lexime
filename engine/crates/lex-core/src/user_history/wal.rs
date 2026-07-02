@@ -273,13 +273,26 @@ impl HistoryWal {
                 self.frozen = !data.is_empty();
                 Ok(ReplaySummary::default())
             }
-            WalFormat::BadHeader => {
-                self.adopt_empty(history.applied_seq());
-                self.frozen = true;
-                Ok(ReplaySummary::default())
-            }
+            // A whole-file format mismatch must fail loudly in the strict
+            // path: silently reporting an empty WAL would let offline audits
+            // produce plausible-but-incomplete results. (Frame-level tail
+            // corruption below keeps the v1 stop-silently semantics — a torn
+            // tail is the expected power-loss residue.)
+            WalFormat::BadHeader => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WAL header unreadable (unknown version); use the engine's \
+                 recovery path or inspect the file",
+            )),
             WalFormat::Legacy => {
                 if origin == CheckpointOrigin::V2 {
+                    if legacy_valid_prefix(&data) == 0 {
+                        // Not readable as v1 either — most likely a v2 WAL
+                        // with corrupted magic, not migration residue.
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "headerless WAL with no readable v1 frame",
+                        ));
+                    }
                     // Migration-crash residue: already covered by the v2
                     // checkpoint (§2.3) — do not replay.
                     self.adopt_empty(history.applied_seq());
@@ -370,8 +383,11 @@ impl HistoryWal {
         hasher.update(&payload);
         let crc = hasher.finalize();
 
-        // Single buffer + single write_all so a frame is never split across
-        // syscalls.
+        // Build the frame in one buffer for a single write_all call, so a
+        // partial write is the only tearing mode (write_all may still issue
+        // multiple write(2) calls — torn tails are repaired by replay; the
+        // point is not to interleave header and payload as separate appends
+        // the way v1 did).
         let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
         frame.extend_from_slice(&payload_len.to_le_bytes());
         frame.extend_from_slice(&crc.to_le_bytes());
