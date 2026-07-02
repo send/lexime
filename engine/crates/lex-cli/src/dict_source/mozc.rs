@@ -91,14 +91,15 @@ struct Stamp {
     manifest: Vec<String>,
 }
 
-/// Read the version stamp. Only a stamp whose first line is a well-formed
-/// commit SHA counts: missing / empty / legacy pre-versioning empty `.stamp` /
-/// corrupted or hand-edited contents all return `None`, which the caller
-/// treats as "no version" (wipe + full re-download). Manifest entries must
-/// pass `is_upstream_file_name`; anything else (path traversal attempts, or a
-/// hand-edited entry naming a user file like `dictionary-custom.txt`) is
-/// dropped so a tampered stamp can neither direct the wipe outside the cache
-/// dir nor at files this source never fetched.
+/// Read the version stamp. Returns `None` when the first line is not a
+/// well-formed commit SHA (missing file, empty / legacy pre-versioning
+/// `.stamp`, corrupted or hand-edited SHA line) — the caller treats that as
+/// "no version" (wipe + full re-download). Manifest entries on lines 2+ are
+/// filtered, not fatal: anything that fails `is_upstream_file_name` (path
+/// traversal attempts, or a hand-edited entry naming a user file like
+/// `dictionary-custom.txt`) is silently dropped so a tampered stamp can
+/// neither direct the wipe outside the cache dir nor at files this source
+/// never fetched.
 fn read_stamp(path: &Path) -> Option<Stamp> {
     let content = fs::read_to_string(path).ok()?;
     let mut lines = content.lines();
@@ -226,7 +227,12 @@ fn write_stamp(path: &Path, sha: &str, manifest: &[String]) -> Result<(), DictSo
         contents.push('\n');
         contents.push_str(name);
     }
-    fs::write(path, contents).map_err(DictSourceError::Io)
+    // tmp + rename: an interrupted write must not leave a truncated stamp
+    // whose valid SHA line + partial manifest would satisfy cache_complete
+    // and mask an incomplete snapshot.
+    let tmp = path.with_extension("stamp.tmp");
+    fs::write(&tmp, contents).map_err(DictSourceError::Io)?;
+    fs::rename(&tmp, path).map_err(DictSourceError::Io)
 }
 
 /// Parse GitHub Contents API JSON and return (name, download_url) pairs
