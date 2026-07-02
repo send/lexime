@@ -5,10 +5,11 @@
 #   - cost: i16. Default 5000 (mid). Lower = higher rank.
 # Comment lines start with '#'. Blank lines are ignored.
 #
-# All entries use the 名詞,一般 POS id (DEFAULT_POS in extras.rs — snapshot
-# dependent, see #273). When that's wrong (e.g. proper nouns), tune via cost
-# rather than POS for now — POS overrides are out of scope for the curated
-# layer.
+# All entries use the 名詞,一般 POS id, resolved from the pinned id.def at
+# compile time (DEFAULT_POS_TAG in extras.rs — #279 made this dynamic after
+# a pin bump renumbered the previously hardcoded id, see #273). When that's
+# wrong (e.g. proper nouns), tune via cost rather than POS for now — POS
+# overrides are out of scope for the curated layer.
 
 # --- 数学 / CS ---
 べきとう	冪等

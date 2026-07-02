@@ -49,6 +49,22 @@ pub trait DictSource {
             "this source does not support --sha (only 'mozc' does)".to_string(),
         ))
     }
+
+    /// Resolve POS ids that depend on the Mozc `id.def` in use. `compile`
+    /// calls this on every source's parsed entries, passing the same id.def
+    /// it uses for cost adjustments (`None` when compiling without one).
+    ///
+    /// Default: no-op — most sources carry explicit POS ids in their raw
+    /// files. Sources that assign a POS by tag (extras) override this to
+    /// resolve the tag against id.def, so a pin bump that renumbers ids
+    /// can't silently degrade their entries (#279).
+    fn resolve_pos_ids(
+        &self,
+        _entries: &mut HashMap<String, Vec<DictEntry>>,
+        _id_def: Option<&Path>,
+    ) -> Result<(), DictSourceError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
