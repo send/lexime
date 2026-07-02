@@ -274,11 +274,15 @@ impl LexUserHistory {
                     // re-apply after a crash, never loss).
                     match self.inner.write() {
                         Ok(mut h) => h.advance_applied_seq(seq),
-                        // Proceed best-effort: a stale applied_seq only
-                        // delays truncation (never loses frames), but the
-                        // state is worth surfacing.
-                        Err(e) => {
-                            warn!("history write lock poisoned; applied_seq not advanced: {e}")
+                        // Recover through the poison: advance_applied_seq is
+                        // a monotonic u64 max, safe regardless of the state
+                        // the panicking holder left behind — and a stale
+                        // applied_seq would let a later checkpoint under-
+                        // report coverage (restart replay then re-applies
+                        // its frames).
+                        Err(poisoned) => {
+                            warn!("history write lock poisoned; advancing applied_seq anyway");
+                            poisoned.into_inner().advance_applied_seq(seq);
                         }
                     }
                     false
