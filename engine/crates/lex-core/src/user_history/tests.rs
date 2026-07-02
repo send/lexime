@@ -296,9 +296,14 @@ fn test_bigram_successors_empty_history() {
 
 #[test]
 fn test_save_to_invalid_path() {
+    // Use a regular file as a path component: create_dir_all fails with
+    // ENOTDIR deterministically, even for root / CAP_DAC_OVERRIDE
+    // environments where permission-based invalid paths would succeed.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("not_a_dir");
+    fs::write(&blocker, b"x").unwrap();
     let h = UserHistory::new();
-    let result = h.save(Path::new("/nonexistent/deeply/nested/dir/history.lxud"));
-    // create_dir_all on a path under /nonexistent should fail on macOS
+    let result = h.save(&blocker.join("nested").join("history.lxud"));
     assert!(result.is_err());
 }
 

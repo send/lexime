@@ -523,6 +523,11 @@ impl HistoryWal {
         self.wal_bytes
     }
 
+    /// Highest seq physically present in the file (0 if none).
+    pub fn last_appended_seq(&self) -> u64 {
+        self.last_appended_seq
+    }
+
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
         self.frozen

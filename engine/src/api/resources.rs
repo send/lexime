@@ -466,6 +466,16 @@ impl LexUserHistory {
                 const UNCONFIRMED_TRUNCATE_CAP_BYTES: u64 = 8 * 1024 * 1024;
                 if wal.file_bytes() < UNCONFIRMED_TRUNCATE_CAP_BYTES {
                     warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
+                    // A frame beyond this snapshot's coverage may have its
+                    // effect already inside the just-written checkpoint with
+                    // a stale applied_seq (phase-1 race): queue a second
+                    // pass whose snapshot carries the advanced applied_seq —
+                    // replay then skips the frame, no truncation needed.
+                    // Conditional, or a permanently-unconfirmed filesystem
+                    // would re-queue forever.
+                    if wal.last_appended_seq() > snapshot.applied_seq() {
+                        self.compact_pending.store(true, Ordering::SeqCst);
+                    }
                     return;
                 }
                 warn!(
