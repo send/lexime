@@ -357,6 +357,11 @@ impl DictSource for MozcSource {
                              using cached snapshot {}.",
                             st.sha
                         );
+                        // Same-content rewrite, like the online fast path:
+                        // a successful (offline-verified) fetch refreshes the
+                        // stamp mtime so mise's sources-vs-outputs staleness
+                        // check doesn't re-run this task on every build.
+                        write_stamp(&stamp_path, &st.sha, &st.manifest)?;
                         return Ok(());
                     }
                     return Err(DictSourceError::Http(format!(
