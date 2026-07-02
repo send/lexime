@@ -695,3 +695,349 @@ expected = "買い手"
 category = "conjugation"
 tags = ["verb", "te-form", "ambiguous"]
 note = "買い手(名詞) が top-1; 書いて(て形) is #2"
+
+# ═══════════════════════════════════════════════════════════════════
+# History-audit mined cases (2026-07-02, PR #256 の lextool history-audit)
+#
+# 実使用の学習履歴から抽出した「履歴ブーストでも直らない」ミス。
+# flip-flop 検出でユーザー内の表記一貫性を確認済みのケースのみ採用。
+# 表記方針: 補助動詞・形式名詞はかな (されてる/〜ときに/まとめる/いい〜)、
+# 名詞・疑問詞の単独用法は漢字 (何でも/後の方が/箇所)。
+# 修正されたら skip を外すこと。
+#   #261 カタカナ語が仮名/漢字候補に負ける
+#   #262 機能語・補助表現の誤漢字化と表記選択ミス
+#   #263 分節崩れ・接辞付き複合語
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "ましん"
+expected = "マシン"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "麻しん が top-1、マシン は rank 5"
+
+[[cases]]
+reading = "えんじん"
+expected = "エンジン"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "円陣 が top-1、エンジン は rank 6"
+
+[[cases]]
+reading = "だめです"
+expected = "ダメです"
+category = "loanword"
+tags = ["history-audit"]
+skip = true
+issue = "#261"
+note = "駄目です が top-1、ダメです は rank 5"
+
+[[cases]]
+reading = "ばぐを"
+expected = "バグを"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "馬具を が top-1"
+
+[[cases]]
+reading = "ぱす"
+expected = "パス"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "ひらがな ぱす のままが top-1"
+
+[[cases]]
+reading = "まじで"
+expected = "マジで"
+category = "loanword"
+tags = ["history-audit", "colloquial"]
+skip = true
+issue = "#261"
+note = "まじで のままが top-1、マジで は rank 7"
+
+[[cases]]
+reading = "とれいと"
+expected = "トレイト"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "トレイと (トレイ+と) が top-1"
+
+[[cases]]
+reading = "ねすてっど"
+expected = "ネステッド"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "ねステッド と部分変換される"
+
+[[cases]]
+reading = "さいとりすと"
+expected = "サイトリスト"
+category = "loanword"
+tags = ["history-audit", "it", "compound"]
+skip = true
+issue = "#261"
+note = "再トリスト が top-1"
+
+[[cases]]
+reading = "すれ"
+expected = "スレ"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "擦れ が top-1、スレ は top-10 圏外"
+
+[[cases]]
+reading = "ずれ"
+expected = "ズレ"
+category = "loanword"
+tags = ["history-audit"]
+skip = true
+issue = "#261"
+note = "連れ が top-1 (読み不一致の候補が勝っている)、ズレ は rank 4"
+
+[[cases]]
+reading = "どる"
+expected = "ドル"
+category = "loanword"
+tags = ["history-audit"]
+skip = true
+issue = "#261"
+note = "取る が top-1 (読み不一致)、ドル は rank 4"
+
+[[cases]]
+reading = "ぷろだくしょんに"
+expected = "プロダクションに"
+category = "loanword"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#261"
+note = "ひらがなのままが top-1"
+
+[[cases]]
+reading = "はいつ"
+expected = "ハイツ"
+category = "loanword"
+tags = ["history-audit"]
+skip = true
+issue = "#261"
+note = "ひらがな はいつ のままが top-1、ハイツ は rank 9"
+
+[[cases]]
+reading = "されてる"
+expected = "されてる"
+category = "conjugation"
+tags = ["history-audit", "auxiliary"]
+skip = true
+issue = "#262"
+note = "去れてる が top-1"
+
+[[cases]]
+reading = "になってない"
+expected = "になってない"
+category = "phrase"
+tags = ["history-audit", "auxiliary"]
+skip = true
+issue = "#262"
+note = "担ってない が top-1"
+
+[[cases]]
+reading = "いません"
+expected = "いません"
+category = "word"
+tags = ["history-audit", "auxiliary"]
+skip = true
+issue = "#262"
+note = "今戦 が top-1"
+
+[[cases]]
+reading = "なくないですか"
+expected = "無くないですか"
+category = "phrase"
+tags = ["history-audit"]
+skip = true
+issue = "#262"
+note = "なく無いですか と 無 の位置が誤る"
+
+[[cases]]
+reading = "まとめる"
+expected = "まとめる"
+category = "word"
+tags = ["history-audit", "kana-preferred"]
+skip = true
+issue = "#262"
+note = "纏める が top-1 (過剰漢字化)"
+
+[[cases]]
+reading = "いいきがしてきました"
+expected = "いい気がしてきました"
+category = "phrase"
+tags = ["history-audit", "kana-preferred"]
+skip = true
+issue = "#262"
+note = "良い気がしてきました が top-1。いい はかな方針"
+
+[[cases]]
+reading = "みつけたときに"
+expected = "見つけたときに"
+category = "phrase"
+tags = ["history-audit", "kana-preferred"]
+skip = true
+issue = "#262"
+note = "見つけた時に が top-1。形式名詞 とき はかな方針"
+
+[[cases]]
+reading = "またあとで"
+expected = "またあとで"
+category = "phrase"
+tags = ["history-audit", "kana-preferred"]
+skip = true
+issue = "#262"
+note = "また後で が top-1。挨拶定型はかな方針"
+
+[[cases]]
+reading = "なんでも"
+expected = "何でも"
+category = "word"
+tags = ["history-audit"]
+skip = true
+issue = "#262"
+note = "なんでも のままが top-1。疑問詞の単独用法は漢字方針"
+
+[[cases]]
+reading = "したりゆうはなんですか"
+expected = "した理由は何ですか"
+category = "phrase"
+tags = ["history-audit"]
+skip = true
+issue = "#262"
+note = "〜はなんですか とかな のままが top-1"
+
+[[cases]]
+reading = "あとのほうが"
+expected = "後の方が"
+category = "phrase"
+tags = ["history-audit"]
+skip = true
+issue = "#262"
+note = "あとの方が が top-1。名詞用法の 後 は漢字方針"
+
+[[cases]]
+reading = "かしょで"
+expected = "箇所で"
+category = "word"
+tags = ["history-audit"]
+skip = true
+issue = "#262"
+note = "か所で が top-1。箇所 の表記を優先"
+
+[[cases]]
+reading = "しそうです"
+expected = "しそうです"
+category = "phrase"
+tags = ["history-audit", "auxiliary"]
+skip = true
+issue = "#263"
+note = "思想です が top-1、しそうです は top-10 圏外"
+
+[[cases]]
+reading = "したんでしたっけ"
+expected = "したんでしたっけ"
+category = "phrase"
+tags = ["history-audit", "auxiliary"]
+skip = true
+issue = "#263"
+note = "紫檀でしたっけ が top-1"
+
+[[cases]]
+reading = "えんきになりますか"
+expected = "延期になりますか"
+category = "phrase"
+tags = ["history-audit"]
+skip = true
+issue = "#263"
+note = "円気になりますか が top-1"
+
+[[cases]]
+reading = "かいりしていないか"
+expected = "乖離していないか"
+category = "phrase"
+tags = ["history-audit", "naika"]
+skip = true
+issue = "#263"
+note = "乖離指定内科 が top-1 (ないか→内科)"
+
+[[cases]]
+reading = "すべきところがないか"
+expected = "すべき所がないか"
+category = "phrase"
+tags = ["history-audit", "naika"]
+skip = true
+issue = "#263"
+note = "すべきところが内科 が top-1 (ないか→内科)"
+
+[[cases]]
+reading = "こえたふぁいるはありませんか"
+expected = "超えたファイルはありませんか"
+category = "phrase"
+tags = ["history-audit", "it"]
+skip = true
+issue = "#263"
+note = "超え他ファイルはありませんか と 他 が混入"
+
+[[cases]]
+reading = "にしたほうがいい"
+expected = "にした方が良い"
+category = "phrase"
+tags = ["history-audit"]
+skip = true
+issue = "#263"
+note = "西他方が良い が top-1 (分節崩壊)"
+
+[[cases]]
+reading = "じせっしょんにしたほうが"
+expected = "次セッションにした方が"
+category = "phrase"
+tags = ["history-audit", "it", "prefix-loanword"]
+skip = true
+issue = "#263"
+note = "じセッション西田邦画 が top-1。次+外来語 の複合が組めない"
+
+[[cases]]
+reading = "みこみっと"
+expected = "未コミット"
+category = "compound"
+tags = ["history-audit", "it", "prefix-loanword"]
+skip = true
+issue = "#263"
+note = "見込みっと が top-1。未+外来語 の複合が組めない"
+
+[[cases]]
+reading = "めもりないに"
+expected = "メモリ内に"
+category = "compound"
+tags = ["history-audit", "it", "suffix-loanword"]
+skip = true
+issue = "#263"
+note = "目盛り内に が top-1。外来語+内 の複合が組めない"
+
+[[cases]]
+reading = "れびゅーじに"
+expected = "レビュー時に"
+category = "compound"
+tags = ["history-audit", "it", "suffix-loanword"]
+skip = true
+issue = "#263"
+note = "レビュー死に が top-1。外来語+時 の複合が組めない"
