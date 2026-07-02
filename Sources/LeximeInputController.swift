@@ -12,6 +12,7 @@ class LeximeInputController: IMKInputController {
     private var coordinator: SessionCoordinator?
 
     private static var hasShownDictWarning = false
+    private static var hasLoggedEngineUnavailable = false
 
     private lazy var cachedTrigger: LexTriggerKey? = snippetTriggerKey()
 
@@ -23,7 +24,10 @@ class LeximeInputController: IMKInputController {
         guard let engine = AppContext.shared.engine else {
             // Alert is deferred to the first real key press (handle()) so that
             // short-lived IMKit probe processes never trigger UI.
-            NSLog("Lexime: WARNING - engine not loaded. Conversion is unavailable.")
+            if !Self.hasLoggedEngineUnavailable {
+                Self.hasLoggedEngineUnavailable = true
+                NSLog("Lexime: WARNING - engine not loaded. Conversion is unavailable.")
+            }
             return
         }
 
