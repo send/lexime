@@ -35,7 +35,7 @@ mise run build && mise run install && mise run reload
 
 main に直接コミットしない。必ず以下の流れで作業する:
 
-1. `git checkout -b <type>/<topic>` でブランチを切る
+1. `git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
 3. `git push -u origin <branch>` で push する
 4. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
