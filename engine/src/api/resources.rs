@@ -89,6 +89,18 @@ pub struct LexUserHistory {
     commit_log: Mutex<CommitLog>,
 }
 
+/// Releases the `compacting` flag on drop, so a panic while compacting or
+/// clearing (UniFFI catches panics at the FFI boundary, and a panicking
+/// background thread does not kill the process) cannot leave the flag stuck
+/// and make later `clear`/`force_compact` calls spin forever.
+struct CompactingGuard<'a>(&'a AtomicBool);
+
+impl Drop for CompactingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Lazily-opened append handle for the commit log, mirroring HistoryWal.
 struct CommitLog {
     path: PathBuf,
@@ -178,9 +190,8 @@ impl LexUserHistory {
         {
             std::thread::yield_now();
         }
-        let result = self.clear_locked();
-        self.compacting.store(false, Ordering::Release);
-        result
+        let _guard = CompactingGuard(&self.compacting);
+        self.clear_locked()
     }
 
     fn clear_locked(&self) -> Result<(), LexError> {
@@ -301,8 +312,8 @@ impl LexUserHistory {
         }
         let this = Arc::clone(self);
         std::thread::spawn(move || {
+            let _guard = CompactingGuard(&this.compacting);
             this.run_compact();
-            this.compacting.store(false, Ordering::Release);
         });
     }
 
@@ -317,6 +328,7 @@ impl LexUserHistory {
         {
             std::thread::yield_now();
         }
+        let _guard = CompactingGuard(&self.compacting);
         // Unconditional truncate on the deletion path: skipping it could
         // leave a racing Committed frame for the just-deleted entry in the
         // WAL, uncovered by the checkpoint written here, and the next replay
@@ -325,7 +337,6 @@ impl LexUserHistory {
         // structural fix is PR2's Tombstone frames, which make the
         // delete-after-commit ordering durable in the WAL itself).
         self.run_compact_impl(false);
-        self.compacting.store(false, Ordering::Release);
     }
 
     fn run_compact(&self) {

@@ -131,6 +131,11 @@ impl FileWalIo {
                 .open(&self.path)?;
             if f.metadata()?.len() == 0 {
                 f.write_all(&WAL_HEADER)?;
+                // Order the header ahead of any frame bytes: without this,
+                // power loss could persist later frames while the header
+                // page is lost, and recovery would misclassify the file as
+                // headerless and quarantine otherwise-recoverable frames.
+                barrier_fsync(&f)?;
             }
             self.file = Some(f);
         }
