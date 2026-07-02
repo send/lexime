@@ -47,10 +47,15 @@ const DOMAINS: &[(&str, &str)] = &[
 /// homophones unless we explicitly want them to.
 const DEFAULT_COST: i16 = 5000;
 
-/// Default POS: 名詞,一般 (Mozc id 1852). Works for content nouns and
-/// brand-name proper nouns alike. Per-domain POS tuning is deferred — cost
-/// adjustment is sufficient for the MVP.
-const DEFAULT_POS: u16 = 1852;
+/// Default POS: 名詞,一般 (Mozc id 1851 in the pinned 2026-07 id.def; was
+/// 1852 before the snapshot renumbered ids — see #273). Works for content
+/// nouns and brand-name proper nouns alike. Per-domain POS tuning is
+/// deferred — cost adjustment is sufficient for the MVP.
+///
+/// NOTE: this id is only valid for the id.def snapshot pinned in
+/// `engine/data/mozc-pin.txt`. Re-verify on every pin bump (e.g.
+/// `grep '名詞,一般,\*,\*,\*,\*,\*$' data/mozc-raw/id.def`).
+const DEFAULT_POS: u16 = 1851;
 
 pub struct ExtrasSource;
 
