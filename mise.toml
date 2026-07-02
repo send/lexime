@@ -302,6 +302,15 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- diff-snapshot \
   testcorpus/snapshot-readings.txt data/snapshot.jsonl -n 5
 """
 
+[tasks.history-audit]
+description = "Audit user history against raw engine top-1"
+depends = ["dict", "conn"]
+run = """
+cd engine && cargo run --release -p lex-cli --bin lextool -- history-audit \
+  data/lexime.dict data/lexime.conn \
+  "$HOME/Library/Application Support/Lexime/user_history.lxud" "$@"
+"""
+
 [tasks.trace-log]
 description = "Stream trace JSONL output"
 run = "tail -f ~/Library/Logs/Lexime/lexime-trace.jsonl | python3 -m json.tool --no-ensure-ascii"
