@@ -417,8 +417,13 @@ fn reinitialize(wal: &mut HistoryWal, history: &UserHistory) {
 }
 
 fn quarantined_files(checkpoint_path: &Path) -> Vec<PathBuf> {
-    let Some(parent) = checkpoint_path.parent() else {
-        return Vec::new();
+    let parent = match checkpoint_path.parent() {
+        // Bare relative name ("history.lxud"): parent is "" = the current
+        // directory; read_dir("") would fail and hide quarantine files from
+        // rotation and the clear() privacy wipe.
+        Some(p) if p.as_os_str().is_empty() => Path::new("."),
+        Some(p) => p,
+        None => return Vec::new(),
     };
     let Some(prefix) = checkpoint_path.file_name().and_then(|n| n.to_str()) else {
         return Vec::new();
