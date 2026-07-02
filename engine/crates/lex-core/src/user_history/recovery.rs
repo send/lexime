@@ -21,7 +21,8 @@ use tracing::{info, warn};
 
 use super::persistence::{load_checkpoint, CheckpointLoaded};
 use super::wal::{
-    classify_wal, scan_legacy, scan_v2, wal_path_for, HistoryWal, WalFormat, WAL_HEADER_LEN,
+    classify_wal, legacy_valid_prefix, scan_legacy, scan_v2, wal_path_for, HistoryWal, WalFormat,
+    WAL_HEADER_LEN,
 };
 use super::UserHistory;
 
@@ -157,7 +158,20 @@ pub fn open_recovering(
                     }
                 }
                 WalFormat::Legacy => {
-                    if cp_is_v2 {
+                    if legacy_valid_prefix(&data) == 0 {
+                        // No readable v1 frame at all — most likely a v2 WAL
+                        // whose magic bytes got corrupted (a real v1 file
+                        // starts with a small length field and CRC-valid
+                        // frames). Quarantine like an unreadable header
+                        // rather than silently discarding what may be the
+                        // post-checkpoint tail.
+                        warn!("headerless WAL with no readable v1 frame; quarantining");
+                        report.wal_state = WalState::Quarantined;
+                        wal.adopt_empty(history.applied_seq());
+                        if !quarantine(&wal_path, &mut report.quarantined_paths) {
+                            wal.freeze();
+                        }
+                    } else if cp_is_v2 {
                         // Migration-crash residue: the v2 checkpoint already
                         // contains everything the v1 WAL held (§2.3/§7) —
                         // discard without replay so migration stays idempotent.
@@ -216,9 +230,12 @@ pub fn open_recovering(
         if v1_checkpoint_present {
             backup_v1_checkpoint(checkpoint_path);
         }
-        // v1 data carries no seqs: the fresh v2 checkpoint starts the
-        // sequence space at applied_seq = 0.
-        debug_assert_eq!(history.applied_seq(), 0);
+        // applied_seq is usually 0 here (v1 data carries no seqs), but not
+        // always: if a previous startup's migration commit failed with no
+        // legacy WAL to freeze, later commits appended v2 frames next to
+        // the still-v1 checkpoint. Those frames were replayed above, so the
+        // checkpoint written here covers them (its applied_seq reflects the
+        // replay) and they are correctly skipped from now on.
         match history.save(checkpoint_path) {
             Ok(()) => {
                 // Commit point passed: from here any crash leaves a v2

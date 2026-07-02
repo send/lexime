@@ -166,6 +166,24 @@ impl LexUserHistory {
 
 impl LexUserHistory {
     pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+        // Serialize with compactions (startup recovery / background): a
+        // compactor that cloned a pre-clear snapshot must not save it after
+        // the files are removed, or the privacy wipe would be undone. Holding
+        // the flag also makes spawn_compact a no-op for the duration.
+        // (PR2 replaces this spin idiom with a parking compact_gate Mutex.)
+        while self
+            .compacting
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+        let result = self.clear_locked();
+        self.compacting.store(false, Ordering::Release);
+        result
+    }
+
+    fn clear_locked(&self) -> Result<(), LexError> {
         {
             let mut h = self.inner.write().map_err(|e| LexError::Io {
                 msg: format!("history write lock poisoned: {e}"),
@@ -299,11 +317,22 @@ impl LexUserHistory {
         {
             std::thread::yield_now();
         }
-        self.run_compact();
+        // Unconditional truncate on the deletion path: skipping it could
+        // leave a racing Committed frame for the just-deleted entry in the
+        // WAL, uncovered by the checkpoint written here, and the next replay
+        // would resurrect the deleted learning. Destroying an uncovered
+        // frame instead loses at most that racing commit (v1 semantics; the
+        // structural fix is PR2's Tombstone frames, which make the
+        // delete-after-commit ordering durable in the WAL itself).
+        self.run_compact_impl(false);
         self.compacting.store(false, Ordering::Release);
     }
 
     fn run_compact(&self) {
+        self.run_compact_impl(true);
+    }
+
+    fn run_compact_impl(&self, covered_only: bool) {
         // 1. Clone history under read lock (brief)
         let snapshot = match self.inner.read() {
             Ok(h) => h.clone(),
@@ -330,7 +359,12 @@ impl LexUserHistory {
         // replay correct either way, and the entry count stays above the
         // threshold so the next compaction retries soon.
         if let Ok(mut wal) = self.wal.lock() {
-            if let Err(e) = wal.truncate_covered(snapshot.applied_seq()) {
+            let result = if covered_only {
+                wal.truncate_covered(snapshot.applied_seq()).map(|_| ())
+            } else {
+                wal.truncate_wal()
+            };
+            if let Err(e) = result {
                 warn!("WAL truncate failed: {e}");
             }
         }
@@ -361,6 +395,37 @@ mod tests {
         // clear() removes the commit log along with history files
         hist.clear_impl().unwrap();
         assert!(!log_path.exists(), "commit log should be removed by clear");
+    }
+
+    #[test]
+    fn test_force_compact_truncates_uncovered_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = LexUserHistory::open(cp.display().to_string()).unwrap();
+
+        // Covered frame: the normal path advances applied_seq
+        hist.append_wal(&[("きょう".into(), "今日".into())], 1000);
+        // Uncovered frame: append directly without advancing applied_seq,
+        // modeling a commit racing the compaction snapshot
+        hist.wal
+            .lock()
+            .unwrap()
+            .append(&[("あす".into(), "明日".into())], 1001)
+            .unwrap();
+
+        // Background-style compaction must skip truncation (uncovered frame
+        // would be destroyed while absent from the checkpoint)
+        hist.run_compact();
+        assert_eq!(
+            hist.wal.lock().unwrap().entry_count(),
+            2,
+            "covered-only truncation must be skipped"
+        );
+
+        // Deletion-path compaction truncates unconditionally so a deleted
+        // entry can never be resurrected by an uncovered replayable frame
+        hist.force_compact();
+        assert_eq!(hist.wal.lock().unwrap().entry_count(), 0);
     }
 
     #[test]

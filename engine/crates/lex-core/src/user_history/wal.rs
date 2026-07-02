@@ -613,6 +613,35 @@ pub(super) struct LegacyScan {
     pub(super) truncated_tail: bool,
 }
 
+/// Count CRC-valid v1 frames without applying anything. Used to tell a real
+/// v1 (headerless) WAL apart from a v2 WAL whose magic bytes got corrupted:
+/// the latter reads as a v1 frame with a ~1 GB length field and yields zero
+/// valid frames.
+pub(super) fn legacy_valid_prefix(data: &[u8]) -> usize {
+    let mut count = 0;
+    let mut pos = 0;
+    while pos < data.len() {
+        if pos + 8 > data.len() {
+            break;
+        }
+        let length =
+            u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4-byte field")) as usize;
+        let expected_crc =
+            u32::from_le_bytes(data[pos + 4..pos + 8].try_into().expect("4-byte field"));
+        let end = pos.checked_add(8).and_then(|v| v.checked_add(length));
+        let end = match end {
+            Some(end) if length != 0 && end <= data.len() => end,
+            _ => break,
+        };
+        if crc32fast::hash(&data[pos + 8..end]) != expected_crc {
+            break;
+        }
+        count += 1;
+        pos = end;
+    }
+    count
+}
+
 /// Scan v1 (headerless) frames, applying into `history` without evicting.
 pub(super) fn scan_legacy(data: &[u8], history: &mut UserHistory) -> LegacyScan {
     let mut scan = LegacyScan {

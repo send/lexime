@@ -662,6 +662,53 @@ fn t5_corrupt_v1_checkpoint_with_v1_wal() {
     assert!(report.data_loss_suspected());
 }
 
+#[test]
+fn t5_v1_checkpoint_with_v2_wal_mixed_state() {
+    // A failed migration commit with no legacy WAL leaves a v1 checkpoint in
+    // place and an appendable (fresh) v2 WAL; later commits append v2 frames
+    // beside the v1 checkpoint. Recovery must replay them, migrate, and
+    // cover them — not assert or double-apply.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
+    let mut wal = HistoryWal::new(&f.cp);
+    wal.append(&seg(B), T0 + 1).unwrap();
+    wal.append(&seg(C), T0 + 2).unwrap();
+
+    let (h2, _, report) = open_recovering(&f.cp).unwrap();
+    assert_contents(&h2, &[A, B, C], &[]);
+    assert!(report.migrated_from_v1);
+    assert_eq!(report.frames_replayed, 2);
+    assert_eq!(fs::read(&f.cp).unwrap()[4], 2, "checkpoint migrated to v2");
+
+    // The migrated checkpoint covers the replayed v2 frames: the retained
+    // WAL skips them on the next open (no double apply)
+    let (h3, _, r3) = open_recovering(&f.cp).unwrap();
+    assert_eq!(frequency(&h3, B), 1);
+    assert_eq!(r3.frames_skipped, 2);
+    assert_eq!(r3.frames_replayed, 0);
+}
+
+#[test]
+fn wal_corrupted_magic_quarantined_not_discarded() {
+    // A bit flip in the WAL magic bytes classifies the file as Legacy. Since
+    // it parses as zero valid v1 frames it must be quarantined (user-visible
+    // loss), not silently discarded as v1 migration residue.
+    let f = fx();
+    build_v2_state(&f, false);
+    let mut data = fs::read(&f.wal).unwrap();
+    data[0] ^= 0xFF;
+    fs::write(&f.wal, &data).unwrap();
+
+    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    assert_eq!(report.wal_state, WalState::Quarantined);
+    assert!(report.data_loss_suspected());
+    assert_contents(&h, &[A, B], &[C, D, E]);
+    assert!(!f.wal.exists(), "unreadable WAL renamed away");
+    assert_eq!(quarantine_count(&f), 1);
+}
+
 #[cfg(unix)]
 #[test]
 fn t5_migration_commit_failure_leaves_v1_intact_and_freezes_appends() {
@@ -673,6 +720,14 @@ fn t5_migration_commit_failure_leaves_v1_intact_and_freezes_appends() {
 
     // Read-only directory: the migration checkpoint write (tmp create) fails
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    // Probe: root / CAP_DAC_OVERRIDE environments (containerized CI) ignore
+    // directory permissions, so the failure cannot be injected this way —
+    // skip rather than assert a failure that will not happen.
+    if fs::write(dir.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: directory permissions are not enforced here");
+        return;
+    }
     let result = open_recovering(&f.cp);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
