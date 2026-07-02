@@ -1,0 +1,40 @@
+# AGENTS.md
+
+This repo's engineering rules, build commands, and workflow are in the
+**`CLAUDE.md`** at the repo root — read it first; it is the single source of
+truth. Do not restate or fork its rules here.
+
+## Review guidelines
+
+Codex reads this section for PR code review (it keys on the literal
+`## Review guidelines` heading). The local pre-push gate (Claude-based)
+already covers generic correctness and style, so a generic review adds
+little. Add value by applying lexime's *project-specific* lenses and flagging
+what a generic reviewer misses:
+
+- **Conversion-accuracy impact**: changes to dictionary sources
+  (`engine/data/`, `engine/crates/lex-cli/src/dict_source/`), connection
+  costs, feature weights (`engine/crates/lex-core/src/settings.rs`),
+  rerankers, or the Viterbi path must show before/after results of both
+  accuracy corpora (`mise run accuracy` / `mise run accuracy-history`) in the
+  PR description (CLAUDE.md § 変換精度テスト). Flag cost/weight changes that
+  lack that evidence.
+- **Corpus discipline**: an accuracy-corpus `skip` without an issue link is a
+  violation (理由なし skip 禁止); a new history-corpus case without a
+  `baseline` (expected result with no history) is a real defect, not a nit.
+- **FFI boundary (UniFFI)**: the Rust engine (`engine/`) reaches the Swift
+  frontend (`Sources/`) via UniFFI. Watch for panics that could cross the
+  boundary, blocking calls on the IMKit main thread, and callback
+  re-entrancy.
+- **Concurrency invariants**: history/learning state sits behind locks with a
+  known self-deadlock history (PR #237); lattice generation consistency is
+  epoch-based, including the watermark across FFI (PR #258-260 series). Flag
+  lock-order changes and epoch/generation regressions.
+- **Performance scope**: only the IME hot path (conversion, key handling)
+  is performance-sensitive. Dev-tool (`dictool`) performance nits are
+  acceptable-by-policy — do not raise them.
+- Prioritize conversion correctness and boundary safety over naming/style
+  nits.
+
+CLAUDE.md is the SSoT; this section deliberately does not duplicate its
+content.

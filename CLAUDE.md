@@ -23,13 +23,13 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 ### PR レビュー対応フロー
 
-Copilot レビューは `/copilot-review` スキルで対応する。スキル側に手順 (GraphQL paginated `reviewThreads` での silent-zero 判定、severity calibration、scope-creep / convergence trigger 等) が記載されている。
+外部レビュー (OpenAI Codex) は routine PR は `/external-review` スキル (single-pass triage)、高 stakes / 高 blast-radius PR は `/external-converge` スキル (収束ループ) で対応する。reviewer の詳細 (bot 名、trigger、fetch の罠、latency) は `.claude/skills/external-review/project.md` / `.claude/skills/external-converge/project.md` の overlay に記載。Codex へのレビュー観点の供給は `AGENTS.md` の `## Review guidelines` 節 (pointer-only、SSoT は本ファイル)。
 
 このリポジトリ固有の運用ルール:
 
-- **初回 Copilot レビューはリポジトリ設定で自動リクエスト**。Claude が `requestReviews` を呼ぶのは収束ループ内の再レビュー依頼時のみ
+- **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
-- **マージ前にユーザー確認**: CI pass + Copilot 収束 (TERMINAL) 後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
+- **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 
 ## コミット規約
 
