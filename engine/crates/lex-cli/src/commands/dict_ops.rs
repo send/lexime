@@ -62,10 +62,27 @@ pub fn compile(
         process::exit(1);
     }
 
+    // id.def drives both morpheme-role cost offsets and tag-based POS
+    // resolution (extras). Auto-detect in input_dir if --id-def is not
+    // specified.
+    let id_def_path = id_def.map(PathBuf::from).or_else(|| {
+        let auto = input_path.join("id.def");
+        if auto.is_file() {
+            eprintln!("Auto-detected id.def at {}", auto.display());
+            Some(auto)
+        } else {
+            None
+        }
+    });
+
     eprintln!("Source: {source_name}");
     let mut entries = die!(
         dict_source.parse_dir(input_path),
         "Error parsing dictionary: {}"
+    );
+    die!(
+        dict_source.resolve_pos_ids(&mut entries, id_def_path.as_deref()),
+        "Error resolving POS ids: {}"
     );
 
     // Parse extra sources up front, but defer merging until after id.def
@@ -86,24 +103,18 @@ pub fn compile(
             process::exit(1);
         }
         eprintln!("Extra source: {extra_name}");
-        let parsed = die!(
+        let mut parsed = die!(
             extra_src.parse_dir(extra_path),
             "Error parsing extra dictionary: {}"
+        );
+        die!(
+            extra_src.resolve_pos_ids(&mut parsed, id_def_path.as_deref()),
+            "Error resolving POS ids for '{extra_name}': {}"
         );
         extras.push((extra_name.clone(), parsed));
     }
 
     // Apply compile-time cost offsets based on morpheme roles.
-    // Auto-detect id.def in input_dir if --id-def is not specified.
-    let id_def_path = id_def.map(PathBuf::from).or_else(|| {
-        let auto = input_path.join("id.def");
-        if auto.is_file() {
-            eprintln!("Auto-detected id.def at {}", auto.display());
-            Some(auto)
-        } else {
-            None
-        }
-    });
     if let Some(id_def_path) = &id_def_path {
         let roles = die!(
             pos_map::morpheme_roles(id_def_path),
