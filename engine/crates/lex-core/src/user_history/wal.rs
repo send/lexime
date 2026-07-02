@@ -129,7 +129,14 @@ impl FileWalIo {
                 .create(true)
                 .append(true)
                 .open(&self.path)?;
-            if f.metadata()?.len() == 0 {
+            let len = f.metadata()?.len();
+            if len < WAL_HEADER_LEN as u64 {
+                if len != 0 {
+                    // 1-7 byte stub (torn truncation): recreate as
+                    // header-only so frames never land after foreign bytes
+                    // and get misclassified at the next startup.
+                    f.set_len(0)?;
+                }
                 f.write_all(&WAL_HEADER)?;
                 // Order the header ahead of any frame bytes: without this,
                 // power loss could persist later frames while the header

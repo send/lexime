@@ -879,6 +879,23 @@ fn wal_stub_reinitialized() {
 }
 
 #[test]
+fn append_onto_stub_recreates_header() {
+    // A 1-7 byte stub (torn truncation) must not receive frames after the
+    // foreign bytes: the lazy open recreates the file as header-only first.
+    let f = fx();
+    fs::write(&f.wal, b"LXW").unwrap();
+    let mut wal = HistoryWal::new(&f.cp);
+    wal.append(&seg(A), T0).unwrap();
+
+    let data = fs::read(&f.wal).unwrap();
+    assert_eq!(&data[..WAL_HEADER_LEN], &WAL_HEADER);
+    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    assert!(present(&h, A), "appended frame must be replayable");
+    assert_eq!(report.frames_replayed, 1);
+    assert_eq!(report.wal_state, WalState::Clean);
+}
+
+#[test]
 fn wal_unknown_version_quarantined() {
     let f = fx();
     build_v2_state(&f, false);
