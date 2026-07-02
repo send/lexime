@@ -14,11 +14,6 @@ impl InputSession {
             });
         }
 
-        // Accumulate committed text for context
-        if let Some(ref committed) = resp.commit {
-            self.committed_context.push_str(committed);
-        }
-
         self.reset_state();
         resp
     }
@@ -53,11 +48,6 @@ impl InputSession {
                     text: String::new(),
                 });
             }
-        }
-
-        // Accumulate committed text for context
-        if let Some(ref committed) = resp.commit {
-            self.committed_context.push_str(committed);
         }
 
         self.reset_state();

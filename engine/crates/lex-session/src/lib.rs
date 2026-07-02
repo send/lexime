@@ -64,9 +64,6 @@ pub struct InputSession {
     /// ABC passthrough mode: all keys pass through to app, except Kana.
     abc_passthrough: bool,
 
-    // Accumulated committed text (conversion context)
-    committed_context: String,
-
     snippet_store: Option<Arc<SnippetStore>>,
 }
 
@@ -89,7 +86,6 @@ impl InputSession {
             lattice_cache: LatticeCache::new(),
             history_records: Vec::new(),
             abc_passthrough: false,
-            committed_context: String::new(),
             snippet_store: None,
         }
     }
@@ -176,10 +172,5 @@ impl InputSession {
     /// The caller should feed these to `UserHistory::record()`.
     pub fn take_history_records(&mut self) -> Vec<LearningRecord> {
         std::mem::take(&mut self.history_records)
-    }
-
-    /// Get the accumulated committed text (conversion context).
-    pub fn committed_context(&self) -> String {
-        self.committed_context.clone()
     }
 }
