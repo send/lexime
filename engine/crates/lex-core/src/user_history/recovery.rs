@@ -295,8 +295,11 @@ pub fn open_recovering(
     }
 
     // --- 4. startup-compaction hint (§5.1-6) ---
+    // data_loss_suspected() keys off the quarantine *states*, not the path
+    // list: quarantine() can succeed via the remove-file fallback without
+    // recording a path, and that case still needs an early re-checkpoint.
     report.compaction_recommended = report.migrated_from_v1
-        || !report.quarantined_paths.is_empty()
+        || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || wal.needs_compact()
         || wal.is_frozen();
