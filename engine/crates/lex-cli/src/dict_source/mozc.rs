@@ -57,6 +57,13 @@ impl MozcSource {
     }
 }
 
+/// True if `s` is a full commit SHA: exactly 40 hex chars. Anything else is
+/// rejected so a malformed value can't end up embedded in raw URLs or trusted
+/// as a cache version.
+fn is_valid_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Extract and validate the commit SHA from a GitHub Commits API response.
 fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
     let v: serde_json::Value = serde_json::from_str(json)
@@ -64,9 +71,7 @@ fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
     let sha = v["sha"]
         .as_str()
         .ok_or_else(|| DictSourceError::Parse("GitHub commit JSON: missing sha".to_string()))?;
-    // A full commit SHA is 40 hex chars; reject anything else so a malformed
-    // response can't end up embedded in raw URLs or the stamp file.
-    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !is_valid_sha(sha) {
         return Err(DictSourceError::Parse(format!(
             "GitHub commit JSON: invalid sha {sha:?}"
         )));
@@ -74,13 +79,15 @@ fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
     Ok(sha.to_string())
 }
 
-/// Read the version stamp. Missing / empty / whitespace-only stamps (including
-/// the legacy pre-versioning empty `.stamp`) all count as "no version".
+/// Read the version stamp. Only a well-formed commit SHA counts as a version:
+/// missing / empty / legacy pre-versioning empty `.stamp` / corrupted or
+/// hand-edited contents all return `None`, which the caller treats as
+/// "no version" (wipe + full re-download).
 fn read_stamp(path: &Path) -> Option<String> {
     fs::read_to_string(path)
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| is_valid_sha(s))
 }
 
 /// True if `name` is one of the files this source fetches into the cache dir.
@@ -89,6 +96,25 @@ fn is_fetched_file(name: &str) -> bool {
         || name == "id.def"
         || name == "connection_single_column.txt"
         || name == "LICENSE"
+}
+
+/// True if the files required by downstream consumers are all present:
+/// `id.def`, `connection_single_column.txt`, and at least one
+/// `dictionary*.txt`. Used by the offline fallback — a stamp alone is not
+/// enough evidence if the artifacts themselves have since been deleted.
+fn required_files_present(dest: &Path) -> bool {
+    let any_dictionary = fs::read_dir(dest)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name();
+                let s = n.to_string_lossy();
+                s.starts_with("dictionary") && s.ends_with(".txt")
+            })
+        })
+        .unwrap_or(false);
+    any_dictionary
+        && dest.join("id.def").exists()
+        && dest.join("connection_single_column.txt").exists()
 }
 
 /// True if any previously fetched file exists in `dest`.
@@ -185,12 +211,14 @@ impl DictSource for MozcSource {
     /// corrupts conversion quality without any visible error.
     ///
     /// Within a still-valid cache (stamp == latest SHA), individual missing
-    /// files are re-downloaded from that same SHA, so an interrupted run
-    /// recovers without re-fetching everything.
+    /// files (e.g. deleted by hand after a successful fetch) are re-downloaded
+    /// from that same pinned SHA. An interrupted run never writes a stamp, so
+    /// it takes the wipe + full re-download path on the next attempt.
     ///
-    /// Offline behavior: if the SHA can't be resolved but a complete cached
-    /// snapshot exists (non-empty stamp — only written after a fully
-    /// successful fetch), warn and keep using it; otherwise fail.
+    /// Offline behavior: if the SHA can't be resolved but a cached snapshot
+    /// exists (valid stamp — only written after a fully successful fetch) and
+    /// the required artifacts are still on disk, warn and keep using it;
+    /// otherwise fail.
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
         let stamp_path = dest.join(".stamp");
@@ -200,11 +228,18 @@ impl DictSource for MozcSource {
             Ok(sha) => sha,
             Err(e) => {
                 if let Some(v) = &cached {
-                    eprintln!(
-                        "Warning: could not resolve latest mozc commit ({e}); \
-                         using cached snapshot {v}."
-                    );
-                    return Ok(());
+                    if required_files_present(dest) {
+                        eprintln!(
+                            "Warning: could not resolve latest mozc commit ({e}); \
+                             using cached snapshot {v}."
+                        );
+                        return Ok(());
+                    }
+                    return Err(DictSourceError::Http(format!(
+                        "could not resolve latest mozc commit ({e}) and cached snapshot {v} \
+                         in {} is missing required files",
+                        dest.display()
+                    )));
                 }
                 return Err(e);
             }
@@ -357,6 +392,19 @@ mod tests {
     }
 
     #[test]
+    fn test_is_valid_sha() {
+        assert!(is_valid_sha("0123456789abcdef0123456789abcdef01234567"));
+        assert!(is_valid_sha("0123456789ABCDEF0123456789ABCDEF01234567"));
+        // Wrong length
+        assert!(!is_valid_sha(""));
+        assert!(!is_valid_sha("abc123"));
+        assert!(!is_valid_sha("0123456789abcdef0123456789abcdef012345678"));
+        // Right length, non-hex
+        assert!(!is_valid_sha("0123456789abcdef0123456789abcdef0123456z"));
+        assert!(!is_valid_sha("../../../../../../../../../../../../etc/x"));
+    }
+
+    #[test]
     fn test_parse_commit_sha() {
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let json = format!(r#"{{"sha": "{sha}", "commit": {{}}}}"#);
@@ -394,6 +442,14 @@ mod tests {
 
         // Whitespace-only → None
         fs::write(&stamp, "  \n").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+
+        // Corrupted / hand-edited (not a 40-hex SHA) → None, so it is treated
+        // as "no version" and triggers a wipe + re-download instead of being
+        // trusted (Copilot review on PR #266).
+        fs::write(&stamp, "master\n").unwrap();
+        assert!(read_stamp(&stamp).is_none());
+        fs::write(&stamp, "0123456789abcdef0123456789abcdef0123456z\n").unwrap();
         assert!(read_stamp(&stamp).is_none());
 
         // Trim trailing newline
@@ -439,6 +495,37 @@ mod tests {
         // Case 4: legacy empty stamp → wipe.
         fs::write(dir.join(".stamp"), "").unwrap();
         assert!(should_wipe(&dir, latest));
+
+        // Case 5: corrupted / hand-edited stamp (not a 40-hex SHA) → wipe.
+        fs::write(dir.join(".stamp"), "master").unwrap();
+        assert!(should_wipe(&dir, latest));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pins the offline-fallback guard (Copilot review on PR #266): a stamp
+    /// alone must not be enough to skip fetching — the required artifacts
+    /// (id.def, connection matrix, ≥1 dictionary*.txt) must still be on disk.
+    #[test]
+    fn test_required_files_present() {
+        let dir = std::env::temp_dir().join("lexime_test_mozc_required");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Empty dir → incomplete.
+        assert!(!required_files_present(&dir));
+
+        // Build up piece by piece; only the full set passes.
+        fs::write(dir.join("id.def"), "x").unwrap();
+        assert!(!required_files_present(&dir));
+        fs::write(dir.join("connection_single_column.txt"), "x").unwrap();
+        assert!(!required_files_present(&dir));
+        fs::write(dir.join("dictionary00.txt"), "x").unwrap();
+        assert!(required_files_present(&dir));
+
+        // Losing any one required artifact flips it back to incomplete.
+        fs::remove_file(dir.join("id.def")).unwrap();
+        assert!(!required_files_present(&dir));
 
         fs::remove_dir_all(&dir).ok();
     }
