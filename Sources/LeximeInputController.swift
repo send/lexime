@@ -21,10 +21,9 @@ class LeximeInputController: IMKInputController {
         NSLog("Lexime: InputController initialized (engine: %@)", version)
 
         guard let engine = AppContext.shared.engine else {
-            if !Self.hasShownDictWarning {
-                Self.hasShownDictWarning = true
-                NSLog("Lexime: WARNING - engine not loaded. Conversion is unavailable.")
-            }
+            // Alert is deferred to the first real key press (handle()) so that
+            // short-lived IMKit probe processes never trigger UI.
+            NSLog("Lexime: WARNING - engine not loaded. Conversion is unavailable.")
             return
         }
 
@@ -64,7 +63,16 @@ class LeximeInputController: IMKInputController {
     // MARK: - Key Handling
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let coordinator, let event, let client = sender as? IMKTextInput else {
+        guard let event, let client = sender as? IMKTextInput else {
+            return false
+        }
+
+        guard let coordinator else {
+            // Engine failed to initialize: surface the fatal failure once,
+            // on the first real key press (never on IMKit probe processes).
+            if event.type == .keyDown {
+                Self.showEngineFailureAlertIfNeeded()
+            }
             return false
         }
 
@@ -136,10 +144,83 @@ class LeximeInputController: IMKInputController {
             && dominated.contains(.command) == trigger.cmd
     }
 
+    // MARK: - Engine Failure Visibility
+
+    /// Show a one-time critical alert when the engine is unavailable.
+    /// Called from the first real key press; the IME is a background process,
+    /// so temporarily switch the activation policy (same pattern as
+    /// SettingsWindowController) to bring the alert to the front.
+    private static func showEngineFailureAlertIfNeeded() {
+        guard !hasShownDictWarning else { return }
+        hasShownDictWarning = true
+
+        let detail = AppContext.shared.engineContainer.fatalFailureDetail ?? ""
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = NSLocalizedString(
+                "Lexime の辞書の読み込みに失敗しました",
+                comment: "Engine failure alert title")
+            alert.informativeText = String(
+                format: NSLocalizedString(
+                    "かな漢字変換は利用できません。Lexime を再インストールしてください。\n\n詳細: %@",
+                    comment: "Engine failure alert body"),
+                detail)
+            alert.runModal()
+            // Restore the background-process policy unless another Lexime
+            // window (e.g. Settings) is currently visible.
+            if !NSApp.windows.contains(where: { $0.isVisible }) {
+                NSApp.setActivationPolicy(.prohibited)
+            }
+        }
+    }
+
+    private func degradedStatusTitle(for failure: EngineInitFailure) -> String {
+        switch failure {
+        case .dictionary:
+            return NSLocalizedString(
+                "⚠️ 辞書の読み込みに失敗（変換不可）",
+                comment: "Degraded status: system dictionary failed")
+        case .userDictionary:
+            return NSLocalizedString(
+                "⚠️ ユーザ辞書の読み込みに失敗",
+                comment: "Degraded status: user dictionary failed")
+        case .compositeDictionary:
+            return NSLocalizedString(
+                "⚠️ ユーザ辞書が変換に反映されていません",
+                comment: "Degraded status: composite dictionary failed")
+        case .history:
+            return NSLocalizedString(
+                "⚠️ 学習履歴の読み込みに失敗",
+                comment: "Degraded status: user history failed")
+        case .customSettings:
+            return NSLocalizedString(
+                "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）",
+                comment: "Degraded status: custom settings failed")
+        }
+    }
+
     // MARK: - Menu
 
     override func menu() -> NSMenu! {
         let menu = NSMenu()
+
+        let container = AppContext.shared.engineContainer
+        if container.isDegraded {
+            for failure in container.initFailures {
+                // No action/target: IMKit renders these as disabled status rows.
+                let item = NSMenuItem(
+                    title: degradedStatusTitle(for: failure),
+                    action: nil,
+                    keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
+
         let settingsItem = NSMenuItem(
             title: NSLocalizedString("設定...", comment: "Settings menu item"),
             action: #selector(showSettings),

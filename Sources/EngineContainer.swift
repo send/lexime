@@ -1,24 +1,63 @@
 import Foundation
 
+/// A non-recoverable or degraded condition detected during engine startup.
+/// Recorded for visibility only — fallback behavior is unchanged.
+enum EngineInitFailure {
+    /// System dictionary failed to load. Fatal: the engine cannot start.
+    case dictionary(detail: String)
+    /// User dictionary file could not be opened (entries unavailable).
+    case userDictionary(detail: String)
+    /// Composite (system + user) dictionary creation failed;
+    /// user dictionary entries are not reflected in conversion.
+    case compositeDictionary(detail: String)
+    /// User history could not be opened (learning disabled).
+    case history(detail: String)
+    /// Custom settings.toml exists but failed to parse (defaults in effect).
+    case customSettings(detail: String)
+}
+
 final class EngineContainer {
     let engine: LexEngine?
     let dictionary: LexDictionary?
     let history: LexUserHistory?
     let userDict: LexUserDictionary?
 
+    /// Initialization failures recorded for user visibility (menu / alert).
+    private(set) var initFailures: [EngineInitFailure]
+
+    /// True when any component failed to initialize and the IME is running
+    /// in a degraded state (including the fatal engine-nil case).
+    var isDegraded: Bool { !initFailures.isEmpty }
+
+    /// Detail message of the fatal dictionary failure, if the engine is unavailable.
+    var fatalFailureDetail: String? {
+        guard engine == nil else { return nil }
+        for case let .dictionary(detail) in initFailures { return detail }
+        return nil
+    }
+
+    /// Record a failure detected outside `load` (e.g. settings parse errors
+    /// caught during bootstrap).
+    func recordFailure(_ failure: EngineInitFailure) {
+        initFailures.append(failure)
+    }
+
     init(
         engine: LexEngine?,
         dictionary: LexDictionary?,
         history: LexUserHistory?,
-        userDict: LexUserDictionary?
+        userDict: LexUserDictionary?,
+        initFailures: [EngineInitFailure] = []
     ) {
         self.engine = engine
         self.dictionary = dictionary
         self.history = history
         self.userDict = userDict
+        self.initFailures = initFailures
     }
 
     static func load(resourcePath: String, userDictPath: String, historyPath: String) -> EngineContainer {
+        var failures: [EngineInitFailure] = []
         let dictPath = (resourcePath as NSString).appendingPathComponent("lexime.dict")
         var dict: LexDictionary?
         do {
@@ -29,6 +68,7 @@ final class EngineContainer {
             dict = d
         } catch {
             NSLog("Lexime: Failed to load dictionary at %@: %@", dictPath, "\(error)")
+            failures.append(.dictionary(detail: "\(error)"))
             dict = nil
         }
 
@@ -50,6 +90,7 @@ final class EngineContainer {
             userDict = ud
         } catch {
             NSLog("Lexime: Failed to open user dictionary at %@: %@", userDictPath, "\(error)")
+            failures.append(.userDictionary(detail: "\(error)"))
             userDict = nil
         }
 
@@ -61,6 +102,7 @@ final class EngineContainer {
                 dict = composite
             } catch {
                 NSLog("Lexime: Failed to create composite dictionary: %@", "\(error)")
+                failures.append(.compositeDictionary(detail: "\(error)"))
             }
         }
 
@@ -71,6 +113,7 @@ final class EngineContainer {
             history = h
         } catch {
             NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")
+            failures.append(.history(detail: "\(error)"))
             history = nil
         }
 
@@ -82,6 +125,7 @@ final class EngineContainer {
         }
 
         return EngineContainer(
-            engine: engine, dictionary: dict, history: history, userDict: userDict)
+            engine: engine, dictionary: dict, history: history, userDict: userDict,
+            initFailures: failures)
     }
 }
