@@ -191,6 +191,16 @@ pub enum LearningRecord {
         /// Pre-segmented N-best path (if available and multi-segment).
         /// Used for sub-phrase unigram + bigram learning.
         segments: Option<Vec<(String, String)>>,
+        /// 0-based index of the selected candidate at commit time.
+        /// 0 = the user accepted top-1; >0 = a manual pick, i.e. a
+        /// conversion miss observable in the commit log.
+        rank: usize,
+        /// Top-1 surface at commit time. Some only when rank > 0
+        /// (otherwise it equals `surface`).
+        top1: Option<String>,
+        /// True when produced by auto-commit (the user kept typing past a
+        /// stable prefix, which implies acceptance of top-1).
+        auto: bool,
     },
     /// User requested deletion of history for this reading→surface.
     Deletion { segments: Vec<(String, String)> },

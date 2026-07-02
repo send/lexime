@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -80,6 +81,10 @@ pub struct LexUserHistory {
     pub(crate) inner: Arc<RwLock<UserHistory>>,
     wal: Mutex<HistoryWal>,
     compacting: AtomicBool,
+    /// Append-only JSONL log of commit events (rank, top-1 acceptance),
+    /// stored next to the checkpoint. Local diagnostics only; mined offline
+    /// by lextool to track the real-world top-1 acceptance rate.
+    commit_log_path: PathBuf,
 }
 
 #[uniffi::export]
@@ -88,10 +93,12 @@ impl LexUserHistory {
     fn open(path: String) -> Result<Arc<Self>, LexError> {
         let cp = Path::new(&path);
         let (history, wal) = crate::user_history::wal::open_with_wal(cp)?;
+        let commit_log_path = cp.with_file_name("commit-log.jsonl");
         Ok(Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
             compacting: AtomicBool::new(false),
+            commit_log_path,
         }))
     }
 
@@ -113,7 +120,11 @@ impl LexUserHistory {
             msg: format!("WAL lock poisoned: {e}"),
         })?;
         wal.truncate_wal()?;
-        for path in [wal.wal_path(), wal.checkpoint_path()] {
+        for path in [
+            wal.wal_path(),
+            wal.checkpoint_path(),
+            self.commit_log_path.as_path(),
+        ] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -134,6 +145,23 @@ impl LexUserHistory {
         };
         if let Err(e) = wal.append(segments, timestamp) {
             warn!("WAL append failed: {e}");
+        }
+    }
+
+    /// Append one JSONL line to the commit log. Failures are logged and
+    /// swallowed — diagnostics must never break the commit path.
+    pub(super) fn append_commit_log(&self, line: &str) {
+        let open = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.commit_log_path);
+        match open {
+            Ok(mut f) => {
+                if let Err(e) = writeln!(f, "{line}") {
+                    warn!("commit-log append failed: {e}");
+                }
+            }
+            Err(e) => warn!("commit-log open failed: {e}"),
         }
     }
 
@@ -204,6 +232,26 @@ impl LexUserHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_commit_log_append_and_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = LexUserHistory::open(cp.display().to_string()).unwrap();
+
+        hist.append_commit_log(r#"{"t":1,"reading":"きょう","surface":"今日","rank":0}"#);
+        hist.append_commit_log(
+            r#"{"t":2,"reading":"きょう","surface":"京","rank":2,"top1":"今日"}"#,
+        );
+
+        let log_path = dir.path().join("commit-log.jsonl");
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content.lines().count(), 2);
+
+        // clear() removes the commit log along with history files
+        hist.clear_impl().unwrap();
+        assert!(!log_path.exists(), "commit log should be removed by clear");
+    }
 
     #[test]
     fn test_clear_resets_history_and_removes_files() {

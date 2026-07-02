@@ -83,6 +83,9 @@ impl InputSession {
                 reading: committed_reading.clone(),
                 surface: committed_surface.clone(),
                 segments: seg_pairs,
+                rank: 0,
+                top1: None,
+                auto: true,
             });
         }
 
