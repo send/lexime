@@ -99,11 +99,18 @@ pub(super) fn load_checkpoint(path: &Path) -> io::Result<CheckpointLoaded> {
 /// Returns whether the rename's durability was confirmed (parent-dir fsync
 /// succeeded). On `false`, callers must not destroy data that only the new
 /// file covers — a power loss could still roll the rename back.
+/// `create_dir_all` for the parent, tolerating bare relative paths whose
+/// parent is "" (the current directory — nothing to create).
+pub(super) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => fs::create_dir_all(p),
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     let tmp = tmp_path(path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(path)?;
     let mut f = File::create(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;

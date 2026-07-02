@@ -119,14 +119,7 @@ struct FileWalIo {
     file: Option<File>,
 }
 
-/// `create_dir_all` for the parent, tolerating bare relative paths whose
-/// parent is "" (the current directory — nothing to create).
-fn ensure_parent_dir(path: &Path) -> io::Result<()> {
-    match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => fs::create_dir_all(p),
-        _ => Ok(()),
-    }
-}
+use super::persistence::ensure_parent_dir;
 
 impl FileWalIo {
     fn open_file(&mut self) -> io::Result<&mut File> {
