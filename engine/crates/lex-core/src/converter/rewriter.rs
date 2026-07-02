@@ -52,9 +52,21 @@ pub(crate) fn run_rewriters(
     for rw in rewriters {
         let candidates = rw.generate(paths, reading);
         for candidate in candidates {
-            if seen.insert(candidate.surface_key()) {
+            let key = candidate.surface_key();
+            if seen.insert(key.clone()) {
                 let pos = paths.partition_point(|p| p.viterbi_cost < candidate.viterbi_cost);
                 paths.insert(pos, candidate);
+            } else if let Some(i) = paths.iter().position(|p| p.surface_key() == key) {
+                // Same surface already in the list (e.g. a retained identity
+                // path) at a worse cost: reprice it to the rewriter's cost so
+                // the surface ranks where the fallback intended, keeping the
+                // real path's segments for per-segment history recording.
+                if candidate.viterbi_cost < paths[i].viterbi_cost {
+                    let mut existing = paths.remove(i);
+                    existing.viterbi_cost = candidate.viterbi_cost;
+                    let pos = paths.partition_point(|p| p.viterbi_cost < existing.viterbi_cost);
+                    paths.insert(pos, existing);
+                }
             }
         }
     }
@@ -131,14 +143,12 @@ pub(crate) struct PartialHiraganaRewriter;
 
 impl Rewriter for PartialHiraganaRewriter {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
-        let source_count = paths.len().min(5);
         let mut new_paths = Vec::new();
 
-        for path in paths.iter().take(source_count) {
-            if path.segments.len() <= 1 {
-                continue;
-            }
-
+        // Select the 5 cheapest multi-segment paths BEFORE limiting: injected
+        // single-segment fallbacks (e.g. HiraganaVariantRewriter at best+4000)
+        // sort into the top 5 and must not displace a real source path.
+        for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
             for seg_idx in 0..path.segments.len() {
                 let seg = &path.segments[seg_idx];
                 if seg.surface == seg.reading || seg.surface.chars().all(is_katakana) {
