@@ -207,6 +207,19 @@ pub(super) fn wal_path_for(checkpoint_path: &Path) -> PathBuf {
 }
 
 /// WAL state that lives alongside a checkpoint file.
+///
+/// # Single-writer invariant
+///
+/// Exactly one writing handle may exist per history path (§3: `next_seq` is
+/// owned by this handle; §4's concurrency model is intra-process). The
+/// engine upholds this by opening one `LexUserHistory` per file for the
+/// process's lifetime; offline tooling uses the strict read-only paths.
+/// Concurrent writers were never supported: in v1 a second handle's
+/// compaction would checkpoint its own memory (lacking the other handle's
+/// commits entirely) and truncate the shared WAL, silently discarding the
+/// other handle's learning wholesale. Under v2 the failure is narrower
+/// (duplicate seqs read as a corrupt tail) but still a failure — do not
+/// open two writing handles on one path.
 pub struct HistoryWal {
     /// Path to the checkpoint file (`user_history.lxud`).
     checkpoint_path: PathBuf,
