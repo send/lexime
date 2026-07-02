@@ -137,8 +137,8 @@ note = "1-char variance exclusion により baseline が質問した に改善; 
 [[cases]]
 reading = "おねがいします"
 expected = "お願いします"
-baseline = "おねがいします"
+baseline = "お願いします"
 category = "regression"
 tags = ["history", "whole-path", "rewriter"]
-note = "学習済み お願いします が候補上位に出る。以前は history_rerank 後の KanjiVariantRewriter が boost 済みひらがなパスから漢字バリアントを量産し、その継承コストで お願いします を2ページ目に押し下げていた (pre_history_cost で修正)"
+note = "学習済み お願いします が候補上位に出る。以前は history_rerank 後の KanjiVariantRewriter が boost 済みひらがなパスから漢字バリアントを量産し、その継承コストで お願いします を2ページ目に押し下げていた (pre_history_cost で修正)。baseline は Mozc 2026-07 スナップショットのコスト変更で おねがいします → お願いします に変化 (#273)"
 pr = "#248"
