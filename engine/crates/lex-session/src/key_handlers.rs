@@ -20,6 +20,15 @@ impl InputSession {
     /// If `skip_current` is true and selected==0, jump directly to 1.
     fn navigate_candidates(&mut self, delta: i32, skip_current: bool) -> KeyResponse {
         self.ensure_candidates();
+        // Provisional candidates hold only the deferred-mode interim result
+        // (sync 1-best / post-auto-commit remainders). The async N-best that
+        // would replace them may already have been invalidated by this very
+        // key press, so no refresh is guaranteed to arrive — without a
+        // fallback, navigation would cycle the interim list forever. Generate
+        // the full list synchronously instead.
+        if self.comp().candidates.provisional {
+            self.update_candidates();
+        }
         let c = self.comp();
         if !c.candidates.is_empty() {
             if skip_current && c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {

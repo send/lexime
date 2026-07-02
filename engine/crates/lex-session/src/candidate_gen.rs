@@ -35,6 +35,7 @@ impl InputSession {
         let c = self.comp();
         c.candidates.surfaces = surfaces;
         c.candidates.paths = paths;
+        c.candidates.provisional = false;
         c.stability.track(&c.candidates.paths);
     }
 
@@ -62,6 +63,9 @@ impl InputSession {
             c.candidates.surfaces = vec![surface];
             c.candidates.paths = vec![segments];
             c.candidates.selected = 0;
+            // Interim 1-best only; the full N-best arrives asynchronously
+            // (or never, if a later key invalidates the request).
+            c.candidates.provisional = true;
 
             let mut resp = build_marked_text(self.comp());
             resp.async_request = Some(AsyncCandidateRequest {
@@ -115,6 +119,7 @@ impl InputSession {
         c.candidates.surfaces = surfaces;
         c.candidates.paths = paths;
         c.candidates.selected = 0;
+        c.candidates.provisional = false;
         c.stability.track(&c.candidates.paths);
 
         // Try auto-commit with fresh candidates

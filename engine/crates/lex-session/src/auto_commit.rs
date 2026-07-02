@@ -144,6 +144,7 @@ impl InputSession {
             // Store provisional candidates in session state so that candidate
             // navigation (Space / Arrow) works during the async phase.
             c.candidates.surfaces.clone_from(&provisional);
+            c.candidates.provisional = true;
 
             // prefix.text was already consumed into commit via std::mem::take
             // above, so it is empty here — no need to prepend it.

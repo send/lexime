@@ -143,6 +143,13 @@ pub(crate) struct CandidateState {
     pub(crate) surfaces: Vec<String>,
     pub(crate) paths: Vec<Vec<ConvertedSegment>>,
     pub(crate) selected: usize,
+    /// True while `surfaces` holds only the interim result of deferred mode
+    /// (the synchronous 1-best, or post-auto-commit remainders) and the full
+    /// async N-best has not been received yet. The async refresh may never
+    /// arrive (every key press invalidates in-flight work), so candidate
+    /// navigation falls back to synchronous generation when this is set
+    /// instead of cycling the interim list forever.
+    pub(crate) provisional: bool,
 }
 
 impl CandidateState {
@@ -151,6 +158,7 @@ impl CandidateState {
             surfaces: Vec::new(),
             paths: Vec::new(),
             selected: 0,
+            provisional: false,
         }
     }
 
@@ -158,6 +166,7 @@ impl CandidateState {
         self.surfaces.clear();
         self.paths.clear();
         self.selected = 0;
+        self.provisional = false;
     }
 
     pub(crate) fn is_empty(&self) -> bool {

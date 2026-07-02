@@ -309,6 +309,71 @@ fn test_commit_bumps_epoch() {
     );
 }
 
+// --- Provisional candidates: navigation fallback ---
+
+/// Regression: in deferred mode, a fast Space right after typing races with
+/// the async N-best — the key press invalidates the in-flight work, and
+/// `ensure_candidates` used to skip regeneration because the provisional
+/// 1-best made the list non-empty, leaving navigation stuck on a single
+/// candidate with no recovery path. Navigation must fall back to synchronous
+/// generation when the candidates are provisional.
+#[test]
+fn test_provisional_navigation_falls_back_to_sync_generation() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    // Type "kyou": deferred mode leaves a provisional 1-best while the
+    // async N-best is (still) in flight.
+    type_string(&mut session, "kyou");
+    assert!(session.comp().candidates.provisional);
+    assert_eq!(session.comp().candidates.surfaces.len(), 1);
+
+    // Space before the async response arrives. In production this key press
+    // also invalidates the in-flight work, so no async refresh would come.
+    let resp = session.handle_key(KeyEvent::Space);
+
+    assert!(
+        !session.comp().candidates.provisional,
+        "navigation must resolve provisional candidates"
+    );
+    assert!(
+        session.comp().candidates.surfaces.len() > 1,
+        "sync fallback must produce the full candidate list"
+    );
+    assert_eq!(session.comp().candidates.selected, 1);
+    match resp.candidates {
+        CandidateAction::Show { surfaces, selected } => {
+            assert!(surfaces.len() > 1);
+            assert_eq!(selected, 1);
+        }
+        _ => panic!("Space over provisional candidates must show the candidate panel"),
+    }
+}
+
+/// A fresh async response still lands normally on provisional candidates
+/// (the fallback only kicks in on navigation, not on Enter/Tab commits).
+#[test]
+fn test_provisional_cleared_by_async_response() {
+    use lex_core::candidates::generate_candidates;
+
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    type_string(&mut session, "kyou");
+    assert!(session.comp().candidates.provisional);
+
+    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let epoch = session.epoch;
+    let r = session.receive_candidates(epoch, "きょう", cand.surfaces, cand.paths);
+    assert!(r.is_some());
+    assert!(
+        !session.comp().candidates.provisional,
+        "accepted async response must mark candidates as ready"
+    );
+}
+
 #[test]
 fn test_predictive_mode_no_auto_commit() {
     use lex_core::candidates::generate_candidates;
