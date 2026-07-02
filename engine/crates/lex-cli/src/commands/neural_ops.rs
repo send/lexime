@@ -6,7 +6,6 @@ use lex_core::converter::{convert, convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
 use lex_core::neural::NeuralScorer;
-use lex_core::user_history::UserHistory;
 
 macro_rules! die {
     ($result:expr, $($arg:tt)*) => {
@@ -36,10 +35,13 @@ pub fn neural_score_cmd(
     );
 
     let user_history = history.map(|path| {
-        die!(
-            UserHistory::open(Path::new(path)),
+        // open_with_wal: uncheckpointed commits live only in the WAL; a
+        // checkpoint-only read would ignore the most recent learning.
+        let (h, _wal) = die!(
+            lex_core::user_history::wal::open_with_wal(Path::new(path)),
             "Error opening history: {}"
-        )
+        );
+        h
     });
 
     // 1) Viterbi N-best

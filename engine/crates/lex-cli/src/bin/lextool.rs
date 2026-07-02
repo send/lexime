@@ -296,10 +296,14 @@ fn open_resources(
     });
 
     let hist = history.as_ref().map(|path| {
-        UserHistory::open(Path::new(path)).unwrap_or_else(|e| {
-            eprintln!("Failed to open user history at {}: {}", path, e);
-            process::exit(1);
-        })
+        // open_with_wal: uncheckpointed commits live only in the WAL; a
+        // checkpoint-only read would ignore the most recent learning.
+        let (h, _wal) =
+            lex_core::user_history::wal::open_with_wal(Path::new(path)).unwrap_or_else(|e| {
+                eprintln!("Failed to open user history at {}: {}", path, e);
+                process::exit(1);
+            });
+        h
     });
 
     (dict, conn, hist)

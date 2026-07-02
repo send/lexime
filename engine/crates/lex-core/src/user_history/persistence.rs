@@ -124,8 +124,13 @@ fn tmp_path(path: &Path) -> PathBuf {
 /// Returns whether the sync succeeded (callers gate destructive follow-ups
 /// like WAL truncation on it).
 fn sync_parent_dir(path: &Path) -> bool {
-    let Some(parent) = path.parent() else {
-        return false;
+    let parent = match path.parent() {
+        // A bare relative path ("history.lxud") has parent "" — that means
+        // the current directory, and File::open("") would fail, making
+        // durability permanently unconfirmed (truncation never runs).
+        Some(p) if p.as_os_str().is_empty() => Path::new("."),
+        Some(p) => p,
+        None => return false,
     };
     match File::open(parent) {
         Ok(dir) => dir.sync_all().is_ok(),
