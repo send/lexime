@@ -154,6 +154,7 @@ impl InputSession {
                 reading: c.kana.clone(),
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
                 lattice: None, // kana changed after commit; worker rebuilds
+                epoch: self.epoch,
             });
             resp.candidates = CandidateAction::Show {
                 surfaces: provisional,

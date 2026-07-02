@@ -41,6 +41,12 @@ impl InputSession {
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let _span = debug_span!("handle_key", ?event).entered();
 
+        // Every key event starts a new epoch so that in-flight async
+        // candidate responses are rejected — including responses racing with
+        // kana-preserving keys (Space/Escape/ForwardDelete) that the
+        // reading-match check in `receive_candidates` cannot detect.
+        self.bump_epoch();
+
         // Snippet trigger: enter snippet mode (commit composing first if needed)
         if matches!(event, KeyEvent::SnippetTrigger) {
             return self.enter_snippet_mode();

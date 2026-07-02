@@ -109,6 +109,11 @@ pub struct AsyncCandidateRequest {
     /// Shared via `Arc` so hand-off to the worker stays cheap — the session's
     /// cache and the worker both hold references to the same lattice.
     pub lattice: Option<std::sync::Arc<lex_core::converter::Lattice>>,
+    /// Session epoch snapshot taken when the request was issued. The async
+    /// worker carries this through to the response, and
+    /// `InputSession::receive_candidates` silently discards the response if
+    /// the session epoch has moved on (any key press / commit in between).
+    pub epoch: u64,
 }
 
 /// Orthogonal side-effects that accompany a response.

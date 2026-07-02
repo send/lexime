@@ -96,9 +96,11 @@ impl HeadlessIME {
             &reading,
             MAX_CANDIDATES,
         );
+        // Simulate a fresh (non-stale) response: snapshot the current epoch.
+        let epoch = self.session.epoch;
         let resp = self
             .session
-            .receive_candidates(&reading, cand.surfaces, cand.paths);
+            .receive_candidates(epoch, &reading, cand.surfaces, cand.paths);
 
         match resp {
             Some(r) => {

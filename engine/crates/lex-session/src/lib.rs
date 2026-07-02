@@ -42,6 +42,19 @@ pub struct InputSession {
 
     config: SessionConfig,
 
+    /// Monotonic counter identifying the current composition state.
+    ///
+    /// Bumped (under the caller-held session lock) at the start of every
+    /// entry point that may mutate composition/candidate state, and when an
+    /// async candidate response is accepted. Async candidate requests
+    /// snapshot this value and responses carry it back; `receive_candidates`
+    /// rejects any response whose epoch does not match. This closes the race
+    /// where a stale async response arrives after a kana-preserving key
+    /// (Space selection move / Escape / ForwardDelete) already changed the
+    /// selection or panel visibility — a reading-match check alone cannot
+    /// detect those.
+    epoch: u64,
+
     /// Incremental Viterbi-input cache, independent of the UI `Composition`.
     pub(crate) lattice_cache: LatticeCache,
 
@@ -68,6 +81,7 @@ impl InputSession {
             conn,
             history,
             state: SessionState::Idle,
+            epoch: 0,
             config: SessionConfig {
                 defer_candidates: false,
                 conversion_mode: ConversionMode::Standard,
@@ -85,7 +99,17 @@ impl InputSession {
     }
 
     pub fn set_conversion_mode(&mut self, mode: ConversionMode) {
+        // In-flight async responses were generated under the old mode's
+        // dispatch; invalidate them.
+        self.bump_epoch();
         self.config.conversion_mode = mode;
+    }
+
+    /// Invalidate all in-flight async candidate responses.
+    /// Called at the start of every entry point that mutates composition or
+    /// candidate state. See the `epoch` field docs.
+    fn bump_epoch(&mut self) {
+        self.epoch += 1;
     }
 
     pub fn is_composing(&self) -> bool {
@@ -125,6 +149,9 @@ impl InputSession {
 
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
+        // Same contract as `handle_key`: every state-mutating entry point
+        // invalidates in-flight async candidate responses.
+        self.bump_epoch();
         if matches!(self.state, SessionState::Snippet(_)) {
             // Snippet mode: cancel and go back to idle
             self.reset_state();

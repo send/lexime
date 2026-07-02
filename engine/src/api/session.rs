@@ -99,7 +99,9 @@ impl LexSession {
     }
 
     fn handle_key(&self, event: LexKeyEvent) -> LexKeyResponse {
-        // Invalidate stale candidates from previous key events
+        // Cancel in-flight candidate work early (computation-skip
+        // optimization; correctness is owned by the session epoch, which
+        // `session.handle_key` bumps under the session lock below).
         if let Some(worker) = self.worker.lock().unwrap().as_ref() {
             worker.invalidate_candidates();
         }
@@ -110,7 +112,12 @@ impl LexSession {
         // Submit async candidate work internally
         if let Some(req) = resp.async_request.take() {
             if let Some(worker) = self.worker.lock().unwrap().as_ref() {
-                worker.submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
+                worker.submit_candidates(
+                    req.reading,
+                    req.candidate_dispatch,
+                    req.lattice,
+                    req.epoch,
+                );
             }
         }
 
@@ -121,6 +128,13 @@ impl LexSession {
     }
 
     fn commit(&self) -> LexKeyResponse {
+        // Cancel in-flight candidate work, mirroring `handle_key`
+        // (computation-skip optimization; `session.commit` bumps the session
+        // epoch, which is what actually rejects stale responses).
+        if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+            worker.invalidate_candidates();
+        }
+
         let mut session = self.session.lock().unwrap();
         let resp = session.commit();
         let records = session.take_history_records();
@@ -180,12 +194,18 @@ impl LexSession {
         let paths: Vec<Vec<ConvertedSegment>> = result.response.paths;
 
         let mut session = self.session.lock().unwrap();
-        let mut resp = session.receive_candidates(&result.reading, surfaces, paths)?;
+        let mut resp =
+            session.receive_candidates(result.epoch, &result.reading, surfaces, paths)?;
 
         // Chain: submit any new async requests from the response
         if let Some(req) = resp.async_request.take() {
             if let Some(worker) = self.worker.lock().unwrap().as_ref() {
-                worker.submit_candidates(req.reading, req.candidate_dispatch, req.lattice);
+                worker.submit_candidates(
+                    req.reading,
+                    req.candidate_dispatch,
+                    req.lattice,
+                    req.epoch,
+                );
             }
         }
         let records = session.take_history_records();

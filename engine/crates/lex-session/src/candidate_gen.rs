@@ -68,6 +68,7 @@ impl InputSession {
                 reading,
                 candidate_dispatch: self.config.conversion_mode.candidate_dispatch(),
                 lattice: Some(std::sync::Arc::clone(&lattice)),
+                epoch: self.epoch,
             });
             return resp;
         } else {
@@ -78,18 +79,37 @@ impl InputSession {
     }
 
     /// Receive asynchronously generated candidates and update session state.
-    /// Returns `None` if the reading is stale (kana has changed).
+    ///
+    /// `epoch` is the session epoch snapshot carried over from the
+    /// originating [`AsyncCandidateRequest`]. Returns `None` (silently
+    /// discarding the response) if the response is stale.
     pub fn receive_candidates(
         &mut self,
+        epoch: u64,
         reading: &str,
         surfaces: Vec<String>,
         paths: Vec<Vec<ConvertedSegment>>,
     ) -> Option<KeyResponse> {
-        // Stale check: reading must match current composing state
+        // Correctness gate: the epoch must match. Every state-mutating entry
+        // point bumps the epoch under the session lock, so a mismatch means
+        // the user did something after this request was issued — even a
+        // kana-preserving key (Space/Escape/ForwardDelete) that the reading
+        // check below cannot detect.
+        if epoch != self.epoch {
+            return None;
+        }
+        // Defense in depth: reading must match current composing state.
+        // With session-owned epochs this should never fire when the epoch
+        // matches, but it is a cheap second line of defense.
         match &self.state {
             SessionState::Composing(c) if c.kana == reading => {}
             _ => return None,
         }
+
+        // Accepting a response mutates candidate state, so it starts a new
+        // epoch like any other state-mutating entry (chained auto-commit
+        // requests below snapshot the new value).
+        self.bump_epoch();
 
         let c = self.comp();
         c.candidates.surfaces = surfaces;

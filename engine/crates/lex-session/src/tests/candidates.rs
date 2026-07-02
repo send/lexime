@@ -149,7 +149,9 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
             return None;
         }
         let cand = generate_candidates(dict, None, None, &reading, 20);
-        session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        // Simulate a fresh (non-stale) response: snapshot the current epoch.
+        let epoch = session.epoch;
+        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
     }
 
     // Build up "きょうはいいてんき" with async cycles after each romaji group.
@@ -204,6 +206,109 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
     );
 }
 
+// --- Session-owned epoch: stale async response rejection ---
+
+/// Regression: a stale async response must not rewind the candidate
+/// selection. Space moves the selection without changing the kana, so the
+/// reading-match check alone would accept the stale response and reset
+/// `selected` to 0; the session-owned epoch rejects it.
+#[test]
+fn test_stale_epoch_response_does_not_rewind_selection() {
+    use lex_core::candidates::generate_candidates;
+
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    // Type "kyou" — the final key issues an async request with an epoch snapshot.
+    let responses = type_string(&mut session, "kyou");
+    let stale_epoch = responses
+        .last()
+        .unwrap()
+        .async_request
+        .as_ref()
+        .expect("deferred mode should request async candidates")
+        .epoch;
+
+    // The response arrives while the epoch is unchanged: accepted.
+    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let r = session.receive_candidates(
+        stale_epoch,
+        "きょう",
+        cand.surfaces.clone(),
+        cand.paths.clone(),
+    );
+    assert!(r.is_some(), "fresh response must be accepted");
+    assert!(session.comp().candidates.surfaces.len() > 1);
+
+    // Space moves the selection. Kana is unchanged, so a reading check
+    // cannot detect that the following response is stale.
+    session.handle_key(KeyEvent::Space);
+    assert_eq!(session.comp().candidates.selected, 1);
+
+    // A stale response from before the Space must be silently discarded.
+    let r = session.receive_candidates(stale_epoch, "きょう", cand.surfaces, cand.paths);
+    assert!(r.is_none(), "stale-epoch response must be rejected");
+    assert_eq!(
+        session.comp().candidates.selected,
+        1,
+        "selection must not rewind to 0"
+    );
+}
+
+/// Regression: a stale async response arriving after Escape (which hides the
+/// candidate panel but keeps the composition, kana unchanged) must not
+/// re-show the panel.
+#[test]
+fn test_stale_epoch_response_does_not_reshow_hidden_panel() {
+    use lex_core::candidates::generate_candidates;
+
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    let responses = type_string(&mut session, "kyou");
+    let stale_epoch = responses
+        .last()
+        .unwrap()
+        .async_request
+        .as_ref()
+        .expect("deferred mode should request async candidates")
+        .epoch;
+
+    // Escape hides the panel and clears candidates; state stays Composing
+    // with the same kana, so the reading still matches.
+    let resp = session.handle_key(KeyEvent::Escape);
+    assert!(matches!(resp.candidates, CandidateAction::Hide));
+    assert!(session.comp().candidates.is_empty());
+
+    // The in-flight response now arrives: epoch mismatch → discarded.
+    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let r = session.receive_candidates(stale_epoch, "きょう", cand.surfaces, cand.paths);
+    assert!(
+        r.is_none(),
+        "stale response after Escape must not re-show candidates"
+    );
+    assert!(session.comp().candidates.is_empty());
+}
+
+/// `commit()` must invalidate in-flight async responses like `handle_key`
+/// does (it previously skipped invalidation entirely).
+#[test]
+fn test_commit_bumps_epoch() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+
+    type_string(&mut session, "kyou");
+    let before = session.epoch;
+    session.commit();
+    assert!(
+        session.epoch > before,
+        "commit must start a new epoch to invalidate in-flight responses"
+    );
+}
+
 #[test]
 fn test_predictive_mode_no_auto_commit() {
     use lex_core::candidates::generate_candidates;
@@ -219,7 +324,9 @@ fn test_predictive_mode_no_auto_commit() {
             return None;
         }
         let cand = generate_candidates(dict, None, None, &reading, 20);
-        session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        // Simulate a fresh (non-stale) response: snapshot the current epoch.
+        let epoch = session.epoch;
+        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
     }
 
     // Build up enough input that would trigger auto-commit in Standard mode
@@ -255,7 +362,9 @@ fn test_auto_commit_skips_single_kana_first_segment() {
             return None;
         }
         let cand = generate_candidates(dict, None, None, &reading, 20);
-        session.receive_candidates(&reading, cand.surfaces, cand.paths)
+        // Simulate a fresh (non-stale) response: snapshot the current epoch.
+        let epoch = session.epoch;
+        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
     }
 
     // Type a reading where Viterbi may produce a single-kana first segment.
