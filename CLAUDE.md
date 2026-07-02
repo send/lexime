@@ -52,11 +52,6 @@ main に直接コミットしない。必ず以下の流れで作業する:
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
 - **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 
-## コミット規約
-
-- Conventional Commits を使用する
-- amend + force push しない。レビュー修正は新しいコミットを積む
-
 ## 変換精度テスト
 
 2 つのコーパスで管理し、それぞれ `mise run accuracy` / `mise run accuracy-history` で実行する。
