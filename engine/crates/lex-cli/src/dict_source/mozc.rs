@@ -403,6 +403,22 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
         }
     }
     files.sort();
+    // The listing must contain everything downstream needs — id.def and at
+    // least one numbered shard. Without this gate, a restructured upstream
+    // directory would fetch "successfully", write a manifest stamp, and leave
+    // an unusable cache that cache_complete / the offline fallback then treat
+    // as complete. Both the repair and staging paths share this chokepoint.
+    if !files.iter().any(|(n, _)| n == "id.def") {
+        return Err(DictSourceError::Parse(
+            "GitHub listing has no id.def — upstream layout changed?".to_string(),
+        ));
+    }
+    if !files.iter().any(|(n, _)| is_numbered_dictionary(n)) {
+        return Err(DictSourceError::Parse(
+            "GitHub listing has no dictionary<digits>.txt shards — upstream layout changed?"
+                .to_string(),
+        ));
+    }
     Ok(files)
 }
 
@@ -672,23 +688,43 @@ mod tests {
         let json = r#"[
             {"name": "dictionary_extra.txt", "download_url": "https://example.com/a"},
             {"name": "dictionary-custom.txt", "download_url": "https://example.com/b"},
-            {"name": "dictionary00.txt", "download_url": "https://example.com/c"}
+            {"name": "dictionary00.txt", "download_url": "https://example.com/c"},
+            {"name": "id.def", "download_url": "https://example.com/d"}
         ]"#;
         let files = parse_remote_files(json).unwrap();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0].0, "dictionary00.txt");
+        assert_eq!(files[1].0, "id.def");
         for (name, _) in &files {
             assert!(is_upstream_file_name(name));
         }
     }
 
     #[test]
+    fn test_parse_remote_files_requires_core_artifacts() {
+        // A listing without id.def (or without any numbered shard) must fail
+        // loudly instead of producing a "successful" fetch whose stamp vouches
+        // for an unusable cache (Copilot review R9 on PR #266).
+        let no_id_def = r#"[
+            {"name": "dictionary00.txt", "download_url": "https://example.com/a"}
+        ]"#;
+        assert!(parse_remote_files(no_id_def).is_err());
+
+        let no_shards = r#"[
+            {"name": "id.def", "download_url": "https://example.com/a"},
+            {"name": "dictionary-custom.txt", "download_url": "https://example.com/b"}
+        ]"#;
+        assert!(parse_remote_files(no_shards).is_err());
+    }
+
+    #[test]
     fn test_parse_remote_files_sanitizes_path() {
         let json = r#"[
-            {"name": "../../../etc/dictionary00.txt", "download_url": "https://example.com/x"}
+            {"name": "../../../etc/dictionary00.txt", "download_url": "https://example.com/x"},
+            {"name": "id.def", "download_url": "https://example.com/id.def"}
         ]"#;
         let files = parse_remote_files(json).unwrap();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0].0, "dictionary00.txt");
     }
 
