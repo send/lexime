@@ -51,6 +51,16 @@ class SettingsWindowController {
             closeObserver = nil
         }
         window = nil
+        restoreBackgroundActivationPolicy()
+    }
+
+    /// Restore the background-process activation policy (`.prohibited`)
+    /// unless the settings window is still alive — including miniaturized
+    /// or hidden states, where the window exists but is not visible.
+    /// Shared with other transient UI (e.g. the engine-failure alert) so
+    /// policy restoration follows a single ownership rule.
+    func restoreBackgroundActivationPolicy() {
+        guard window == nil else { return }
         NSApp.setActivationPolicy(.prohibited)
     }
 }

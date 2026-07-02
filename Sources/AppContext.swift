@@ -92,6 +92,7 @@ final class AppContext {
         traceInit(logDir: logDir)
 
         let settingsPath = (leximeDir as NSString).appendingPathComponent("settings.toml")
+        var settingsLoadError: String?
         if FileManager.default.fileExists(atPath: settingsPath) {
             do {
                 try settingsLoadConfig(path: settingsPath)
@@ -99,6 +100,7 @@ final class AppContext {
             } catch {
                 NSLog("Lexime: settings config error at %@: %@",
                       settingsPath, "\(error)")
+                settingsLoadError = "\(error)"
             }
         }
 
@@ -118,6 +120,9 @@ final class AppContext {
             resourcePath: resourcePath,
             userDictPath: config.userDictPath,
             historyPath: historyPath)
+        if let settingsLoadError {
+            engineContainer.recordFailure(.customSettings(detail: settingsLoadError))
+        }
 
         let ui = UIServices()
 
