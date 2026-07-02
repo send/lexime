@@ -102,7 +102,9 @@ struct CompactingGuard<'a>(&'a AtomicBool);
 
 impl Drop for CompactingGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        // SeqCst to participate in the same total order as the
+        // spawn_compact missed-wakeup dance (release -> pending re-check).
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
