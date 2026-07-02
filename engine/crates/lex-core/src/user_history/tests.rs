@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::settings::settings;
 
-use super::wal::HistoryWal;
+use super::wal::{CheckpointOrigin, HistoryWal};
 use super::*;
 
 #[test]
@@ -325,10 +325,14 @@ fn test_wal_append_and_replay() {
     // Replay into fresh history
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let count = wal2.replay(&mut h).unwrap();
-    assert_eq!(count, 2);
+    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    assert_eq!(summary.frames_replayed, 2);
+    assert_eq!(summary.frames_skipped, 0);
+    assert_eq!(wal2.entry_count(), 2);
     assert!(h.unigram_boost("きょう", "今日", now + 2) > 0);
     assert!(h.bigram_boost("今日", "は", "は", now + 2) > 0);
+    // Sequence numbers 1 and 2 were assigned and applied
+    assert_eq!(h.applied_seq(), 2);
 }
 
 #[test]
@@ -351,15 +355,15 @@ fn test_wal_compaction() {
     assert!(cp.exists(), "checkpoint should exist");
     assert_eq!(
         fs::read(wal.wal_path()).unwrap().len(),
-        0,
-        "WAL should be empty"
+        8,
+        "WAL should be header-only after truncation"
     );
 
     // Reopen: checkpoint has the data, WAL is empty
     let mut h2 = UserHistory::open(&cp).unwrap();
     let mut wal2 = HistoryWal::new(&cp);
-    let replayed = wal2.replay(&mut h2).unwrap();
-    assert_eq!(replayed, 0);
+    let replayed = wal2.replay(&mut h2, CheckpointOrigin::V2).unwrap();
+    assert_eq!(replayed.frames_replayed, 0);
     assert!(h2.unigram_boost("きょう", "今日", now + 1) > 0);
 }
 
@@ -382,10 +386,17 @@ fn test_wal_truncated_frame() {
     // Replay should recover the first entry only
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let count = wal2.replay(&mut h).unwrap();
-    assert_eq!(count, 1);
+    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    assert_eq!(summary.frames_replayed, 1);
     assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
     assert_eq!(h.unigram_boost("あした", "明日", now + 1), 0);
+    // Strict replay never mutates the file (offline tooling reads live
+    // files); the corrupt tail is still there.
+    assert_eq!(
+        fs::read(wal2.wal_path()).unwrap().len(),
+        data.len() - 5,
+        "strict replay must not repair the file"
+    );
 }
 
 #[test]
@@ -400,16 +411,27 @@ fn test_wal_corrupt_crc() {
     wal.append(&[("あした".into(), "明日".into())], now)
         .unwrap();
 
-    // Corrupt the CRC of the first frame (bytes 4..8)
+    // Corrupt the CRC of the first frame (file header 8B + frame offset 4)
     let mut data = fs::read(wal.wal_path()).unwrap();
-    data[4] ^= 0xFF;
+    data[12] ^= 0xFF;
     fs::write(wal.wal_path(), &data).unwrap();
 
-    // Replay should stop at the corrupt frame
+    // Strict replay should stop at the corrupt frame without repairing
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let count = wal2.replay(&mut h).unwrap();
-    assert_eq!(count, 0);
+    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    assert_eq!(summary.frames_replayed, 0);
+
+    // Recovery-mode open repairs: truncate back to the last good frame
+    // (here: the file header) so later appends stay visible to replay
+    let (h2, wal3, report) = super::recovery::open_recovering(&cp).unwrap();
+    assert_eq!(h2.unigram_boost("きょう", "今日", now + 1), 0);
+    assert_eq!(report.wal_state, super::recovery::WalState::TailRepaired);
+    assert_eq!(
+        fs::read(wal3.wal_path()).unwrap().len(),
+        8,
+        "recovery should truncate the corrupt tail"
+    );
 }
 
 #[test]
@@ -422,16 +444,16 @@ fn test_wal_empty_file() {
 
     let mut h = UserHistory::new();
     let mut wal = HistoryWal::new(&cp);
-    let count = wal.replay(&mut h).unwrap();
-    assert_eq!(count, 0);
+    let summary = wal.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    assert_eq!(summary.frames_replayed, 0);
 }
 
 #[test]
-fn test_wal_migration_from_v1() {
+fn test_open_with_wal_checkpoint_only() {
     let dir = tempfile::tempdir().unwrap();
     let cp = dir.path().join("history.lxud");
 
-    // Create a v1 checkpoint (no WAL file)
+    // Create a v2 checkpoint (no WAL file)
     let mut h = UserHistory::new();
     h.record(&[("きょう".into(), "今日".into())]);
     h.save(&cp).unwrap();
@@ -441,6 +463,24 @@ fn test_wal_migration_from_v1() {
     let (h2, wal) = super::wal::open_with_wal(&cp).unwrap();
     assert!(h2.unigram_boost("きょう", "今日", now_epoch()) > 0);
     assert_eq!(wal.entry_count(), 0);
+}
+
+#[test]
+fn test_checkpoint_applied_seq_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into())]);
+    h.advance_applied_seq(42);
+    // Monotonic: lower values never roll it back
+    h.advance_applied_seq(7);
+    assert_eq!(h.applied_seq(), 42);
+    h.save(&cp).unwrap();
+
+    let h2 = UserHistory::open(&cp).unwrap();
+    assert_eq!(h2.applied_seq(), 42);
+    assert!(h2.unigram_boost("きょう", "今日", now_epoch()) > 0);
 }
 
 #[test]
@@ -469,7 +509,7 @@ fn test_wal_roundtrip_with_bigrams() {
 
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    wal2.replay(&mut h).unwrap();
+    wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
 
     assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
     assert!(h.bigram_boost("今日", "は", "は", now + 1) > 0);

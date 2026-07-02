@@ -1073,6 +1073,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "lexime-trie",
+ "libc",
  "memmap2",
  "serde",
  "tempfile",

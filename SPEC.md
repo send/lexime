@@ -395,13 +395,15 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 候補選択中に Fn+Delete を押すと、選択中の候補に対応する学習エントリ（ユニグラム + バイグラム）を削除する。削除後は `force_compact()` で即座にチェックポイントを書き出し、WAL リプレイによる復活を防ぐ。`force_compact()` はバックグラウンドコンパクションとの競合を `compacting` ガードで直列化する。
 
-### 保存（WAL + Checkpoint）
+### 保存（WAL + Checkpoint、LXUD v2）
 
-- **Checkpoint**: LXUD（マジック `LXUD` + version 1 + bincode）
-- **WAL**: `history.lxud.wal`（フレーム形式: length + CRC32 + bincode）
+- **Checkpoint**: LXUD v2（32 バイト固定ヘッダ: マジック `LXUD` + version 2 + `applied_seq` + created_at + body_len + body CRC32、body は bincode）。v1（マジック + version 1 + bincode）の reader を保持し、起動時に一回で v2 へ migration（元 v1 は `.v1.bak` へ best-effort 退避）
+- **WAL**: `user_history.lxud.wal`（8 バイトファイルヘッダ `LXWL` + version 2。フレーム形式: payload_len + CRC32(seq+payload) + seq + bincode(`WalRecord::Committed|Tombstone`)）
+- **seq**: WAL フレームは単調増加の連番を持ち、checkpoint ヘッダの `applied_seq` が「効果を含む最後の seq」を記録。replay は `seq > applied_seq` のフレームのみ適用するため、checkpoint 書き込みと WAL truncate の間でクラッシュしても二重適用が構造的に起きない
+- **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`、Tombstone は毎回 `F_FULLFSYNC`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync で書き出し + WAL truncate）
 - **場所**: `~/Library/Application Support/Lexime/user_history.lxud`
-- **書き込み**: 確定時に WAL append（同期）、閾値到達で background compaction（checkpoint 書き出し + WAL truncate）
-- **起動時**: checkpoint ロード → WAL replay → in-memory 復元
+- **起動時（エンジン経路）**: `recovery::open_recovering` — checkpoint ロード → WAL replay（evict なし + 事後 1 回）→ in-memory 復元。破損は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空で継続、WAL 末尾破損は last-good オフセットで物理修復。どのファイル状態でも起動は成功し学習は継続する（`OpenReport` に結果を記録。Err は EACCES 等の環境障害のみ）
+- **オフラインツール経路**: `UserHistory::open` / `open_with_wal` は無副作用・厳格エラーのまま（監査ツールが稼働中 IME のファイルを rename しない）
 
 ### 退避
 

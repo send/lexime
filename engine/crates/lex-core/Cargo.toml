@@ -28,6 +28,11 @@ anyhow = { version = "1", optional = true }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Direct fcntl(F_BARRIERFSYNC) for the WAL write barrier: std's sync_data
+# maps to F_FULLFSYNC on Apple targets (~4ms vs ~0.3ms on M-series).
+libc = "0.2"
+
 [build-dependencies]
 toml = { workspace = true }
 

@@ -126,7 +126,16 @@ impl LexUserHistory {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
         let cp = Path::new(&path);
-        let (history, wal) = crate::user_history::wal::open_with_wal(cp)?;
+        // Recovery-mode open: corruption is quarantined instead of failing
+        // startup, so learning never silently stops. Err = environmental
+        // read failure only (EACCES etc.). PR2 surfaces the report to Swift;
+        // until then it is logged here.
+        let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        if report.data_loss_suspected() {
+            warn!("user history recovered with suspected data loss: {report:?}");
+        } else if !report.is_clean() {
+            tracing::info!("user history recovery events: {report:?}");
+        }
         let commit_log = CommitLog {
             path: cp.with_file_name("commit-log.jsonl"),
             file: None,
@@ -178,6 +187,9 @@ impl LexUserHistory {
                 Err(e) => return Err(e.into()),
             }
         }
+        // Privacy wipe: quarantined bytes and the v1 migration backup must
+        // not survive a clear.
+        crate::user_history::recovery::remove_recovery_artifacts(wal.checkpoint_path())?;
         Ok(())
     }
 
@@ -190,8 +202,23 @@ impl LexUserHistory {
                 return;
             }
         };
-        if let Err(e) = wal.append(segments, timestamp) {
-            warn!("WAL append failed: {e}");
+        match wal.append(segments, timestamp) {
+            Ok(seq) => {
+                // Advance applied_seq while still holding the wal mutex
+                // (lock order: wal -> inner). The in-memory effect of this
+                // frame was applied in record_history phase 1, so once the
+                // frame is on disk a checkpoint snapshot may claim coverage
+                // of `seq`. A snapshot racing between phase 1 and here only
+                // under-reports applied_seq — the safe direction (bounded
+                // re-apply after a crash, never loss).
+                if let Ok(mut h) = self.inner.write() {
+                    h.advance_applied_seq(seq);
+                }
+            }
+            // Memory keeps the record (§5.2): the next checkpoint is a full
+            // snapshot, so a recovered disk picks it up; the frame's absence
+            // makes double-apply impossible.
+            Err(e) => warn!("WAL append failed: {e}"),
         }
     }
 
