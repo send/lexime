@@ -20,6 +20,18 @@ final class SessionCoordinator {
     /// arrives between keystrokes and we need an IMKTextInput to apply events against.
     private weak var lastClient: IMKTextInput?
 
+    /// Highest session epoch whose events have been applied to the UI.
+    ///
+    /// The Rust session rejects stale async responses under its own lock, but
+    /// accepted async responses are re-queued onto the main thread (see
+    /// `Listener`) while key responses are applied inline in `handleKey` /
+    /// `commit`. A response accepted *before* a key was processed can
+    /// therefore reach the UI *after* that key's events — re-showing hidden
+    /// candidates or rewinding the selection. Epochs are monotonic, so any
+    /// async response carrying an epoch lower than the highest already
+    /// applied is a re-ordered delivery and must be dropped.
+    private(set) var highestAppliedEpoch: UInt64 = 0
+
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
          onSwitchToAbc: @escaping () -> Void) {
@@ -55,6 +67,10 @@ final class SessionCoordinator {
         lastClient = client
         candidateManager.invalidate()
         let resp = session.handleKey(event: keyEvent)
+        // Synchronous responses always reflect the latest session state
+        // (the session lock serializes them), so apply unconditionally and
+        // advance the epoch watermark.
+        highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
         applyEvents(resp, client: client)
         return resp.consumed
     }
@@ -62,6 +78,7 @@ final class SessionCoordinator {
     func commit(client: IMKTextInput) {
         lastClient = client
         let resp = session.commit()
+        highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
         applyEvents(resp, client: client)
     }
 
@@ -79,8 +96,15 @@ final class SessionCoordinator {
 
     // MARK: - Apply Events
 
-    fileprivate func applyAsyncResponse(_ resp: LexKeyResponse) {
+    /// Apply an async candidate response on the main thread.
+    /// Internal (not fileprivate) so unit tests can drive it directly.
+    func applyAsyncResponse(_ resp: LexKeyResponse) {
+        // Drop re-ordered deliveries: this response was accepted by the Rust
+        // session, but a newer key response has already been applied to the
+        // UI while this one sat in the main queue (see `highestAppliedEpoch`).
+        guard resp.epoch >= highestAppliedEpoch else { return }
         guard let client = lastClient else { return }
+        highestAppliedEpoch = resp.epoch
         applyEvents(resp, client: client)
     }
 

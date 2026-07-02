@@ -121,10 +121,14 @@ impl LexSession {
             }
         }
 
+        // Stamp the response with the epoch it reflects (still under the
+        // session lock) so the Swift side can drop async responses that are
+        // re-ordered behind this one on the main queue.
+        let epoch = session.epoch();
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp)
+        convert_to_events(resp, epoch)
     }
 
     fn commit(&self) -> LexKeyResponse {
@@ -137,10 +141,11 @@ impl LexSession {
 
         let mut session = self.session.lock().unwrap();
         let resp = session.commit();
+        let epoch = session.epoch();
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        convert_to_events(resp)
+        convert_to_events(resp, epoch)
     }
 
     fn is_composing(&self) -> bool {
@@ -208,10 +213,15 @@ impl LexSession {
                 );
             }
         }
+        // Stamp the accepted response with the post-acceptance epoch (read
+        // under the same lock). A later key handler that beats this response
+        // to the main queue will have applied a strictly higher epoch, so
+        // the Swift side can detect and drop the re-ordered delivery.
+        let epoch = session.epoch();
         let records = session.take_history_records();
         drop(session);
         self.record_history(&records);
-        Some(convert_to_events(resp))
+        Some(convert_to_events(resp, epoch))
     }
 
     fn record_history(&self, records: &[LearningRecord]) {

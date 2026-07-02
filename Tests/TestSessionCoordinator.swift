@@ -175,6 +175,85 @@ func testSessionCoordinator() {
         assertTrue(coordinator.currentDisplay == nil, "resetDisplay clears display")
     }
 
+    // Async response with a stale epoch is dropped (main-queue reordering guard):
+    // a response accepted by Rust before a key was processed must not re-apply
+    // its events after that key's response already reached the UI.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, epoch: 5, events: [.hideCandidates])
+        ]
+        let panel = FakePanel()
+        let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
+        // Hold the client strongly so the drop below is provably caused by
+        // the epoch guard, not by the weak lastClient having gone away.
+        let client = FakeIMKClient()
+        // Key response (epoch 5) applied inline → watermark advances to 5.
+        _ = coordinator.handleKey(.escape, client: client)
+        assertTrue(coordinator.highestAppliedEpoch == 5,
+                   "sync key response advances epoch watermark")
+
+        withExtendedLifetime(client) {
+            // Async response from before the key (epoch 4) arrives late from
+            // the main queue → must be silently dropped.
+            coordinator.applyAsyncResponse(LexKeyResponse(
+                consumed: true, epoch: 4,
+                events: [.showCandidates(surfaces: ["古い候補"], selected: 0)]))
+            assertTrue(manager.candidates.isEmpty,
+                       "stale-epoch async response must not update candidates")
+            assertEqual(panel.showCount, 0,
+                        "stale-epoch async response must not re-show the panel")
+            assertTrue(coordinator.highestAppliedEpoch == 5,
+                       "dropped response must not move the watermark")
+        }
+    }
+
+    // Async response with a fresh epoch (>= watermark) applies normally.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, epoch: 5, events: [])
+        ]
+        let panel = FakePanel()
+        let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
+        // Keep the client alive across applyAsyncResponse: the coordinator
+        // holds it weakly (lastClient) and needs it to apply events.
+        let client = FakeIMKClient()
+        _ = coordinator.handleKey(.space, client: client)
+
+        withExtendedLifetime(client) {
+            coordinator.applyAsyncResponse(LexKeyResponse(
+                consumed: true, epoch: 6,
+                events: [.showCandidates(surfaces: ["新", "候補"], selected: 0)]))
+            assertEqual(manager.candidates, ["新", "候補"],
+                        "fresh async response applies candidates")
+            assertTrue(coordinator.highestAppliedEpoch == 6,
+                       "applied async response advances epoch watermark")
+        }
+    }
+
+    // commit(client:) also advances the epoch watermark.
+    do {
+        let session = FakeLexSession()
+        session.commitResponses = [
+            LexKeyResponse(consumed: true, epoch: 7, events: [])
+        ]
+        let (coordinator, manager) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        coordinator.commit(client: client)
+        assertTrue(coordinator.highestAppliedEpoch == 7,
+                   "commit response advances epoch watermark")
+
+        withExtendedLifetime(client) {
+            // In-flight async from before the commit is now stale.
+            coordinator.applyAsyncResponse(LexKeyResponse(
+                consumed: true, epoch: 6,
+                events: [.showCandidates(surfaces: ["古"], selected: 0)]))
+            assertTrue(manager.candidates.isEmpty,
+                       "async response older than commit must be dropped")
+        }
+    }
+
     // deactivate: invalidates candidates, hides panel, clears display
     do {
         let session = FakeLexSession()

@@ -112,6 +112,16 @@ impl InputSession {
         self.epoch += 1;
     }
 
+    /// Current session epoch (see the `epoch` field docs).
+    ///
+    /// The FFI layer stamps every outgoing response with this value (read
+    /// under the same session lock as the state change it reflects) so the
+    /// platform frontend can drop async responses that get re-ordered behind
+    /// newer synchronous key responses on its UI thread.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn is_composing(&self) -> bool {
         matches!(
             self.state,
