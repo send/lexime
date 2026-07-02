@@ -99,6 +99,10 @@ final class SessionCoordinator {
     /// Apply an async candidate response on the main thread.
     /// Internal (not fileprivate) so unit tests can drive it directly.
     func applyAsyncResponse(_ resp: LexKeyResponse) {
+        // IMKit and the epoch watermark are main-thread only; the Listener
+        // hops here via DispatchQueue.main.async. Debug-build guard against
+        // future in-module callers invoking this directly off-main.
+        assert(Thread.isMainThread)
         // Drop re-ordered deliveries: this response was accepted by the Rust
         // session, but a newer key response has already been applied to the
         // UI while this one sat in the main queue (see `highestAppliedEpoch`).
@@ -109,6 +113,7 @@ final class SessionCoordinator {
     }
 
     private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
+        assert(Thread.isMainThread)
         for event in resp.events {
             switch event {
             case .commit(let text):
