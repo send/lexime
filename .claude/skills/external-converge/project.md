@@ -61,6 +61,9 @@ normally takes **~15 minutes** to land. So:
   keying head-staleness on `pulls/{n}/reviews` alone false-stalls every dry
   round (elidex `#322`/`#337`).
 
-The genuine Pro Codex is `chatgpt-codex-connector[bot]`; a bare
-`@codex[agent]` mention is a Copilot-billed impostor — do **not** use.
-Lenses reach Codex via `AGENTS.md` (`## Review guidelines`).
+The genuine Pro Codex responds as `chatgpt-codex-connector[bot]`; `@codex`
+with a non-`review` instruction starts a Pro-billed Codex cloud task (fine —
+just not a review). The Copilot-billed `codex[agent]` SWE agent is a
+different product — if a responder is not `chatgpt-codex-connector[bot]`,
+stop and check billing (full caveat: `external-review/project.md`). Lenses
+reach Codex via `AGENTS.md` (`## Review guidelines`).

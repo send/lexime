@@ -27,7 +27,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 このリポジトリ固有の運用ルール:
 
-- **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。素の `@codex` mention は Copilot 課金の別 agent なので使わない
+- **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
 - **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 

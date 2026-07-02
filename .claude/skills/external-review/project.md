@@ -60,7 +60,14 @@ symptom-vs-root check per fix. lexime-specific bias:
   `pulls/{n}/reviews` alone false-reports "stale review" (elidex
   `#322`/`#337`).
 
-**Identity caveat**: only the `chatgpt-codex-connector[bot]` review is the
-genuine Pro Codex. A bare `@codex[agent]` mention routes to a GitHub-Copilot
-SWE agent (Copilot credits) — do **not** use it. Lenses reach Codex via
-`AGENTS.md` (`## Review guidelines`).
+**Identity caveat**: the genuine Pro Codex responds as
+`chatgpt-codex-connector[bot]`. `@codex review` requests a review; `@codex`
+with any other instruction starts a Codex **cloud task** with the PR as
+context — both genuine and Pro-billed
+(developers.openai.com/codex/integrations/github). The thing to avoid is
+GitHub Copilot's separate SWE agent (`codex[agent]`, runs on
+`api.individual.githubcopilot.com`, Copilot credits) — on elidex it answered
+`@codex` mentions while the OpenAI connector was not yet installed
+(2026-06-06 billing incident). If a responder is not
+`chatgpt-codex-connector[bot]`, stop and check billing. Lenses reach Codex
+via `AGENTS.md` (`## Review guidelines`).
