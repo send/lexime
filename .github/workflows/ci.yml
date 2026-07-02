@@ -19,6 +19,7 @@ jobs:
       session: ${{ steps.filter.outputs.session }}
       ffi: ${{ steps.filter.outputs.ffi }}
       cli: ${{ steps.filter.outputs.cli }}
+      corpus: ${{ steps.filter.outputs.corpus }}
       swift: ${{ steps.filter.outputs.swift }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,9 @@ jobs:
               - 'engine/src/**'
             cli:
               - 'engine/crates/lex-cli/**'
+            corpus:
+              - 'engine/testcorpus/**'
+              - 'mise.toml'
             swift:
               - 'Sources/**'
               - 'Tests/**'
@@ -162,6 +166,79 @@ jobs:
           shared-key: engine
 
       - run: cd engine && cargo test -p lex-cli
+
+  # Conversion accuracy gate: builds the full dictionary (Mozc snapshot +
+  # bundled symbols/extras) and runs both accuracy corpora. The Mozc raw
+  # snapshot (~90MB of TSVs) is kept in the actions cache; the dictool fetch
+  # stamp (commit SHA + manifest, PR #266) decides on every run whether the
+  # cached snapshot is still current, repairs it, or re-downloads a new
+  # upstream snapshot — so a stale cache entry can never poison the dict.
+  # `needs: changes` only (not lint): a corpus-only change must not be
+  # skipped just because the Rust lint job didn't run.
+  accuracy:
+    needs: changes
+    if: >-
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.cli == 'true' ||
+      needs.changes.outputs.corpus == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Separate shared-key: this job builds the release profile (dictool /
+      # lextool), which the debug-profile `engine` cache never contains.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: accuracy
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+
+      # Restore/save split keyed on the pinned upstream commit SHA (line 1 of
+      # dictool's .stamp): exactly one cache entry per upstream Mozc snapshot.
+      # The `key` never matches an existing entry directly — restore-keys
+      # picks up the newest snapshot — and the save step below only fires
+      # when the post-fetch SHA differs from what was restored (first run, or
+      # upstream moved). The stamp mechanism makes a stale restore safe:
+      # dictool verifies the restored snapshot against upstream on every run
+      # (fast path: one Commits API call) and transactionally re-downloads
+      # when it no longer matches, so a stale cache can never poison the dict.
+      - name: Restore Mozc dictionary snapshot
+        id: mozc-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: engine/data/mozc-raw
+          key: mozc-raw-
+          restore-keys: |
+            mozc-raw-
+
+      # GITHUB_TOKEN: Actions runners share the anonymous GitHub API quota
+      # (60 req/h per IP), which is effectively always exhausted. dictool
+      # attaches the token to api.github.com requests when set.
+      - name: Run accuracy corpus
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: mise run accuracy
+
+      - name: Run accuracy-history corpus
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: mise run accuracy-history
+
+      - name: Read fetched Mozc snapshot version
+        id: mozc-stamp
+        run: echo "key=mozc-raw-$(head -n1 engine/data/mozc-raw/.stamp)" >> "$GITHUB_OUTPUT"
+
+      - name: Save Mozc dictionary snapshot
+        if: steps.mozc-stamp.outputs.key != steps.mozc-restore.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: engine/data/mozc-raw
+          key: ${{ steps.mozc-stamp.outputs.key }}
 
   audit:
     needs: changes
