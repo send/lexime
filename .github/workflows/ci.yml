@@ -205,7 +205,9 @@ jobs:
   swift:
     needs: changes
     if: >-
-      (needs.changes.outputs.core == 'true' || needs.changes.outputs.session == 'true' || needs.changes.outputs.ffi == 'true') &&
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.session == 'true' ||
+      needs.changes.outputs.ffi == 'true' ||
       needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
