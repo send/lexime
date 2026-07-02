@@ -58,12 +58,20 @@ pub(crate) fn run_rewriters(
                 paths.insert(pos, candidate);
             } else if let Some(i) = paths.iter().position(|p| p.surface_key() == key) {
                 // Same surface already in the list (e.g. a retained identity
-                // path) at a worse cost: reprice it to the rewriter's cost so
-                // the surface ranks where the fallback intended, keeping the
-                // real path's segments for per-segment history recording.
+                // path) at a worse cost: adopt the cheaper rewriter price so
+                // the surface ranks where the fallback intended. Keep the
+                // richer segmentation of the two (a real multi-segment path
+                // beats a synthetic single) so committing it records
+                // per-segment history. The adopted price is synthetic and
+                // un-boosted, so any stale whole-path boost is cleared.
                 if candidate.viterbi_cost < paths[i].viterbi_cost {
                     let mut existing = paths.remove(i);
-                    existing.viterbi_cost = candidate.viterbi_cost;
+                    if candidate.segments.len() > existing.segments.len() {
+                        existing = candidate;
+                    } else {
+                        existing.viterbi_cost = candidate.viterbi_cost;
+                        existing.history_boost = 0;
+                    }
                     let pos = paths.partition_point(|p| p.viterbi_cost < existing.viterbi_cost);
                     paths.insert(pos, existing);
                 }
@@ -145,10 +153,20 @@ impl Rewriter for PartialHiraganaRewriter {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
         let mut new_paths = Vec::new();
 
-        // Select the 5 cheapest multi-segment paths BEFORE limiting: injected
-        // single-segment fallbacks (e.g. HiraganaVariantRewriter at best+4000)
-        // sort into the top 5 and must not displace a real source path.
-        for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
+        // Select the 5 cheapest paths that can actually yield variants BEFORE
+        // limiting: injected single-segment fallbacks and repriced identity
+        // paths (no replaceable segment) sort into the top 5 and must not
+        // displace a real kanji-bearing source path.
+        for path in paths
+            .iter()
+            .filter(|p| {
+                p.segments.len() > 1
+                    && p.segments
+                        .iter()
+                        .any(|s| s.surface != s.reading && !s.surface.chars().all(is_katakana))
+            })
+            .take(5)
+        {
             for seg_idx in 0..path.segments.len() {
                 let seg = &path.segments[seg_idx];
                 if seg.surface == seg.reading || seg.surface.chars().all(is_katakana) {
