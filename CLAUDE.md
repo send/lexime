@@ -17,7 +17,7 @@
 - 場当たり的 reactive fix 禁止。新しい型・rewriter・特例の前に既存の抽象 (辞書層 / POS / コスト / 既存 rewriter) で解決できないか考える
 - 同種処理は単一の正準形に収束させる。dead code・後方互換 shim は削除。ただしオンディスク形式 (履歴 / user_dict / 設定) の変更は migration 必須
 - コスト・重み変更は「直る側」だけでなく「壊れる側」も実測してから採用する (§変換精度テスト)
-- 不変条件が交差する大きめの work は multi-PR に分割し、実装前に plan review を通す
+- 不変条件が交差する大きめの work は multi-PR に分割し、実装前に `/lexime-plan-review` を通す
 - 大型 refactor の見送りは発動条件つきで記録する。コンセプトに効かない理想化はしない
 - 並行 Claude セッションあり: コミットするブランチは専用 worktree で隔離
 
@@ -37,10 +37,11 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 1. `git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
-3. `git push -u origin <branch>` で push する
-4. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
-5. コードの変更を含む PR はレビュー対応後にマージする（後述）
-6. `gh pr merge --merge --delete-branch` でマージする
+3. push 前に `/pre-push` を通す（fmt → verify → /simplify → /code-review → /review → /lexime-review の 6 段ゲート。post-push レビューは single-shot なので深さはここで確保する）
+4. `git push -u origin <branch>` で push する
+5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
+6. コードの変更を含む PR はレビュー対応後にマージする（後述）
+7. `gh pr merge --merge --delete-branch` でマージする
 
 ### PR レビュー対応フロー
 

@@ -21,15 +21,21 @@ Swift-side changes are gated by CI (`gh pr checks`), not locally.
 
 ## fix_discipline
 
-No project-local review-axes skill (unlike elidex) — run SKILL.md's bare
-symptom-vs-root check per fix. lexime-specific bias:
+SSoT: `<repo>/.claude/skills/lexime-review/SKILL.md` Step 3 (哲学レンズ +
+disposition) — apply it per fix here too. In brief: symptom vs root through
+CLAUDE.md 設計哲学; real → fully fix (incl. real MINs) / FP → reject with
+citation; no "edge / diminishing-returns" bucket. lexime-specific bias:
 
 - Conversion-accuracy regressions are fixed at the *data/cost* root
   (dictionary entry, connection cost, feature weight), not by special-casing
-  in conversion code.
+  in conversion code (axes.md Axis 1).
 - When a reviewer-confirmed conversion miss is real, add a regression
   corpus case (`engine/testcorpus/accuracy-corpus.toml`, regression
   category) alongside the fix — CLAUDE.md § 運用ルール recommends it.
+- When any fix this pass is symptom-shaped OR touches persistence / epoch /
+  FFI surfaces, run one `/lexime-review` over the fix delta before the merge
+  proposal — external-review fixes never re-enter the pre-push gate on
+  their own.
 
 ## classification_calibration
 
