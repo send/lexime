@@ -90,18 +90,32 @@ impl MozcSource {
         Ok(())
     }
 
+    /// GET an api.github.com URL and return the response body. Unlike the
+    /// raw-file downloads (`download_file`), API requests count against the
+    /// GitHub API rate limit — 60 req/h anonymous per IP, which is
+    /// effectively always exhausted on shared CI runner IPs — so when the
+    /// conventional `GITHUB_TOKEN` env var is set, it is attached as a
+    /// bearer token (5000 req/h). The token is deliberately NOT sent with
+    /// raw.githubusercontent.com downloads: they are not API-rate-limited,
+    /// and the credential should touch as few endpoints as possible.
+    fn api_get(url: &str) -> Result<String, DictSourceError> {
+        let mut req = ureq::get(url);
+        if let Some(auth) = github_auth_header(std::env::var("GITHUB_TOKEN").ok().as_deref()) {
+            req = req.header("Authorization", &auth);
+        }
+        req.call()
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
+            .into_body()
+            .read_to_string()
+            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))
+    }
+
     /// Resolve the latest commit SHA of `master` via the GitHub Commits API.
     /// All raw-file downloads in a fetch run are pinned to this single SHA so
     /// the cached snapshot can never mix files from two upstream states.
     fn latest_commit_sha() -> Result<String, DictSourceError> {
         let url = format!("{MOZC_API_BASE}/commits/master");
-        let body = ureq::get(&url)
-            .call()
-            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
-            .into_body()
-            .read_to_string()
-            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
-        parse_commit_sha(&body)
+        parse_commit_sha(&Self::api_get(&url)?)
     }
 
     /// List dictionary files via GitHub Contents API **pinned to `sha`** and
@@ -110,14 +124,18 @@ impl MozcSource {
     /// The returned `download_url`s point at the same pinned SHA.
     fn list_remote_files(sha: &str) -> Result<Vec<(String, String)>, DictSourceError> {
         let url = format!("{MOZC_API_BASE}/contents/src/data/dictionary_oss?ref={sha}");
-        let body = ureq::get(&url)
-            .call()
-            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?
-            .into_body()
-            .read_to_string()
-            .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
-        parse_remote_files(&body)
+        parse_remote_files(&Self::api_get(&url)?)
     }
+}
+
+/// `Authorization` header value for GitHub API requests, derived from the
+/// raw `GITHUB_TOKEN` environment value. `None` (unset) and blank values —
+/// e.g. `GITHUB_TOKEN=""` in a CI step that clears it — mean "anonymous";
+/// surrounding whitespace is trimmed so a stray newline from `$(cmd)`
+/// substitution cannot corrupt the header.
+fn github_auth_header(token: Option<&str>) -> Option<String> {
+    let token = token?.trim();
+    (!token.is_empty()).then(|| format!("Bearer {token}"))
 }
 
 /// Removes the staged temp file on drop so error paths don't leak it. After
@@ -747,6 +765,25 @@ mod tests {
         // Right length, non-hex
         assert!(!is_valid_sha("0123456789abcdef0123456789abcdef0123456z"));
         assert!(!is_valid_sha("../../../../../../../../../../../../etc/x"));
+    }
+
+    #[test]
+    fn test_github_auth_header() {
+        // Unset → anonymous.
+        assert_eq!(github_auth_header(None), None);
+        // Blank / whitespace-only (e.g. `GITHUB_TOKEN=""` in CI) → anonymous.
+        assert_eq!(github_auth_header(Some("")), None);
+        assert_eq!(github_auth_header(Some("  \n")), None);
+        // Set → bearer token, with surrounding whitespace trimmed so a stray
+        // newline from shell substitution cannot corrupt the header.
+        assert_eq!(
+            github_auth_header(Some("ghs_abc123")).as_deref(),
+            Some("Bearer ghs_abc123")
+        );
+        assert_eq!(
+            github_auth_header(Some(" ghs_abc123\n")).as_deref(),
+            Some("Bearer ghs_abc123")
+        );
     }
 
     #[test]
