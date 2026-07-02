@@ -11,7 +11,7 @@ class LeximeInputController: IMKInputController {
     private let modeController = ModeController()
     private var coordinator: SessionCoordinator?
 
-    private static var hasShownDictWarning = false
+    private static var hasShownEngineFailureAlert = false
     private static var hasLoggedEngineUnavailable = false
 
     private lazy var cachedTrigger: LexTriggerKey? = snippetTriggerKey()
@@ -155,8 +155,8 @@ class LeximeInputController: IMKInputController {
     /// so temporarily switch the activation policy (same pattern as
     /// SettingsWindowController) to bring the alert to the front.
     private static func showEngineFailureAlertIfNeeded() {
-        guard !hasShownDictWarning else { return }
-        hasShownDictWarning = true
+        guard !hasShownEngineFailureAlert else { return }
+        hasShownEngineFailureAlert = true
 
         let detail = AppContext.shared.engineContainer.fatalFailureDetail ?? ""
         DispatchQueue.main.async {
