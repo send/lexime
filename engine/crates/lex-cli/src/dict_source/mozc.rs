@@ -154,6 +154,37 @@ fn is_valid_sha(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Resolve the commit SHA that every download in a fetch run is pinned to.
+///
+/// An explicit pin short-circuits: it is validated (`is_valid_sha`, after
+/// trimming stray whitespace a shell pipeline may append) and used as-is,
+/// and `resolve_latest` — the Commits API call in production — is **never
+/// invoked**. A pinned fetch must be deterministic: it must not depend on
+/// upstream's current state, must not spend API rate limit on it, and must
+/// not fail just because the Commits API is unreachable. The SHA is
+/// normalized to lowercase so stamp comparisons can't be defeated by case
+/// (GitHub returns lowercase; `is_valid_sha` accepts either).
+///
+/// Without a pin, `resolve_latest` decides — the classic "track upstream
+/// master" behavior used for explicit pin bumps.
+fn resolve_run_sha(
+    pinned: Option<&str>,
+    resolve_latest: impl FnOnce() -> Result<String, DictSourceError>,
+) -> Result<String, DictSourceError> {
+    match pinned {
+        Some(pin) => {
+            let pin = pin.trim();
+            if !is_valid_sha(pin) {
+                return Err(DictSourceError::Parse(format!(
+                    "pinned SHA must be a full 40-hex commit SHA, got {pin:?}"
+                )));
+            }
+            Ok(pin.to_ascii_lowercase())
+        }
+        None => resolve_latest(),
+    }
+}
+
 /// Extract and validate the commit SHA from a GitHub Commits API response.
 fn parse_commit_sha(json: &str) -> Result<String, DictSourceError> {
     let v: serde_json::Value = serde_json::from_str(json)
@@ -479,7 +510,9 @@ impl DictSource for MozcSource {
     /// Fetch the Mozc dictionary snapshot into `dest`. Same cache discipline
     /// as the SudachiDict fetcher (`candidates/sudachi.rs`, PR #242): **the
     /// stamp file must equal the resolved upstream version exactly**, here
-    /// the latest commit SHA of `google/mozc` master. Anything else (stamp
+    /// the run's pinned commit SHA of `google/mozc` — the explicit
+    /// `--sha` pin when given, the latest master commit otherwise
+    /// (`resolve_run_sha`). Anything else (stamp
     /// missing, legacy empty stamp, mismatched SHA — with or without leftover
     /// files) triggers a full re-download of the new snapshot into a
     /// `.staging` subdirectory, followed by a transactional swap
@@ -510,12 +543,34 @@ impl DictSource for MozcSource {
     /// Offline behavior: if the SHA can't be resolved but a cached snapshot
     /// exists (valid stamp — only written after a fully successful fetch) and
     /// its artifacts are still on disk, warn and keep using it; otherwise
-    /// fail.
+    /// fail. With an explicit pin, resolution cannot fail for network
+    /// reasons — the only resolve error is a malformed pin, which must be a
+    /// hard error: silently falling back to whatever snapshot happens to be
+    /// cached would defeat the very determinism the pin exists for. A pinned
+    /// fetch over a complete cache therefore touches the network *zero*
+    /// times (not even the one Commits API call of the unpinned fast path).
     ///
     /// The stamp records, after the SHA, the manifest of files this fetch
     /// downloaded; a later wipe deletes exactly those, so user-placed files
     /// in the cache dir survive version bumps.
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
+        self.fetch_impl(dest, None)
+    }
+
+    /// Fetch pinned to an explicit commit SHA — see [`MozcSource::fetch`]
+    /// for the full cache discipline. The pin's primary source of truth is
+    /// `engine/data/mozc-pin.txt`, which `mise run fetch-dict-mozc` reads
+    /// and passes through `dictool fetch --sha`.
+    fn fetch_pinned(&self, dest: &Path, sha: &str) -> Result<(), DictSourceError> {
+        self.fetch_impl(dest, Some(sha))
+    }
+}
+
+impl MozcSource {
+    /// Shared implementation of [`DictSource::fetch`] (pinned = `None`,
+    /// track upstream master) and [`DictSource::fetch_pinned`] (pinned =
+    /// explicit SHA, deterministic snapshot).
+    fn fetch_impl(&self, dest: &Path, pinned: Option<&str>) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
         let stamp_path = dest.join(".stamp");
         // Clear staging leftovers from an interrupted previous run up front.
@@ -527,8 +582,12 @@ impl DictSource for MozcSource {
         }
         let cached = read_stamp(&stamp_path);
 
-        let sha = match Self::latest_commit_sha() {
+        let sha = match resolve_run_sha(pinned, Self::latest_commit_sha) {
             Ok(sha) => sha,
+            // A malformed explicit pin is a hard error — the offline
+            // fallback below exists for network failures resolving
+            // "latest", not for overriding what the caller asked for.
+            Err(e) if pinned.is_some() => return Err(e),
             Err(e) => {
                 if let Some(st) = &cached {
                     // A stamp alone is not enough — verify the artifacts it
@@ -600,9 +659,10 @@ impl DictSource for MozcSource {
         // a transient listing/download failure leaves the old snapshot
         // working and offline-usable (Codex review R3 on PR #266: wiping
         // up front traded a working cache for any network hiccup).
+        let sha_kind = if pinned.is_some() { "pinned" } else { "latest" };
         if let Some(st) = &cached {
             eprintln!(
-                "Cache commit {} != latest {sha}; downloading new snapshot before replacing.",
+                "Cache commit {} != {sha_kind} {sha}; downloading new snapshot before replacing.",
                 st.sha
             );
         } else if any_fetched_file_exists(dest) {
@@ -765,6 +825,64 @@ mod tests {
         // Right length, non-hex
         assert!(!is_valid_sha("0123456789abcdef0123456789abcdef0123456z"));
         assert!(!is_valid_sha("../../../../../../../../../../../../etc/x"));
+    }
+
+    /// Pins the `--sha` contract: an explicit pin must be used as-is —
+    /// deterministically — without ever consulting the Commits API. The
+    /// panicking closure stands in for `latest_commit_sha`; if the pinned
+    /// path ever calls it, this test blows up.
+    #[test]
+    fn test_resolve_run_sha_pinned_never_calls_latest() {
+        let no_api = || -> Result<String, DictSourceError> {
+            panic!("Commits API must not be consulted when a pin is given")
+        };
+        assert_eq!(
+            resolve_run_sha(Some("7c1e06d39d6a8446e15a324700c48dcb00846039"), no_api).unwrap(),
+            "7c1e06d39d6a8446e15a324700c48dcb00846039"
+        );
+        // Surrounding whitespace (stray newline from `$(cmd)` substitution
+        // in the mise task) is trimmed; uppercase is normalized to the
+        // lowercase form GitHub uses, so stamp comparison stays exact-match.
+        assert_eq!(
+            resolve_run_sha(Some(" 7C1E06D39D6A8446E15A324700C48DCB00846039\n"), no_api).unwrap(),
+            "7c1e06d39d6a8446e15a324700c48dcb00846039"
+        );
+    }
+
+    /// A malformed pin is rejected up front (reusing the `is_valid_sha`
+    /// gate), still without touching the Commits API — the error must
+    /// surface the bad pin, not fall back to "latest" or a cached snapshot.
+    #[test]
+    fn test_resolve_run_sha_rejects_invalid_pin() {
+        let no_api = || -> Result<String, DictSourceError> {
+            panic!("Commits API must not be consulted when a pin is given")
+        };
+        for bad in [
+            "",
+            "  \n",
+            "7c1e06d3",                                  // abbreviated
+            "master",                                    // ref, not a SHA
+            "0123456789abcdef0123456789abcdef0123456z",  // non-hex
+            "0123456789abcdef0123456789abcdef012345678", // 41 chars
+            "../../../../../../../../../../../../etc/x", // traversal
+        ] {
+            assert!(
+                resolve_run_sha(Some(bad), no_api).is_err(),
+                "pin {bad:?} should be rejected"
+            );
+        }
+    }
+
+    /// Without a pin, resolution delegates to the latest-commit lookup —
+    /// both its success and its failure (which the caller's offline
+    /// fallback then handles) pass straight through.
+    #[test]
+    fn test_resolve_run_sha_unpinned_delegates_to_latest() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(resolve_run_sha(None, || Ok(sha.to_string())).unwrap(), sha);
+        assert!(
+            resolve_run_sha(None, || Err(DictSourceError::Http("offline".to_string()))).is_err()
+        );
     }
 
     #[test]

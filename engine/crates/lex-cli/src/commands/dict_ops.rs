@@ -16,7 +16,11 @@ macro_rules! die {
     };
 }
 
-pub fn fetch(source_name: &str, output_dir: &str) {
+/// Fetch raw dictionary files. With `sha`, the snapshot is pinned to that
+/// exact upstream commit (`fetch_pinned` — only the mozc source supports
+/// this); without it, the source's default resolution applies (mozc: latest
+/// upstream master commit, used for explicit pin bumps).
+pub fn fetch(source_name: &str, output_dir: &str, sha: Option<&str>) {
     let output_dir = Path::new(output_dir);
     let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
         eprintln!(
@@ -25,10 +29,11 @@ pub fn fetch(source_name: &str, output_dir: &str) {
         );
         process::exit(1);
     });
-    die!(
-        dict_source.fetch(output_dir),
-        "Error fetching dictionary: {}"
-    );
+    let result = match sha {
+        Some(sha) => dict_source.fetch_pinned(output_dir, sha),
+        None => dict_source.fetch(output_dir),
+    };
+    die!(result, "Error fetching dictionary: {}");
 }
 
 /// Cost offsets applied at dictionary compile time to eliminate reranker heuristics.

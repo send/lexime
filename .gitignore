@@ -20,6 +20,8 @@ generated/
 
 # Dictionary data (downloaded / compiled)
 engine/data/*
+# ... except the in-repo Mozc snapshot pin (source of truth for fetch-dict-mozc)
+!engine/data/mozc-pin.txt
 # Neural model files
 /data/
 
