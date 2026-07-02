@@ -230,7 +230,11 @@ fn write_stamp(path: &Path, sha: &str, manifest: &[String]) -> Result<(), DictSo
     // tmp + rename: an interrupted write must not leave a truncated stamp
     // whose valid SHA line + partial manifest would satisfy cache_complete
     // and mask an incomplete snapshot.
-    let tmp = path.with_extension("stamp.tmp");
+    // Not with_extension(): for a dotfile like `.stamp` that has no extension,
+    // with_extension would yield `.stamp.stamp.tmp`. Append to the name instead.
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     fs::write(&tmp, contents).map_err(DictSourceError::Io)?;
     fs::rename(&tmp, path).map_err(DictSourceError::Io)
 }
@@ -255,7 +259,12 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        let wanted = (name.starts_with("dictionary") && name.ends_with(".txt")) || name == "id.def";
+        // Invariant: everything fetch downloads must pass is_upstream_file_name,
+        // because the manifest read-filter (read_stamp) and wipe_cache only
+        // recognize those names. A broader match here (e.g. plain
+        // `dictionary*.txt`) would download files the wipe never removes,
+        // re-introducing cross-snapshot mixing on the next version bump.
+        let wanted = is_numbered_dictionary(&name) || name == "id.def";
         if wanted {
             files.push((name.into_owned(), url.to_string()));
         }
@@ -526,6 +535,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_remote_files_only_recognized_names() {
+        // Invariant: fetched ⊆ recognized (is_upstream_file_name). A file the
+        // wipe/manifest layer doesn't recognize must not be downloaded, or it
+        // would survive version bumps and mix into the next snapshot.
+        let json = r#"[
+            {"name": "dictionary_extra.txt", "download_url": "https://example.com/a"},
+            {"name": "dictionary-custom.txt", "download_url": "https://example.com/b"},
+            {"name": "dictionary00.txt", "download_url": "https://example.com/c"}
+        ]"#;
+        let files = parse_remote_files(json).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "dictionary00.txt");
+        for (name, _) in &files {
+            assert!(is_upstream_file_name(name));
+        }
+    }
+
+    #[test]
     fn test_parse_remote_files_sanitizes_path() {
         let json = r#"[
             {"name": "../../../etc/dictionary00.txt", "download_url": "https://example.com/x"}
@@ -631,6 +658,25 @@ mod tests {
              dictionary-custom.txt\nnotes.md\ndictionary00.txt\n",
         )
         .unwrap();
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.manifest, vec!["dictionary00.txt"]);
+
+        // write_stamp uses tmp+rename with a proper `.stamp.tmp` sibling —
+        // for a dotfile, with_extension would have produced `.stamp.stamp.tmp`
+        // (Copilot review on PR #266). No tmp residue after a write.
+        write_stamp(
+            &stamp,
+            "0123456789abcdef0123456789abcdef01234567",
+            &["dictionary00.txt".to_string()],
+        )
+        .unwrap();
+        let residue: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(residue.is_empty(), "tmp residue left behind: {residue:?}");
         let st = read_stamp(&stamp).unwrap();
         assert_eq!(st.manifest, vec!["dictionary00.txt"]);
 
