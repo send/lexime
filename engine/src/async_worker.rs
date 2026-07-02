@@ -121,7 +121,13 @@ impl Drop for AsyncWorker {
         let mut inner = self.inner.lock().unwrap();
         inner.tx.take();
         if let Some(handle) = inner.thread_handle.take() {
-            let _ = handle.join();
+            // The last strong Arc<LexSession> can be dropped on the worker
+            // thread itself: deliver() upgrades the Weak while Swift releases
+            // its handle concurrently. Joining our own thread would deadlock
+            // (pthread_join EDEADLK panic), so let it exit on its own instead.
+            if handle.thread().id() != std::thread::current().id() {
+                let _ = handle.join();
+            }
         }
     }
 }
