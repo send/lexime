@@ -254,7 +254,7 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/Controller/SessionCoordinator.swift \
   Sources/Controller/ModeController.swift \
   Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift Tests/TestSnippetTOML.swift \
-  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestSessionCoordinator.swift \
+  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestAbcRevertPolicy.swift Tests/TestInputSourceReverter.swift Tests/TestSessionCoordinator.swift \
   -o build/test-runner && build/test-runner
 """
 

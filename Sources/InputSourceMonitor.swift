@@ -6,6 +6,10 @@ import Foundation
 /// switches to the standard ABC keyboard layout (which can happen due to
 /// macOS IMKit race conditions) back to Lexime Roman, with secure input
 /// awareness (polls for release before reverting).
+///
+/// Only Lexime → ABC transitions are reverted (see `AbcRevertPolicy`): when
+/// the user reaches ABC from another IME or layout — a deliberate choice —
+/// the monitor leaves it alone.
 final class InputSourceMonitor: NSObject {
 
     /// Suppress notifications for this many seconds after init (avoid startup noise).
@@ -18,13 +22,23 @@ final class InputSourceMonitor: NSObject {
     private static let secureInputPollTimeout: TimeInterval = 60
     /// macOS needs a beat after wake before TIS calls reliably take effect.
     private static let wakeRecheckDelay: TimeInterval = 1.0
-    private static let revertRetryInterval: TimeInterval = 0.05
-    private static let revertRetryMaxAttempts = 5
 
     private let startTime = Date()
+    private let reverter: AbcReverting
     private var secureInputTimer: Timer?
+    /// Tracks the last non-ABC source so only Lexime → ABC transitions are
+    /// reverted. Main-thread only (notification and wake handlers).
+    private var revertPolicy = AbcRevertPolicy()
+
+    init(reverter: AbcReverting = InputSourceReverter.shared) {
+        self.reverter = reverter
+        super.init()
+    }
 
     func startMonitoring() {
+        // Seed the policy so a Lexime → ABC flip right after startup is
+        // attributed correctly.
+        revertPolicy.observe(InputSource.currentID())
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(inputSourceDidChange),
@@ -49,11 +63,21 @@ final class InputSourceMonitor: NSObject {
     // MARK: - Input Source Change Handling
 
     @objc private func inputSourceDidChange() {
-        guard InputSource.isCurrentStandardABC() else { return }
+        let currentID = InputSource.currentID()
+        revertPolicy.observe(currentID)
+        guard currentID == LeximeInputSourceID.standardABC else { return }
 
         // Startup quiet period
         guard Date().timeIntervalSince(startTime) >= Self.startupQuietPeriod else {
             NSLog("Lexime: ABC detected but within startup quiet period, suppressing")
+            return
+        }
+
+        // Respect a deliberate ABC choice: only reclaim ABC when it was
+        // reached from one of Lexime's own modes (IMKit race on Eisu/ESC, or
+        // the engine's temporary ABC switch).
+        guard revertPolicy.shouldRevert(currentID: currentID) else {
+            NSLog("Lexime: ABC selected from a non-Lexime source, leaving it alone")
             return
         }
 
@@ -65,11 +89,10 @@ final class InputSourceMonitor: NSObject {
             return
         }
 
-        // Non-secure ABC switch (e.g. IMKit race on Eisu/ESC key).
-        // Auto-revert after a short delay.
+        // Unexpected non-secure ABC switch: auto-revert after a short delay.
         NSLog("Lexime: unexpected ABC switch detected, auto-reverting in %.1fs", Self.autoRevertDelay)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoRevertDelay) { [weak self] in
-            self?.revertFromAbcWithRetry()
+            self?.revertToRoman()
         }
     }
 
@@ -82,14 +105,20 @@ final class InputSourceMonitor: NSObject {
         NSLog("Lexime: wake detected, rechecking input source in %.1fs", Self.wakeRecheckDelay)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.wakeRecheckDelay) { [weak self] in
             guard let self else { return }
-            guard InputSource.isCurrentStandardABC() else { return }
+            let currentID = InputSource.currentID()
+            self.revertPolicy.observe(currentID)
+            guard currentID == LeximeInputSourceID.standardABC else { return }
+            guard self.revertPolicy.shouldRevert(currentID: currentID) else {
+                NSLog("Lexime: wake on ABC but it was not reached from Lexime, leaving it alone")
+                return
+            }
             if IsSecureEventInputEnabled() {
                 NSLog("Lexime: wake on ABC during secure input, polling for release")
                 self.startSecureInputPolling()
                 return
             }
             NSLog("Lexime: wake on ABC, reverting to Lexime Roman")
-            self.revertFromAbcWithRetry()
+            self.revertToRoman()
         }
     }
 
@@ -106,7 +135,7 @@ final class InputSourceMonitor: NSObject {
                 timer.invalidate()
                 self.secureInputTimer = nil
                 NSLog("Lexime: Secure input released, switching back to Lexime")
-                self.revertFromAbcWithRetry()
+                self.revertToRoman()
             } else if Date() >= deadline {
                 timer.invalidate()
                 self.secureInputTimer = nil
@@ -115,17 +144,27 @@ final class InputSourceMonitor: NSObject {
         }
     }
 
-    /// TISSelectInputSource can silently fail during wake or other input source
-    /// transitions. Verify the switch took effect and retry if still on ABC.
-    /// Bails if the current source is no longer ABC — the user/system may have
-    /// moved off ABC during the caller's delay, and we must not force them back.
-    private func revertFromAbcWithRetry(attempt: Int = 0) {
-        guard InputSource.isCurrentStandardABC() else { return }
-        InputSource.select(id: LeximeInputSourceID.roman)
-        guard attempt + 1 < Self.revertRetryMaxAttempts else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertRetryInterval) { [weak self] in
-            self?.revertFromAbcWithRetry(attempt: attempt + 1)
+    // MARK: - Revert
+
+    /// A bare ABC appearance is normalized to Lexime *Roman*: outside the ESC
+    /// race there is no evidence the user was mid-Japanese-input, and Roman
+    /// keeps Lexime active with ABC-equivalent typing behavior. (The ESC race
+    /// itself is handled first by ModeController, which reverts to Japanese
+    /// well before our `autoRevertDelay` fires — by then the source is no
+    /// longer ABC and the reverter's per-tick ABC check leaves it alone.)
+    ///
+    /// All callers reach this after a delay (`autoRevertDelay`, the wake
+    /// recheck, or up to `secureInputPollTimeout` of secure-input polling),
+    /// so re-validate ownership at fire time: `inputSourceDidChange` kept
+    /// observing in the meantime, and if the user moved to another source and
+    /// then deliberately re-selected ABC, the claim this revert was scheduled
+    /// under no longer holds.
+    private func revertToRoman() {
+        guard revertPolicy.shouldRevert(currentID: InputSource.currentID()) else {
+            NSLog("Lexime: ABC ownership lapsed before revert fired, leaving it alone")
+            return
         }
+        reverter.revertFromAbc(to: LeximeInputSourceID.roman)
     }
 
 }

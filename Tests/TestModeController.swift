@@ -30,19 +30,25 @@ func testModeController() {
         assertTrue(mc.takePendingEscapeCommit(), "re-armable after clear")
     }
 
-    // revertToLeximeIfEscapeRaced with attempt >= max exits immediately:
-    // no asyncAfter is scheduled, so calling it is safe in a headless test.
-    // We cannot observe the guard directly (no scheduler injection here), so
-    // this is a smoke check that the call returns synchronously without crashing.
+    // revertToLeximeIfEscapeRaced delegates to the shared reverter with the
+    // Lexime *Japanese* mode as the target: the ESC race interrupts active
+    // Japanese composing, so recovery must land back on Japanese (unlike
+    // InputSourceMonitor, which normalizes bare ABC to Roman). It must use
+    // the *watch* variant because the IMKit flip to ABC lands asynchronously
+    // after the ESC commit.
     do {
-        let mc = ModeController()
-        mc.revertToLeximeIfEscapeRaced(attempt: 100)
+        let fake = FakeAbcReverter()
+        let mc = ModeController(reverter: fake)
+        mc.revertToLeximeIfEscapeRaced()
+        assertEqual(fake.calls, [.revertWhenAbcAppears(LeximeInputSourceID.japanese)],
+                    "ESC-race recovery watches for ABC and targets Japanese")
+        mc.revertToLeximeIfEscapeRaced()
+        assertEqual(fake.calls.count, 2,
+                    "each ESC-race recovery delegates one revert")
     }
 
-    // NOTE: The live retry path of `revertToLeximeIfEscapeRaced(attempt: 0)`
-    // calls TIS APIs and spawns DispatchQueue.main.asyncAfter work. Exercising
-    // it in a CLI test process would mutate the user's real input source and
-    // leak timers past test teardown, so we cover only the input-independent
-    // escape-flag state machine here. A full integration test would need a TIS
-    // fake layer, which is out of scope for this PR.
+    // NOTE: The shared retry loop itself is covered by TestInputSourceReverter
+    // (with injected TIS/scheduler fakes) and the ownership policy by
+    // TestAbcRevertPolicy; this file covers ModeController's delegation
+    // boundary and the escape-flag state machine only.
 }
