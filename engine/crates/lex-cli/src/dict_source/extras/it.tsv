@@ -5,9 +5,11 @@
 #   - cost: i16. Default 5000 (mid). Lower = higher rank.
 # Comment lines start with '#'. Blank lines are ignored.
 #
-# All entries use POS id 1852 (名詞,一般). When that's wrong (e.g. proper
-# nouns), tune via cost rather than POS for now — POS overrides are out of
-# scope for the curated layer.
+# All entries use the 名詞,一般 POS id, resolved from the pinned id.def at
+# compile time (DEFAULT_POS_TAG in extras.rs — #279 made this dynamic after
+# a pin bump renumbered the previously hardcoded id, see #273). When that's
+# wrong (e.g. proper nouns), tune via cost rather than POS for now — POS
+# overrides are out of scope for the curated layer.
 
 # --- 数学 / CS ---
 べきとう	冪等
@@ -19,3 +21,6 @@
 # --- 開発用語 (#261/#263 history-audit) ---
 ねすてっど	ネステッド
 みこみっと	未コミット
+# マシン: Mozc 既存 (cost 4241) だが 麻しん の mixed-script bonus に margin 79
+# で負ける (2026-07 pin, #273)。IT 用途では マシン が正なので cost-override
+ましん	マシン	3500

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use super::{is_hiragana, parse_dict_files, DictSource, DictSourceError, ParsedLine};
+use super::{is_hiragana, parse_dict_files, pos_map, DictSource, DictSourceError, ParsedLine};
 use lex_core::dict::DictEntry;
 
 /// Curated domain-specific vocabulary not covered by Mozc UT.
@@ -47,10 +47,22 @@ const DOMAINS: &[(&str, &str)] = &[
 /// homophones unless we explicitly want them to.
 const DEFAULT_COST: i16 = 5000;
 
-/// Default POS: 名詞,一般 (Mozc id 1852). Works for content nouns and
-/// brand-name proper nouns alike. Per-domain POS tuning is deferred — cost
-/// adjustment is sufficient for the MVP.
-const DEFAULT_POS: u16 = 1852;
+/// POS tag assigned to every extras entry: 名詞,一般 works for content nouns
+/// and brand-name proper nouns alike. Per-domain POS tuning is deferred —
+/// cost adjustment is sufficient for the MVP.
+///
+/// The numeric id for this tag is resolved from the pinned id.def at compile
+/// time by [`ExtrasSource::resolve_pos_ids`] — ids are line numbers in
+/// id.def, so hardcoding one silently degrades every extras entry when a pin
+/// bump renumbers them (#273: the old constant drifted onto 名詞,一般,あと
+/// and every entry paid a +3777 BOS-connection penalty; see #279).
+const DEFAULT_POS_TAG: &str = "名詞,一般,*,*,*,*,*";
+
+/// Placeholder POS id emitted by `parse_dir`, replaced by `resolve_pos_ids`.
+/// Deliberately out of id.def's range (~2700 ids) so an unresolved entry
+/// that somehow reaches a compiled dict fails loudly in conversion instead
+/// of blending in as a plausible POS.
+const POS_UNRESOLVED: u16 = u16::MAX;
 
 pub struct ExtrasSource;
 
@@ -90,12 +102,33 @@ impl DictSource for ExtrasSource {
                 Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
-                    left_id: DEFAULT_POS,
-                    right_id: DEFAULT_POS,
+                    left_id: POS_UNRESOLVED,
+                    right_id: POS_UNRESOLVED,
                     cost,
                 })
             },
         )
+    }
+
+    fn resolve_pos_ids(
+        &self,
+        entries: &mut HashMap<String, Vec<DictEntry>>,
+        id_def: Option<&Path>,
+    ) -> Result<(), DictSourceError> {
+        let id_def = id_def.ok_or_else(|| {
+            DictSourceError::Parse(
+                "extras requires id.def to resolve its POS id — pass --id-def or place id.def in the primary input dir".to_string(),
+            )
+        })?;
+        let pos = resolve_default_pos(id_def)?;
+        eprintln!("  extras POS id: {pos} ({DEFAULT_POS_TAG})");
+        for entry_list in entries.values_mut() {
+            for entry in entry_list.iter_mut() {
+                entry.left_id = pos;
+                entry.right_id = pos;
+            }
+        }
+        Ok(())
     }
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
@@ -112,6 +145,18 @@ impl DictSource for ExtrasSource {
         );
         Ok(())
     }
+}
+
+/// Look up [`DEFAULT_POS_TAG`] in `id.def`. Fails when the tag is absent —
+/// a silent fallback here is exactly the drift #279 exists to prevent.
+fn resolve_default_pos(id_def_path: &Path) -> Result<u16, DictSourceError> {
+    let map = pos_map::parse_mozc_id_def(id_def_path)?;
+    map.get(DEFAULT_POS_TAG).copied().ok_or_else(|| {
+        DictSourceError::Parse(format!(
+            "'{DEFAULT_POS_TAG}' not found in {} — cannot assign the extras POS id",
+            id_def_path.display()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -162,15 +207,92 @@ mod tests {
             .expect("こむろてつや must map to 小室哲哉");
         assert!(komuro.iter().any(|e| e.surface == "小室哲哉"));
 
-        // All entries use the default POS id.
+        // parse_dir alone leaves the POS unresolved; the compile pipeline
+        // always follows up with resolve_pos_ids.
         for entry_list in entries.values() {
             for entry in entry_list {
-                assert_eq!(entry.left_id, DEFAULT_POS);
-                assert_eq!(entry.right_id, DEFAULT_POS);
+                assert_eq!(entry.left_id, POS_UNRESOLVED);
+                assert_eq!(entry.right_id, POS_UNRESOLVED);
             }
         }
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Write a minimal id.def with the given lines and return its path.
+    fn write_id_def(dir_name: &str, lines: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("id.def");
+        fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn resolve_pos_ids_assigns_id_from_id_def() {
+        let id_def = write_id_def(
+            "lexime_test_extras_pos_ok",
+            &[
+                "0 BOS/EOS,*,*,*,*,*,*",
+                "1850 名詞,一般,*,*,*,*,あと",
+                "1851 名詞,一般,*,*,*,*,*",
+                "1852 名詞,サ変接続,*,*,*,*,*",
+            ],
+        );
+
+        let mut entries = HashMap::from([(
+            "べきとう".to_string(),
+            vec![DictEntry {
+                surface: "冪等".to_string(),
+                cost: 5000,
+                left_id: POS_UNRESOLVED,
+                right_id: POS_UNRESOLVED,
+            }],
+        )]);
+
+        ExtrasSource
+            .resolve_pos_ids(&mut entries, Some(&id_def))
+            .unwrap();
+        let entry = &entries["べきとう"][0];
+        assert_eq!(entry.left_id, 1851);
+        assert_eq!(entry.right_id, 1851);
+
+        fs::remove_dir_all(id_def.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn resolve_pos_ids_fails_without_id_def() {
+        let err = ExtrasSource
+            .resolve_pos_ids(&mut HashMap::new(), None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("id.def"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_pos_ids_fails_when_tag_missing() {
+        // A vocab-specific 名詞,一般 row must NOT satisfy the generic tag —
+        // that near-miss is exactly the #273 degradation.
+        let id_def = write_id_def(
+            "lexime_test_extras_pos_missing",
+            &[
+                "0 BOS/EOS,*,*,*,*,*,*",
+                "1850 名詞,一般,*,*,*,*,あと",
+                "1852 名詞,サ変接続,*,*,*,*,*",
+            ],
+        );
+
+        let err = ExtrasSource
+            .resolve_pos_ids(&mut HashMap::new(), Some(&id_def))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(DEFAULT_POS_TAG),
+            "unexpected error: {err}"
+        );
+
+        fs::remove_dir_all(id_def.parent().unwrap()).ok();
     }
 
     #[test]
