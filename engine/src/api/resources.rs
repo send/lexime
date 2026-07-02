@@ -270,8 +270,14 @@ impl LexUserHistory {
                     // of `seq`. A snapshot racing between phase 1 and here only
                     // under-reports applied_seq — the safe direction (bounded
                     // re-apply after a crash, never loss).
-                    if let Ok(mut h) = self.inner.write() {
-                        h.advance_applied_seq(seq);
+                    match self.inner.write() {
+                        Ok(mut h) => h.advance_applied_seq(seq),
+                        // Proceed best-effort: a stale applied_seq only
+                        // delays truncation (never loses frames), but the
+                        // state is worth surfacing.
+                        Err(e) => {
+                            warn!("history write lock poisoned; applied_seq not advanced: {e}")
+                        }
                     }
                     false
                 }
@@ -337,26 +343,35 @@ impl LexUserHistory {
             return;
         }
         let this = Arc::clone(self);
-        std::thread::spawn(move || loop {
-            {
-                // Guard scope: released at the end of each iteration, and —
-                // via Drop — on panic, so the flag can never stick.
-                let _guard = CompactingGuard(&this.compacting);
-                if this.compact_pending.swap(false, Ordering::SeqCst) {
-                    this.run_compact();
+        let spawned = std::thread::Builder::new()
+            .name("lexime-history-compact".into())
+            .spawn(move || loop {
+                {
+                    // Guard scope: released at the end of each iteration, and —
+                    // via Drop — on panic, so the flag can never stick.
+                    let _guard = CompactingGuard(&this.compacting);
+                    if this.compact_pending.swap(false, Ordering::SeqCst) {
+                        this.run_compact();
+                    }
                 }
-            }
-            // Missed-wakeup re-check: a request may have landed between the
-            // pending swap above and the guard release. If re-acquisition
-            // fails, whoever holds the flag next will observe
-            // compact_pending itself.
-            if !this.compact_pending.load(Ordering::SeqCst) {
-                break;
-            }
-            if this.compacting.swap(true, Ordering::SeqCst) {
-                break;
-            }
-        });
+                // Missed-wakeup re-check: a request may have landed between the
+                // pending swap above and the guard release. If re-acquisition
+                // fails, whoever holds the flag next will observe
+                // compact_pending itself.
+                if !this.compact_pending.load(Ordering::SeqCst) {
+                    break;
+                }
+                if this.compacting.swap(true, Ordering::SeqCst) {
+                    break;
+                }
+            });
+        // Spawn failure would otherwise leave the flag stuck and disable
+        // compaction (and clear/force_compact) forever. compact_pending
+        // stays set, so the next request retries.
+        if let Err(e) = spawned {
+            self.compacting.store(false, Ordering::SeqCst);
+            warn!("failed to spawn compaction thread: {e}");
+        }
     }
 
     /// Force an immediate compaction (used after history deletion to persist changes).
