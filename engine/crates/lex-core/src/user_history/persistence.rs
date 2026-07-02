@@ -87,11 +87,15 @@ pub(super) fn load_checkpoint(path: &Path) -> io::Result<CheckpointLoaded> {
     }
 }
 
-/// Atomic + durable write: tmp → sync_all (F_FULLFSYNC on macOS) → rename →
-/// parent-dir fsync. Without the tmp sync, the rename can become durable
-/// before the file contents, manufacturing a corrupt checkpoint on power
-/// loss. The tmp name appends `.tmp` to the full file name (`with_extension`
-/// would strip `.lxud` and leave a stray `user_history.tmp`).
+/// Atomic write with content durability: tmp → sync_all (F_FULLFSYNC on
+/// macOS) → rename → best-effort parent-dir fsync. Without the tmp sync,
+/// the rename can become durable before the file contents, manufacturing a
+/// corrupt checkpoint on power loss. The parent-dir fsync only makes the
+/// rename itself durable and its failure is deliberately ignored (POSIX
+/// practice; APFS journals renames anyway) — the worst case is rolling back
+/// to the previous checkpoint, never corruption. The tmp name appends
+/// `.tmp` to the full file name (`with_extension` would strip `.lxud` and
+/// leave a stray `user_history.tmp`).
 pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = tmp_path(path);
     if let Some(parent) = path.parent() {
