@@ -195,8 +195,8 @@ pub enum LearningRecord {
         /// 0 = the user accepted top-1; >0 = a manual pick, i.e. a
         /// conversion miss observable in the commit log.
         rank: usize,
-        /// Top-1 surface at commit time. Some only when rank > 0
-        /// (otherwise it equals `surface`).
+        /// Top-1 surface at commit time. Set to `Some` only when rank > 0
+        /// (otherwise the top-1 is `surface` itself).
         top1: Option<String>,
         /// True when produced by auto-commit (the user kept typing past a
         /// stable prefix, which implies acceptance of top-1).
