@@ -1107,6 +1107,62 @@ fn barrier_reissued_on_first_append_after_replay() {
     assert_eq!(barriers2.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+/// Barrier that fails the first N attempts (transient-failure cadence test).
+struct FlakyBarrierIo {
+    attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_first: usize,
+}
+
+impl super::wal::WalIo for FlakyBarrierIo {
+    fn append(&mut self, _buf: &[u8]) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn sync_barrier(&mut self) -> std::io::Result<()> {
+        let n = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n < self.fail_first {
+            Err(std::io::Error::other("transient barrier failure"))
+        } else {
+            Ok(())
+        }
+    }
+    fn sync_full(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn truncate_to_header(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn barrier_retries_on_next_append_after_transient_failure() {
+    // A failed barrier must not defer the retry by another full interval —
+    // the counter stays saturated so the very next append retries.
+    let f = fx();
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let io = FlakyBarrierIo {
+        attempts: std::sync::Arc::clone(&attempts),
+        fail_first: 1,
+    };
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    for i in 0..50 {
+        wal.append(&seg(A), T0 + i).unwrap();
+    }
+    // 50th append attempted the barrier and it failed
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // 51st append retries immediately (and succeeds, resetting the cadence)
+    wal.append(&seg(B), T0 + 50).unwrap();
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    // Cadence resumed: no further attempt until 50 more frames
+    for i in 0..49 {
+        wal.append(&seg(A), T0 + 51 + i).unwrap();
+    }
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    wal.append(&seg(B), T0 + 100).unwrap();
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 #[test]
 fn committed_barrier_failure_still_returns_seq() {
     // A failed barrier after a successful frame write must not surface as

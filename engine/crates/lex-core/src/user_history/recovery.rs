@@ -178,9 +178,23 @@ pub fn open_recovering(
                     } else if cp_is_v2 {
                         // Migration-crash residue: the v2 checkpoint already
                         // contains everything the v1 WAL held (§2.3/§7) —
-                        // discard without replay so migration stays idempotent.
-                        report.wal_state = WalState::LegacyDiscarded;
-                        reinitialize(&mut wal, &history);
+                        // discard without replay so migration stays
+                        // idempotent. But first confirm the checkpoint
+                        // rename is durable: after a LegacyKept run (dir
+                        // fsync failed during migration), a power loss could
+                        // still roll the name back to the v1 file, and this
+                        // WAL would then hold the only copy of its frames.
+                        if super::persistence::sync_parent_dir(checkpoint_path) {
+                            report.wal_state = WalState::LegacyDiscarded;
+                            reinitialize(&mut wal, &history);
+                        } else {
+                            warn!(
+                                "checkpoint rename durability unconfirmed; keeping legacy WAL frozen"
+                            );
+                            report.wal_state = WalState::LegacyKept;
+                            wal.adopt_empty(history.applied_seq());
+                            wal.freeze();
+                        }
                     } else {
                         // v1-format data (v1, missing, or quarantined
                         // checkpoint): migration input. Replaying under a

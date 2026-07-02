@@ -447,15 +447,23 @@ impl HistoryWal {
 
         match record {
             WalRecord::Tombstone { .. } => {
-                self.frames_since_barrier = 0;
+                // Reset only after a successful flush: on Err the counter
+                // stays saturated so the next append retries a sync instead
+                // of deferring it a full interval.
                 self.io.sync_full()?;
+                self.frames_since_barrier = 0;
             }
             WalRecord::Committed { .. } => {
                 self.frames_since_barrier += 1;
                 if self.frames_since_barrier >= BARRIER_EVERY_FRAMES {
-                    self.frames_since_barrier = 0;
-                    if let Err(e) = self.io.sync_barrier() {
-                        warn!("WAL barrier sync failed (frame is written, durability window widens): {e}");
+                    match self.io.sync_barrier() {
+                        // Reset only on success: a transient failure must
+                        // not defer the retry by another full interval, or
+                        // the documented power-loss bound would double.
+                        Ok(()) => self.frames_since_barrier = 0,
+                        Err(e) => warn!(
+                            "WAL barrier sync failed (frame is written, durability window widens): {e}"
+                        ),
                     }
                 }
             }

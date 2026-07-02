@@ -145,7 +145,7 @@ fn tmp_path(path: &Path) -> PathBuf {
 /// a background path, so it costs nothing and failures are non-fatal.
 /// Returns whether the sync succeeded (callers gate destructive follow-ups
 /// like WAL truncation on it).
-fn sync_parent_dir(path: &Path) -> bool {
+pub(super) fn sync_parent_dir(path: &Path) -> bool {
     let parent = match path.parent() {
         // A bare relative path ("history.lxud") has parent "" — that means
         // the current directory, and File::open("") would fail, making
