@@ -175,6 +175,13 @@ class LeximeInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         coordinator?.resetDisplay()
+        // If IMKit skipped the previous controller's deactivateServer (e.g. the
+        // client crashed), the shared panel may still be visible at the old
+        // cursor position — and a visible panel takes the no-reposition fast
+        // path on the next show(). Hide it before reuse. Note: deactivate()
+        // cancels only this controller's own pending deferred shows; the
+        // shared panel has no cross-controller cancellation.
+        candidateManager.deactivate()
         candidateManager.reset()
         super.activateServer(sender)
     }
