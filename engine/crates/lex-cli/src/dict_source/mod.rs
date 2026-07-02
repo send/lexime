@@ -38,6 +38,17 @@ pub trait DictSource {
 
     /// Download raw dictionary files into `dest`.
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError>;
+
+    /// Download raw dictionary files into `dest`, pinned to `sha` (a full
+    /// 40-hex commit SHA) instead of whatever upstream currently serves.
+    /// Only sources backed by a git remote can honor a commit pin, so the
+    /// default implementation rejects it — `dictool fetch --sha` on a
+    /// source that would silently ignore the pin must fail loudly.
+    fn fetch_pinned(&self, _dest: &Path, _sha: &str) -> Result<(), DictSourceError> {
+        Err(DictSourceError::Parse(
+            "this source does not support --sha (only 'mozc' does)".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -157,4 +168,30 @@ pub fn from_name(name: &str) -> Option<Box<dyn DictSource>> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, ctor)| ctor())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source that doesn't override `fetch_pinned` must reject `--sha`
+    /// instead of silently fetching an unpinned snapshot — the caller asked
+    /// for determinism it cannot provide. `symbols` and `extras` are bundled
+    /// TSVs with no upstream commit to pin.
+    #[test]
+    fn test_fetch_pinned_rejected_by_default() {
+        for name in ["symbols", "extras"] {
+            let source = from_name(name).unwrap();
+            let err = source
+                .fetch_pinned(
+                    Path::new("/nonexistent"),
+                    "0123456789abcdef0123456789abcdef01234567",
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("--sha"),
+                "{name}: unexpected error {err}"
+            );
+        }
+    }
 }

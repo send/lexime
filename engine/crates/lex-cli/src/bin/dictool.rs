@@ -30,6 +30,11 @@ enum Command {
         /// Dictionary source
         #[arg(long, default_value = "mozc")]
         source: String,
+        /// Pin the snapshot to a full 40-hex commit SHA instead of resolving
+        /// the latest upstream commit (mozc only). The primary pin lives in
+        /// engine/data/mozc-pin.txt; `mise run fetch-dict-mozc` passes it here.
+        #[arg(long)]
+        sha: Option<String>,
         /// Output directory
         output_dir: String,
     },
@@ -283,8 +288,10 @@ fn main() {
 
     match cli.command {
         Command::Fetch {
-            source, output_dir, ..
-        } => dict_ops::fetch(&source, &output_dir),
+            source,
+            sha,
+            output_dir,
+        } => dict_ops::fetch(&source, &output_dir, sha.as_deref()),
         Command::Compile {
             source,
             input_dir,

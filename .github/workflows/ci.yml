@@ -46,6 +46,7 @@ jobs:
               - 'engine/crates/lex-cli/**'
             corpus:
               - 'engine/testcorpus/**'
+              - 'engine/data/mozc-pin.txt'
               - 'mise.toml'
             swift:
               - 'Sources/**'
@@ -168,11 +169,15 @@ jobs:
       - run: cd engine && cargo test -p lex-cli
 
   # Conversion accuracy gate: builds the full dictionary (Mozc snapshot +
-  # bundled symbols/extras) and runs both accuracy corpora. The Mozc raw
-  # snapshot (~90MB of TSVs) is kept in the actions cache; the dictool fetch
-  # stamp (commit SHA + manifest, PR #266) decides on every run whether the
-  # cached snapshot is still current, repairs it, or re-downloads a new
-  # upstream snapshot — so a stale cache entry can never poison the dict.
+  # bundled symbols/extras) and runs both accuracy corpora. The Mozc snapshot
+  # is pinned to the commit in engine/data/mozc-pin.txt (the corpus filter
+  # includes the pin file, so a pin bump re-runs this gate), which keeps the
+  # gate deterministic — upstream Mozc moving can never turn main red, and
+  # local `mise run accuracy` measures against the identical snapshot. The
+  # raw snapshot (~90MB of TSVs) is kept in the actions cache; the dictool
+  # fetch stamp (commit SHA + manifest, PR #266) decides on every run whether
+  # the cached snapshot matches the pin, repairs it, or transactionally
+  # re-downloads it — so a stale cache entry can never poison the dict.
   # `needs: changes` only (not lint): a corpus-only change must not be
   # skipped just because the Rust lint job didn't run.
   accuracy:
@@ -198,27 +203,29 @@ jobs:
         with:
           install: false
 
-      # Restore/save split keyed on the pinned upstream commit SHA (line 1 of
-      # dictool's .stamp): exactly one cache entry per upstream Mozc snapshot.
-      # The `key` never matches an existing entry directly — restore-keys
-      # picks up the newest snapshot — and the save step below only fires
-      # when the post-fetch SHA differs from what was restored (first run, or
-      # upstream moved). The stamp mechanism makes a stale restore safe:
-      # dictool verifies the restored snapshot against upstream on every run
-      # (fast path: one Commits API call) and transactionally re-downloads
-      # when it no longer matches, so a stale cache can never poison the dict.
+      # Restore/save split keyed on the content of the pin file: exactly one
+      # cache entry per pinned Mozc snapshot. On an exact hit, dictool's
+      # stamp check confirms the restored snapshot matches the pin without a
+      # single network call. On a pin bump the exact key misses and
+      # restore-keys falls back to the newest previous snapshot, which
+      # dictool then transactionally replaces with the newly pinned one —
+      # the stamp mechanism (PR #266) makes any stale restore safe. The save
+      # step below only fires on that exact-key miss (first run, or the pin
+      # changed).
       - name: Restore Mozc dictionary snapshot
         id: mozc-restore
         uses: actions/cache/restore@v4
         with:
           path: engine/data/mozc-raw
-          key: mozc-raw-
+          key: mozc-raw-${{ hashFiles('engine/data/mozc-pin.txt') }}
           restore-keys: |
             mozc-raw-
 
       # GITHUB_TOKEN: Actions runners share the anonymous GitHub API quota
       # (60 req/h per IP), which is effectively always exhausted. dictool
-      # attaches the token to api.github.com requests when set.
+      # attaches the token to api.github.com requests when set. With the pin,
+      # the API is only consulted at all when the restored snapshot doesn't
+      # match the pin (Contents API listing for the re-download).
       - name: Run accuracy corpus
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -229,16 +236,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: mise run accuracy-history
 
-      - name: Read fetched Mozc snapshot version
-        id: mozc-stamp
-        run: echo "key=mozc-raw-$(head -n1 engine/data/mozc-raw/.stamp)" >> "$GITHUB_OUTPUT"
-
       - name: Save Mozc dictionary snapshot
-        if: steps.mozc-stamp.outputs.key != steps.mozc-restore.outputs.cache-matched-key
+        if: steps.mozc-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: engine/data/mozc-raw
-          key: ${{ steps.mozc-stamp.outputs.key }}
+          key: mozc-raw-${{ hashFiles('engine/data/mozc-pin.txt') }}
 
   audit:
     needs: changes

@@ -1,0 +1,21 @@
+# Mozc dictionary snapshot pin.
+#
+# The google/mozc commit SHA that `mise run fetch-dict-mozc` downloads
+# (via `dictool fetch --source mozc --sha <sha>`). Pinning in-repo keeps
+# conversion-quality measurements reproducible: local runs and the CI
+# accuracy job build the dictionary from the same upstream snapshot
+# instead of whatever master happens to be at fetch time (issue #273:
+# a 2026-02 local snapshot vs a 2026-07 CI snapshot diverged on 6
+# accuracy cases).
+#
+# Bump procedure (do all of this in ONE PR):
+#   1. Replace the SHA below with the new full 40-hex commit, e.g. the
+#      current master head from
+#      https://api.github.com/repos/google/mozc/commits/master
+#   2. Run `mise run accuracy` and `mise run accuracy-history` before and
+#      after the bump, and paste the before/after results into the PR.
+#   3. Fix or skip (+ issue link) any newly failing corpus cases in the
+#      same PR, so main never lands with a red accuracy gate.
+#
+# Format: the first non-comment, non-empty line is the pinned commit SHA.
+7c1e06d39d6a8446e15a324700c48dcb00846039
