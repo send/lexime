@@ -58,6 +58,10 @@ pub enum WalState {
     /// File re-created as header-only (sub-header stub, or v1 WAL consumed
     /// by migration). Log-only.
     Reinitialized,
+    /// v1-format WAL consumed by migration but retained on disk because the
+    /// v2 checkpoint's rename durability was unconfirmed; appends are
+    /// frozen until a later compaction completes the reinitialization.
+    LegacyKept,
 }
 
 /// What `open_recovering` found and did. PR2 surfaces this over UniFFI;
@@ -260,6 +264,7 @@ pub fn open_recovering(
                         warn!(
                             "migration rename durability unconfirmed; keeping v1 WAL until a later compaction"
                         );
+                        report.wal_state = WalState::LegacyKept;
                         wal.freeze();
                     }
                 }

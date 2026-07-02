@@ -463,9 +463,12 @@ impl LexUserHistory {
                         // effect raced into this checkpoint before its frame
                         // was sequenced would otherwise be re-applied by a
                         // restart replay until the next threshold compaction
-                        // covers it. The prompt re-run closes that window in
-                        // milliseconds. (Structural fix — WAL-ahead ordering
-                        // under the wal mutex — lands in PR2.)
+                        // covers it. The prompt re-run narrows that residual
+                        // double-apply to a crash landing in the milliseconds
+                        // between the two passes — it does not eliminate it;
+                        // the structural fix (WAL-ahead ordering under the
+                        // wal mutex, so snapshots can never contain
+                        // unsequenced effects) lands in PR2.
                         self.compact_pending.store(true, Ordering::SeqCst);
                         Ok(())
                     }
