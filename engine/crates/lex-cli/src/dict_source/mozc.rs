@@ -18,6 +18,12 @@ const MOZC_RAW_BASE: &str = "https://raw.githubusercontent.com/google/mozc";
 pub struct MozcSource;
 
 impl MozcSource {
+    /// Download `url` into `dest` atomically: the body is staged in a
+    /// dot-prefixed temp file next to `dest` and renamed into place. An
+    /// interrupted run therefore never leaves a partial download under a
+    /// final artifact name — which the repair path (`cache_complete` /
+    /// skip-existing) would otherwise trust as a complete file (Codex
+    /// review R3 on PR #266). The temp file is removed on every error path.
     fn download_file(url: &str, dest: &Path) -> Result<(), DictSourceError> {
         let body = ureq::get(url)
             .call()
@@ -25,7 +31,62 @@ impl MozcSource {
             .into_body()
             .read_to_vec()
             .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
-        fs::write(dest, &body).map_err(DictSourceError::Io)?;
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(dest.file_name().ok_or_else(|| {
+            DictSourceError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid download path {}", dest.display()),
+            ))
+        })?);
+        tmp_name.push(format!(".tmp.{}", std::process::id()));
+        let tmp = dest.with_file_name(tmp_name);
+        let _guard = TmpFileGuard(tmp.clone());
+        fs::write(&tmp, &body).map_err(DictSourceError::Io)?;
+        fs::rename(&tmp, dest).map_err(DictSourceError::Io)?;
+        Ok(())
+    }
+
+    /// Download one snapshot's files — the listed shards + `id.def`, plus the
+    /// fixed-URL connection matrix and LICENSE — pinned to `sha`, into
+    /// `target`. With `skip_existing` (repair within a valid cache), files
+    /// already present are left alone: they are guaranteed to come from the
+    /// same pinned SHA, and `download_file`'s tmp+rename guarantees none of
+    /// them is a torn write.
+    fn download_snapshot(
+        sha: &str,
+        remote_files: &[(String, String)],
+        target: &Path,
+        skip_existing: bool,
+    ) -> Result<(), DictSourceError> {
+        for (name, url) in remote_files {
+            let path = target.join(name);
+            if skip_existing && path.is_file() {
+                eprintln!("  {name} (already exists, skipping)");
+                continue;
+            }
+            eprintln!("  {name}");
+            Self::download_file(url, &path)?;
+        }
+
+        let connection = target.join("connection_single_column.txt");
+        if skip_existing && connection.is_file() {
+            eprintln!("  connection_single_column.txt (already exists, skipping)");
+        } else {
+            eprintln!("  connection_single_column.txt");
+            let url = format!(
+                "{MOZC_RAW_BASE}/{sha}/src/data/dictionary_oss/connection_single_column.txt"
+            );
+            Self::download_file(&url, &connection)?;
+        }
+
+        let license = target.join("LICENSE");
+        if skip_existing && license.is_file() {
+            eprintln!("  LICENSE (already exists, skipping)");
+        } else {
+            eprintln!("  LICENSE");
+            let url = format!("{MOZC_RAW_BASE}/{sha}/LICENSE");
+            Self::download_file(&url, &license)?;
+        }
         Ok(())
     }
 
@@ -56,6 +117,15 @@ impl MozcSource {
             .read_to_string()
             .map_err(|e| DictSourceError::Http(format!("{url}: {e}")))?;
         parse_remote_files(&body)
+    }
+}
+
+/// Removes the staged temp file on drop so error paths don't leak it. After
+/// a successful rename the path no longer exists and the removal is a no-op.
+struct TmpFileGuard(std::path::PathBuf);
+impl Drop for TmpFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -240,6 +310,62 @@ fn write_stamp(path: &Path, sha: &str, manifest: &[String]) -> Result<(), DictSo
     fs::rename(&tmp, path).map_err(DictSourceError::Io)
 }
 
+/// The full manifest of a snapshot: the listed shard / `id.def` names plus
+/// the two fixed-URL files.
+fn snapshot_manifest(remote_files: &[(String, String)]) -> Vec<String> {
+    let mut manifest: Vec<String> = remote_files.iter().map(|(n, _)| n.clone()).collect();
+    manifest.push("connection_single_column.txt".to_string());
+    manifest.push("LICENSE".to_string());
+    manifest
+}
+
+/// Swap a fully staged snapshot into `dest`. Pure file operations, ordered so
+/// that no crash point leaves a state the next run would *trust*:
+///
+/// 1. Preflight — every `new_manifest` file must exist in `staging`; bail
+///    before touching `dest` otherwise, leaving the current cache intact.
+/// 2. Delete the stamp. From here on the cache is officially "no version":
+///    a crash mid-swap leaves a mixed dir at worst, and the next run wipes
+///    and re-downloads it rather than mistaking it for a complete snapshot.
+/// 3. Wipe the old snapshot files (old manifest, or the upstream naming
+///    pattern for legacy stamps). User-placed files survive as usual.
+/// 4. Rename the staged files into place (same filesystem — `staging` lives
+///    inside `dest` — so these are atomic per file).
+/// 5. Remove the now-empty staging dir and write the new stamp, which
+///    re-validates the cache.
+fn commit_staged(
+    dest: &Path,
+    stamp_path: &Path,
+    staging: &Path,
+    old_manifest: &[String],
+    sha: &str,
+    new_manifest: &[String],
+) -> Result<(), DictSourceError> {
+    for name in new_manifest {
+        if !staging.join(name).is_file() {
+            return Err(DictSourceError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "staged snapshot in {} is missing {name}; leaving current cache untouched",
+                    staging.display()
+                ),
+            )));
+        }
+    }
+    remove_if_exists(stamp_path)?;
+    wipe_cache(dest, stamp_path, old_manifest)?;
+    for name in new_manifest {
+        fs::rename(staging.join(name), dest.join(name)).map_err(|e| {
+            DictSourceError::Io(io::Error::new(
+                e.kind(),
+                format!("failed to move staged {name} into place: {e}"),
+            ))
+        })?;
+    }
+    let _ = fs::remove_dir_all(staging);
+    write_stamp(stamp_path, sha, new_manifest)
+}
+
 /// Parse GitHub Contents API JSON and return (name, download_url) pairs
 /// for the upstream-numbered shards (`dictionary<digits>.txt`) and `id.def`.
 fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceError> {
@@ -307,7 +433,12 @@ impl DictSource for MozcSource {
     /// stamp file must equal the resolved upstream version exactly**, here
     /// the latest commit SHA of `google/mozc` master. Anything else (stamp
     /// missing, legacy empty stamp, mismatched SHA — with or without leftover
-    /// files) triggers a clean wipe + full re-download.
+    /// files) triggers a full re-download of the new snapshot into a
+    /// `.staging` subdirectory, followed by a transactional swap
+    /// (`commit_staged`): the old snapshot keeps working — and remains
+    /// available to the offline fallback — until the entire new snapshot has
+    /// landed. A transient listing/download failure therefore never costs a
+    /// previously working cache.
     ///
     /// Crucially, every download in a run is pinned to that one SHA via
     /// `raw.githubusercontent.com/google/mozc/<sha>/...`, so `id.def` and
@@ -321,10 +452,12 @@ impl DictSource for MozcSource {
     /// Contents API at all — a valid cache must not fail on rate limits or
     /// transient listing errors. Within a valid-but-incomplete cache (files
     /// deleted by hand after a successful fetch), only the missing files are
-    /// re-downloaded, from that same pinned SHA. An interrupted run never
-    /// writes a stamp, so it takes the wipe + full re-download path on the
-    /// next attempt; if the wipe itself cannot remove a stale file, the fetch
-    /// aborts rather than risk mixing snapshots.
+    /// re-downloaded, from that same pinned SHA, atomically per file
+    /// (tmp+rename), so an interrupted repair never leaves a partial file
+    /// under a final name. An interrupted swap never leaves a stamp, so the
+    /// next run wipes and re-downloads instead of trusting a mixed dir; if
+    /// that wipe cannot remove a stale file, the fetch aborts rather than
+    /// risk mixing snapshots.
     ///
     /// Offline behavior: if the SHA can't be resolved but a cached snapshot
     /// exists (valid stamp — only written after a fully successful fetch) and
@@ -337,6 +470,13 @@ impl DictSource for MozcSource {
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
         let stamp_path = dest.join(".stamp");
+        // Clear staging leftovers from an interrupted previous run up front.
+        // `.staging` is dot-prefixed, so parse_dir's dictionary*.txt glob and
+        // the wipe/presence scans never see it or its contents.
+        let staging = dest.join(".staging");
+        if staging.exists() {
+            fs::remove_dir_all(&staging).map_err(DictSourceError::Io)?;
+        }
         let cached = read_stamp(&stamp_path);
 
         let sha = match Self::latest_commit_sha() {
@@ -377,10 +517,11 @@ impl DictSource for MozcSource {
 
         let cache_valid = cached.as_ref().map(|s| s.sha.as_str()) == Some(sha.as_str());
 
-        // Fast path: latest SHA with every manifest file on disk — done,
-        // without spending a Contents API call (or risking its failure).
         if cache_valid {
             let st = cached.as_ref().expect("cache_valid implies stamp");
+
+            // Fast path: latest SHA with every manifest file on disk — done,
+            // without spending a Contents API call (or risking its failure).
             if cache_complete(st, dest) {
                 eprintln!("Mozc dictionary cache is up to date (commit {sha}).");
                 // Rewrite the (identical) stamp so its mtime satisfies
@@ -388,72 +529,49 @@ impl DictSource for MozcSource {
                 write_stamp(&stamp_path, &st.sha, &st.manifest)?;
                 return Ok(());
             }
-        } else {
-            if let Some(st) = &cached {
-                eprintln!(
-                    "Cache commit {} != latest {sha}; wiping stale files.",
-                    st.sha
-                );
-            } else if any_fetched_file_exists(dest) {
-                eprintln!("Cache has no version stamp but files present; wiping.");
-            }
-            let manifest = cached
-                .as_ref()
-                .map(|s| s.manifest.as_slice())
-                .unwrap_or(&[]);
-            wipe_cache(dest, &stamp_path, manifest)?;
-        }
 
-        eprintln!(
-            "Downloading Mozc dictionary files (commit {sha}) to {}...",
-            dest.display()
-        );
-
-        let remote_files = Self::list_remote_files(&sha)?;
-        // Manifest of everything this snapshot owns — written into the stamp
-        // so a future wipe removes exactly these files and nothing else.
-        let mut manifest: Vec<String> = remote_files.iter().map(|(n, _)| n.clone()).collect();
-        manifest.push("connection_single_column.txt".to_string());
-        manifest.push("LICENSE".to_string());
-
-        // Skipping an existing file is only sound within a valid cache
-        // (same pinned SHA). After a wipe, download unconditionally —
-        // fs::write overwrites — so no pre-existing file can leak into the
-        // new snapshot.
-        for (name, url) in &remote_files {
-            let file_path = dest.join(name);
-            if cache_valid && file_path.is_file() {
-                eprintln!("  {name} (already exists, skipping)");
-                continue;
-            }
-            eprintln!("  {name}");
-            Self::download_file(url, &file_path)?;
-        }
-
-        // Download connection matrix
-        let connection = dest.join("connection_single_column.txt");
-        if cache_valid && connection.is_file() {
-            eprintln!("  connection_single_column.txt (already exists, skipping)");
-        } else {
-            eprintln!("  connection_single_column.txt");
-            let url = format!(
-                "{MOZC_RAW_BASE}/{sha}/src/data/dictionary_oss/connection_single_column.txt"
+            // Repair path: same SHA but files missing (deleted by hand, or a
+            // legacy manifest-less stamp). Fill in only the gaps, straight
+            // into dest — sound because everything already present is from
+            // the same pinned SHA and download_file lands each file
+            // atomically, so nothing partial can be mistaken for complete.
+            eprintln!(
+                "Repairing Mozc dictionary cache (commit {sha}) in {}...",
+                dest.display()
             );
-            Self::download_file(&url, &connection)?;
+            let remote_files = Self::list_remote_files(&sha)?;
+            let manifest = snapshot_manifest(&remote_files);
+            Self::download_snapshot(&sha, &remote_files, dest, true)?;
+            write_stamp(&stamp_path, &sha, &manifest)?;
+            eprintln!("Done. Files saved to {}", dest.display());
+            return Ok(());
         }
 
-        // Download LICENSE
-        let license = dest.join("LICENSE");
-        if cache_valid && license.is_file() {
-            eprintln!("  LICENSE (already exists, skipping)");
-        } else {
-            eprintln!("  LICENSE");
-            let url = format!("{MOZC_RAW_BASE}/{sha}/LICENSE");
-            Self::download_file(&url, &license)?;
+        // Stale (or unversioned) cache: transactional snapshot swap. Nothing
+        // in dest is touched until the ENTIRE new snapshot sits in staging —
+        // a transient listing/download failure leaves the old snapshot
+        // working and offline-usable (Codex review R3 on PR #266: wiping
+        // up front traded a working cache for any network hiccup).
+        if let Some(st) = &cached {
+            eprintln!(
+                "Cache commit {} != latest {sha}; downloading new snapshot before replacing.",
+                st.sha
+            );
+        } else if any_fetched_file_exists(dest) {
+            eprintln!("Cache has no version stamp; will replace files after download.");
         }
 
-        // Record the snapshot version + manifest only after every file landed.
-        write_stamp(&stamp_path, &sha, &manifest)?;
+        eprintln!("Downloading Mozc dictionary files (commit {sha}) to staging...");
+        let remote_files = Self::list_remote_files(&sha)?;
+        let manifest = snapshot_manifest(&remote_files);
+        fs::create_dir_all(&staging).map_err(DictSourceError::Io)?;
+        Self::download_snapshot(&sha, &remote_files, &staging, false)?;
+
+        let old_manifest = cached
+            .as_ref()
+            .map(|s| s.manifest.as_slice())
+            .unwrap_or(&[]);
+        commit_staged(dest, &stamp_path, &staging, old_manifest, &sha, &manifest)?;
         eprintln!("Done. Files saved to {}", dest.display());
         Ok(())
     }
@@ -926,6 +1044,143 @@ mod tests {
 
         // Same failure through the legacy (pattern-scan) path.
         assert!(wipe_cache(&dir, &dir.join(".stamp"), &[]).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    const OLD_SHA: &str = "fedcba9876543210fedcba9876543210fedcba98";
+    const NEW_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// Build a cache dir holding an "old" snapshot (files + manifest stamp)
+    /// plus user files, and a staging dir holding a "new" snapshot. Returns
+    /// (dir, staging, old_manifest, new_manifest).
+    fn setup_swap_fixture(
+        tag: &str,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Vec<String>,
+        Vec<String>,
+    ) {
+        let dir = std::env::temp_dir().join(format!("lexime_test_mozc_swap_{tag}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Old snapshot: has a shard (dictionary09.txt) the new one drops.
+        let old_manifest: Vec<String> = ["dictionary00.txt", "dictionary09.txt", "id.def"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for name in &old_manifest {
+            fs::write(dir.join(name), "old").unwrap();
+        }
+        write_stamp(&dir.join(".stamp"), OLD_SHA, &old_manifest).unwrap();
+
+        // User files that must survive any swap.
+        fs::write(dir.join("notes.md"), "keep me").unwrap();
+        fs::write(dir.join("dictionary-custom.txt"), "user entries").unwrap();
+
+        // New snapshot fully staged.
+        let new_manifest: Vec<String> = ["dictionary00.txt", "id.def", "LICENSE"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let staging = dir.join(".staging");
+        fs::create_dir_all(&staging).unwrap();
+        for name in &new_manifest {
+            fs::write(staging.join(name), "new").unwrap();
+        }
+
+        (dir, staging, old_manifest, new_manifest)
+    }
+
+    /// Happy path of the transactional swap (Codex review R3 on PR #266):
+    /// old snapshot files go away — including a shard the new snapshot no
+    /// longer has — staged files land under their final names, the stamp
+    /// records the new SHA + manifest, staging is gone, user files survive.
+    #[test]
+    fn test_commit_staged_swaps_snapshots() {
+        let (dir, staging, old_manifest, new_manifest) = setup_swap_fixture("ok");
+        let stamp = dir.join(".stamp");
+
+        commit_staged(
+            &dir,
+            &stamp,
+            &staging,
+            &old_manifest,
+            NEW_SHA,
+            &new_manifest,
+        )
+        .unwrap();
+
+        for name in &new_manifest {
+            assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), "new");
+        }
+        assert!(
+            !dir.join("dictionary09.txt").exists(),
+            "shard dropped upstream must not survive the swap"
+        );
+        assert!(!staging.exists(), "staging dir should be removed");
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.sha, NEW_SHA);
+        assert_eq!(st.manifest, new_manifest);
+        assert!(dir.join("notes.md").exists());
+        assert!(dir.join("dictionary-custom.txt").exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// If staging is missing any manifest file, the commit must fail BEFORE
+    /// touching dest: old snapshot files and the old stamp stay intact, so
+    /// the working cache (and the offline fallback) is never sacrificed to
+    /// an incomplete download.
+    #[test]
+    fn test_commit_staged_incomplete_staging_leaves_dest_untouched() {
+        let (dir, staging, old_manifest, new_manifest) = setup_swap_fixture("incomplete");
+        let stamp = dir.join(".stamp");
+        fs::remove_file(staging.join("id.def")).unwrap();
+
+        let result = commit_staged(
+            &dir,
+            &stamp,
+            &staging,
+            &old_manifest,
+            NEW_SHA,
+            &new_manifest,
+        );
+        assert!(result.is_err());
+
+        // Old snapshot untouched and still trusted.
+        for name in &old_manifest {
+            assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), "old");
+        }
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.sha, OLD_SHA);
+        assert_eq!(st.manifest, old_manifest);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Legacy path: no old manifest (SHA-only stamp) → the wipe inside the
+    /// commit falls back to the upstream naming pattern. Old upstream-named
+    /// files are still replaced/removed and user files still survive.
+    #[test]
+    fn test_commit_staged_legacy_old_manifest() {
+        let (dir, staging, _old_manifest, new_manifest) = setup_swap_fixture("legacy");
+        let stamp = dir.join(".stamp");
+        // Downgrade to a legacy SHA-only stamp.
+        fs::write(&stamp, OLD_SHA).unwrap();
+
+        commit_staged(&dir, &stamp, &staging, &[], NEW_SHA, &new_manifest).unwrap();
+
+        for name in &new_manifest {
+            assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), "new");
+        }
+        assert!(!dir.join("dictionary09.txt").exists());
+        assert!(dir.join("notes.md").exists());
+        assert!(dir.join("dictionary-custom.txt").exists());
+        let st = read_stamp(&stamp).unwrap();
+        assert_eq!(st.sha, NEW_SHA);
 
         fs::remove_dir_all(&dir).ok();
     }
