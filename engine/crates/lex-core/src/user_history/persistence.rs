@@ -33,10 +33,25 @@ pub(super) const VERSION: u8 = 2;
 pub(super) const HEADER_LEN: usize = 32;
 
 /// bincode config matching the wire format of `bincode::serialize` (fixint
-/// encoding, trailing bytes tolerated) plus an explicit allocation cap.
-/// The plain `bincode::deserialize` is unlimited: a corrupt length prefix
-/// inside the body could trigger a giant allocation before any data is read.
+/// encoding) plus an explicit allocation cap. The plain
+/// `bincode::deserialize` is unlimited: a corrupt length prefix inside the
+/// body could trigger a giant allocation before any data is read.
+///
+/// Trailing bytes are rejected: v2 checkpoint bodies and WAL payloads are
+/// exact-length by construction (length fields + CRC), so leftovers can
+/// only mean a writer bug or corruption that happened to keep the CRC —
+/// surface it instead of silently succeeding.
 pub(super) fn bincode_reader(limit: usize) -> impl bincode::Options {
+    bincode::options()
+        .with_fixint_encoding()
+        .with_limit(limit as u64)
+}
+
+/// v1 reader config: the original v1 reader was `bincode::deserialize`,
+/// which tolerates trailing bytes — keep that parity so degraded-but-
+/// parseable v1 files still migrate (v1 has no CRC; strictness here would
+/// quarantine data the old code recovered).
+fn bincode_reader_v1(limit: usize) -> impl bincode::Options {
     bincode::options()
         .with_fixint_encoding()
         .allow_trailing_bytes()
@@ -188,7 +203,7 @@ impl UserHistory {
 
     pub(super) fn from_bytes_v1(bytes: &[u8]) -> Result<Self, io::Error> {
         let body = &bytes[5..];
-        let data: UserHistoryData = bincode_reader(body.len())
+        let data: UserHistoryData = bincode_reader_v1(body.len())
             .deserialize(body)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(Self::from_data(data))
