@@ -62,6 +62,11 @@ pub enum WalState {
     /// v2 checkpoint's rename durability was unconfirmed; appends are
     /// frozen until a later compaction completes the reinitialization.
     LegacyKept,
+    /// A repair (tail truncation or reinitialization) was needed but the
+    /// file operation failed; appends are frozen until a compaction heals
+    /// the file. Nothing is lost — memory keeps the state and checkpoints
+    /// keep persisting it.
+    RepairFailed,
 }
 
 /// What `open_recovering` found and did. PR2 surfaces this over UniFFI;
@@ -146,8 +151,11 @@ pub fn open_recovering(
             match classify_wal(&data) {
                 WalFormat::Stub => {
                     // 0-7 bytes: normal residue of a crash during WAL truncation.
-                    report.wal_state = WalState::Reinitialized;
-                    reinitialize(&mut wal, &history);
+                    report.wal_state = if reinitialize(&mut wal, &history) {
+                        WalState::Reinitialized
+                    } else {
+                        WalState::RepairFailed
+                    };
                 }
                 WalFormat::BadHeader => {
                     warn!("user history WAL header unreadable; quarantining whole file");
@@ -185,8 +193,11 @@ pub fn open_recovering(
                         // still roll the name back to the v1 file, and this
                         // WAL would then hold the only copy of its frames.
                         if super::persistence::sync_parent_dir(checkpoint_path) {
-                            report.wal_state = WalState::LegacyDiscarded;
-                            reinitialize(&mut wal, &history);
+                            report.wal_state = if reinitialize(&mut wal, &history) {
+                                WalState::LegacyDiscarded
+                            } else {
+                                WalState::RepairFailed
+                            };
                         } else {
                             warn!(
                                 "checkpoint rename durability unconfirmed; keeping legacy WAL frozen"
@@ -223,14 +234,17 @@ pub fn open_recovering(
                         // Physical repair. v1 never truncated, so appends landed
                         // after the corrupt point and became permanently
                         // invisible to replay (problem A).
-                        report.wal_state = WalState::TailRepaired;
                         match repair_tail(&wal_path, scan.last_good_end) {
-                            Ok(()) => info!(
-                                "user history WAL tail repaired at byte {}",
-                                scan.last_good_end
-                            ),
+                            Ok(()) => {
+                                report.wal_state = WalState::TailRepaired;
+                                info!(
+                                    "user history WAL tail repaired at byte {}",
+                                    scan.last_good_end
+                                );
+                            }
                             Err(e) => {
                                 warn!("WAL tail repair failed ({e}); freezing appends until compaction");
+                                report.wal_state = WalState::RepairFailed;
                                 wal.freeze();
                             }
                         }
@@ -265,8 +279,11 @@ pub fn open_recovering(
                 }
                 if legacy_wal_consumed {
                     if rename_confirmed {
-                        report.wal_state = WalState::Reinitialized;
-                        reinitialize(&mut wal, &history);
+                        report.wal_state = if reinitialize(&mut wal, &history) {
+                            WalState::Reinitialized
+                        } else {
+                            WalState::RepairFailed
+                        };
                     } else {
                         // The rename could still be rolled back by a power
                         // loss; destroying the v1 WAL now could lose the
@@ -426,14 +443,20 @@ fn repair_tail(wal_path: &Path, keep: usize) -> io::Result<()> {
 }
 
 /// Re-create the WAL as header-only; on failure freeze appends (the file is
-/// not in appendable v2 form) and let the next compaction heal it.
-fn reinitialize(wal: &mut HistoryWal, history: &UserHistory) {
+/// not in appendable v2 form) and let the next compaction heal it. Returns
+/// whether the reinitialization actually happened (callers report
+/// `RepairFailed` on `false`).
+fn reinitialize(wal: &mut HistoryWal, history: &UserHistory) -> bool {
     match wal.truncate_wal() {
-        Ok(()) => wal.adopt_empty(history.applied_seq()),
+        Ok(()) => {
+            wal.adopt_empty(history.applied_seq());
+            true
+        }
         Err(e) => {
             warn!("WAL reinitialization failed ({e}); freezing appends until compaction");
             wal.adopt_empty(history.applied_seq());
             wal.freeze();
+            false
         }
     }
 }
