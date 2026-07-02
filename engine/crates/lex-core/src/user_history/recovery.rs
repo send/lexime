@@ -224,12 +224,10 @@ pub fn open_recovering(
                     let scan = scan_v2(&data, &mut history);
                     report.frames_replayed = scan.frames_applied;
                     report.frames_skipped = scan.frames_skipped;
-                    wal.adopt_scan(
-                        scan.valid_frames,
-                        scan.last_good_end as u64,
-                        scan.max_seq,
-                        history.applied_seq(),
-                    );
+                    // wal_bytes reflects the on-disk size, so start from the
+                    // valid-prefix length only when the repair below actually
+                    // shrinks the file to it.
+                    let mut file_bytes = scan.last_good_end as u64;
                     if scan.truncated_tail {
                         // Physical repair. v1 never truncated, so appends landed
                         // after the corrupt point and became permanently
@@ -245,10 +243,20 @@ pub fn open_recovering(
                             Err(e) => {
                                 warn!("WAL tail repair failed ({e}); freezing appends until compaction");
                                 report.wal_state = WalState::RepairFailed;
+                                // The corrupt tail is still on disk; under-
+                                // reporting the size would keep byte-based
+                                // compaction backstops from ever firing.
+                                file_bytes = data.len() as u64;
                                 wal.freeze();
                             }
                         }
                     }
+                    wal.adopt_scan(
+                        scan.valid_frames,
+                        file_bytes,
+                        scan.max_seq,
+                        history.applied_seq(),
+                    );
                 }
             }
         }
