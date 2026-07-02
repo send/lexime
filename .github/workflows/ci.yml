@@ -203,8 +203,9 @@ jobs:
         with:
           install: false
 
-      # Restore/save split keyed on the content of the pin file: exactly one
-      # cache entry per pinned Mozc snapshot. On an exact hit, dictool's
+      # Restore/save split keyed on the pinned SHA itself (not a hash of the
+      # whole pin file, so comment-only edits don't churn cache entries):
+      # exactly one cache entry per pinned Mozc snapshot. On an exact hit, dictool's
       # stamp check confirms the restored snapshot matches the pin without a
       # single network call. On a pin bump the exact key misses and
       # restore-keys falls back to the newest previous snapshot, which
@@ -212,12 +213,16 @@ jobs:
       # the stamp mechanism (PR #266) makes any stale restore safe. The save
       # step below only fires on that exact-key miss (first run, or the pin
       # changed).
+      - name: Read pinned Mozc SHA
+        id: mozc-pin
+        run: echo "sha=$(grep -oE -m1 '^[[:space:]]*[0-9a-fA-F]{40}[[:space:]]*$' engine/data/mozc-pin.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
       - name: Restore Mozc dictionary snapshot
         id: mozc-restore
         uses: actions/cache/restore@v4
         with:
           path: engine/data/mozc-raw
-          key: mozc-raw-${{ hashFiles('engine/data/mozc-pin.txt') }}
+          key: mozc-raw-${{ steps.mozc-pin.outputs.sha }}
           restore-keys: |
             mozc-raw-
 
@@ -241,7 +246,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: engine/data/mozc-raw
-          key: mozc-raw-${{ hashFiles('engine/data/mozc-pin.txt') }}
+          key: mozc-raw-${{ steps.mozc-pin.outputs.sha }}
 
   audit:
     needs: changes

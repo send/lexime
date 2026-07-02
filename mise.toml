@@ -58,9 +58,11 @@ outputs = ["engine/data/mozc-raw/.stamp"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-# A pin file without a SHA line yields sha="" (grep's exit code is masked),
-# which dictool then rejects with a clear "must be a full 40-hex SHA" error.
-sha=$(grep -v -e '^#' -e '^[[:space:]]*$' engine/data/mozc-pin.txt | head -n1 | tr -d '[:space:]' || true)
+# Extract the first 40-hex line (allowing surrounding whitespace) — comments
+# in any form and junk lines are excluded by construction. An absent SHA line
+# yields sha="" (grep's exit code is masked), which dictool then rejects with
+# a clear "must be a full 40-hex SHA" error.
+sha=$(grep -oE -m1 '^[[:space:]]*[0-9a-fA-F]{40}[[:space:]]*$' engine/data/mozc-pin.txt | tr -d '[:space:]' || true)
 cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc --sha "$sha" data/mozc-raw
 """
 
