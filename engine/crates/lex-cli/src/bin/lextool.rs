@@ -113,6 +113,26 @@ enum Command {
         top_n: usize,
     },
 
+    /// Audit user history: compare raw engine top-1 against the user's
+    /// dominant committed surface for each learned reading
+    HistoryAudit {
+        /// Path to the compiled dictionary file
+        dict_file: String,
+        /// Path to the compiled connection matrix file
+        conn_file: String,
+        /// Path to the user history checkpoint (.lxud; adjacent WAL is replayed)
+        history_file: String,
+        /// Minimum commit frequency for a reading to be audited
+        #[arg(long, default_value = "2")]
+        min_freq: u32,
+        /// N-best depth used to locate the rank of the dominant choice
+        #[arg(short, long, default_value = "10")]
+        n: usize,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Compare current output against a saved snapshot
     DiffSnapshot {
         /// Path to the compiled dictionary file
@@ -218,6 +238,40 @@ struct AccuracySummary {
 struct AccuracyReport {
     results: Vec<AccuracyResult>,
     summary: AccuracySummary,
+}
+
+// --- History audit types ---
+
+/// A reading where the raw engine top-1 disagrees with the user's dominant choice.
+#[derive(Debug, Serialize)]
+struct AuditMiss {
+    reading: String,
+    /// The surface the user committed most often for this reading.
+    dominant: String,
+    /// Commit frequency of the dominant surface.
+    frequency: u32,
+    /// Raw (no-history) top-1 conversion.
+    raw_top1: String,
+    /// 1-based rank of the dominant surface in the raw N-best; None = absent.
+    rank: Option<usize>,
+    /// Whether the history-boosted top-1 matches the dominant surface.
+    history_fixed: bool,
+}
+
+/// A reading the user regularly commits with more than one surface.
+#[derive(Debug, Serialize)]
+struct AuditFlipFlop {
+    reading: String,
+    surfaces: Vec<(String, u32)>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditReport {
+    audited: usize,
+    agree: usize,
+    agree_rate: String,
+    misses: Vec<AuditMiss>,
+    flip_flops: Vec<AuditFlipFlop>,
 }
 
 fn open_resources(
@@ -690,6 +744,120 @@ fn main() {
             }
         }
 
+        Command::HistoryAudit {
+            dict_file,
+            conn_file,
+            history_file,
+            min_freq,
+            n,
+            json,
+        } => {
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let conn = conn.expect("connection matrix is required for history-audit");
+
+            let (hist, _wal) = lex_core::user_history::wal::open_with_wal(Path::new(&history_file))
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to open user history at {}: {}", history_file, e);
+                    process::exit(1);
+                });
+
+            // Group unigrams by reading
+            let mut by_reading: HashMap<&str, Vec<(&str, u32, u64)>> = HashMap::new();
+            for (reading, surface, entry) in hist.unigrams() {
+                by_reading.entry(reading).or_default().push((
+                    surface,
+                    entry.frequency,
+                    entry.last_used,
+                ));
+            }
+
+            let mut misses: Vec<AuditMiss> = Vec::new();
+            let mut flip_flops: Vec<AuditFlipFlop> = Vec::new();
+            let mut audited = 0usize;
+            let mut agree = 0usize;
+
+            for (reading, mut surfaces) in by_reading {
+                surfaces.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+                let (dominant, frequency, _) = surfaces[0];
+                if frequency < min_freq {
+                    continue;
+                }
+                audited += 1;
+
+                let regulars: Vec<(String, u32)> = surfaces
+                    .iter()
+                    .filter(|s| s.1 >= min_freq)
+                    .map(|(s, f, _)| (s.to_string(), *f))
+                    .collect();
+                if regulars.len() >= 2 {
+                    flip_flops.push(AuditFlipFlop {
+                        reading: reading.to_string(),
+                        surfaces: regulars,
+                    });
+                }
+
+                let paths = convert_nbest(&dict, Some(&conn), reading, n);
+                let joined: Vec<String> = paths
+                    .iter()
+                    .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                    .collect();
+                let raw_top1 = joined.first().cloned().unwrap_or_default();
+                if raw_top1 == dominant {
+                    agree += 1;
+                    continue;
+                }
+
+                let rank = joined.iter().position(|s| s == dominant).map(|i| i + 1);
+                let hist_top1: String =
+                    convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
+                        .first()
+                        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                        .unwrap_or_default();
+
+                misses.push(AuditMiss {
+                    reading: reading.to_string(),
+                    dominant: dominant.to_string(),
+                    frequency,
+                    raw_top1,
+                    rank,
+                    history_fixed: hist_top1 == dominant,
+                });
+            }
+
+            misses.sort_by(|a, b| {
+                b.frequency
+                    .cmp(&a.frequency)
+                    .then_with(|| a.reading.cmp(&b.reading))
+            });
+            flip_flops.sort_by(|a, b| {
+                let fa: u32 = a.surfaces.iter().map(|(_, f)| f).sum();
+                let fb: u32 = b.surfaces.iter().map(|(_, f)| f).sum();
+                fb.cmp(&fa).then_with(|| a.reading.cmp(&b.reading))
+            });
+
+            let rate = if audited > 0 {
+                agree as f64 / audited as f64 * 100.0
+            } else {
+                0.0
+            };
+            let report = AuditReport {
+                audited,
+                agree,
+                agree_rate: format!("{:.1}%", rate),
+                misses,
+                flip_flops,
+            };
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).expect("JSON serialization failed")
+                );
+            } else {
+                print_audit_text(&report, min_freq, n);
+            }
+        }
+
         Command::DiffSnapshot {
             dict_file,
             conn_file,
@@ -791,6 +959,60 @@ fn main() {
             }
         }
     }
+}
+
+fn print_audit_text(report: &AuditReport, min_freq: u32, n: usize) {
+    if !report.misses.is_empty() {
+        println!();
+        println!("=== Misses (raw top-1 != your dominant choice) ===");
+        for m in &report.misses {
+            let rank = match m.rank {
+                Some(r) => format!("rank {}", r),
+                None => format!("not in top-{}", n),
+            };
+            let hist = if m.history_fixed {
+                "history: fixed"
+            } else {
+                "history: NOT fixed"
+            };
+            println!(
+                "  \u{2717} {}: you={} \u{00d7}{}, engine={} ({}, {})",
+                m.reading, m.dominant, m.frequency, m.raw_top1, rank, hist
+            );
+        }
+    }
+
+    if !report.flip_flops.is_empty() {
+        println!();
+        println!("=== Flip-flops (multiple surfaces in regular use) ===");
+        for f in &report.flip_flops {
+            let surfaces: Vec<String> = f
+                .surfaces
+                .iter()
+                .map(|(s, freq)| format!("{} \u{00d7}{}", s, freq))
+                .collect();
+            println!("  ~ {}: {}", f.reading, surfaces.join(" / "));
+        }
+    }
+
+    let history_fixed = report.misses.iter().filter(|m| m.history_fixed).count();
+    println!();
+    println!("=== Summary ===");
+    println!(
+        "  Readings audited: {} (dominant freq >= {})",
+        report.audited, min_freq
+    );
+    println!(
+        "  Raw top-1 agreement: {} ({}/{})",
+        report.agree_rate, report.agree, report.audited
+    );
+    println!(
+        "  Misses: {} (history fixes {}, leaves {})",
+        report.misses.len(),
+        history_fixed,
+        report.misses.len() - history_fixed
+    );
+    println!("  Flip-flops: {}", report.flip_flops.len());
 }
 
 fn print_tune_text(result: &tune::TuneResult) {

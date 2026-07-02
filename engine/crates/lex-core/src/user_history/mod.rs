@@ -224,6 +224,16 @@ impl UserHistory {
         results
     }
 
+    /// Iterate all unigram records as (reading, surface, entry).
+    /// Used by offline tooling (`lextool history-audit`) to mine the history.
+    pub fn unigrams(&self) -> impl Iterator<Item = (&str, &str, &HistoryEntry)> {
+        self.unigrams.iter().flat_map(|(reading, inner)| {
+            inner
+                .iter()
+                .map(move |(surface, entry)| (reading.as_str(), surface.as_str(), entry))
+        })
+    }
+
     /// Reorder dictionary candidates so learned entries appear first.
     pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
         let now = now_epoch();
