@@ -190,6 +190,12 @@ impl LexUserHistory {
         // the flag also makes spawn_compact a no-op for the duration.
         self.acquire_compacting();
         let _guard = CompactingGuard(&self.compacting);
+        // Clearing supersedes queued compaction requests: it truncates the
+        // WAL (unfreezing it) and empties memory, so there is nothing left
+        // for a queued heal to persist. A request racing in after this point
+        // targets the post-clear state and self-heals on the next commit
+        // (every failed append re-issues spawn_compact).
+        self.compact_pending.store(false, Ordering::SeqCst);
         self.clear_locked()
     }
 
@@ -355,21 +361,27 @@ impl LexUserHistory {
 
     /// Force an immediate compaction (used after history deletion to persist changes).
     /// Acquires the compacting guard to serialize with background compaction.
-    pub(super) fn force_compact(&self) {
+    pub(super) fn force_compact(self: &Arc<Self>) {
         self.acquire_compacting();
-        let _guard = CompactingGuard(&self.compacting);
-        // A full checkpoint supersedes any queued background request; a
-        // request racing in after this swap stays pending and is handled by
-        // the next spawn_compact.
-        self.compact_pending.store(false, Ordering::SeqCst);
-        // Unconditional truncate on the deletion path: skipping it could
-        // leave a racing Committed frame for the just-deleted entry in the
-        // WAL, uncovered by the checkpoint written here, and the next replay
-        // would resurrect the deleted learning. Destroying an uncovered
-        // frame instead loses at most that racing commit (v1 semantics; the
-        // structural fix is PR2's Tombstone frames, which make the
-        // delete-after-commit ordering durable in the WAL itself).
-        self.run_compact_impl(false);
+        {
+            let _guard = CompactingGuard(&self.compacting);
+            // The full checkpoint below supersedes requests queued so far.
+            self.compact_pending.store(false, Ordering::SeqCst);
+            // Unconditional truncate on the deletion path: skipping it could
+            // leave a racing Committed frame for the just-deleted entry in the
+            // WAL, uncovered by the checkpoint written here, and the next replay
+            // would resurrect the deleted learning. Destroying an uncovered
+            // frame instead loses at most that racing commit (v1 semantics; the
+            // structural fix is PR2's Tombstone frames, which make the
+            // delete-after-commit ordering durable in the WAL itself).
+            self.run_compact_impl(false);
+        }
+        // Drain requests that raced in while this thread held the flag —
+        // their snapshot requirements postdate ours (same reasoning as the
+        // background loop's re-check).
+        if self.compact_pending.load(Ordering::SeqCst) {
+            self.spawn_compact();
+        }
     }
 
     fn run_compact(&self) {
