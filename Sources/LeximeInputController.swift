@@ -280,9 +280,11 @@ class LeximeInputController: IMKInputController {
     // We intercept to toggle abc_passthrough in the Rust engine.
     // Other mode changes (Caps Lock etc.) are blocked during composition.
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
+        // The mode IDs IMKit passes here are the tsInputModeListKey keys from
+        // Info.plist, which are identical to the TIS input source IDs.
         let modeID = value as? String ?? ""
 
-        if modeID == ModeController.romanModeID {
+        if modeID == LeximeInputSourceID.roman {
             if let coordinator, coordinator.isComposing, let client = sender as? IMKTextInput {
                 coordinator.commit(client: client)
             }
@@ -290,7 +292,7 @@ class LeximeInputController: IMKInputController {
             super.setValue(value, forTag: tag, client: sender)
             return
         }
-        if modeID == ModeController.japaneseModeID {
+        if modeID == LeximeInputSourceID.japanese {
             coordinator?.setAbcPassthrough(enabled: false)
             super.setValue(value, forTag: tag, client: sender)
             return

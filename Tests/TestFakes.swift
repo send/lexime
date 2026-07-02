@@ -107,6 +107,16 @@ final class FakePanel: CandidatePanelDisplaying {
     }
 }
 
+/// Records ABC-revert delegations so tests can verify the target mode a
+/// caller passes without touching real TIS APIs or spawning timers.
+final class FakeAbcReverter: AbcReverting {
+    var revertCalls: [String] = []
+
+    func revertFromAbc(to targetID: String) {
+        revertCalls.append(targetID)
+    }
+}
+
 /// In-memory fake of `LexSessionProtocol`. Tests queue responses to be returned
 /// by `handleKey` / `commit` and inspect recorded calls afterwards.
 final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {

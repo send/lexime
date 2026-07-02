@@ -36,6 +36,7 @@ struct TestMain {
         testSnippetTOML()
         testCandidateManager()
         testModeController()
+        testAbcRevertPolicy()
         testSessionCoordinator()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")

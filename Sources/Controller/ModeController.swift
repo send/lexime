@@ -5,13 +5,11 @@ import Foundation
 /// IMKit ESC race where macOS silently flips the user to standard ABC.
 final class ModeController {
 
-    private static let escapeRevertRetryInterval: TimeInterval = 0.05
-    private static let escapeRevertRetryMaxAttempts = 5
+    private let reverter: AbcReverting
 
-    // IMKit mode IDs as declared in Info.plist's tsInputModeListKey.
-    // These match the values IMKit passes to setValue(_:forTag:client:).
-    static let japaneseModeID = "sh.send.inputmethod.Lexime.Japanese"
-    static let romanModeID = "sh.send.inputmethod.Lexime.Roman"
+    init(reverter: AbcReverting = InputSourceReverter.shared) {
+        self.reverter = reverter
+    }
 
     /// Set when ESC is pressed during composing, so commitComposition can
     /// guard against macOS switching to standard ABC.
@@ -34,18 +32,14 @@ final class ModeController {
         InputSource.select(id: LeximeInputSourceID.standardABC)
     }
 
-    /// If the ESC race flipped us to standard ABC, retry reverting to the
-    /// Lexime Japanese mode. The IMKit race fires asynchronously so we check
-    /// each tick, and we re-select on subsequent ticks if still on ABC to
-    /// recover from silent TISSelectInputSource failures.
-    func revertToLeximeIfEscapeRaced(attempt: Int = 0) {
-        guard attempt < Self.escapeRevertRetryMaxAttempts else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.escapeRevertRetryInterval) { [weak self] in
-            guard let self else { return }
-            if InputSource.isCurrentStandardABC() {
-                InputSource.select(id: LeximeInputSourceID.japanese)
-            }
-            self.revertToLeximeIfEscapeRaced(attempt: attempt + 1)
-        }
+    /// If the ESC race flipped us to standard ABC, revert to the Lexime
+    /// *Japanese* mode: the race is an accident that interrupts active
+    /// Japanese composing, so the user should land back where they were.
+    /// (Contrast with InputSourceMonitor, which normalizes a bare ABC
+    /// appearance to Lexime Roman.) The race fires asynchronously after the
+    /// ESC commit, so the reverter's whole retry window doubles as the watch
+    /// window for the flip to arrive.
+    func revertToLeximeIfEscapeRaced() {
+        reverter.revertFromAbc(to: LeximeInputSourceID.japanese)
     }
 }
