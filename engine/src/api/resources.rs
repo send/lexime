@@ -418,10 +418,13 @@ impl LexUserHistory {
         };
 
         // 2. Write checkpoint (no locks held, slow I/O)
-        if let Err(e) = snapshot.save(&cp_path) {
-            warn!("checkpoint write failed: {e}");
-            return;
-        }
+        let rename_confirmed = match snapshot.save_reporting_durability(&cp_path) {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                warn!("checkpoint write failed: {e}");
+                return;
+            }
+        };
 
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
@@ -430,6 +433,19 @@ impl LexUserHistory {
         // replay correct either way, and the entry count stays above the
         // threshold so the next compaction retries soon.
         if let Ok(mut wal) = self.wal.lock() {
+            // Truncation destroys frames whose only other copy is the new
+            // checkpoint; if the rename's durability was not confirmed, a
+            // power loss could roll back to the previous checkpoint while
+            // the truncation persists (deletion-path exception below).
+            if covered_only && !rename_confirmed {
+                warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
+                return;
+            }
+            if !rename_confirmed {
+                // Deletion path: prioritize the privacy wipe (matching v1,
+                // which had no dir fsync at all) over the rollback window.
+                warn!("checkpoint rename durability unconfirmed; truncating anyway for deletion");
+            }
             let result = if covered_only {
                 match wal.truncate_covered(snapshot.applied_seq()) {
                     Ok(true) => Ok(()),

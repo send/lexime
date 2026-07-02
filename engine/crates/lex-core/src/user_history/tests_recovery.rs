@@ -1027,6 +1027,68 @@ impl super::wal::WalIo for FailingIo {
     }
 }
 
+/// Records barrier calls (durability-cadence tests).
+#[derive(Default)]
+struct CountingIo {
+    barriers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl super::wal::WalIo for CountingIo {
+    fn append(&mut self, _buf: &[u8]) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn sync_barrier(&mut self) -> std::io::Result<()> {
+        self.barriers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn sync_full(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn truncate_to_header(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn barrier_reissued_on_first_append_after_replay() {
+    // Frames replayed from a previous process may include an unbarriered
+    // tail; the first new append must issue a barrier so the documented
+    // power-loss bound (<= BARRIER_EVERY_FRAMES commits) survives restarts.
+    let f = fx();
+    {
+        let mut wal = HistoryWal::new(&f.cp);
+        for _ in 0..3 {
+            wal.append(&seg(A), T0).unwrap();
+        }
+    }
+    let barriers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let io = CountingIo {
+        barriers: std::sync::Arc::clone(&barriers),
+    };
+    let mut h = UserHistory::new();
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    wal.replay(&mut h, super::wal::CheckpointOrigin::Missing)
+        .unwrap();
+    wal.append(&seg(B), T0 + 1).unwrap();
+    assert_eq!(
+        barriers.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "first append after replaying existing frames must barrier"
+    );
+
+    // A fresh (empty) WAL keeps the normal cadence: no barrier on the first
+    // append.
+    let f2 = fx();
+    let barriers2 = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let io2 = CountingIo {
+        barriers: std::sync::Arc::clone(&barriers2),
+    };
+    let mut wal2 = HistoryWal::with_io(&f2.cp, Box::new(io2));
+    wal2.append(&seg(A), T0).unwrap();
+    assert_eq!(barriers2.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 #[test]
 fn committed_barrier_failure_still_returns_seq() {
     // A failed barrier after a successful frame write must not surface as

@@ -96,7 +96,10 @@ pub(super) fn load_checkpoint(path: &Path) -> io::Result<CheckpointLoaded> {
 /// to the previous checkpoint, never corruption. The tmp name appends
 /// `.tmp` to the full file name (`with_extension` would strip `.lxud` and
 /// leave a stray `user_history.tmp`).
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Returns whether the rename's durability was confirmed (parent-dir fsync
+/// succeeded). On `false`, callers must not destroy data that only the new
+/// file covers — a power loss could still roll the rename back.
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     let tmp = tmp_path(path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -106,8 +109,7 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     f.sync_all()?;
     drop(f);
     fs::rename(&tmp, path)?;
-    sync_parent_dir(path);
-    Ok(())
+    Ok(sync_parent_dir(path))
 }
 
 fn tmp_path(path: &Path) -> PathBuf {
@@ -119,10 +121,15 @@ fn tmp_path(path: &Path) -> PathBuf {
 /// Best-effort fsync of the parent directory so the rename itself is
 /// durable. APFS likely journals renames already; this is POSIX practice on
 /// a background path, so it costs nothing and failures are non-fatal.
-fn sync_parent_dir(path: &Path) {
-    let Some(parent) = path.parent() else { return };
-    if let Ok(dir) = File::open(parent) {
-        let _ = dir.sync_all();
+/// Returns whether the sync succeeded (callers gate destructive follow-ups
+/// like WAL truncation on it).
+fn sync_parent_dir(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    match File::open(parent) {
+        Ok(dir) => dir.sync_all().is_ok(),
+        Err(_) => false,
     }
 }
 
@@ -208,6 +215,15 @@ impl UserHistory {
 
     /// Atomic durable write (see [`write_atomic`]).
     pub fn save(&self, path: &Path) -> Result<(), io::Error> {
+        self.save_reporting_durability(path).map(|_| ())
+    }
+
+    /// Like [`Self::save`], additionally reporting whether the rename was
+    /// confirmed durable (parent-dir fsync succeeded). On `false` the
+    /// content is written and synced but a power loss may roll back to the
+    /// previous checkpoint — callers must not destroy data that only the
+    /// new checkpoint covers (e.g. skip WAL truncation).
+    pub fn save_reporting_durability(&self, path: &Path) -> Result<bool, io::Error> {
         let bytes = self.to_bytes()?;
         write_atomic(path, &bytes)
     }

@@ -507,7 +507,16 @@ impl HistoryWal {
         self.wal_bytes = file_bytes.max(WAL_HEADER_LEN as u64);
         self.last_appended_seq = max_seq;
         self.next_seq = max_seq.max(applied_seq) + 1;
-        self.frames_since_barrier = 0;
+        // Existing frames may include an unbarriered tail from before the
+        // restart (their power-loss durability is unknown even though they
+        // were readable). Seed the counter so the first new append issues a
+        // barrier, flushing them along with it — otherwise the documented
+        // <= BARRIER_EVERY_FRAMES loss bound could double across a restart.
+        self.frames_since_barrier = if valid_frames > 0 {
+            BARRIER_EVERY_FRAMES - 1
+        } else {
+            0
+        };
     }
 
     pub(super) fn adopt_empty(&mut self, applied_seq: u64) {

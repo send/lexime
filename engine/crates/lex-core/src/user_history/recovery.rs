@@ -236,8 +236,8 @@ pub fn open_recovering(
         // the still-v1 checkpoint. Those frames were replayed above, so the
         // checkpoint written here covers them (its applied_seq reflects the
         // replay) and they are correctly skipped from now on.
-        match history.save(checkpoint_path) {
-            Ok(()) => {
+        match history.save_reporting_durability(checkpoint_path) {
+            Ok(rename_confirmed) => {
                 // Commit point passed: from here any crash leaves a v2
                 // checkpoint, and a leftover v1 WAL is discarded on the next
                 // startup (idempotent).
@@ -246,8 +246,22 @@ pub fn open_recovering(
                     report.checkpoint_state = CheckpointState::Migrated;
                 }
                 if legacy_wal_consumed {
-                    report.wal_state = WalState::Reinitialized;
-                    reinitialize(&mut wal, &history);
+                    if rename_confirmed {
+                        report.wal_state = WalState::Reinitialized;
+                        reinitialize(&mut wal, &history);
+                    } else {
+                        // The rename could still be rolled back by a power
+                        // loss; destroying the v1 WAL now could lose the
+                        // only copy of its frames. Both leftover states are
+                        // safe: v2 cp + v1 WAL is discarded as residue, v1
+                        // cp + v1 WAL re-migrates. A later compaction
+                        // (checkpointing memory, which contains everything)
+                        // completes the reinit.
+                        warn!(
+                            "migration rename durability unconfirmed; keeping v1 WAL until a later compaction"
+                        );
+                        wal.freeze();
+                    }
                 }
                 info!(
                     "user history migrated from v1 (frames: {})",
