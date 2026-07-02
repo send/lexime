@@ -2,8 +2,9 @@
 //!
 //! The core guarantee is "no path silently stops learning forever": whatever
 //! the on-disk state, `open_recovering` succeeds and returns a usable
-//! history, with corruption quarantined (renamed, never deleted — the bytes
-//! stay rescuable) and a report of what happened. The only `Err` is an
+//! history, with corruption quarantined (renamed aside so the bytes stay
+//! rescuable; see [`quarantine`] for the last-resort fallbacks when even the
+//! rename fails) and a report of what happened. The only `Err` is an
 //! environmental read failure (EACCES etc.), which is visible degradation,
 //! not a silent stop.
 //!
@@ -305,10 +306,14 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Rename `path` aside as `<name>.corrupt-<epoch>[-n]`. Falls back to
-/// removal if rename fails; if even that fails, leaves the file in place
-/// (subsequent writes will try to overwrite it). Returns whether `path` is
-/// now clear.
+/// Rename `path` aside as `<name>.corrupt-<epoch>[-n]`, preserving the
+/// bytes for manual rescue. If the rename fails, removal is attempted as a
+/// last resort — clearing the path so subsequent saves can recreate it is
+/// prioritized over byte preservation at that point (in practice rename and
+/// removal need the same directory permission, so a byte-destroying
+/// fallback is nearly unreachable); if even that fails, the file stays in
+/// place and later saves will try to overwrite it. Returns whether `path`
+/// is now clear.
 fn quarantine(path: &Path, quarantined: &mut Vec<PathBuf>) -> bool {
     let ts = super::now_epoch();
     for n in 0..10 {
