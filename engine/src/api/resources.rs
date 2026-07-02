@@ -431,7 +431,23 @@ impl LexUserHistory {
         // threshold so the next compaction retries soon.
         if let Ok(mut wal) = self.wal.lock() {
             let result = if covered_only {
-                wal.truncate_covered(snapshot.applied_seq()).map(|_| ())
+                match wal.truncate_covered(snapshot.applied_seq()) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => {
+                        // Frames landed after our snapshot. Re-run promptly
+                        // (the spawn_compact loop and force_compact both
+                        // drain compact_pending): a commit whose in-memory
+                        // effect raced into this checkpoint before its frame
+                        // was sequenced would otherwise be re-applied by a
+                        // restart replay until the next threshold compaction
+                        // covers it. The prompt re-run closes that window in
+                        // milliseconds. (Structural fix — WAL-ahead ordering
+                        // under the wal mutex — lands in PR2.)
+                        self.compact_pending.store(true, Ordering::SeqCst);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             } else {
                 wal.truncate_wal()
             };
