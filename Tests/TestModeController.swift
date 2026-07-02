@@ -33,21 +33,22 @@ func testModeController() {
     // revertToLeximeIfEscapeRaced delegates to the shared reverter with the
     // Lexime *Japanese* mode as the target: the ESC race interrupts active
     // Japanese composing, so recovery must land back on Japanese (unlike
-    // InputSourceMonitor, which normalizes bare ABC to Roman).
+    // InputSourceMonitor, which normalizes bare ABC to Roman). It must use
+    // the *watch* variant because the IMKit flip to ABC lands asynchronously
+    // after the ESC commit.
     do {
         let fake = FakeAbcReverter()
         let mc = ModeController(reverter: fake)
         mc.revertToLeximeIfEscapeRaced()
-        assertEqual(fake.revertCalls, [LeximeInputSourceID.japanese],
-                    "ESC-race revert targets the Japanese mode")
+        assertEqual(fake.calls, [.revertWhenAbcAppears(LeximeInputSourceID.japanese)],
+                    "ESC-race recovery watches for ABC and targets Japanese")
         mc.revertToLeximeIfEscapeRaced()
-        assertEqual(fake.revertCalls.count, 2,
+        assertEqual(fake.calls.count, 2,
                     "each ESC-race recovery delegates one revert")
     }
 
-    // NOTE: The live retry loop (InputSourceReverter) calls TIS APIs and
-    // spawns DispatchQueue.main.asyncAfter work. Exercising it in a CLI test
-    // process would mutate the user's real input source and leak timers past
-    // test teardown, so tests cover the delegation boundary (above) and the
-    // pure revert policy (TestAbcRevertPolicy), not the TIS-side loop.
+    // NOTE: The shared retry loop itself is covered by TestInputSourceReverter
+    // (with injected TIS/scheduler fakes) and the ownership policy by
+    // TestAbcRevertPolicy; this file covers ModeController's delegation
+    // boundary and the escape-flag state machine only.
 }

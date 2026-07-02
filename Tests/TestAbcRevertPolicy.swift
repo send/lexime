@@ -90,4 +90,21 @@ func testAbcRevertPolicy() {
         assertTrue(policy.shouldRevert(currentID: abc),
                    "second race after recovery is reverted again")
     }
+
+    // Deferred-revert ownership re-check (secure input regression): a revert
+    // scheduled for a Lexime -> ABC transition can fire much later (up to the
+    // 60s secure-input poll). If the user meanwhile moved to another source
+    // and then deliberately re-selected ABC, re-evaluating the policy at fire
+    // time must now say "leave it alone".
+    do {
+        var policy = AbcRevertPolicy()
+        policy.observe(japanese)
+        policy.observe(abc)       // Lexime -> ABC detected, revert deferred
+        assertTrue(policy.shouldRevert(currentID: abc),
+                   "claim valid when the revert was scheduled")
+        policy.observe(otherIME)  // user moves on during the wait...
+        policy.observe(abc)       // ...then deliberately re-selects ABC
+        assertTrue(!policy.shouldRevert(currentID: abc),
+                   "claim lapsed by fire time: deferred revert must be skipped")
+    }
 }

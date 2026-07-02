@@ -152,7 +152,18 @@ final class InputSourceMonitor: NSObject {
     /// itself is handled first by ModeController, which reverts to Japanese
     /// well before our `autoRevertDelay` fires — by then the source is no
     /// longer ABC and the reverter's per-tick ABC check leaves it alone.)
+    ///
+    /// All callers reach this after a delay (`autoRevertDelay`, the wake
+    /// recheck, or up to `secureInputPollTimeout` of secure-input polling),
+    /// so re-validate ownership at fire time: `inputSourceDidChange` kept
+    /// observing in the meantime, and if the user moved to another source and
+    /// then deliberately re-selected ABC, the claim this revert was scheduled
+    /// under no longer holds.
     private func revertToRoman() {
+        guard revertPolicy.shouldRevert(currentID: InputSource.currentID()) else {
+            NSLog("Lexime: ABC ownership lapsed before revert fired, leaving it alone")
+            return
+        }
         reverter.revertFromAbc(to: LeximeInputSourceID.roman)
     }
 

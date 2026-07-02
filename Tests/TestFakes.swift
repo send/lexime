@@ -107,13 +107,22 @@ final class FakePanel: CandidatePanelDisplaying {
     }
 }
 
-/// Records ABC-revert delegations so tests can verify the target mode a
-/// caller passes without touching real TIS APIs or spawning timers.
+/// Records ABC-revert delegations so tests can verify the target mode and
+/// entry point a caller uses without touching real TIS APIs or timers.
 final class FakeAbcReverter: AbcReverting {
-    var revertCalls: [String] = []
+    enum Call: Equatable {
+        case revertFromAbc(String)
+        case revertWhenAbcAppears(String)
+    }
+
+    var calls: [Call] = []
 
     func revertFromAbc(to targetID: String) {
-        revertCalls.append(targetID)
+        calls.append(.revertFromAbc(targetID))
+    }
+
+    func revertWhenAbcAppears(to targetID: String) {
+        calls.append(.revertWhenAbcAppears(targetID))
     }
 }
 

@@ -37,6 +37,7 @@ struct TestMain {
         testCandidateManager()
         testModeController()
         testAbcRevertPolicy()
+        testInputSourceReverter()
         testSessionCoordinator()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")

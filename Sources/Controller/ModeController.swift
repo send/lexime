@@ -37,9 +37,9 @@ final class ModeController {
     /// Japanese composing, so the user should land back where they were.
     /// (Contrast with InputSourceMonitor, which normalizes a bare ABC
     /// appearance to Lexime Roman.) The race fires asynchronously after the
-    /// ESC commit, so the reverter's whole retry window doubles as the watch
-    /// window for the flip to arrive.
+    /// ESC commit, so we use the watch variant: the reverter's retry window
+    /// doubles as the watch window for the flip to arrive.
     func revertToLeximeIfEscapeRaced() {
-        reverter.revertFromAbc(to: LeximeInputSourceID.japanese)
+        reverter.revertWhenAbcAppears(to: LeximeInputSourceID.japanese)
     }
 }
