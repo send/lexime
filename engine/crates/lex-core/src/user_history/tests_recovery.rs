@@ -896,6 +896,24 @@ fn append_onto_stub_recreates_header() {
 }
 
 #[test]
+fn append_refused_on_corrupt_header() {
+    // A live handle must not append after unreadable header bytes: the next
+    // startup would quarantine the whole file, new frames included. The
+    // failed append freezes the WAL; truncation heals it.
+    let f = fx();
+    fs::write(&f.wal, b"XXXXXXXX-garbage").unwrap();
+    let mut wal = HistoryWal::new(&f.cp);
+    assert!(wal.append(&seg(A), T0).is_err());
+    assert!(wal.is_frozen());
+    wal.truncate_wal().unwrap();
+    assert!(!wal.is_frozen());
+    wal.append(&seg(A), T0).unwrap();
+    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    assert!(present(&h, A));
+    assert_eq!(report.frames_replayed, 1);
+}
+
+#[test]
 fn wal_unknown_version_quarantined() {
     let f = fx();
     build_v2_state(&f, false);

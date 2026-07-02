@@ -436,15 +436,24 @@ impl LexUserHistory {
             // Truncation destroys frames whose only other copy is the new
             // checkpoint; if the rename's durability was not confirmed, a
             // power loss could roll back to the previous checkpoint while
-            // the truncation persists (deletion-path exception below).
-            if covered_only && !rename_confirmed {
+            // the truncation persists. Exceptions: the deletion path
+            // (privacy wipe over the rollback window, matching v1 which had
+            // no dir fsync at all) and a frozen WAL — truncation is its only
+            // in-process heal, and its unreadable tail would be cut by the
+            // next recovery replay anyway.
+            if covered_only && !rename_confirmed && !wal.is_frozen() {
                 warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
                 return;
             }
             if !rename_confirmed {
-                // Deletion path: prioritize the privacy wipe (matching v1,
-                // which had no dir fsync at all) over the rollback window.
-                warn!("checkpoint rename durability unconfirmed; truncating anyway for deletion");
+                warn!(
+                    "checkpoint rename durability unconfirmed; truncating anyway ({})",
+                    if covered_only {
+                        "frozen-WAL heal"
+                    } else {
+                        "deletion path"
+                    }
+                );
             }
             let result = if covered_only {
                 match wal.truncate_covered(snapshot.applied_seq()) {

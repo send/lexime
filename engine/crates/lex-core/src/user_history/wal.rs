@@ -126,6 +126,7 @@ impl FileWalIo {
                 fs::create_dir_all(parent)?;
             }
             let mut f = OpenOptions::new()
+                .read(true)
                 .create(true)
                 .append(true)
                 .open(&self.path)?;
@@ -143,6 +144,23 @@ impl FileWalIo {
                 // page is lost, and recovery would misclassify the file as
                 // headerless and quarantine otherwise-recoverable frames.
                 barrier_fsync(&f)?;
+            } else {
+                // Validate the existing header: appending after unreadable
+                // header bytes (external edit, on-disk rot) would get the
+                // whole file — new frames included — quarantined at the
+                // next startup. The Err freezes the WAL via append_record's
+                // failure path; compaction heals it by re-creating the file.
+                use std::io::{Read, Seek, SeekFrom};
+                let mut header = [0u8; WAL_HEADER_LEN];
+                f.seek(SeekFrom::Start(0))?;
+                f.read_exact(&mut header)?;
+                // O_APPEND writes always go to EOF; no seek-back needed.
+                if header != WAL_HEADER {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "WAL header mismatch; refusing to append",
+                    ));
+                }
             }
             self.file = Some(f);
         }
