@@ -58,11 +58,24 @@ impl InputSession {
         if self.history.is_none() {
             return;
         }
-        let segments = self.comp().find_matching_path(&surface);
+        let (segments, rank, top1) = {
+            let c = self.comp();
+            let rank = c.candidates.selected;
+            let top1 = if rank > 0 {
+                c.candidates.surfaces.first().cloned()
+            } else {
+                None
+            };
+            (c.find_matching_path(&surface), rank, top1)
+        };
         self.history_records.push(LearningRecord::Committed {
             reading,
             surface,
             segments,
+            rank,
+            top1,
+            auto: false,
+            learn: true,
         });
     }
 

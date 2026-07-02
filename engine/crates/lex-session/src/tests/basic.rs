@@ -416,6 +416,49 @@ fn test_history_not_recorded_on_escape() {
     assert!(records.is_empty());
 }
 
+#[test]
+fn test_history_record_includes_rank_and_top1() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    // Accepting top-1: rank 0, no top1, not auto
+    type_string(&mut session, "kyou");
+    session.handle_key(KeyEvent::Enter);
+    let records = session.take_history_records();
+    let LearningRecord::Committed {
+        rank, top1, auto, ..
+    } = &records[0]
+    else {
+        panic!("expected Committed record");
+    };
+    assert_eq!(*rank, 0);
+    assert!(top1.is_none());
+    assert!(!auto);
+
+    // Manual selection: rank reflects the picked index, top1 is recorded
+    type_string(&mut session, "kyou");
+    let expected_top1 = session.comp().candidates.surfaces[0].clone();
+    session.handle_key(KeyEvent::Space); // move selection to index 1
+    let expected_surface = session.comp().candidates.surfaces[1].clone();
+    session.handle_key(KeyEvent::Enter);
+    let records = session.take_history_records();
+    let LearningRecord::Committed {
+        rank,
+        top1,
+        surface,
+        auto,
+        ..
+    } = &records[0]
+    else {
+        panic!("expected Committed record");
+    };
+    assert_eq!(*rank, 1);
+    assert_eq!(top1.as_deref(), Some(expected_top1.as_str()));
+    assert_eq!(surface, &expected_surface);
+    assert!(!auto);
+}
+
 // --- Cyclic index ---
 
 #[test]
