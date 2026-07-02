@@ -273,7 +273,7 @@ category = "regression"
 tags = ["partial-hiragana"]
 skip = true
 issue = "#273"
-note = "した方がいい は PartialHiraganaRewriter で生成されるが history boost なしでは top-1 にならない。Mozc 2026-07 スナップショットで 下ほうが良い が top-1 に drift"
+note = "した方がいい は PartialHiraganaRewriter で生成されるが history boost なしでは top-1 にならない。2026-07 pin では 下ほうが良い (24981) が したほうが良い (26981) に viterbi で勝つ: 下(した)=名詞,接尾 word=20 + conn(下→ほうが)=0 が支配的で、script bonus 側 (Fix 4) では 2000 の gap を埋められない。辞書 curation (Fix 5) 案件"
 
 [[cases]]
 reading = "どれ"
@@ -459,9 +459,8 @@ reading = "しかかり"
 expected = "仕掛"
 category = "extras"
 tags = ["it", "business"]
-skip = true
 issue = "#273"
-note = "Mozc 2026-07 スナップショットで しか借り が top-1 に drift"
+note = "extras POS id 再校正 (#273): id.def 番号ズレで extras が 名詞,一般,あと (BOS 4843) に落ち しか借り に drift していた"
 
 [[cases]]
 reading = "たんじゃお"
@@ -474,9 +473,8 @@ reading = "ほわじゃお"
 expected = "花椒"
 category = "extras"
 tags = ["food", "domain-reading"]
-skip = true
 issue = "#273"
-note = "Mozc 2026-07 スナップショットで ホワジャオ が top-1 に drift (cost-conflict 校正が旧スナップショット前提)"
+note = "extras POS id 再校正 (#273) 前は ホワジャオ に drift していた"
 
 [[cases]]
 reading = "いっぽどう"
@@ -512,9 +510,16 @@ reading = "えいろく"
 expected = "永禄"
 category = "extras"
 tags = ["history", "era"]
-skip = true
 issue = "#273"
-note = "Mozc top-1 は 栄禄 (obscure)。Wikipedia corpus mining で発見。Mozc 2026-07 スナップショットで 栄禄 が再び top-1 に drift"
+note = "Mozc top-1 は 栄禄 (obscure)。Wikipedia corpus mining で発見。extras POS id 再校正 (#273) で再 fix"
+
+[[cases]]
+reading = "えんきょう"
+expected = "延享"
+category = "extras"
+tags = ["history", "era"]
+issue = "#273"
+note = "extras POS id 再校正 (#273) 前は 円強 (gibberish) が top-1 に drift していた regression ガード"
 
 [[cases]]
 reading = "じゅごい"
@@ -572,6 +577,14 @@ reading = "しんちょうぶんこ"
 expected = "新潮文庫"
 category = "extras"
 tags = ["culture", "publisher"]
+
+[[cases]]
+reading = "こうぶんどう"
+expected = "弘文堂"
+category = "extras"
+tags = ["culture", "publisher"]
+issue = "#273"
+note = "extras POS id 再校正 (#273) 前は 光文堂 が top-1 に drift していた regression ガード"
 
 [[cases]]
 reading = "かどかわにほんちめいだいじてん"
@@ -724,9 +737,8 @@ reading = "ましん"
 expected = "マシン"
 category = "loanword"
 tags = ["history-audit", "it"]
-skip = true
 issue = "#273"
-note = "麻しん が top-1 だった。katakana_penalty 5000→150 で fix (#261)。Mozc 2026-07 スナップショットのコスト変更で 麻しん に再 drift (tie-breaker 150 が旧コスト前提)"
+note = "麻しん が top-1 だった。katakana_penalty 5000→150 で fix (#261)。2026-07 pin で margin 79 に再逆転 → extras cost-override (マシン 3500) で再 fix (#273)。医療系複合語 (麻しんワクチン 等) は Mozc の複合語エントリで維持"
 
 [[cases]]
 reading = "えんじん"
@@ -1062,9 +1074,8 @@ issue = "#261"
 
 [[cases]]
 reading = "かっこ"
-expected = "カッコ"
+expected = "括弧"
 category = "loanword"
 tags = ["katakana-policy"]
-skip = true
 issue = "#273"
-note = "設計判断: 括弧 rank 2 を許容 (#261 Q1)。漢字が欲しい場合は履歴学習で flip。Mozc 2026-07 スナップショットのコスト変更で 括弧 が top-1 に drift"
+note = "設計判断ガード (#261 Q1): katakana_penalty はタイブレーカーに留め辞書序列に従う。旧 snapshot は カッコ、2026-07 pin は 括弧 が辞書優位 (margin 109) — 設計に従い expected を更新 (#273)。カタカナが欲しい場合は履歴学習で flip"
