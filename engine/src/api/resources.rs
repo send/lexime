@@ -98,6 +98,12 @@ struct CommitLog {
 impl CommitLog {
     fn append(&mut self, line: &str) -> std::io::Result<()> {
         if self.file.is_none() {
+            // Mirror HistoryWal::open_file: on a fresh install the first
+            // logged event can precede any WAL append, so the parent
+            // directory may not exist yet.
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             self.file = Some(
                 std::fs::OpenOptions::new()
                     .create(true)
@@ -275,7 +281,9 @@ mod tests {
     #[test]
     fn test_commit_log_append_and_clear() {
         let dir = tempfile::tempdir().unwrap();
-        let cp = dir.path().join("history.lxud");
+        // Nested path that does not exist yet: the first append must create
+        // the parent directory (fresh-install case).
+        let cp = dir.path().join("nested").join("history.lxud");
         let hist = LexUserHistory::open(cp.display().to_string()).unwrap();
 
         hist.append_commit_log(r#"{"t":1,"reading":"きょう","surface":"今日","rank":0}"#);
@@ -283,7 +291,7 @@ mod tests {
             r#"{"t":2,"reading":"きょう","surface":"京","rank":2,"top1":"今日"}"#,
         );
 
-        let log_path = dir.path().join("commit-log.jsonl");
+        let log_path = dir.path().join("nested").join("commit-log.jsonl");
         let content = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(content.lines().count(), 2);
 
