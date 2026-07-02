@@ -30,6 +30,27 @@ fn test_frequency_increment() {
 }
 
 #[test]
+fn test_unigrams_iterator() {
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "今日".into())]);
+    h.record(&[("きょう".into(), "今日".into())]);
+    h.record(&[("きょう".into(), "京".into())]);
+
+    let mut records: Vec<(String, String, u32)> = h
+        .unigrams()
+        .map(|(r, s, e)| (r.to_string(), s.to_string(), e.frequency))
+        .collect();
+    records.sort();
+    assert_eq!(
+        records,
+        vec![
+            ("きょう".to_string(), "京".to_string(), 1),
+            ("きょう".to_string(), "今日".to_string(), 2),
+        ]
+    );
+}
+
+#[test]
 fn test_serialize_roundtrip() {
     let mut h = UserHistory::new();
     h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
