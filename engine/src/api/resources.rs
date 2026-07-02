@@ -447,8 +447,21 @@ impl LexUserHistory {
             // full memory): slower, but nothing is lost and learning never
             // stops. The only exception is the deletion path below.
             if covered_only && !rename_confirmed {
-                warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
-                return;
+                // Escape hatch: on a filesystem where the parent-dir fsync
+                // never succeeds, skipping forever would grow the WAL
+                // without bound (startup replay reads the whole file). Past
+                // a hard cap, accept the theoretical rename-rollback window
+                // — dir-fsync-less filesystems rely on journaling for
+                // rename durability anyway — over unbounded growth.
+                const UNCONFIRMED_TRUNCATE_CAP_BYTES: u64 = 8 * 1024 * 1024;
+                if wal.file_bytes() < UNCONFIRMED_TRUNCATE_CAP_BYTES {
+                    warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
+                    return;
+                }
+                warn!(
+                    "checkpoint rename durability unconfirmed but WAL exceeded {} bytes; truncating",
+                    UNCONFIRMED_TRUNCATE_CAP_BYTES
+                );
             }
             if !rename_confirmed {
                 // Deletion path: prioritize the privacy wipe (matching v1,

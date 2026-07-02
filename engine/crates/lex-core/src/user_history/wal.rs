@@ -518,6 +518,11 @@ impl HistoryWal {
         self.entry_count
     }
 
+    /// Approximate on-disk size (header + appended frames).
+    pub fn file_bytes(&self) -> u64 {
+        self.wal_bytes
+    }
+
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
         self.frozen
