@@ -224,120 +224,15 @@ impl LexSession {
         Some(convert_to_events(resp, epoch))
     }
 
+    /// Persist a batch of learning records. The whole protocol — WAL-ahead
+    /// append, in-memory apply, commit log, compaction scheduling — lives
+    /// in [`LexUserHistory::apply_records`] (§5.2).
     fn record_history(&self, records: &[LearningRecord]) {
         if records.is_empty() {
             return;
         }
-        let Some(ref h) = self.history else {
-            return;
-        };
-
-        // Phase 1: in-memory update (write lock)
-        let now = crate::user_history::now_epoch();
-        let mut wal_entries: Vec<Vec<(String, String)>> = Vec::new();
-        let mut needs_compact = false;
-        let mut log_lines: Vec<String> = Vec::new();
-        if let Ok(mut hist) = h.inner.write() {
-            for r in records {
-                match r {
-                    LearningRecord::Committed {
-                        reading,
-                        surface,
-                        segments,
-                        rank,
-                        top1,
-                        auto,
-                        learn,
-                    } => {
-                        if *learn {
-                            let segs = vec![(reading.clone(), surface.clone())];
-                            hist.record_at(&segs, now);
-                            wal_entries.push(segs);
-                            if let Some(sub_segs) = segments {
-                                hist.record_at(sub_segs, now);
-                                wal_entries.push(sub_segs.clone());
-                            }
-                        }
-                        log_lines.push(commit_log_line(
-                            now,
-                            reading,
-                            surface,
-                            *rank,
-                            top1.as_deref(),
-                            *auto,
-                        ));
-                    }
-                    LearningRecord::Deletion { segments } => {
-                        if hist.remove_entries(segments) {
-                            needs_compact = true;
-                        }
-                    }
-                }
-            }
+        if let Some(ref h) = self.history {
+            h.apply_records(records);
         }
-
-        // Phase 2: WAL append (write lock released, wal mutex only)
-        for segments in &wal_entries {
-            h.append_wal(segments, now);
-        }
-        for line in &log_lines {
-            h.append_commit_log(line);
-        }
-
-        // Phase 3: persist deletion immediately, or background compaction
-        if needs_compact {
-            h.force_compact();
-        } else {
-            h.maybe_compact();
-        }
-    }
-}
-
-/// Serialize one commit event as a JSONL line for the commit log.
-/// `top1` and `auto` are omitted at their defaults to keep lines lean.
-fn commit_log_line(
-    now: u64,
-    reading: &str,
-    surface: &str,
-    rank: usize,
-    top1: Option<&str>,
-    auto: bool,
-) -> String {
-    let mut obj = serde_json::json!({
-        "t": now,
-        "reading": reading,
-        "surface": surface,
-        "rank": rank,
-    });
-    if let Some(t1) = top1 {
-        obj["top1"] = serde_json::Value::String(t1.to_string());
-    }
-    if auto {
-        obj["auto"] = serde_json::Value::Bool(true);
-    }
-    obj.to_string()
-}
-
-#[cfg(test)]
-mod commit_log_tests {
-    use super::commit_log_line;
-
-    #[test]
-    fn test_commit_log_line_shape() {
-        // Manual pick: top1 present, auto omitted
-        let line = commit_log_line(42, "きょう", "京", 2, Some("今日"), false);
-        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(v["t"], 42);
-        assert_eq!(v["reading"], "きょう");
-        assert_eq!(v["surface"], "京");
-        assert_eq!(v["rank"], 2);
-        assert_eq!(v["top1"], "今日");
-        assert!(v.get("auto").is_none());
-
-        // Auto-commit acceptance: top1 omitted, auto present
-        let line = commit_log_line(42, "きょう", "今日", 0, None, true);
-        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert!(v.get("top1").is_none());
-        assert_eq!(v["auto"], true);
     }
 }
