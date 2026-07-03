@@ -80,32 +80,26 @@ impl LexConnection {
 pub struct LexUserHistory {
     pub(crate) inner: Arc<RwLock<UserHistory>>,
     wal: Mutex<HistoryWal>,
-    compacting: AtomicBool,
-    /// A compaction request that arrived while one was in flight (the
-    /// in-flight snapshot may predate the state the requester needs
-    /// persisted, e.g. a WAL-append-failure heal). The finishing compactor
-    /// re-checks this and runs again.
-    compact_pending: AtomicBool,
+    /// Compaction exclusivity (design decision #11): threshold compactions
+    /// skip when the gate is held (`try_lock`); clear, the deletion path,
+    /// and heal requests park on it. The Mutex guards no data — it only
+    /// serializes "one compaction at a time" — so recovering it through
+    /// poisoning is trivially safe, and the guard's Drop releases it on
+    /// panic (UniFFI catches panics at the FFI boundary, and a panicking
+    /// background thread does not kill the process).
+    compact_gate: Mutex<()>,
+    /// §5.3 step 5: a posted compaction request whose snapshot requirement
+    /// may postdate an in-flight run. Posted before parking on the gate;
+    /// whoever runs a compaction consumes it before snapshotting, so a
+    /// parked requester that wakes to find it consumed skips its redundant
+    /// run.
+    scrub_pending: AtomicBool,
     /// Append-only JSONL log of commit events (rank, top-1 acceptance),
     /// stored next to the checkpoint. Local diagnostics only; mined offline
     /// by lextool to track the real-world top-1 acceptance rate. The mutex
     /// serializes appends across all sessions sharing this history so
     /// concurrent commits cannot interleave partial lines.
     commit_log: Mutex<CommitLog>,
-}
-
-/// Releases the `compacting` flag on drop, so a panic while compacting or
-/// clearing (UniFFI catches panics at the FFI boundary, and a panicking
-/// background thread does not kill the process) cannot leave the flag stuck
-/// and make later `clear`/`force_compact` calls spin forever.
-struct CompactingGuard<'a>(&'a AtomicBool);
-
-impl Drop for CompactingGuard<'_> {
-    fn drop(&mut self) {
-        // SeqCst to participate in the same total order as the
-        // spawn_compact missed-wakeup dance (release -> pending re-check).
-        self.0.store(false, Ordering::SeqCst);
-    }
 }
 
 /// Lazily-opened append handle for the commit log, mirroring HistoryWal.
@@ -162,8 +156,8 @@ impl LexUserHistory {
         let this = Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
-            compacting: AtomicBool::new(false),
-            compact_pending: AtomicBool::new(false),
+            compact_gate: Mutex::new(()),
+            scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
@@ -179,48 +173,32 @@ impl LexUserHistory {
     }
 
     /// Clear all learning history (in-memory + WAL + checkpoint files).
-    fn clear(self: Arc<Self>) -> Result<(), LexError> {
+    fn clear(&self) -> Result<(), LexError> {
         self.clear_impl()
     }
 }
 
 impl LexUserHistory {
-    pub(super) fn clear_impl(self: &Arc<Self>) -> Result<(), LexError> {
-        // Serialize with compactions (startup recovery / background): a
+    pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+        // Park until any in-flight compaction finishes (§5.5 step 1): a
         // compactor that cloned a pre-clear snapshot must not save it after
-        // the files are removed, or the privacy wipe would be undone. Holding
-        // the flag also makes spawn_compact a no-op for the duration.
-        self.acquire_compacting();
-        let result = {
-            let _guard = CompactingGuard(&self.compacting);
-            // Clearing supersedes requests queued so far: it truncates the
-            // WAL (unfreezing it) and empties memory, so there is nothing
-            // left for a queued heal to persist.
-            self.compact_pending.store(false, Ordering::SeqCst);
-            self.clear_locked()
-        };
-        // Drain requests that raced in while this thread held the flag
-        // (e.g. a commit recorded mid-clear whose WAL append failed): they
-        // target the post-clear state and would otherwise wait for an
-        // unrelated future commit.
-        if self.compact_pending.load(Ordering::SeqCst) {
-            self.spawn_compact();
-        }
-        result
+        // the files are removed, or the privacy wipe would be undone.
+        // Holding the gate also blocks new compactions for the duration.
+        let _gate = self.lock_gate();
+        // Clearing supersedes requests posted so far: it truncates the WAL
+        // (unfreezing it) and empties memory. A heal posted mid-clear parks
+        // on the gate and runs after release, checkpointing the (empty)
+        // post-clear state — harmless.
+        self.scrub_pending.store(false, Ordering::SeqCst);
+        self.clear_locked()
     }
 
-    /// Acquire the `compacting` flag, sleeping briefly between attempts —
-    /// a compaction holds the flag across multi-ms checkpoint I/O, so a
-    /// tight yield-loop would burn CPU. (PR2 replaces this idiom with a
-    /// parking compact_gate Mutex.)
-    fn acquire_compacting(&self) {
-        while self
-            .compacting
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+    /// Acquire the compaction gate, recovering through poisoning: the gate
+    /// protects no data (see the field docs).
+    fn lock_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.compact_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn clear_locked(&self) -> Result<(), LexError> {
@@ -306,10 +284,9 @@ impl LexUserHistory {
         };
         // An append failure freezes the WAL (partial frame at the tail);
         // only a post-checkpoint truncation restores appendable form, and
-        // the entry-count threshold can no longer reach it. Attempt the
-        // heal directly (guarded by `compacting`, checkpoint write may
-        // still fail under a persistent disk problem — retried on the next
-        // record).
+        // the entry-count threshold can no longer reach it. Post a heal
+        // request (checkpoint writes may still fail under a persistent disk
+        // problem — the next record's failure re-posts).
         if failed {
             self.spawn_compact();
         }
@@ -339,194 +316,143 @@ impl LexUserHistory {
         if !needs {
             return;
         }
-        self.spawn_compact();
-    }
-
-    /// Spawn an unconditional background compaction attempt (startup
-    /// recovery, WAL-append-failure healing). If one is already in flight,
-    /// the request is queued via `compact_pending` rather than dropped: the
-    /// in-flight snapshot may predate the state this request needs
-    /// persisted. SeqCst keeps the missed-wakeup reasoning simple; these
-    /// paths are rare.
-    fn spawn_compact(self: &Arc<Self>) {
-        self.compact_pending.store(true, Ordering::SeqCst);
-        if self.compacting.swap(true, Ordering::SeqCst) {
-            // The in-flight compactor re-checks compact_pending after
-            // releasing the flag (see the loop below), so this request is
-            // picked up even if it raced that release.
-            return;
+        // §4: threshold compactions skip when one is in flight — the
+        // threshold stays exceeded and the next commit retries. Advisory
+        // pre-check to avoid spawning a thread per commit while a
+        // compaction runs; the spawned thread re-checks with its own
+        // try_lock.
+        match self.compact_gate.try_lock() {
+            Ok(gate) => drop(gate),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(_)) => {}
         }
         let this = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("lexime-history-compact".into())
-            .spawn(move || loop {
-                {
-                    // Guard scope: released at the end of each iteration, and —
-                    // via Drop — on panic, so the flag can never stick.
-                    let _guard = CompactingGuard(&this.compacting);
-                    if this.compact_pending.swap(false, Ordering::SeqCst) {
-                        this.run_compact();
-                    }
+            .spawn(move || {
+                let _gate = match this.compact_gate.try_lock() {
+                    Ok(g) => g,
+                    Err(std::sync::TryLockError::WouldBlock) => return,
+                    Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                };
+                // This run's snapshot covers heal requests posted so far.
+                this.scrub_pending.store(false, Ordering::SeqCst);
+                if this.run_compact_impl(true) {
+                    this.spawn_compact();
                 }
-                // Missed-wakeup re-check: a request may have landed between the
-                // pending swap above and the guard release. If re-acquisition
-                // fails, whoever holds the flag next will observe
-                // compact_pending itself.
-                if !this.compact_pending.load(Ordering::SeqCst) {
-                    break;
-                }
-                if this.compacting.swap(true, Ordering::SeqCst) {
-                    break;
-                }
-            });
-        // Spawn failure would otherwise leave the flag stuck and disable
-        // compaction (and clear/force_compact) forever. compact_pending
-        // stays set, so the next request retries.
-        if let Err(e) = spawned {
-            self.compacting.store(false, Ordering::SeqCst);
+            })
+        {
             warn!("failed to spawn compaction thread: {e}");
         }
     }
 
-    /// Force an immediate compaction (used after history deletion to persist changes).
-    /// Acquires the compacting guard to serialize with background compaction.
-    pub(super) fn force_compact(self: &Arc<Self>) {
-        self.acquire_compacting();
+    /// Post a compaction request that must run with a snapshot no older
+    /// than now (startup recovery, WAL-append-failure healing) and park a
+    /// worker on the gate until it can run. If an intervening gated run —
+    /// which consumes `scrub_pending` before snapshotting — already covered
+    /// the request, the worker wakes to a consumed flag and skips its
+    /// redundant run.
+    fn spawn_compact(self: &Arc<Self>) {
+        self.scrub_pending.store(true, Ordering::SeqCst);
+        let this = Arc::clone(self);
+        if let Err(e) = std::thread::Builder::new()
+            .name("lexime-history-compact".into())
+            .spawn(move || {
+                let _gate = this.lock_gate();
+                if this.scrub_pending.swap(false, Ordering::SeqCst) && this.run_compact_impl(true) {
+                    this.spawn_compact();
+                }
+            })
         {
-            let _guard = CompactingGuard(&self.compacting);
-            // The full checkpoint below supersedes requests queued so far.
-            self.compact_pending.store(false, Ordering::SeqCst);
-            // Unconditional truncate on the deletion path: skipping it could
-            // leave a racing Committed frame for the just-deleted entry in the
-            // WAL, uncovered by the checkpoint written here, and the next replay
-            // would resurrect the deleted learning. Destroying an uncovered
-            // frame instead loses at most that racing commit (v1 semantics; the
-            // structural fix is PR2's Tombstone frames, which make the
-            // delete-after-commit ordering durable in the WAL itself).
-            self.run_compact_impl(false);
-        }
-        // Drain requests that raced in while this thread held the flag —
-        // their snapshot requirements postdate ours (same reasoning as the
-        // background loop's re-check).
-        if self.compact_pending.load(Ordering::SeqCst) {
-            self.spawn_compact();
+            // scrub_pending stays posted; the next request (or the next
+            // gated run's consume) picks it up.
+            warn!("failed to spawn compaction thread: {e}");
         }
     }
 
+    /// Force an immediate compaction (used after history deletion to
+    /// persist changes). Parks until any in-flight compaction finishes,
+    /// then truncates unconditionally: leaving a racing Committed frame for
+    /// the just-deleted entry uncovered in the WAL would let the next
+    /// replay resurrect the deleted learning. Destroying an uncovered frame
+    /// instead loses at most that racing commit (v1 semantics; the
+    /// structural fix is PR2's Tombstone frames, which make the
+    /// delete-after-commit ordering durable in the WAL itself).
+    pub(super) fn force_compact(&self) {
+        let _gate = self.lock_gate();
+        // This full-snapshot run covers heal requests posted so far.
+        self.scrub_pending.store(false, Ordering::SeqCst);
+        self.run_compact_impl(false);
+    }
+
+    #[cfg(test)]
     fn run_compact(&self) {
         self.run_compact_impl(true);
     }
 
-    fn run_compact_impl(&self, covered_only: bool) {
+    /// Returns whether a follow-up pass is warranted: frames were appended
+    /// after this run's snapshot, so the covered-only truncation was
+    /// skipped.
+    fn run_compact_impl(&self, covered_only: bool) -> bool {
         // 1. Clone history under read lock (brief)
         let snapshot = match self.inner.read() {
             Ok(h) => h.clone(),
             Err(e) => {
                 warn!("history read lock failed during compaction: {e}");
-                return;
+                return false;
             }
         };
         let cp_path = match self.wal.lock() {
             Ok(wal) => wal.checkpoint_path().to_path_buf(),
             Err(e) => {
                 warn!("WAL lock poisoned during compaction: {e}");
-                return;
+                return false;
             }
         };
 
         // 2. Write checkpoint (no locks held, slow I/O)
-        let rename_confirmed = match snapshot.save_reporting_durability(&cp_path) {
-            Ok(confirmed) => confirmed,
-            Err(e) => {
-                warn!("checkpoint write failed: {e}");
-                return;
-            }
-        };
+        if let Err(e) = snapshot.save(&cp_path) {
+            warn!("checkpoint write failed: {e}");
+            return false;
+        }
 
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
-        // snapshot time) may be destroyed. If a session appended after the
-        // snapshot was cloned, truncation is skipped — the seq filter keeps
-        // replay correct either way, and the entry count stays above the
-        // threshold so the next compaction retries soon.
-        let wal = match self.wal.lock() {
-            Ok(w) => Some(w),
+        // snapshot time) may be destroyed. The deletion path truncates
+        // unconditionally (see force_compact).
+        let mut wal = match self.wal.lock() {
+            Ok(w) => w,
             Err(e) => {
                 warn!("WAL lock poisoned; skipping truncation after checkpoint: {e}");
-                None
+                return false;
             }
         };
-        if let Some(mut wal) = wal {
-            // Truncation destroys frames whose only other copy is the new
-            // checkpoint; if the rename's durability was not confirmed, a
-            // power loss could roll back to the previous checkpoint while
-            // the truncation persists. This also covers frozen WALs — every
-            // freeze reason (failed migration commit, failed tail repair,
-            // append failure) can leave replayable frames in the file. On a
-            // filesystem where the parent-dir fsync never succeeds, the WAL
-            // then stays frozen and the system degrades to checkpoint-per-
-            // commit (each failed append triggers a compaction persisting
-            // full memory): slower, but nothing is lost and learning never
-            // stops. The only exception is the deletion path below.
-            if covered_only && !rename_confirmed {
-                // Escape hatch: on a filesystem where the parent-dir fsync
-                // never succeeds, skipping forever would grow the WAL
-                // without bound (startup replay reads the whole file). Past
-                // a hard cap, accept the theoretical rename-rollback window
-                // — dir-fsync-less filesystems rely on journaling for
-                // rename durability anyway — over unbounded growth.
-                const UNCONFIRMED_TRUNCATE_CAP_BYTES: u64 = 8 * 1024 * 1024;
-                if wal.file_bytes() < UNCONFIRMED_TRUNCATE_CAP_BYTES {
-                    warn!("checkpoint rename durability unconfirmed; skipping WAL truncation");
-                    // A frame beyond this snapshot's coverage may have its
-                    // effect already inside the just-written checkpoint with
-                    // a stale applied_seq (phase-1 race): queue a second
-                    // pass whose snapshot carries the advanced applied_seq —
-                    // replay then skips the frame, no truncation needed.
-                    // Conditional, or a permanently-unconfirmed filesystem
-                    // would re-queue forever.
-                    if wal.last_appended_seq() > snapshot.applied_seq() {
-                        self.compact_pending.store(true, Ordering::SeqCst);
-                    }
-                    return;
+        if covered_only {
+            match wal.truncate_covered(snapshot.applied_seq()) {
+                Ok(true) => false,
+                Ok(false) => {
+                    // Frames landed after our snapshot: request a follow-up
+                    // pass (§5.3 step 5). A commit whose in-memory effect
+                    // raced into this checkpoint before its frame was
+                    // sequenced would otherwise stay replayable until the
+                    // next threshold compaction; the follow-up's snapshot
+                    // carries the advanced applied_seq and covers it. This
+                    // narrows the residual double-apply to a crash between
+                    // the two passes — the structural fix (WAL-ahead
+                    // ordering under the wal mutex, so snapshots can never
+                    // contain unsequenced effects) lands in PR2.
+                    true
                 }
-                warn!(
-                    "checkpoint rename durability unconfirmed but WAL exceeded {} bytes; truncating",
-                    UNCONFIRMED_TRUNCATE_CAP_BYTES
-                );
-            }
-            if !covered_only && !rename_confirmed {
-                // Deletion path: prioritize the privacy wipe (matching v1,
-                // which had no dir fsync at all) over the rollback window.
-                warn!("checkpoint rename durability unconfirmed; truncating anyway for deletion");
-            }
-            let result = if covered_only {
-                match wal.truncate_covered(snapshot.applied_seq()) {
-                    Ok(true) => Ok(()),
-                    Ok(false) => {
-                        // Frames landed after our snapshot. Re-run promptly
-                        // (the spawn_compact loop and force_compact both
-                        // drain compact_pending): a commit whose in-memory
-                        // effect raced into this checkpoint before its frame
-                        // was sequenced would otherwise be re-applied by a
-                        // restart replay until the next threshold compaction
-                        // covers it. The prompt re-run narrows that residual
-                        // double-apply to a crash landing in the milliseconds
-                        // between the two passes — it does not eliminate it;
-                        // the structural fix (WAL-ahead ordering under the
-                        // wal mutex, so snapshots can never contain
-                        // unsequenced effects) lands in PR2.
-                        self.compact_pending.store(true, Ordering::SeqCst);
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
+                Err(e) => {
+                    warn!("WAL truncate failed: {e}");
+                    false
                 }
-            } else {
-                wal.truncate_wal()
-            };
-            if let Err(e) = result {
+            }
+        } else {
+            if let Err(e) = wal.truncate_wal() {
                 warn!("WAL truncate failed: {e}");
             }
+            false
         }
     }
 }

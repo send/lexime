@@ -58,10 +58,6 @@ pub enum WalState {
     /// File re-created as header-only (sub-header stub, or v1 WAL consumed
     /// by migration). Log-only.
     Reinitialized,
-    /// v1-format WAL consumed by migration but retained on disk because the
-    /// v2 checkpoint's rename durability was unconfirmed; appends are
-    /// frozen until a later compaction completes the reinitialization.
-    LegacyKept,
     /// A repair (tail truncation or reinitialization) was needed but the
     /// file operation failed; appends are frozen until a compaction heals
     /// the file. Nothing is lost — memory keeps the state and checkpoints
@@ -187,25 +183,12 @@ pub fn open_recovering(
                         // Migration-crash residue: the v2 checkpoint already
                         // contains everything the v1 WAL held (§2.3/§7) —
                         // discard without replay so migration stays
-                        // idempotent. But first confirm the checkpoint
-                        // rename is durable: after a LegacyKept run (dir
-                        // fsync failed during migration), a power loss could
-                        // still roll the name back to the v1 file, and this
-                        // WAL would then hold the only copy of its frames.
-                        if super::persistence::sync_parent_dir(checkpoint_path) {
-                            report.wal_state = if reinitialize(&mut wal, &history) {
-                                WalState::LegacyDiscarded
-                            } else {
-                                WalState::RepairFailed
-                            };
+                        // idempotent.
+                        report.wal_state = if reinitialize(&mut wal, &history) {
+                            WalState::LegacyDiscarded
                         } else {
-                            warn!(
-                                "checkpoint rename durability unconfirmed; keeping legacy WAL frozen"
-                            );
-                            report.wal_state = WalState::LegacyKept;
-                            wal.adopt_empty(history.applied_seq());
-                            wal.freeze();
-                        }
+                            WalState::RepairFailed
+                        };
                     } else {
                         // v1-format data (v1, missing, or quarantined
                         // checkpoint): migration input. Replaying under a
@@ -276,8 +259,8 @@ pub fn open_recovering(
         // the still-v1 checkpoint. Those frames were replayed above, so the
         // checkpoint written here covers them (its applied_seq reflects the
         // replay) and they are correctly skipped from now on.
-        match history.save_reporting_durability(checkpoint_path) {
-            Ok(rename_confirmed) => {
+        match history.save(checkpoint_path) {
+            Ok(()) => {
                 // Commit point passed: from here any crash leaves a v2
                 // checkpoint, and a leftover v1 WAL is discarded on the next
                 // startup (idempotent).
@@ -286,26 +269,11 @@ pub fn open_recovering(
                     report.checkpoint_state = CheckpointState::Migrated;
                 }
                 if legacy_wal_consumed {
-                    if rename_confirmed {
-                        report.wal_state = if reinitialize(&mut wal, &history) {
-                            WalState::Reinitialized
-                        } else {
-                            WalState::RepairFailed
-                        };
+                    report.wal_state = if reinitialize(&mut wal, &history) {
+                        WalState::Reinitialized
                     } else {
-                        // The rename could still be rolled back by a power
-                        // loss; destroying the v1 WAL now could lose the
-                        // only copy of its frames. Both leftover states are
-                        // safe: v2 cp + v1 WAL is discarded as residue, v1
-                        // cp + v1 WAL re-migrates. A later compaction
-                        // (checkpointing memory, which contains everything)
-                        // completes the reinit.
-                        warn!(
-                            "migration rename durability unconfirmed; keeping v1 WAL until a later compaction"
-                        );
-                        report.wal_state = WalState::LegacyKept;
-                        wal.freeze();
-                    }
+                        WalState::RepairFailed
+                    };
                 }
                 info!(
                     "user history migrated from v1 (frames: {})",
