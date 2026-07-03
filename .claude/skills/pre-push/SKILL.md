@@ -31,10 +31,11 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 
 条件付き追加 (diff に該当パスがあれば必須):
 
-条件は **CI の job ゲートと同一基準** (`.github/workflows/ci.yml` の `changes` filter が SSoT — ローカルと CI の判定をずらさない):
+条件付き追加 — **SSoT は `.github/workflows/ci.yml` の `changes` filter**。diff の変更パスを filter に当てて「CI でどの job が走るか」を判定し、走る job のローカル等価をここで先に走らせる。**filter のパス内容をこの doc に書き写さない** (書き写しは必ず drift する — 本 PR の R2/R3 レビューがその実証):
 
-- **accuracy** (CI accuracy job = core ∨ cli ∨ corpus): `engine/crates/lex-core/` / `engine/crates/lex-cli/` (dict_source 含む) / `engine/testcorpus/` / `engine/data/` を触った → `mise run accuracy && mise run accuracy-history`。コスト・重み変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
-- **swift** (CI swift job = core ∨ session ∨ ffi ∨ swift): `engine/crates/lex-core/` / `engine/crates/lex-session/` / `engine/src/` / `Sources/` / `Tests/` を触った → `mise run test-swift`
+- CI **accuracy** job が走る変更 (`core ∨ cli ∨ corpus` filter) → `mise run accuracy && mise run accuracy-history`。コスト・重み・辞書ソース・変換パスの変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
+- CI **swift** job が走る変更 (`core ∨ session ∨ ffi ∨ swift` filter) → `mise run test-swift`
+- CI **audit** job が走る変更 (`core` filter — Cargo.toml/lock・deny.toml・supply-chain 等を含む) → `mise run audit`
 
 ### Stage 3 — `/simplify`
 

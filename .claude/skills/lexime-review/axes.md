@@ -30,7 +30,7 @@ Detect リストは **fail-safe な非網羅** — リストにない形でも�
 
 ### Detect
 
-- コスト・重み・reranker 変更に accuracy 両コーパスの before/after が無い
+- accuracy に影響し得る変更 (コスト・重み・reranker・辞書ソース [dict_source / `engine/data/`]・変換パス [converter / viterbi]) に accuracy 両コーパスの before/after が無い
 - 「直る側」の flip のみ提示し「壊れる側」の反実仮想を実測していない
 - 変換精度バグの修正に regression corpus ケースが無い
 - history コーパス新規ケースに `baseline` が無い / corpus `skip` に issue リンクが無い
