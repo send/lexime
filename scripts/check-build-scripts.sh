@@ -12,7 +12,10 @@ if [ ! -f "$BASELINE" ]; then
     exit 1
 fi
 
-current=$(cargo metadata --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
+# --locked: metadata must not rewrite an out-of-sync Cargo.lock — this script
+# now runs before the audit chain's `cargo check --locked` and would otherwise
+# silently repair the lockfile that check is supposed to verify.
+current=$(cargo metadata --locked --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for pkg in data['packages']:
