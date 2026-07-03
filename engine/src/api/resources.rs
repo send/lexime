@@ -593,25 +593,37 @@ impl LexUserHistory {
                 };
                 // This run's snapshot covers heal requests posted so far.
                 this.scrub_pending.store(false, Ordering::SeqCst);
-                if this.run_compact_impl() {
-                    this.spawn_compact();
-                }
+                let outcome = this.run_compact_impl();
+                this.after_compact(outcome);
             })
         {
             warn!("failed to spawn compaction thread: {e}");
         }
     }
 
-    /// Acquire the gate and run one compaction if a scrub is still pending,
-    /// posting an async follow-up when frames landed after the snapshot.
-    /// Shared by [`Self::spawn_compact`] (async) and the synchronous
-    /// durability-failure fallback in [`Self::apply_records`] (§5.4). The
-    /// caller posts `scrub_pending` first so a concurrent gated run can
-    /// absorb the request.
+    /// React to a [`run_compact_impl`](Self::run_compact_impl) outcome: chain
+    /// a follow-up for reclaimable frames, or re-post the scrub if the
+    /// checkpoint did not become durable so a later trigger retries it —
+    /// never silently dropping a delete that is only in memory (or an
+    /// unconfirmed WAL frame).
+    fn after_compact(self: &Arc<Self>, outcome: CompactOutcome) {
+        match outcome {
+            CompactOutcome::Done => {}
+            CompactOutcome::FollowUp => self.spawn_compact(),
+            CompactOutcome::Failed => self.scrub_pending.store(true, Ordering::SeqCst),
+        }
+    }
+
+    /// Acquire the gate and run one compaction if a scrub is still pending
+    /// (see [`Self::after_compact`] for outcome handling). Shared by
+    /// [`Self::spawn_compact`] (async) and the synchronous durability-failure
+    /// fallback in [`Self::apply_records`] (§5.4). The caller posts
+    /// `scrub_pending` first so a concurrent gated run can absorb the request.
     fn run_gated_compact(self: &Arc<Self>) {
         let _gate = self.lock_gate();
-        if self.scrub_pending.swap(false, Ordering::SeqCst) && self.run_compact_impl() {
-            self.spawn_compact();
+        if self.scrub_pending.swap(false, Ordering::SeqCst) {
+            let outcome = self.run_compact_impl();
+            self.after_compact(outcome);
         }
     }
 
@@ -635,14 +647,14 @@ impl LexUserHistory {
     }
 
     #[cfg(test)]
-    fn run_compact(&self) {
-        self.run_compact_impl();
+    fn run_compact(&self) -> CompactOutcome {
+        self.run_compact_impl()
     }
 
-    /// Returns whether a follow-up pass is warranted: frames were appended
-    /// after this run's snapshot, so the covered-only truncation was
-    /// skipped.
-    fn run_compact_impl(&self) -> bool {
+    /// Write a checkpoint and conditionally truncate the WAL, reporting
+    /// whether the checkpoint became durable and whether a follow-up is
+    /// warranted (see [`CompactOutcome`]).
+    fn run_compact_impl(&self) -> CompactOutcome {
         // 1. Clone history under read lock (brief)
         let snapshot = read_recover(&self.inner).clone();
         let cp_path = lock_recover(&self.wal).checkpoint_path().to_path_buf();
@@ -650,7 +662,7 @@ impl LexUserHistory {
         // 2. Write checkpoint (no locks held, slow I/O)
         if let Err(e) = snapshot.save(&cp_path) {
             warn!("checkpoint write failed: {e}");
-            return false;
+            return CompactOutcome::Failed;
         }
 
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
@@ -658,7 +670,7 @@ impl LexUserHistory {
         // snapshot time) may be destroyed.
         let mut wal = lock_recover(&self.wal);
         match wal.truncate_covered(snapshot.applied_seq()) {
-            Ok(true) => false,
+            Ok(true) => CompactOutcome::Done,
             Ok(false) => {
                 // Frames landed after our snapshot: request a follow-up
                 // pass (§5.3 step 5), which keeps the §5.4 scrub prompt. A
@@ -672,14 +684,39 @@ impl LexUserHistory {
                 // "frames landed after the snapshot" and the follow-up's
                 // snapshot covers them (SyncFailed tombstones carry their
                 // real seq, so no on-disk frame stays uncovered forever).
-                true
+                CompactOutcome::FollowUp
             }
             Err(e) => {
+                // The checkpoint IS durable (save succeeded), so the deletion
+                // is persisted; only the physical WAL scrub is deferred. The
+                // leftover frames are covered (replay skips them) and the
+                // next threshold/startup compaction retries the truncation —
+                // re-posting here would risk a tight loop on a stuck disk.
                 warn!("WAL truncate failed: {e}");
-                false
+                CompactOutcome::Done
             }
         }
     }
+}
+
+/// Outcome of a single [`LexUserHistory::run_compact_impl`] pass, so callers
+/// can tell a durable checkpoint from a failed write. The boolean this
+/// replaced conflated "done" with "save failed", letting the durability-
+/// failure path (§5.4) consume the pending scrub and return without any
+/// durable checkpoint or guaranteed retry.
+enum CompactOutcome {
+    /// Durable checkpoint written and the WAL truncated to cover it. A failed
+    /// *truncation* also lands here: the checkpoint is durable (the deletion
+    /// is persisted); the leftover covered frames are reclaimed by the next
+    /// threshold/startup compaction (the `frames_skipped` backstop).
+    Done,
+    /// Durable checkpoint written, but frames landed after the snapshot so the
+    /// covered-only truncation was skipped — a follow-up pass reclaims them
+    /// once writes settle.
+    FollowUp,
+    /// The checkpoint write failed, so nothing became durable. The scrub is
+    /// unmet and must stay pending for a later retry.
+    Failed,
 }
 
 /// Serialize one commit event as a JSONL line for the commit log.
@@ -870,8 +907,12 @@ mod tests {
 
         hist.apply_records(&[committed("きょう", "今日")]);
         // Persist the entry into a checkpoint so the scrub has something to
-        // rewrite.
-        hist.run_compact();
+        // rewrite. A quiescent compaction writes a durable checkpoint and
+        // truncates the covered frames (CompactOutcome::Done).
+        assert!(
+            matches!(hist.run_compact(), CompactOutcome::Done),
+            "quiescent compaction should report a durable, truncated checkpoint"
+        );
         assert!(cp.exists());
 
         hist.apply_records(&[deletion("きょう", "今日")]);
@@ -1163,6 +1204,34 @@ mod tests {
         assert!(
             learned(&hist2, "きょう").is_empty(),
             "durability-failed tombstone is checkpointed before return, not resurrected"
+        );
+    }
+
+    #[test]
+    fn test_durability_failure_with_failed_checkpoint_keeps_scrub_pending() {
+        // R2: if the synchronous durability checkpoint ALSO fails (stuck
+        // disk), the scrub must stay pending so a later compaction / startup
+        // retries it — the deletion must not be silently dropped with the
+        // pending flag consumed.
+        let dir = tempfile::tempdir().unwrap();
+        // Parent of the checkpoint is a *file*: save() can never create it.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let cp = blocker.join("history.lxud");
+        let hist = hist_with_io(&cp, Box::new(SyncFailOnceIo { failed: false }));
+
+        // Learn, then delete: the tombstone's sync_full fails (SyncFailed)
+        // AND the synchronous checkpoint save fails (blocked parent).
+        hist.apply_records(&[committed("きょう", "今日")]);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+
+        assert!(
+            learned(&hist, "きょう").is_empty(),
+            "memory delete still runs"
+        );
+        assert!(
+            hist.scrub_pending.load(Ordering::SeqCst),
+            "a failed durability checkpoint must keep the scrub pending for retry"
         );
     }
 
