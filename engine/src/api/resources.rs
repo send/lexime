@@ -350,6 +350,10 @@ impl LexUserHistory {
         //   truncation restores appendable form (heal), and the entry-count
         //   threshold can no longer reach it.
         let mut scrub = false;
+        // A Tombstone whose WAL durability failed (SyncFailed or Io): the
+        // deletion must be checkpointed synchronously before returning (§5.4),
+        // not left to an async scrub that a crash could preempt.
+        let mut durability_failed = false;
         let mut needs_threshold_compact = false;
         if !wal_records.is_empty() {
             let mut wal = lock_recover(&self.wal);
@@ -376,10 +380,18 @@ impl LexUserHistory {
                     // deletion's durability (§5.4): the scrub compaction
                     // scheduled below persists it in full.
                     Err(AppendError::SyncFailed { seq, source }) => {
-                        warn!("tombstone durability sync failed (checkpoint fallback): {source}");
+                        warn!(
+                            "tombstone durability sync failed (synchronous checkpoint fallback): {source}"
+                        );
                         // SyncFailed only arises from a Tombstone append, and a
                         // real (non-no-op) Tombstone already set `scrub` above.
                         debug_assert!(scrub, "SyncFailed implies a scrubbing Tombstone");
+                        // The frame is on disk (process-crash safe via replay)
+                        // but its F_FULLFSYNC failed, reopening the power-loss
+                        // window the Tombstone contract closes. Persist the
+                        // deletion synchronously below rather than resurrect it
+                        // if the async scrub is preempted.
+                        durability_failed = true;
                         sequenced.push((record, Some(seq)));
                     }
                     // Frame not on disk: memory still applies — a confirmed
@@ -392,6 +404,14 @@ impl LexUserHistory {
                     Err(e @ AppendError::Io(_)) => {
                         warn!("{e}");
                         scrub = true;
+                        // A Tombstone whose frame never reached disk has no
+                        // durable representation at all (memory-only): persist
+                        // the deletion synchronously below (privacy), not just
+                        // via the async heal a re-learnable Committed loss can
+                        // wait for.
+                        if matches!(record, WalRecord::Tombstone { .. }) {
+                            durability_failed = true;
+                        }
                         sequenced.push((record, None));
                     }
                 }
@@ -406,7 +426,16 @@ impl LexUserHistory {
             self.append_commit_log(line);
         }
 
-        if scrub {
+        if durability_failed {
+            // A Tombstone could not be made durable through the WAL. Write
+            // the checkpoint synchronously before returning so the deletion
+            // survives a crash instead of resurrecting if an async scrub is
+            // preempted — v1 force_compact's synchronous intent, kept as a
+            // failure-only fallback (§5.4). Only the rare failing-disk path
+            // pays this key-thread cost; every healthy delete stays async.
+            self.scrub_pending.store(true, Ordering::SeqCst);
+            self.run_gated_compact();
+        } else if scrub {
             self.spawn_compact();
         } else if needs_threshold_compact {
             self.spawn_threshold_compact();
@@ -573,6 +602,19 @@ impl LexUserHistory {
         }
     }
 
+    /// Acquire the gate and run one compaction if a scrub is still pending,
+    /// posting an async follow-up when frames landed after the snapshot.
+    /// Shared by [`Self::spawn_compact`] (async) and the synchronous
+    /// durability-failure fallback in [`Self::apply_records`] (§5.4). The
+    /// caller posts `scrub_pending` first so a concurrent gated run can
+    /// absorb the request.
+    fn run_gated_compact(self: &Arc<Self>) {
+        let _gate = self.lock_gate();
+        if self.scrub_pending.swap(false, Ordering::SeqCst) && self.run_compact_impl() {
+            self.spawn_compact();
+        }
+    }
+
     /// Post a compaction request that must run with a snapshot no older
     /// than now (startup recovery, WAL-append-failure healing) and park a
     /// worker on the gate until it can run. If an intervening gated run —
@@ -584,12 +626,7 @@ impl LexUserHistory {
         let this = Arc::clone(self);
         if let Err(e) = std::thread::Builder::new()
             .name("lexime-history-compact".into())
-            .spawn(move || {
-                let _gate = this.lock_gate();
-                if this.scrub_pending.swap(false, Ordering::SeqCst) && this.run_compact_impl() {
-                    this.spawn_compact();
-                }
-            })
+            .spawn(move || this.run_gated_compact())
         {
             // scrub_pending stays posted; the next request (or the next
             // gated run's consume) picks it up.
@@ -1076,10 +1113,56 @@ mod tests {
             "tombstone must be covered by its real seq despite the sync failure"
         );
         assert!(!lock_recover(&hist.wal).is_frozen());
-        // Checkpoint fallback: the scrub compaction persists the deletion.
-        wait_until(
-            || lock_recover(&hist.wal).entry_count() == 0,
-            "scrub compaction after sync failure",
+        // §5.4: because the tombstone's WAL durability failed, the checkpoint
+        // is written SYNCHRONOUSLY before apply_records returns (no wait for a
+        // background thread) — the deletion cannot resurrect if a crash
+        // preempts an async scrub.
+        assert_eq!(
+            lock_recover(&hist.wal).entry_count(),
+            0,
+            "durability-failed tombstone must checkpoint synchronously, not via async scrub"
+        );
+        drop(hist);
+        let hist2 = open_hist(&cp);
+        assert!(
+            learned(&hist2, "きょう").is_empty(),
+            "synchronously-checkpointed deletion survives reopen"
+        );
+    }
+
+    #[test]
+    fn test_tombstone_append_failure_checkpoints_synchronously() {
+        // Io on a tombstone append: the frame never reaches disk, so memory
+        // is the only copy of the deletion. It must be checkpointed
+        // synchronously before returning — a crash before an async scrub
+        // would otherwise resurrect the deleted entry from the old checkpoint.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let fail_appends = Arc::new(AtomicBool::new(false));
+        let hist = hist_with_io(
+            &cp,
+            Box::new(FlakyIo {
+                fail_appends: Arc::clone(&fail_appends),
+                truncates: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
+        );
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        hist.run_compact(); // the entry now lives in the checkpoint
+        assert!(cp.exists());
+
+        // The tombstone's frame fails to append (frozen WAL, memory-only delete).
+        fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert!(learned(&hist, "きょう").is_empty(), "memory delete runs");
+
+        // Synchronous durability: reopening immediately (no wait for a
+        // background scrub) must not resurrect the deletion.
+        drop(hist);
+        let hist2 = open_hist(&cp);
+        assert!(
+            learned(&hist2, "きょう").is_empty(),
+            "durability-failed tombstone is checkpointed before return, not resurrected"
         );
     }
 
