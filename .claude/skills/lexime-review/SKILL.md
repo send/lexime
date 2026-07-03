@@ -33,8 +33,11 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 git fetch --quiet origin main 2>/dev/null || echo "⚠ fetch 失敗 — base が stale の可能性" >&2
 BASE=$(git merge-base origin/main HEAD)
 DIFF=$(mktemp "${TMPDIR:-/tmp}/lexime-review-diff.XXXXXX")   # 並列セッションと衝突しない per-run パス
-git add -N . 2>/dev/null   # 未追跡の新規ファイル (ゲート中に作った corpus ケース等) も diff に含める
 git diff "$BASE" > "$DIFF"   # worktree 込み — /pre-push 中の未コミット fix (/simplify 等) も review 対象に含める
+# 未追跡の新規ファイル (ゲート中に作った corpus ケース等) も index 非破壊で含める
+git ls-files --others --exclude-standard | while read -r f; do
+  git diff --no-index -- /dev/null "$f" >> "$DIFF" || true   # no-index は差分ありで exit 1
+done
 git diff --stat "$BASE"
 ```
 

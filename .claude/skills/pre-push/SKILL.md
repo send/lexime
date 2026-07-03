@@ -36,7 +36,7 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 | CI job | ローカル等価 |
 |---|---|
 | lint / test-* | 上の基本 verify でカバー済み |
-| accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
+| accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・reranker・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
 | swift | `mise run test-swift` |
 | audit | `mise run audit` (CI audit job と同一ステップ、locked check 込み) |
 | msrv | `cd engine && cargo +<rust-version> check --workspace --locked` (`<rust-version>` は `engine/Cargo.toml` の `rust-version` を読む。toolchain 未導入なら `rustup toolchain install <rust-version>`) |

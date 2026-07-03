@@ -277,6 +277,15 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet,cargo-machete
 
+      # Screening steps (no cargo build) run FIRST: `cargo check` compiles and
+      # executes build scripts, so the build.rs baseline / quarantine screens
+      # must reject untrusted additions before any step that runs them.
+      - name: Quarantine check (7-day)
+        run: bash scripts/check-quarantine.sh
+
+      - name: build.rs baseline check
+        run: bash scripts/check-build-scripts.sh
+
       - name: Verify Cargo.lock is in sync
         run: cd engine && cargo check --locked
 
@@ -285,12 +294,6 @@ jobs:
 
       - name: cargo vet (audit tracking)
         run: cd engine && cargo vet check
-
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
-
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
 
       - name: Unused dependencies
         run: cd engine && cargo machete
