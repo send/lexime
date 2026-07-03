@@ -69,6 +69,41 @@ pub enum WalRecord {
     },
 }
 
+/// Why an append failed. The two variants leave the file in different
+/// states, and callers must treat the assigned seq differently:
+///
+/// - `Io`: the frame never (fully) reached the file. The WAL freezes and
+///   the seq is consumed as a gap — the in-memory effect must be applied
+///   without advancing `applied_seq` (the frame cannot replay).
+/// - `SyncFailed`: the frame is validly appended and readable; only its
+///   durability flush failed (the Tombstone contract). Callers must apply
+///   with the carried `seq`: leaving a frame that is on disk uncovered
+///   would hold `applied_seq < last_appended_seq` open indefinitely, and
+///   `truncate_covered` would never run again until an unrelated append.
+///   Replaying a Tombstone after a checkpoint that already contains the
+///   deletion is idempotent, so covering it is safe.
+#[derive(Debug)]
+pub enum AppendError {
+    Io(io::Error),
+    SyncFailed { seq: u64, source: io::Error },
+}
+
+impl std::fmt::Display for AppendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppendError::Io(e) => write!(f, "WAL append failed: {e}"),
+            AppendError::SyncFailed { seq, source } => {
+                write!(
+                    f,
+                    "WAL frame {seq} appended but durability sync failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for AppendError {}
+
 /// v1 WAL entry (headerless file of `length + crc32(payload) + payload`
 /// frames). Retained for the migration reader and test fixtures.
 #[derive(Serialize, Deserialize)]
@@ -395,7 +430,11 @@ impl HistoryWal {
     }
 
     /// Append a Committed record. Returns the assigned sequence number.
-    pub fn append(&mut self, segments: &[(String, String)], timestamp: u64) -> io::Result<u64> {
+    pub fn append(
+        &mut self,
+        segments: &[(String, String)],
+        timestamp: u64,
+    ) -> Result<u64, AppendError> {
         self.append_record(&WalRecord::Committed {
             segments: segments.to_vec(),
             timestamp,
@@ -409,29 +448,29 @@ impl HistoryWal {
     /// resurrects even across power loss. Committed frames take a write
     /// barrier every [`BARRIER_EVERY_FRAMES`] frames instead.
     ///
-    /// Failure semantics:
-    /// - `Err` before the frame write: nothing on disk; the assigned seq is
+    /// Failure semantics (see [`AppendError`] for the caller contract):
+    /// - `Io` before the frame write: nothing on disk; the assigned seq is
     ///   consumed (gaps are legal, §3, replay only warns).
-    /// - Frame write failure: a partial frame may sit at the tail, and any
-    ///   later append would land after unreadable bytes and be lost to
-    ///   replay (problem A at runtime) — so the WAL freezes until a
+    /// - Frame write failure (`Io`): a partial frame may sit at the tail,
+    ///   and any later append would land after unreadable bytes and be lost
+    ///   to replay (problem A at runtime) — so the WAL freezes until a
     ///   truncation (post-checkpoint) re-establishes appendable form.
     /// - Committed barrier failure: logged, still `Ok` — the frame is in
     ///   the file (callers must count it as covered or a crash would
     ///   double-apply it); only the power-loss window widens.
-    /// - Tombstone `sync_full` failure: `Err`, because the immediate
+    /// - Tombstone `sync_full` failure: `SyncFailed`, because the immediate
     ///   durability is the operation's contract. The frame remains appended
-    ///   and uncovered, which is safe: re-applying a Tombstone on replay is
-    ///   idempotent.
-    pub fn append_record(&mut self, record: &WalRecord) -> io::Result<u64> {
+    ///   and must be covered by the caller (variant docs).
+    pub fn append_record(&mut self, record: &WalRecord) -> Result<u64, AppendError> {
         if self.frozen {
-            return Err(io::Error::other(
+            return Err(AppendError::Io(io::Error::other(
                 "WAL file is not in appendable v2 form (pending compaction)",
-            ));
+            )));
         }
-        let payload = bincode::serialize(record).map_err(io::Error::other)?;
+        let payload =
+            bincode::serialize(record).map_err(|e| AppendError::Io(io::Error::other(e)))?;
         let payload_len = u32::try_from(payload.len())
-            .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
+            .map_err(|_| AppendError::Io(io::Error::other("WAL entry too large (>4 GiB)")))?;
         let seq = self.next_seq;
         self.next_seq += 1;
 
@@ -452,7 +491,7 @@ impl HistoryWal {
         frame.extend_from_slice(&payload);
         if let Err(e) = self.io.append(&frame) {
             self.frozen = true;
-            return Err(e);
+            return Err(AppendError::Io(e));
         }
 
         self.last_appended_seq = seq;
@@ -463,8 +502,11 @@ impl HistoryWal {
             WalRecord::Tombstone { .. } => {
                 // Reset only after a successful flush: on Err the counter
                 // stays saturated so the next append retries a sync instead
-                // of deferring it a full interval.
-                self.io.sync_full()?;
+                // of deferring it a full interval. The file is NOT frozen:
+                // the frame itself is valid and readable.
+                if let Err(source) = self.io.sync_full() {
+                    return Err(AppendError::SyncFailed { seq, source });
+                }
                 self.frames_since_barrier = 0;
             }
             WalRecord::Committed { .. } => {
@@ -521,6 +563,14 @@ impl HistoryWal {
         self.entry_count
     }
 
+    /// Highest seq physically present in the file (0 when header-only).
+    /// A checkpoint whose `applied_seq` reaches this value covers every
+    /// frame on disk — the clear protocol (§5.5) stamps its empty
+    /// checkpoint with it so all leftover frames replay as skips.
+    pub fn last_appended_seq(&self) -> u64 {
+        self.last_appended_seq
+    }
+
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
         self.frozen
@@ -563,7 +613,11 @@ impl HistoryWal {
         self.adopt_scan(0, WAL_HEADER_LEN as u64, 0, applied_seq);
     }
 
-    pub(super) fn freeze(&mut self) {
+    /// Mark the on-disk file as not being in appendable v2 form (see the
+    /// `frozen` field docs). Used by recovery when a repair fails, and by
+    /// the engine's clear when its truncation fails: appends must not land
+    /// after bytes replay cannot read.
+    pub fn freeze(&mut self) {
         self.frozen = true;
     }
 }

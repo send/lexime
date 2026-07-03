@@ -1216,6 +1216,156 @@ fn append_write_failure_freezes_until_truncate() {
     assert!(!wal.is_frozen());
 }
 
+// ---------------------------------------------------------------------------
+// T6: syscall ordering / mid-write failure (WalIo seam, design §11)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum IoOp {
+    Append,
+    Barrier,
+    Full,
+    Truncate,
+}
+
+/// Records the WalIo call order; optionally fails sync_full.
+struct OrderIo {
+    ops: std::sync::Arc<std::sync::Mutex<Vec<IoOp>>>,
+    fail_full: bool,
+}
+
+impl super::wal::WalIo for OrderIo {
+    fn append(&mut self, _buf: &[u8]) -> std::io::Result<()> {
+        self.ops.lock().unwrap().push(IoOp::Append);
+        Ok(())
+    }
+    fn sync_barrier(&mut self) -> std::io::Result<()> {
+        self.ops.lock().unwrap().push(IoOp::Barrier);
+        Ok(())
+    }
+    fn sync_full(&mut self) -> std::io::Result<()> {
+        if self.fail_full {
+            return Err(std::io::Error::other("injected full-sync failure"));
+        }
+        self.ops.lock().unwrap().push(IoOp::Full);
+        Ok(())
+    }
+    fn truncate_to_header(&mut self) -> std::io::Result<()> {
+        self.ops.lock().unwrap().push(IoOp::Truncate);
+        Ok(())
+    }
+}
+
+fn tombstone(pair: (&str, &str)) -> WalRecord {
+    WalRecord::Tombstone {
+        segments: seg(pair),
+        timestamp: T0,
+    }
+}
+
+#[test]
+fn t6_tombstone_full_sync_follows_write_before_return() {
+    // §5.4/§6: a Tombstone's durability contract is a full flush after the
+    // frame write, before append_record returns — the deletion must not be
+    // resurrectable once the user's gesture completes.
+    let f = fx();
+    let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let io = OrderIo {
+        ops: std::sync::Arc::clone(&ops),
+        fail_full: false,
+    };
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    wal.append_record(&tombstone(A)).unwrap();
+    assert_eq!(
+        *ops.lock().unwrap(),
+        vec![IoOp::Append, IoOp::Full],
+        "tombstone must be written, then fully flushed, before returning"
+    );
+}
+
+#[test]
+fn t6_tombstone_sync_failure_carries_seq_and_does_not_freeze() {
+    // The frame is validly on disk; only its flush failed. The caller must
+    // receive the real seq (covering the frame keeps conditional truncation
+    // live) and the WAL must stay appendable.
+    let f = fx();
+    let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let io = OrderIo {
+        ops: std::sync::Arc::clone(&ops),
+        fail_full: true,
+    };
+    let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
+    match wal.append_record(&tombstone(A)) {
+        Err(super::wal::AppendError::SyncFailed { seq, .. }) => assert_eq!(seq, 1),
+        other => panic!("expected SyncFailed, got {other:?}"),
+    }
+    assert!(!wal.is_frozen(), "a sync failure must not freeze the WAL");
+    assert_eq!(wal.entry_count(), 1, "the frame is in the file");
+    assert_eq!(wal.last_appended_seq(), 1);
+    // The next append still works and gets the next seq.
+    assert_eq!(wal.append(&seg(B), T0 + 1).unwrap(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// T7 (core side): clear-protocol crash residue (§5.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t7_clear_residue_empty_checkpoint_covers_leftover_wal() {
+    // Crash between §5.5 step 3 (empty checkpoint committed) and step 5
+    // (WAL truncation): the empty checkpoint's applied_seq equals the
+    // highest on-disk seq, so every leftover frame replays as a skip and
+    // the history converges to empty — the resurrection window is zero.
+    let f = fx();
+    let mut wal = HistoryWal::new(&f.cp);
+    for (i, p) in [A, B, C].iter().enumerate() {
+        wal.append(&seg(*p), T0 + i as u64).unwrap();
+    }
+    let mut empty = UserHistory::new();
+    empty.advance_applied_seq(wal.last_appended_seq());
+    empty.save(&f.cp).unwrap();
+    drop(wal);
+
+    let (h, mut wal, report) = open_recovering(&f.cp).unwrap();
+    assert_contents(&h, &[], &[A, B, C]);
+    assert_eq!(report.frames_replayed, 0);
+    assert_eq!(
+        report.frames_skipped, 3,
+        "all frames covered by the empty cp"
+    );
+    assert_eq!(report.checkpoint_state, CheckpointState::Loaded);
+    // Privacy backstop: the leftover (covered) frames still hold input
+    // strings; startup compaction truncates them away.
+    assert!(report.compaction_recommended);
+    // Numbering continues past the cleared generation (§3).
+    assert_eq!(wal.append(&seg(D), T0 + 10).unwrap(), 4);
+}
+
+// ---------------------------------------------------------------------------
+// v1 backup GC (time-based, §9 decision)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v1_backup_expires_after_ttl() {
+    let f = fx();
+    UserHistory::new().save(&f.cp).unwrap();
+    let bak = v1_backup_path(&f.cp);
+
+    // Fresh backup survives startup.
+    fs::write(&bak, b"v1 bytes").unwrap();
+    open_recovering(&f.cp).unwrap();
+    assert!(bak.exists(), "fresh backup must survive");
+
+    // Backdate past the 90-day TTL: the next startup removes it.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(91 * 24 * 60 * 60);
+    let file = fs::OpenOptions::new().write(true).open(&bak).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(old))
+        .unwrap();
+    drop(file);
+    open_recovering(&f.cp).unwrap();
+    assert!(!bak.exists(), "expired backup must be GCed");
+}
+
 #[test]
 fn remove_recovery_artifacts_wipes_backup_and_quarantine() {
     let f = fx();

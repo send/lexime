@@ -290,6 +290,36 @@ impl UserHistory {
         with_boost.iter().map(|(_, _, e)| (*e).clone()).collect()
     }
 
+    /// Whether any unigram/bigram entry exists for these segments — exactly
+    /// the set [`Self::remove_entries`] would touch. Lets the engine skip
+    /// writing a Tombstone (and its F_FULLFSYNC on the key-processing
+    /// thread) for a no-op deletion, e.g. pruning a dictionary-only
+    /// candidate that was never learned.
+    pub fn contains_entries(&self, segments: &[(String, String)]) -> bool {
+        for (reading, surface) in segments {
+            if self
+                .unigrams
+                .get(reading)
+                .is_some_and(|inner| inner.contains_key(surface))
+            {
+                return true;
+            }
+        }
+        for pair in segments.windows(2) {
+            let (_, prev_surface) = &pair[0];
+            let (next_reading, next_surface) = &pair[1];
+            let key = (next_reading.clone(), next_surface.clone());
+            if self
+                .bigrams
+                .get(prev_surface)
+                .is_some_and(|inner| inner.contains_key(&key))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Remove history entries for the given segments.
     /// Returns true if any entries were actually removed.
     pub fn remove_entries(&mut self, segments: &[(String, String)]) -> bool {
@@ -320,8 +350,10 @@ impl UserHistory {
         removed
     }
 
-    /// Evict lowest-score entries when exceeding capacity.
-    fn evict(&mut self) {
+    /// Evict lowest-score entries when exceeding capacity. Public for the
+    /// engine's batched apply path (§5.2): apply a whole batch of records,
+    /// then settle capacity once — replay does the same (§5.1-4).
+    pub fn evict(&mut self) {
         let s = settings();
         let now = now_epoch();
         evict_map(&mut self.unigrams, s.history.max_unigrams, now);
