@@ -15,7 +15,9 @@ fi
 # --locked: metadata must not rewrite an out-of-sync Cargo.lock — this script
 # now runs before the audit chain's `cargo check --locked` and would otherwise
 # silently repair the lockfile that check is supposed to verify.
-current=$(cargo metadata --locked --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
+# --all-features: CI builds with --all-features, so a build.rs behind an
+# optional feature must be visible to this screen too.
+current=$(cargo metadata --locked --all-features --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for pkg in data['packages']:

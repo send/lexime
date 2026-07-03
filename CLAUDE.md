@@ -67,7 +67,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 - **skip 以外は全 pass を維持する**。fail があれば修正するか skip にする
 - **skip には issue リンク必須**（理由なし skip 禁止）
 - skip ケースは定期的にレビューし、修正済みなら skip を外す
-- **コスト調整・reranker・辞書ソース・変換パス変更時**: 事前に両方の accuracy テストで現状確認し、PR に before/after の結果を貼る
+- **コスト・重み・reranker・辞書ソース・変換パス変更時**: 事前に両方の accuracy テストで現状確認し、PR に before/after の結果を貼る
 - **変換精度バグの修正時**: regression カテゴリのケース追加を推奨
 - ユーザ報告の変換ミスは積極的に追加。対応困難なものは skip + issue で管理
 - **history コーパスの新規ケースには `baseline`（履歴なしの期待結果）を必ず付ける**

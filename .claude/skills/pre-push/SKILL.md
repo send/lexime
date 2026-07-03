@@ -25,6 +25,8 @@ cd engine && cargo fmt --all
 
 ### Stage 2 — Verify
 
+**順序規則: screen-before-build**。依存変更 (CI で screen + audit が走る変更) がある場合、build を伴う cargo (clippy / test / check) より**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
+
 ```sh
 cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features
 ```
@@ -39,7 +41,7 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 | accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・reranker・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
 | swift | `mise run test-swift` |
 | screen + audit | `mise run audit` (CI の screen job [quarantine / build.rs baseline] + audit job を screen-first 順で束ねたもの) |
-| msrv | `cd engine && cargo +<rust-version> check --workspace --locked` (`<rust-version>` は `engine/Cargo.toml` の `rust-version` を読む。toolchain 未導入なら `rustup toolchain install <rust-version>`) |
+| msrv | `cd engine && cargo +<toolchain> check --workspace --locked` (`<toolchain>` は ci.yml の msrv job が指定する toolchain 値をそのまま使う — 正規化・別ソース参照をしない。未導入なら `rustup toolchain install <toolchain>`) |
 | CodeQL / Analyze | ローカル等価なし — CI に委ねる |
 
 ### Stage 3 — `/simplify`
