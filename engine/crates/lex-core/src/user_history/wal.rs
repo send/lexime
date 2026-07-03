@@ -82,27 +82,13 @@ pub enum WalRecord {
 ///   `truncate_covered` would never run again until an unrelated append.
 ///   Replaying a Tombstone after a checkpoint that already contains the
 ///   deletion is idempotent, so covering it is safe.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppendError {
-    Io(io::Error),
+    #[error("WAL append failed: {0}")]
+    Io(#[from] io::Error),
+    #[error("WAL frame {seq} appended but durability sync failed: {source}")]
     SyncFailed { seq: u64, source: io::Error },
 }
-
-impl std::fmt::Display for AppendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AppendError::Io(e) => write!(f, "WAL append failed: {e}"),
-            AppendError::SyncFailed { seq, source } => {
-                write!(
-                    f,
-                    "WAL frame {seq} appended but durability sync failed: {source}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for AppendError {}
 
 /// v1 WAL entry (headerless file of `length + crc32(payload) + payload`
 /// frames). Retained for the migration reader and test fixtures.
@@ -463,14 +449,14 @@ impl HistoryWal {
     ///   and must be covered by the caller (variant docs).
     pub fn append_record(&mut self, record: &WalRecord) -> Result<u64, AppendError> {
         if self.frozen {
-            return Err(AppendError::Io(io::Error::other(
+            return Err(io::Error::other(
                 "WAL file is not in appendable v2 form (pending compaction)",
-            )));
+            )
+            .into());
         }
-        let payload =
-            bincode::serialize(record).map_err(|e| AppendError::Io(io::Error::other(e)))?;
+        let payload = bincode::serialize(record).map_err(io::Error::other)?;
         let payload_len = u32::try_from(payload.len())
-            .map_err(|_| AppendError::Io(io::Error::other("WAL entry too large (>4 GiB)")))?;
+            .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
         let seq = self.next_seq;
         self.next_seq += 1;
 

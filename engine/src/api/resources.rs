@@ -157,9 +157,10 @@ pub enum LexHistoryWalState {
     RepairFailed,
 }
 
-/// What `open` found and did (§10). `data_loss_suspected` carries the §8
-/// visibility rule (only whole-file quarantine is user-visible) so Swift
-/// does not re-implement the policy.
+/// What `open` found and did (§10). The policy bits are computed on the
+/// Rust side so Swift stays purely presentational: `data_loss_suspected`
+/// carries the §8 visibility rule (only whole-file quarantine is
+/// user-visible), `clean` the "nothing noteworthy happened" rule.
 #[derive(uniffi::Record)]
 pub struct LexHistoryOpenReport {
     pub checkpoint_state: LexHistoryCheckpointState,
@@ -169,6 +170,7 @@ pub struct LexHistoryOpenReport {
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<String>,
     pub data_loss_suspected: bool,
+    pub clean: bool,
 }
 
 impl From<&OpenReport> for LexHistoryOpenReport {
@@ -200,6 +202,7 @@ impl From<&OpenReport> for LexHistoryOpenReport {
                 .map(|p| p.display().to_string())
                 .collect(),
             data_loss_suspected: r.data_loss_suspected(),
+            clean: r.is_clean(),
         }
     }
 }
@@ -255,7 +258,6 @@ impl LexUserHistory {
             path: cp.with_file_name("commit-log.jsonl"),
             file: None,
         };
-        let compaction_recommended = report.compaction_recommended;
         let this = Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
@@ -270,7 +272,7 @@ impl LexUserHistory {
         // checkpoint covers memory, so the truncation that follows it
         // restores appendable v2 form — without this, appends would keep
         // failing and threshold-based compaction would never trigger.
-        if compaction_recommended {
+        if this.report.compaction_recommended {
             this.spawn_compact();
         }
         Ok(this)
@@ -344,11 +346,20 @@ impl LexUserHistory {
             }
         }
 
-        let mut tombstone_written = false;
-        let mut append_failed = false;
+        // One flag decides the compaction mode below; both causes need the
+        // same immediate gated run:
+        // - Tombstone written: physical scrub (§5.4) — the deleted strings
+        //   still sit in the old checkpoint and past Committed frames until
+        //   a compaction rewrites the checkpoint and truncates the WAL.
+        // - Append failure: the WAL may be frozen; only a post-checkpoint
+        //   truncation restores appendable form (heal), and the entry-count
+        //   threshold can no longer reach it.
+        let mut scrub = false;
+        let mut needs_threshold_compact = false;
         if !wal_records.is_empty() {
             let mut wal = lock_recover(&self.wal);
-            let mut sequenced: Vec<(WalRecord, u64)> = Vec::with_capacity(wal_records.len());
+            let mut sequenced: Vec<(WalRecord, Option<u64>)> =
+                Vec::with_capacity(wal_records.len());
             for record in wal_records {
                 if let WalRecord::Tombstone { segments, .. } = &record {
                     // No-op deletion: pruning a candidate that was never
@@ -359,14 +370,10 @@ impl LexUserHistory {
                     if !read_recover(&self.inner).contains_entries(segments) {
                         continue;
                     }
+                    scrub = true;
                 }
                 match wal.append_record(&record) {
-                    Ok(seq) => {
-                        if matches!(record, WalRecord::Tombstone { .. }) {
-                            tombstone_written = true;
-                        }
-                        sequenced.push((record, seq));
-                    }
+                    Ok(seq) => sequenced.push((record, Some(seq))),
                     // Frame on disk, durability unconfirmed: apply with the
                     // real seq — leaving an on-disk frame uncovered would
                     // stall conditional truncation indefinitely (AppendError
@@ -375,31 +382,26 @@ impl LexUserHistory {
                     // scheduled below persists it in full.
                     Err(AppendError::SyncFailed { seq, source }) => {
                         warn!("tombstone durability sync failed (checkpoint fallback): {source}");
-                        tombstone_written = true;
-                        append_failed = true;
-                        sequenced.push((record, seq));
+                        scrub = true;
+                        sequenced.push((record, Some(seq)));
                     }
                     // Frame not on disk: memory still applies — a confirmed
                     // conversion that stops boosting is an immediate quality
                     // regression (§5.2) — but applied_seq must not advance
-                    // (seq 0 is a no-op for the monotonic max). The next
-                    // checkpoint is a full snapshot, so a recovered disk
-                    // picks the effect up; the frame's absence makes
-                    // double-apply impossible.
+                    // (None), or a checkpoint would claim coverage of a
+                    // frame that cannot replay. The next checkpoint is a
+                    // full snapshot, so a recovered disk picks the effect
+                    // up; the frame's absence makes double-apply impossible.
                     Err(e @ AppendError::Io(_)) => {
                         warn!("{e}");
-                        append_failed = true;
-                        sequenced.push((record, 0));
+                        scrub = true;
+                        sequenced.push((record, None));
                     }
                 }
             }
+            needs_threshold_compact = wal.needs_compact();
             if !sequenced.is_empty() {
-                let mut hist = write_recover(&self.inner);
-                for (record, seq) in &sequenced {
-                    hist.apply(record, *seq);
-                }
-                // Batched apply settles capacity once, like replay (§5.1-4).
-                hist.evict();
+                write_recover(&self.inner).apply_batch(&sequenced);
             }
         }
 
@@ -407,16 +409,10 @@ impl LexUserHistory {
             self.append_commit_log(line);
         }
 
-        // Tombstone: schedule the physical scrub (§5.4) — the deleted
-        // strings still sit in the old checkpoint and in past Committed
-        // frames until a compaction rewrites the checkpoint and truncates
-        // the WAL. Append failure: the WAL may be frozen; only a
-        // post-checkpoint truncation restores appendable form (heal), and
-        // the entry-count threshold can no longer reach it.
-        if tombstone_written || append_failed {
+        if scrub {
             self.spawn_compact();
-        } else {
-            self.maybe_compact();
+        } else if needs_threshold_compact {
+            self.spawn_threshold_compact();
         }
     }
 
@@ -463,7 +459,7 @@ impl LexUserHistory {
             // state unknown) and surface the failure.
             warn!("clear: WAL truncation failed: {e}");
             wal.freeze();
-            deferred = Some(e.into());
+            deferred.get_or_insert(e.into());
         }
 
         {
@@ -513,12 +509,10 @@ impl LexUserHistory {
         }
     }
 
-    /// Acquire the compaction gate, recovering through poisoning: the gate
-    /// protects no data (see the field docs).
-    fn lock_gate(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.compact_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Acquire the compaction gate. Poison recovery is trivially safe here:
+    /// the gate protects no data (see the field docs).
+    fn lock_gate(&self) -> MutexGuard<'_, ()> {
+        lock_recover(&self.compact_gate)
     }
 
     /// Append one JSONL line to the commit log. Failures are logged and
@@ -536,11 +530,9 @@ impl LexUserHistory {
         }
     }
 
-    /// Spawn background compaction if threshold is reached.
-    pub(super) fn maybe_compact(self: &Arc<Self>) {
-        if !lock_recover(&self.wal).needs_compact() {
-            return;
-        }
+    /// Spawn a threshold compaction (the caller has already observed
+    /// `needs_compact()` under the wal lock).
+    fn spawn_threshold_compact(self: &Arc<Self>) {
         // §4: threshold compactions skip when one is in flight — the
         // threshold stays exceeded and the next commit retries. Advisory
         // pre-check to avoid spawning a thread per commit while a
@@ -1234,7 +1226,12 @@ mod tests {
 
         // Quiesce: the gate is free only when no compaction is running;
         // parked ones finish before our acquisition returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timeout waiting for compactions to quiesce"
+            );
             let gate = hist.lock_gate();
             if !hist.scrub_pending.load(Ordering::SeqCst) {
                 // Holding the gate: no compaction can start; writers are

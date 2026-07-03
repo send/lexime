@@ -129,7 +129,7 @@ final class EngineContainer {
                 failures.append(.historyDataLoss(detail: detail))
             } else if report.migratedFromV1 {
                 NSLog("Lexime: User history migrated from v1 (\(report.framesReplayed) frames)")
-            } else if report.walState != .clean && report.walState != .missing {
+            } else if !report.clean {
                 NSLog(
                     "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)"
                 )
