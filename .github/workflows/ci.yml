@@ -70,10 +70,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: engine -> target
-          shared-key: engine
+      # Deliberately NO rust-cache here: Swatinem/rust-cache runs an unlocked
+      # `cargo metadata` for its cache key, which would silently repair an
+      # out-of-sync Cargo.lock before the --locked screen below could reject
+      # it. This job only runs metadata (no build), so the cache buys little.
 
       - name: Quarantine check (7-day)
         run: bash scripts/check-quarantine.sh
