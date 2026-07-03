@@ -385,12 +385,17 @@ run = [
 ]
 
 [tasks.audit]
-description = "Run supply chain checks (cargo-deny, cargo-vet, quarantine, build.rs, machete)"
+description = "Run supply chain checks (quarantine, build.rs, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
 run = [
-  "cd engine && cargo deny check",
-  "cd engine && cargo vet check",
+  # screening first: cargo check executes build scripts, so the build.rs /
+  # quarantine screens must run before anything that builds. In CI these two
+  # live in the `screen` job that gates all cargo-invoking jobs; locally
+  # there is no job DAG, so they run here, first.
   "bash scripts/check-quarantine.sh",
   "bash scripts/check-build-scripts.sh",
+  "cd engine && cargo check --locked",
+  "cd engine && cargo deny check",
+  "cd engine && cargo vet check",
   "cd engine && cargo machete",
 ]
 

@@ -53,8 +53,36 @@ jobs:
               - 'Tests/**'
               - 'Info.plist'
 
-  lint:
+  # Supply-chain screening. Runs the quarantine / build.rs baseline checks
+  # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
+  # compiles and executes dependency build scripts, so every cargo-invoking
+  # job below `needs: screen` (test-* inherit it through lint). Unconditional
+  # (no `if`) on purpose — a path-filtered screen would have to hand-maintain
+  # the union of all dependents' conditions, and a skipped needs-job skips its
+  # dependents.
+  screen:
     needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Deliberately NO rust-cache here: Swatinem/rust-cache runs an unlocked
+      # `cargo metadata` for its cache key, which would silently repair an
+      # out-of-sync Cargo.lock before the --locked screen below could reject
+      # it. This job only runs metadata (no build), so the cache buys little.
+
+      - name: Quarantine check (7-day)
+        run: bash scripts/check-quarantine.sh
+
+      - name: build.rs baseline check
+        run: bash scripts/check-build-scripts.sh
+
+  lint:
+    needs: [changes, screen]
     if: >-
       needs.changes.outputs.core == 'true' ||
       needs.changes.outputs.session == 'true' ||
@@ -77,7 +105,7 @@ jobs:
       - run: cd engine && cargo clippy --workspace --all-features -- -D warnings
 
   msrv:
-    needs: changes
+    needs: [changes, screen]
     if: >-
       needs.changes.outputs.core == 'true' ||
       needs.changes.outputs.session == 'true' ||
@@ -178,10 +206,11 @@ jobs:
   # fetch stamp (commit SHA + manifest, PR #266) decides on every run whether
   # the cached snapshot matches the pin, repairs it, or transactionally
   # re-downloads it — so a stale cache entry can never poison the dict.
-  # `needs: changes` only (not lint): a corpus-only change must not be
-  # skipped just because the Rust lint job didn't run.
+  # No `lint` dependency: a corpus-only change must not be skipped just
+  # because the Rust lint job didn't run. `screen` IS required — this job
+  # builds dictool, which executes dependency build scripts.
   accuracy:
-    needs: changes
+    needs: [changes, screen]
     if: >-
       needs.changes.outputs.core == 'true' ||
       needs.changes.outputs.cli == 'true' ||
@@ -257,13 +286,11 @@ jobs:
           key: mozc-raw-${{ steps.mozc-pin.outputs.sha }}
 
   audit:
-    needs: changes
+    needs: [changes, screen]
     if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -277,6 +304,8 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet,cargo-machete
 
+      # Screening (quarantine / build.rs baseline) lives in the `screen` job,
+      # which gates this and every other cargo-invoking job.
       - name: Verify Cargo.lock is in sync
         run: cd engine && cargo check --locked
 
@@ -286,17 +315,11 @@ jobs:
       - name: cargo vet (audit tracking)
         run: cd engine && cargo vet check
 
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
-
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
-
       - name: Unused dependencies
         run: cd engine && cargo machete
 
   swift:
-    needs: changes
+    needs: [changes, screen]
     if: >-
       needs.changes.outputs.core == 'true' ||
       needs.changes.outputs.session == 'true' ||

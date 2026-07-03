@@ -9,12 +9,25 @@ there and apply unchanged in the loop — not restated here).
 
 ## failure_modes
 
-No lexime-local loop incidents yet. The loop's defensive rules (Step 1
-pitfall gate, Step 4 TERMINAL stop, request-staleness gate, generator-layer /
-altitude check, pre-Ask written-lens attestation) were calibrated on elidex
-incidents — see `../../../../elidex/.claude/skills/external-converge/project.md`
-`failure_modes` for the incident log. They are enforced by the global
-SKILL.md regardless; record lexime-specific incidents here as they occur.
+The loop's defensive rules (Step 1 pitfall gate, Step 4 TERMINAL stop,
+request-staleness gate, generator-layer / altitude check, pre-Ask
+written-lens attestation) were calibrated on elidex incidents — see
+`../../../../elidex/.claude/skills/external-converge/project.md`
+`failure_modes` for that log. lexime-local incidents:
+
+- **PR #281 (2026-07-02, LXUD v2 PR1)** — 1 feature commit + **37 review-fix
+  commits over ~7.5h**. Amplifiers: dual reviewers (Copilot auto-review
+  still ON per-push + Codex rounds; Copilot is OFF since 2026-07-03),
+  same-mechanism corner-hopping (WAL truncate durability / rename
+  confirmation / compaction queue→drain→re-pass→cap patched from a new
+  corner each round), and a branch that predated the AGENTS.md/overlay
+  merge so no lens or loop-defense was visible. Operative rules:
+  **(a)** fire the cumulative fix-delta design re-gate (`/lexime-review`
+  over `git diff <feature-commit>..HEAD`) EARLY on ≥2-round same-mechanism
+  patching, not only at TERMINAL — a diverging loop never reaches TERMINAL;
+  **(b)** at loop start, merge main into long-running branches so
+  AGENTS.md + overlays are present; **(c)** depth belongs in `/pre-push`
+  BEFORE the first push — the loop is not the primary net.
 
 Inherited from the Copilot era (reviewer-agnostic, still applies):
 
