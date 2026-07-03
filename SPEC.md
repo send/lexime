@@ -389,18 +389,18 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 | バリアント | 説明 |
 |---|---|
 | `Committed { reading, surface, segments }` | 確定時に生成。FFI 層が `UserHistory::record_at()` で whole-reading + sub-segments の 2 段階記録 |
-| `Deletion { segments }` | ForwardDelete 時に生成。FFI 層が `UserHistory::remove_entries()` でユニグラム・バイグラムを削除し、`force_compact()` で即座に永続化 |
+| `Deletion { segments }` | ForwardDelete 時に生成。FFI 層が WAL に `Tombstone` frame を append（毎回 `F_FULLFSYNC`）し、`UserHistory::remove_entries()` でメモリから削除、非同期スクラブ compaction で checkpoint から物理消去 |
 
 ### 個別削除
 
-候補選択中に Fn+Delete を押すと、選択中の候補に対応する学習エントリ（ユニグラム + バイグラム）を削除する。削除後は `force_compact()` で即座にチェックポイントを書き出し、WAL リプレイによる復活を防ぐ。`force_compact()` はバックグラウンドコンパクションとの競合を `compacting` ガードで直列化する。
+候補選択中に Fn+Delete を押すと、選択中の候補に対応する学習エントリ（ユニグラム + バイグラム）を削除する。削除は WAL に `Tombstone` frame を書き込んで（書き込み時に `F_FULLFSYNC`）耐久化し、replay 時に削除が再適用されるため WAL リプレイで復活しない。物理スクラブ（旧 checkpoint と過去 Committed frame に残る文字列の消去）は直後に非同期 compaction をスケジュールして行い、`scrub_pending` + `compact_gate`（Mutex）で直列化する。学習されていない候補の削除（no-op）には Tombstone を書かず `F_FULLFSYNC` を払わない。
 
 ### 保存（WAL + Checkpoint、LXUD v2）
 
 - **Checkpoint**: LXUD v2（32 バイト固定ヘッダ: マジック `LXUD` + version 2 + `applied_seq` + created_at + body_len + CRC32、body は bincode。CRC はヘッダ先頭 28 バイト + body を保護 — `applied_seq` は replay filter を駆動するため無防備な bit flip を許さない）。v1（マジック + version 1 + bincode）の reader を保持し、起動時に一回で v2 へ migration（元 v1 は `.v1.bak` へ best-effort 退避）
 - **WAL**: `user_history.lxud.wal`（8 バイトファイルヘッダ `LXWL` + version 2。フレーム形式: payload_len + CRC32(seq+payload) + seq + bincode(`WalRecord::Committed|Tombstone`)）
 - **seq**: WAL フレームは単調増加の連番を持ち、checkpoint ヘッダの `applied_seq` が「効果を含む最後の seq」を記録。replay は `seq > applied_seq` のフレームのみ適用するため、checkpoint 書き込みと WAL truncate の間でクラッシュしても二重適用が構造的に起きない
-- **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync（best-effort・log-only）で書き出し + 条件付き WAL truncate）。compaction の排他は `compact_gate` (Mutex)、削除・障害後の即時要求は `scrub_pending` で直列化。Tombstone frame（削除の WAL 表現、書き込み時に毎回 `F_FULLFSYNC`）は reader を先行導入済みで、writer は次期変更で導入予定 — 現状の削除は `force_compact()`（同期 checkpoint 書き出し）による
+- **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync（best-effort・log-only）で書き出し + 条件付き WAL truncate）。compaction の排他は `compact_gate` (Mutex)、削除・障害後の即時要求は `scrub_pending` で直列化。削除は `Tombstone` frame（削除の WAL 表現、書き込み時に毎回 `F_FULLFSYNC`）を append し、直後に非同期スクラブ compaction をスケジュールして物理消去する。全消去（`clear`）は空 checkpoint（`applied_seq` = 現 WAL 最大 seq）を先行書き込みしてコミットポイントとし、以後どのクラッシュ点でも空履歴に収束する（旧 WAL frame は全て skip される）
 - **場所**: `~/Library/Application Support/Lexime/user_history.lxud`
 - **起動時（エンジン経路）**: `recovery::open_recovering` — checkpoint ロード → WAL replay（evict なし + 事後 1 回）→ in-memory 復元。破損は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空で継続、WAL 末尾破損は last-good オフセットで物理修復。どのファイル状態でも起動は成功し学習は継続する（`OpenReport` に結果を記録。Err は EACCES 等の環境障害のみ）
 - **オフラインツール経路**: `UserHistory::open` / `open_with_wal` は無副作用・厳格エラーのまま（監査ツールが稼働中 IME のファイルを rename しない）
