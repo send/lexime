@@ -13,10 +13,12 @@ invoked from this repo. The multi-round loop variant's calibration
 
 `cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features`
 
-Per CLAUDE.md「ビルド・テスト」. When a fix touches dictionary sources /
-connection costs / feature weights / rerankers, additionally run both
-accuracy gates and keep them green: `mise run accuracy && mise run
-accuracy-history` (skip 以外全 pass — CLAUDE.md § 変換精度テスト).
+Per CLAUDE.md「ビルド・テスト」. When a fix touches any accuracy-impacting
+input — dictionary sources (dict_source / `engine/data/`) / connection
+costs / feature weights / rerankers / the conversion path
+(converter / viterbi) — additionally run both accuracy gates and keep them
+green: `mise run accuracy && mise run accuracy-history` (skip 以外全 pass —
+CLAUDE.md § 変換精度テスト), with before/after evidence in the PR.
 Swift-side changes are gated by CI (`gh pr checks`), not locally.
 
 ## fix_discipline

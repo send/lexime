@@ -385,8 +385,9 @@ run = [
 ]
 
 [tasks.audit]
-description = "Run supply chain checks (cargo-deny, cargo-vet, quarantine, build.rs, machete)"
+description = "Run supply chain checks (locked check, cargo-deny, cargo-vet, quarantine, build.rs, machete) — mirrors the CI audit job"
 run = [
+  "cd engine && cargo check --locked",
   "cd engine && cargo deny check",
   "cd engine && cargo vet check",
   "bash scripts/check-quarantine.sh",

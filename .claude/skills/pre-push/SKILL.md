@@ -12,7 +12,7 @@ user-invocable: true
 
 - **No skipping** — 全段 invoke する。唯一の例外は純 inert doc PR (typo / wording のみ、Stage 3-6 不要)。**review・enforcement tooling の編集 (`.claude/skills/**`, hooks) は inert ではない** — full gate を通す
 - **No substitution** — `/lexime-review` は `/simplify` + `/code-review` + `/review` の代替ではない。4 つとも走らせる
-- **Fix → re-verify** — どの段でもコード編集が発生したら Stage 1 → 2 を再実行してから続行 (`/simplify` は auto-apply なので特に)
+- **Fix → re-verify** — どの段でも編集が発生したら (コードに限らず corpus・辞書 TSV 等のデータ編集も) Stage 1 → 2 を**条件付きゲート込みで**再実行してから続行 (`/simplify` は auto-apply なので特に。データ編集は該当する accuracy ゲートの再実行が本体)
 - 本 skill は **push の手前で止まる**。push / PR 作成は別途の授権アクション
 
 ## Stages (fixed order)
@@ -31,11 +31,16 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 
 条件付き追加 (diff に該当パスがあれば必須):
 
-条件付き追加 — **SSoT は `.github/workflows/ci.yml` の `changes` filter**。diff の変更パスを filter に当てて「CI でどの job が走るか」を判定し、走る job のローカル等価をここで先に走らせる。**filter のパス内容をこの doc に書き写さない** (書き写しは必ず drift する — 本 PR の R2/R3 レビューがその実証):
+条件付き追加 — **SSoT は `.github/workflows/ci.yml`**。diff の変更パスを `changes` filter に当てて「CI でどの job が走るか」を判定し、**走る job 全部**のローカル等価をここで先に走らせる。filter のパス内容も job 一覧もこの doc を正としない (書き写しは drift する — 本 PR の R2〜R4 レビューがその実証)。既知の job → ローカル等価対応 (**非網羅** — ci.yml にここに無い job を見つけたら実行 + この表に追補):
 
-- CI **accuracy** job が走る変更 (`core ∨ cli ∨ corpus` filter) → `mise run accuracy && mise run accuracy-history`。コスト・重み・辞書ソース・変換パスの変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
-- CI **swift** job が走る変更 (`core ∨ session ∨ ffi ∨ swift` filter) → `mise run test-swift`
-- CI **audit** job が走る変更 (`core` filter — Cargo.toml/lock・deny.toml・supply-chain 等を含む) → `mise run audit`
+| CI job | ローカル等価 |
+|---|---|
+| lint / test-* | 上の基本 verify でカバー済み |
+| accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
+| swift | `mise run test-swift` |
+| audit | `mise run audit` (CI audit job と同一ステップ、locked check 込み) |
+| msrv | `cd engine && cargo +<rust-version> check --workspace --locked` (`<rust-version>` は `engine/Cargo.toml` の `rust-version` を読む。toolchain 未導入なら `rustup toolchain install <rust-version>`) |
+| CodeQL / Analyze | ローカル等価なし — CI に委ねる |
 
 ### Stage 3 — `/simplify`
 
