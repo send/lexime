@@ -6,7 +6,6 @@ use lex_core::converter::{
 };
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
-use lex_core::user_history::UserHistory;
 
 macro_rules! die {
     ($result:expr, $($arg:tt)*) => {
@@ -28,10 +27,13 @@ pub fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, histo
     );
 
     let user_history = history.map(|path| {
-        die!(
-            UserHistory::open(Path::new(path)),
+        // open_with_wal: uncheckpointed commits live only in the WAL; a
+        // checkpoint-only read would ignore the most recent learning.
+        let (h, _wal) = die!(
+            lex_core::user_history::wal::open_with_wal(Path::new(path)),
             "Error opening history: {}"
-        )
+        );
+        h
     });
 
     if n <= 1 {

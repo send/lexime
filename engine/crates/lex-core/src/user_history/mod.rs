@@ -4,8 +4,11 @@
 //! promote learned candidates in subsequent sessions.
 
 mod persistence;
+pub mod recovery;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_recovery;
 pub mod wal;
 
 use std::collections::HashMap;
@@ -16,15 +19,18 @@ use serde::{Deserialize, Serialize};
 use crate::dict::DictEntry;
 use crate::settings::settings;
 
-pub(super) const MAGIC: &[u8; 4] = b"LXUD";
-pub(super) const VERSION: u8 = 1;
-
 #[derive(Clone)]
 pub struct UserHistory {
     /// reading → (surface → HistoryEntry)
     pub(super) unigrams: HashMap<String, HashMap<String, HistoryEntry>>,
     /// prev_surface → ((next_reading, next_surface) → HistoryEntry)
     pub(super) bigrams: HashMap<String, HashMap<(String, String), HistoryEntry>>,
+    /// Highest WAL sequence number whose effect is reflected in this state.
+    /// Stored in the v2 checkpoint header (not the bincode body); replay
+    /// applies only frames with `seq > applied_seq`, which is what makes a
+    /// checkpoint + leftover WAL crash state safe (no double application).
+    /// 0 for `new()` and v1 checkpoints.
+    applied_seq: u64,
 }
 
 #[derive(Clone)]
@@ -122,7 +128,34 @@ impl UserHistory {
         Self {
             unigrams: HashMap::new(),
             bigrams: HashMap::new(),
+            applied_seq: 0,
         }
+    }
+
+    /// Highest WAL sequence number reflected in this state.
+    pub fn applied_seq(&self) -> u64 {
+        self.applied_seq
+    }
+
+    /// Record that all WAL frames up to `seq` are reflected in this state.
+    /// Monotonic: a lower `seq` never rolls the value back.
+    pub fn advance_applied_seq(&mut self, seq: u64) {
+        self.applied_seq = self.applied_seq.max(seq);
+    }
+
+    /// Apply one WAL record and advance `applied_seq`. Does not evict —
+    /// replay applies many frames and evicts once afterwards.
+    pub fn apply(&mut self, record: &wal::WalRecord, seq: u64) {
+        match record {
+            wal::WalRecord::Committed {
+                segments,
+                timestamp,
+            } => self.record_segments_at(segments, *timestamp),
+            wal::WalRecord::Tombstone { segments, .. } => {
+                self.remove_entries(segments);
+            }
+        }
+        self.advance_applied_seq(seq);
     }
 
     /// Record a confirmed conversion: list of (reading, surface) segments.
@@ -130,8 +163,15 @@ impl UserHistory {
         self.record_at(segments, now_epoch());
     }
 
-    /// Record with an explicit timestamp (for WAL replay).
+    /// Record with an explicit timestamp.
     pub fn record_at(&mut self, segments: &[(String, String)], now: u64) {
+        self.record_segments_at(segments, now);
+        self.evict();
+    }
+
+    /// Apply one recorded conversion without evicting (replay applies many
+    /// frames and evicts once afterwards; the live path evicts per record).
+    fn record_segments_at(&mut self, segments: &[(String, String)], now: u64) {
         for (reading, surface) in segments {
             let entry = self
                 .unigrams
@@ -164,8 +204,6 @@ impl UserHistory {
             entry.frequency += 1;
             entry.last_used = now;
         }
-
-        self.evict();
     }
 
     /// Compute unigram boost for a (reading, surface) pair.

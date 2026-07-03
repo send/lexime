@@ -1,57 +1,255 @@
-use std::fs;
-use std::io;
-use std::path::Path;
+//! LXUD checkpoint serialization: v2 writer + v1/v2 readers.
+//!
+//! v2 layout — fixed 32-byte header followed by a bincode body:
+//!
+//! | offset | size | field       | content                                    |
+//! |--------|------|-------------|--------------------------------------------|
+//! | 0      | 4    | magic       | `LXUD`                                     |
+//! | 4      | 1    | version     | `2`                                        |
+//! | 5      | 3    | reserved    | 0 on write, ignored on read                |
+//! | 8      | 8    | applied_seq | u64 LE — last WAL seq covered by the body  |
+//! | 16     | 8    | created_at  | u64 LE epoch secs, diagnostics only        |
+//! | 24     | 4    | body_len    | u32 LE                                     |
+//! | 28     | 4    | crc32       | u32 LE, crc32fast over bytes 0..28 + body  |
+//! | 32     | —    | body        | bincode(`UserHistoryData`) — same as v1    |
+//!
+//! The CRC covers the header prefix as well as the body: `applied_seq`
+//! drives the replay filter, and an unprotected bit flip there would
+//! silently skip (or re-apply) WAL frames instead of quarantining.
+//!
+//! v1 (retained reader, ~30 lines): `LXUD` + version byte `1` + bincode body.
 
-use super::{
-    BigramRecord, HistoryEntry, UnigramRecord, UserHistory, UserHistoryData, MAGIC, VERSION,
-};
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use bincode::Options as _;
+use tracing::warn;
+
+use super::{BigramRecord, HistoryEntry, UnigramRecord, UserHistory, UserHistoryData};
+
+pub(super) const MAGIC: &[u8; 4] = b"LXUD";
+pub(super) const VERSION_V1: u8 = 1;
+pub(super) const VERSION: u8 = 2;
+pub(super) const HEADER_LEN: usize = 32;
+
+/// bincode config matching the wire format of `bincode::serialize` (fixint
+/// encoding) plus an explicit allocation cap. The plain
+/// `bincode::deserialize` is unlimited: a corrupt length prefix inside the
+/// body could trigger a giant allocation before any data is read.
+///
+/// Trailing bytes are rejected: v2 checkpoint bodies and WAL payloads are
+/// exact-length by construction (length fields + CRC), so leftovers can
+/// only mean a writer bug or corruption that happened to keep the CRC —
+/// surface it instead of silently succeeding.
+pub(super) fn bincode_reader(limit: usize) -> impl bincode::Options {
+    bincode::options()
+        .with_fixint_encoding()
+        .with_limit(limit as u64)
+}
+
+/// v1 reader config: the original v1 reader was `bincode::deserialize`,
+/// which tolerates trailing bytes — keep that parity so degraded-but-
+/// parseable v1 files still migrate (v1 has no CRC; strictness here would
+/// quarantine data the old code recovered).
+fn bincode_reader_v1(limit: usize) -> impl bincode::Options {
+    bincode::options()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(limit as u64)
+}
+
+fn invalid(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+/// Result of reading a checkpoint file. Content problems are reported as
+/// `Corrupt` so the recovery path can quarantine; environmental read failures
+/// (EACCES etc.) surface as the outer `Err`.
+pub(super) enum CheckpointLoaded {
+    V2(UserHistory),
+    V1(UserHistory),
+    Missing,
+    Corrupt(io::Error),
+}
+
+pub(super) fn load_checkpoint(path: &Path) -> io::Result<CheckpointLoaded> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(CheckpointLoaded::Missing),
+        Err(e) => return Err(e),
+    };
+    if bytes.len() < 5 {
+        return Ok(CheckpointLoaded::Corrupt(invalid("too short")));
+    }
+    if &bytes[0..4] != MAGIC {
+        return Ok(CheckpointLoaded::Corrupt(invalid("bad magic")));
+    }
+    match bytes[4] {
+        VERSION_V1 => match UserHistory::from_bytes_v1(&bytes) {
+            Ok(h) => Ok(CheckpointLoaded::V1(h)),
+            Err(e) => Ok(CheckpointLoaded::Corrupt(e)),
+        },
+        VERSION => match UserHistory::from_bytes_v2(&bytes) {
+            Ok(h) => Ok(CheckpointLoaded::V2(h)),
+            Err(e) => Ok(CheckpointLoaded::Corrupt(e)),
+        },
+        // Unknown versions are "corrupt" (quarantine + fallback), never a
+        // hard error: the bytes are preserved by the rename, so a downgrade
+        // can still rescue them (§7 version-bump policy).
+        v => Ok(CheckpointLoaded::Corrupt(invalid(format!(
+            "unsupported version {v}"
+        )))),
+    }
+}
+
+/// `create_dir_all` for the parent, tolerating bare relative paths whose
+/// parent is "" (the current directory — nothing to create).
+pub(super) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => fs::create_dir_all(p),
+        _ => Ok(()),
+    }
+}
+
+/// Atomic write with content durability: tmp → sync_all (F_FULLFSYNC on
+/// macOS) → rename → best-effort parent-dir fsync. Without the tmp sync,
+/// the rename can become durable before the file contents, manufacturing a
+/// corrupt checkpoint on power loss. The parent-dir fsync only makes the
+/// rename itself durable; per the design (§6) it is deliberately
+/// best-effort and log-only — APFS journals renames, and the worst case of
+/// an unsynced rename is rolling back to the previous checkpoint, never
+/// corruption. The tmp name appends `.tmp` to the full file name
+/// (`with_extension` would strip `.lxud` and leave a stray
+/// `user_history.tmp`).
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = tmp_path(path);
+    ensure_parent_dir(path)?;
+    let mut f = File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    fs::rename(&tmp, path)?;
+    if !sync_parent_dir(path) {
+        warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
+    }
+    Ok(())
+}
+
+fn tmp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// Best-effort fsync of the parent directory so the rename itself is
+/// durable. APFS likely journals renames already; this is POSIX practice on
+/// a background path, so it costs nothing and failures are non-fatal.
+/// Returns whether the sync succeeded (callers only log on failure).
+pub(super) fn sync_parent_dir(path: &Path) -> bool {
+    let parent = match path.parent() {
+        // A bare relative path ("history.lxud") has parent "" — that means
+        // the current directory, and File::open("") would fail.
+        Some(p) if p.as_os_str().is_empty() => Path::new("."),
+        Some(p) => p,
+        None => return false,
+    };
+    match File::open(parent) {
+        Ok(dir) => dir.sync_all().is_ok(),
+        Err(_) => false,
+    }
+}
 
 impl UserHistory {
-    /// Serialize to bytes (LXUD format).
+    /// Serialize to bytes (LXUD v2 format).
     pub fn to_bytes(&self) -> Result<Vec<u8>, io::Error> {
         let data = self.to_data();
         let body = bincode::serialize(&data).map_err(io::Error::other)?;
+        let body_len = u32::try_from(body.len())
+            .map_err(|_| io::Error::other("history body too large (>4 GiB)"))?;
 
-        let mut buf = Vec::with_capacity(5 + body.len());
+        let mut buf = Vec::with_capacity(HEADER_LEN + body.len());
         buf.extend_from_slice(MAGIC);
         buf.push(VERSION);
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.extend_from_slice(&self.applied_seq.to_le_bytes());
+        buf.extend_from_slice(&super::now_epoch().to_le_bytes());
+        buf.extend_from_slice(&body_len.to_le_bytes());
+        // CRC over the header prefix + body (see module docs: applied_seq
+        // must not be trusted unprotected).
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&buf);
+        hasher.update(&body);
+        buf.extend_from_slice(&hasher.finalize().to_le_bytes());
         buf.extend_from_slice(&body);
         Ok(buf)
     }
 
-    /// Deserialize from bytes (LXUD format).
+    /// Deserialize from bytes (LXUD v1 or v2). Strict: any content problem
+    /// is an error — recovery-mode handling lives in [`super::recovery`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, io::Error> {
         if bytes.len() < 5 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "too short"));
+            return Err(invalid("too short"));
         }
         if &bytes[0..4] != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic"));
+            return Err(invalid("bad magic"));
         }
-        if bytes[4] != VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unsupported version",
-            ));
+        match bytes[4] {
+            VERSION_V1 => Self::from_bytes_v1(bytes),
+            VERSION => Self::from_bytes_v2(bytes),
+            v => Err(invalid(format!("unsupported version {v}"))),
         }
-        let data: UserHistoryData = bincode::deserialize(&bytes[5..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    }
 
+    pub(super) fn from_bytes_v1(bytes: &[u8]) -> Result<Self, io::Error> {
+        let body = &bytes[5..];
+        let data: UserHistoryData = bincode_reader_v1(body.len())
+            .deserialize(body)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(Self::from_data(data))
     }
 
-    /// Atomic write: write to .tmp then rename.
+    pub(super) fn from_bytes_v2(bytes: &[u8]) -> Result<Self, io::Error> {
+        if bytes.len() < HEADER_LEN {
+            return Err(invalid("truncated v2 header"));
+        }
+        let applied_seq = u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte field"));
+        // bytes[16..24]: created_at, diagnostics only.
+        let body_len = u32::from_le_bytes(bytes[24..28].try_into().expect("4-byte field")) as usize;
+        let expected_crc = u32::from_le_bytes(bytes[28..32].try_into().expect("4-byte field"));
+        // Strict equality: tmp+rename writes never legitimately leave
+        // trailing garbage, so excess length is a bug worth surfacing.
+        if bytes.len() != HEADER_LEN + body_len {
+            return Err(invalid(format!(
+                "body length mismatch: header says {body_len}, file has {}",
+                bytes.len() - HEADER_LEN
+            )));
+        }
+        let body = &bytes[HEADER_LEN..];
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[0..28]);
+        hasher.update(body);
+        if hasher.finalize() != expected_crc {
+            return Err(invalid("checkpoint CRC mismatch"));
+        }
+        let data: UserHistoryData = bincode_reader(body_len)
+            .deserialize(body)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut history = Self::from_data(data);
+        history.applied_seq = applied_seq;
+        Ok(history)
+    }
+
+    /// Atomic durable write (see [`write_atomic`]).
     pub fn save(&self, path: &Path) -> Result<(), io::Error> {
         let bytes = self.to_bytes()?;
-        let tmp = path.with_extension("tmp");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&tmp, &bytes)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        write_atomic(path, &bytes)
     }
 
     /// Open from file, returning empty UserHistory if file doesn't exist.
+    /// Strict (no side effects, corrupt = `Err`): offline tooling must never
+    /// mutate a live user's files. The engine uses
+    /// [`super::recovery::open_recovering`] instead.
     pub fn open(path: &Path) -> Result<Self, io::Error> {
         match fs::read(path) {
             Ok(bytes) => Self::from_bytes(&bytes),
@@ -118,6 +316,10 @@ impl UserHistory {
             );
         }
 
-        Self { unigrams, bigrams }
+        Self {
+            unigrams,
+            bigrams,
+            applied_seq: 0,
+        }
     }
 }

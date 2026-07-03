@@ -80,7 +80,20 @@ impl LexConnection {
 pub struct LexUserHistory {
     pub(crate) inner: Arc<RwLock<UserHistory>>,
     wal: Mutex<HistoryWal>,
-    compacting: AtomicBool,
+    /// Compaction exclusivity (design decision #11): threshold compactions
+    /// skip when the gate is held (`try_lock`); clear, the deletion path,
+    /// and heal requests park on it. The Mutex guards no data — it only
+    /// serializes "one compaction at a time" — so recovering it through
+    /// poisoning is trivially safe, and the guard's Drop releases it on
+    /// panic (UniFFI catches panics at the FFI boundary, and a panicking
+    /// background thread does not kill the process).
+    compact_gate: Mutex<()>,
+    /// §5.3 step 5: a posted compaction request whose snapshot requirement
+    /// may postdate an in-flight run. Posted before parking on the gate;
+    /// whoever runs a compaction consumes it before snapshotting, so a
+    /// parked requester that wakes to find it consumed skips its redundant
+    /// run.
+    scrub_pending: AtomicBool,
     /// Append-only JSONL log of commit events (rank, top-1 acceptance),
     /// stored next to the checkpoint. Local diagnostics only; mined offline
     /// by lextool to track the real-world top-1 acceptance rate. The mutex
@@ -126,17 +139,37 @@ impl LexUserHistory {
     #[uniffi::constructor]
     fn open(path: String) -> Result<Arc<Self>, LexError> {
         let cp = Path::new(&path);
-        let (history, wal) = crate::user_history::wal::open_with_wal(cp)?;
+        // Recovery-mode open: corruption is quarantined instead of failing
+        // startup, so learning never silently stops. Err = environmental
+        // read failure only (EACCES etc.). PR2 surfaces the report to Swift;
+        // until then it is logged here.
+        let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        if report.data_loss_suspected() {
+            warn!("user history recovered with suspected data loss: {report:?}");
+        } else if !report.is_clean() {
+            tracing::info!("user history recovery events: {report:?}");
+        }
         let commit_log = CommitLog {
             path: cp.with_file_name("commit-log.jsonl"),
             file: None,
         };
-        Ok(Arc::new(Self {
+        let this = Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
-            compacting: AtomicBool::new(false),
+            compact_gate: Mutex::new(()),
+            scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
-        }))
+        });
+        // Startup compaction (§5.1-6): checkpoint recovery results early so
+        // the next startup is clean. This is also the heal path for a
+        // frozen WAL (failed tail repair / failed migration commit): the
+        // checkpoint covers memory, so the truncation that follows it
+        // restores appendable v2 form — without this, appends would keep
+        // failing and threshold-based compaction would never trigger.
+        if report.compaction_recommended {
+            this.spawn_compact();
+        }
+        Ok(this)
     }
 
     /// Clear all learning history (in-memory + WAL + checkpoint files).
@@ -147,6 +180,28 @@ impl LexUserHistory {
 
 impl LexUserHistory {
     pub(super) fn clear_impl(&self) -> Result<(), LexError> {
+        // Park until any in-flight compaction finishes (§5.5 step 1): a
+        // compactor that cloned a pre-clear snapshot must not save it after
+        // the files are removed, or the privacy wipe would be undone.
+        // Holding the gate also blocks new compactions for the duration.
+        let _gate = self.lock_gate();
+        // Clearing supersedes requests posted so far: it truncates the WAL
+        // (unfreezing it) and empties memory. A heal posted mid-clear parks
+        // on the gate and runs after release, checkpointing the (empty)
+        // post-clear state — harmless.
+        self.scrub_pending.store(false, Ordering::SeqCst);
+        self.clear_locked()
+    }
+
+    /// Acquire the compaction gate, recovering through poisoning: the gate
+    /// protects no data (see the field docs).
+    fn lock_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.compact_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn clear_locked(&self) -> Result<(), LexError> {
         {
             let mut h = self.inner.write().map_err(|e| LexError::Io {
                 msg: format!("history write lock poisoned: {e}"),
@@ -178,20 +233,62 @@ impl LexUserHistory {
                 Err(e) => return Err(e.into()),
             }
         }
+        // Privacy wipe: quarantined bytes and the v1 migration backup must
+        // not survive a clear.
+        crate::user_history::recovery::remove_recovery_artifacts(wal.checkpoint_path())?;
         Ok(())
     }
 
     /// Append a WAL entry. Does not block on compaction.
-    pub(super) fn append_wal(&self, segments: &[(String, String)], timestamp: u64) {
-        let mut wal = match self.wal.lock() {
-            Ok(w) => w,
-            Err(e) => {
-                warn!("WAL lock poisoned: {e}");
-                return;
+    pub(super) fn append_wal(self: &Arc<Self>, segments: &[(String, String)], timestamp: u64) {
+        let failed = {
+            let mut wal = match self.wal.lock() {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("WAL lock poisoned: {e}");
+                    return;
+                }
+            };
+            match wal.append(segments, timestamp) {
+                Ok(seq) => {
+                    // Advance applied_seq while still holding the wal mutex
+                    // (lock order: wal -> inner). The in-memory effect of this
+                    // frame was applied in record_history phase 1, so once the
+                    // frame is on disk a checkpoint snapshot may claim coverage
+                    // of `seq`. A snapshot racing between phase 1 and here only
+                    // under-reports applied_seq — the safe direction (bounded
+                    // re-apply after a crash, never loss).
+                    match self.inner.write() {
+                        Ok(mut h) => h.advance_applied_seq(seq),
+                        // Recover through the poison: advance_applied_seq is
+                        // a monotonic u64 max, safe regardless of the state
+                        // the panicking holder left behind — and a stale
+                        // applied_seq would let a later checkpoint under-
+                        // report coverage (restart replay then re-applies
+                        // its frames).
+                        Err(poisoned) => {
+                            warn!("history write lock poisoned; advancing applied_seq anyway");
+                            poisoned.into_inner().advance_applied_seq(seq);
+                        }
+                    }
+                    false
+                }
+                // Memory keeps the record (§5.2): the next checkpoint is a full
+                // snapshot, so a recovered disk picks it up; the frame's absence
+                // makes double-apply impossible.
+                Err(e) => {
+                    warn!("WAL append failed: {e}");
+                    true
+                }
             }
         };
-        if let Err(e) = wal.append(segments, timestamp) {
-            warn!("WAL append failed: {e}");
+        // An append failure freezes the WAL (partial frame at the tail);
+        // only a post-checkpoint truncation restores appendable form, and
+        // the entry-count threshold can no longer reach it. Post a heal
+        // request (checkpoint writes may still fail under a persistent disk
+        // problem — the next record's failure re-posts).
+        if failed {
+            self.spawn_compact();
         }
     }
 
@@ -219,57 +316,143 @@ impl LexUserHistory {
         if !needs {
             return;
         }
-        // Prevent concurrent compactions
-        if self.compacting.swap(true, Ordering::Acquire) {
-            return;
+        // §4: threshold compactions skip when one is in flight — the
+        // threshold stays exceeded and the next commit retries. Advisory
+        // pre-check to avoid spawning a thread per commit while a
+        // compaction runs; the spawned thread re-checks with its own
+        // try_lock.
+        match self.compact_gate.try_lock() {
+            Ok(gate) => drop(gate),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(_)) => {}
         }
         let this = Arc::clone(self);
-        std::thread::spawn(move || {
-            this.run_compact();
-            this.compacting.store(false, Ordering::Release);
-        });
-    }
-
-    /// Force an immediate compaction (used after history deletion to persist changes).
-    /// Acquires the compacting guard to serialize with background compaction.
-    pub(super) fn force_compact(&self) {
-        // Acquire the compacting flag, spinning if a background compaction is in flight.
-        while self
-            .compacting
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
+        if let Err(e) = std::thread::Builder::new()
+            .name("lexime-history-compact".into())
+            .spawn(move || {
+                let _gate = match this.compact_gate.try_lock() {
+                    Ok(g) => g,
+                    Err(std::sync::TryLockError::WouldBlock) => return,
+                    Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                };
+                // This run's snapshot covers heal requests posted so far.
+                this.scrub_pending.store(false, Ordering::SeqCst);
+                if this.run_compact_impl(true) {
+                    this.spawn_compact();
+                }
+            })
         {
-            std::thread::yield_now();
+            warn!("failed to spawn compaction thread: {e}");
         }
-        self.run_compact();
-        self.compacting.store(false, Ordering::Release);
     }
 
+    /// Post a compaction request that must run with a snapshot no older
+    /// than now (startup recovery, WAL-append-failure healing) and park a
+    /// worker on the gate until it can run. If an intervening gated run —
+    /// which consumes `scrub_pending` before snapshotting — already covered
+    /// the request, the worker wakes to a consumed flag and skips its
+    /// redundant run.
+    fn spawn_compact(self: &Arc<Self>) {
+        self.scrub_pending.store(true, Ordering::SeqCst);
+        let this = Arc::clone(self);
+        if let Err(e) = std::thread::Builder::new()
+            .name("lexime-history-compact".into())
+            .spawn(move || {
+                let _gate = this.lock_gate();
+                if this.scrub_pending.swap(false, Ordering::SeqCst) && this.run_compact_impl(true) {
+                    this.spawn_compact();
+                }
+            })
+        {
+            // scrub_pending stays posted; the next request (or the next
+            // gated run's consume) picks it up.
+            warn!("failed to spawn compaction thread: {e}");
+        }
+    }
+
+    /// Force an immediate compaction (used after history deletion to
+    /// persist changes). Parks until any in-flight compaction finishes,
+    /// then truncates unconditionally: leaving a racing Committed frame for
+    /// the just-deleted entry uncovered in the WAL would let the next
+    /// replay resurrect the deleted learning. Destroying an uncovered frame
+    /// instead loses at most that racing commit (v1 semantics; the
+    /// structural fix is PR2's Tombstone frames, which make the
+    /// delete-after-commit ordering durable in the WAL itself).
+    pub(super) fn force_compact(&self) {
+        let _gate = self.lock_gate();
+        // This full-snapshot run covers heal requests posted so far.
+        self.scrub_pending.store(false, Ordering::SeqCst);
+        self.run_compact_impl(false);
+    }
+
+    #[cfg(test)]
     fn run_compact(&self) {
+        self.run_compact_impl(true);
+    }
+
+    /// Returns whether a follow-up pass is warranted: frames were appended
+    /// after this run's snapshot, so the covered-only truncation was
+    /// skipped.
+    fn run_compact_impl(&self, covered_only: bool) -> bool {
         // 1. Clone history under read lock (brief)
         let snapshot = match self.inner.read() {
             Ok(h) => h.clone(),
             Err(e) => {
                 warn!("history read lock failed during compaction: {e}");
-                return;
+                return false;
             }
         };
         let cp_path = match self.wal.lock() {
             Ok(wal) => wal.checkpoint_path().to_path_buf(),
-            Err(_) => return,
+            Err(e) => {
+                warn!("WAL lock poisoned during compaction: {e}");
+                return false;
+            }
         };
 
         // 2. Write checkpoint (no locks held, slow I/O)
         if let Err(e) = snapshot.save(&cp_path) {
             warn!("checkpoint write failed: {e}");
-            return;
+            return false;
         }
 
-        // 3. Truncate WAL (brief lock)
-        if let Ok(mut wal) = self.wal.lock() {
+        // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
+        // provably covered by the durable checkpoint (seq <= applied_seq at
+        // snapshot time) may be destroyed. The deletion path truncates
+        // unconditionally (see force_compact).
+        let mut wal = match self.wal.lock() {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("WAL lock poisoned; skipping truncation after checkpoint: {e}");
+                return false;
+            }
+        };
+        if covered_only {
+            match wal.truncate_covered(snapshot.applied_seq()) {
+                Ok(true) => false,
+                Ok(false) => {
+                    // Frames landed after our snapshot: request a follow-up
+                    // pass (§5.3 step 5). A commit whose in-memory effect
+                    // raced into this checkpoint before its frame was
+                    // sequenced would otherwise stay replayable until the
+                    // next threshold compaction; the follow-up's snapshot
+                    // carries the advanced applied_seq and covers it. This
+                    // narrows the residual double-apply to a crash between
+                    // the two passes — the structural fix (WAL-ahead
+                    // ordering under the wal mutex, so snapshots can never
+                    // contain unsequenced effects) lands in PR2.
+                    true
+                }
+                Err(e) => {
+                    warn!("WAL truncate failed: {e}");
+                    false
+                }
+            }
+        } else {
             if let Err(e) = wal.truncate_wal() {
                 warn!("WAL truncate failed: {e}");
             }
+            false
         }
     }
 }
@@ -298,6 +481,37 @@ mod tests {
         // clear() removes the commit log along with history files
         hist.clear_impl().unwrap();
         assert!(!log_path.exists(), "commit log should be removed by clear");
+    }
+
+    #[test]
+    fn test_force_compact_truncates_uncovered_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = LexUserHistory::open(cp.display().to_string()).unwrap();
+
+        // Covered frame: the normal path advances applied_seq
+        hist.append_wal(&[("きょう".into(), "今日".into())], 1000);
+        // Uncovered frame: append directly without advancing applied_seq,
+        // modeling a commit racing the compaction snapshot
+        hist.wal
+            .lock()
+            .unwrap()
+            .append(&[("あす".into(), "明日".into())], 1001)
+            .unwrap();
+
+        // Background-style compaction must skip truncation (uncovered frame
+        // would be destroyed while absent from the checkpoint)
+        hist.run_compact();
+        assert_eq!(
+            hist.wal.lock().unwrap().entry_count(),
+            2,
+            "covered-only truncation must be skipped"
+        );
+
+        // Deletion-path compaction truncates unconditionally so a deleted
+        // entry can never be resurrected by an uncovered replayable frame
+        hist.force_compact();
+        assert_eq!(hist.wal.lock().unwrap().entry_count(), 0);
     }
 
     #[test]

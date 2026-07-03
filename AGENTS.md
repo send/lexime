@@ -33,6 +33,12 @@ what a generic reviewer misses:
 - **Performance scope**: only the IME hot path (conversion, key handling)
   is performance-sensitive. Dev-tool (`dictool`) performance nits are
   acceptable-by-policy — do not raise them.
+- **Durability stance (settled)**: the user-history checkpoint's parent-dir
+  fsync after rename is deliberately best-effort and log-only (design §6:
+  APFS journals renames; the worst case of an unsynced rename is rolling
+  back to the previous checkpoint, never corruption). Findings that couple
+  rename-durability confirmation to WAL truncation or other behavior
+  re-litigate a settled design decision — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 
