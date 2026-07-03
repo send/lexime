@@ -154,7 +154,8 @@ struct DeveloperSettingsView: View {
     private func resetAll() {
         NSLog("Lexime: Resetting all settings and history")
 
-        // 1. Clear learning history via engine (closes WAL handle + deletes files)
+        // 1. Clear learning history via engine (empty-checkpoint protocol; a
+        //    partial physical failure is logged and scrubbed at next startup)
         do {
             try engineControl.clearHistory()
             NSLog("Lexime: History cleared")
