@@ -18,7 +18,7 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 | Axis | Fires (→ run) when… (非網羅) |
 |---|---|
 | 1 辞書 SSoT | rewriter / postprocess / cost / dict_source / pos_map を触った |
-| 2 測定・コーパス | settings / コスト定数 / reranker / corpus TOML を触った |
+| 2 測定・コーパス | settings / コスト定数 / reranker / converter (viterbi) / corpus TOML を触った |
 | 3 構造的正しさ | lex-session / lex_engine / persistence / AsyncWorker / lock・epoch 系を触った |
 | 4 UniFFI 境界 | `engine/src/` / `Sources/` を触った |
 | 5 文脈整合 | 上記いずれか + 挙動変更 / 新機構の追加 |
@@ -31,7 +31,8 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 
 ```bash
 git fetch --quiet origin main 2>/dev/null || echo "⚠ fetch 失敗 — base が stale の可能性" >&2
-git diff origin/main...HEAD > /tmp/lexime-review-diff.txt
+DIFF=$(mktemp "${TMPDIR:-/tmp}/lexime-review-diff.XXXXXX")   # 並列セッションと衝突しない per-run パス
+git diff origin/main...HEAD > "$DIFF"
 git diff --stat origin/main...HEAD
 ```
 
@@ -39,7 +40,7 @@ git diff --stat origin/main...HEAD
 
 Agent tool で 5 軸を並列起動 (1 agent = 1 軸)。プロンプト template:
 
-> Read `<repo>/.claude/skills/lexime-review/axes.md` の Common + Axis N と `<repo>/CLAUDE.md` の設計哲学・設計規律。次の diff (`/tmp/lexime-review-diff.txt`) を Axis N の Detect 観点で精査し、findings を `path:line / severity (CRIT|IMP|MIN) / 何が壊れるか一文 / 根拠` で返せ。必要なら repo の該当ファイルを読んで文脈確認してよい。findings ゼロならその旨と「何を確認したか」を返せ。
+> Read `<repo>/.claude/skills/lexime-review/axes.md` の Common + Axis N と `<repo>/CLAUDE.md` の設計哲学・設計規律。次の diff (`$DIFF` の実パスを埋め込む) を Axis N の Detect 観点で精査し、findings を `path:line / severity (CRIT|IMP|MIN) / 何が壊れるか一文 / 根拠` で返せ。必要なら repo の該当ファイルを読んで文脈確認してよい。findings ゼロならその旨と「何を確認したか」を返せ。
 
 ### Step 3 — 集約と裁定
 

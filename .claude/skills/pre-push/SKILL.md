@@ -31,8 +31,8 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 
 条件付き追加 (diff に該当パスがあれば必須):
 
-- **辞書・コスト・reranker・corpus** (`dict_source/` / `settings.rs` / cost 定数 / `rewriter` / `postprocess` / `testcorpus/`) → `mise run accuracy && mise run accuracy-history`。コスト・重み変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
-- **Swift** (`Sources/` / `Tests/`) → `mise run test-swift`
+- **辞書・コスト・reranker・変換パス・corpus** (`dict_source/` / `engine/data/` [mozc-pin 等の辞書入力] / `settings.rs` / cost 定数 / `rewriter` / `postprocess` / `converter/` [viterbi 含む] / `testcorpus/`) → `mise run accuracy && mise run accuracy-history`。コスト・重み変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
+- **Swift / FFI 面** (`Sources/` / `Tests/` / `engine/src/` — CI の `ffi` filter と同一基準) → `mise run test-swift`
 
 ### Stage 3 — `/simplify`
 

@@ -37,7 +37,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 1. `git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
-3. push 前に `/pre-push` を通す（fmt → verify → /simplify → /code-review → /review → /lexime-review の 6 段ゲート。post-push レビューは single-shot なので深さはここで確保する）
+3. push 前に `/pre-push` を通す（fmt → verify → /simplify → /code-review → /review → /lexime-review の 6 段ゲート。post-push レビューは single-shot なので深さはここで確保する）。ゲートが編集を生んだら（fmt / /simplify auto-apply / fix 適用）追加コミットしてから次へ
 4. `git push -u origin <branch>` で push する
 5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 6. コードの変更を含む PR はレビュー対応後にマージする（後述）

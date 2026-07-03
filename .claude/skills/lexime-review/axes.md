@@ -55,7 +55,7 @@ Rust ↔ Swift 境界の規律。
 
 ### Detect
 
-- panic し得るパスが FFI 境界に露出している (`unwrap` / `expect` / 添字 in `engine/src/`)
+- panic し得るパスが FFI 境界に露出している (`unwrap` / `expect` / 添字 — `engine/src/` 直下に限らず、FFI API から到達する lex-session / lex-core の経路も対象)
 - IMKit main thread をブロックし得る同期呼び出しの追加
 - poll / timer ベースのイベント取得の再導入 (push/callback が正準)
 - Swift 側で protocol シームを迂回して engine 型を View 層に露出
