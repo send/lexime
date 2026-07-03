@@ -1112,6 +1112,88 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // §14-2: manual latency profile of the coupled critical section.
+    // Run with:
+    //   cargo test --release -p lex_engine profile_apply_records \
+    //     -- --ignored --nocapture
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "manual profiling (§14-2): run with --release --ignored --nocapture"]
+    fn profile_apply_records_lock_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        // Realistic capacity: ~20k unigram entries.
+        {
+            let mut h = write_recover(&hist.inner);
+            for i in 0..20_000 {
+                h.record_at(&[(format!("よみ{i}"), format!("面{i}"))], 1000 + i as u64);
+            }
+        }
+
+        // Contending conversion reads (the §14-2 concern: inner.read vs the
+        // wal->inner write section).
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut readers = Vec::new();
+        for _ in 0..2 {
+            let hist = Arc::clone(&hist);
+            let stop = Arc::clone(&stop);
+            readers.push(std::thread::spawn(move || {
+                let mut n = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let h = read_recover(&hist.inner);
+                    n += h.learned_surfaces("よみ100", 2000).len() as u64;
+                    drop(h);
+                }
+                n
+            }));
+        }
+
+        let percentile = |sorted: &[std::time::Duration], p: f64| {
+            sorted[((sorted.len() as f64 - 1.0) * p) as usize]
+        };
+
+        // Committed path (includes the every-50 F_BARRIERFSYNC).
+        let mut durs = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            let rec = committed(&format!("けいそく{i}"), &format!("計測{i}"));
+            let t = std::time::Instant::now();
+            hist.apply_records(&[rec]);
+            durs.push(t.elapsed());
+        }
+        durs.sort();
+        println!(
+            "apply_records Committed (20k entries, 2 readers): p50={:?} p95={:?} p99={:?} max={:?}",
+            percentile(&durs, 0.50),
+            percentile(&durs, 0.95),
+            percentile(&durs, 0.99),
+            durs.last().unwrap(),
+        );
+
+        // Tombstone path (per-gesture F_FULLFSYNC).
+        let mut tdurs = Vec::with_capacity(20);
+        for i in 0..20 {
+            let rec = deletion(&format!("けいそく{i}"), &format!("計測{i}"));
+            let t = std::time::Instant::now();
+            hist.apply_records(&[rec]);
+            tdurs.push(t.elapsed());
+        }
+        tdurs.sort();
+        println!(
+            "apply_records Tombstone (F_FULLFSYNC): p50={:?} max={:?}",
+            percentile(&tdurs, 0.50),
+            tdurs.last().unwrap(),
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        for r in readers {
+            r.join().unwrap();
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // T8: concurrency smoke — records × compactions × tombstones, then
     // (checkpoint + WAL replay) == memory. Non-deterministic by nature; the
     // deterministic guarantees live in the T2/T6/T7 tests.
