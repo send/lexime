@@ -416,6 +416,9 @@ impl HistoryWal {
     }
 
     /// Append a Committed record. Returns the assigned sequence number.
+    /// Test-only convenience wrapper; production appends go through the
+    /// canonical [`Self::append_record`] from `apply_records`.
+    #[cfg(test)]
     pub fn append(
         &mut self,
         segments: &[(String, String)],

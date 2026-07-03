@@ -30,6 +30,7 @@ struct DeveloperSettingsView: View {
     @State private var settingsText = ""
     @State private var needsRestart = false
     @State private var showResetConfirm = false
+    @State private var resetError: String?
 
     private let supportDir: String
     private let engineControl: EngineControlService
@@ -121,6 +122,14 @@ struct DeveloperSettingsView: View {
         } message: {
             Text("設定ファイル（settings.toml, romaji.toml）と学習履歴を削除して再起動します。この操作は取り消せません。")
         }
+        .alert("初期化エラー", isPresented: Binding(
+            get: { resetError != nil },
+            set: { if !$0 { resetError = nil } }
+        )) {
+            Button("OK") { resetError = nil }
+        } message: {
+            Text(resetError ?? "")
+        }
     }
 
     // MARK: - Components
@@ -153,14 +162,19 @@ struct DeveloperSettingsView: View {
 
     private func resetAll() {
         NSLog("Lexime: Resetting all settings and history")
+        var problems: [String] = []
 
-        // 1. Clear learning history via engine (empty-checkpoint protocol; a
-        //    partial physical failure is logged and scrubbed at next startup)
+        // 1. Clear learning history via engine (empty-checkpoint protocol).
+        //    clear_impl scrubs the checkpoint, WAL, and commit-log and returns
+        //    an error only if some physical scrub could not complete. Surface
+        //    it instead of restarting as if the wipe were done — an incomplete
+        //    privacy wipe must never be silent.
         do {
             try engineControl.clearHistory()
             NSLog("Lexime: History cleared")
         } catch {
             NSLog("Lexime: Failed to clear history: %@", "\(error)")
+            problems.append("学習履歴: \(error)")
         }
 
         // 2. Delete config files
@@ -173,11 +187,20 @@ struct DeveloperSettingsView: View {
                     NSLog("Lexime: Deleted %@", path)
                 } catch {
                     NSLog("Lexime: Failed to delete %@: %@", path, "\(error)")
+                    problems.append("\(name): \(error)")
                 }
             }
         }
 
-        // 3. Restart
+        // 3. Restart only on a fully successful wipe; otherwise surface the
+        //    partial failure so the user knows data may remain, rather than
+        //    silently restarting into a state they believe is clean.
+        guard problems.isEmpty else {
+            resetError =
+                "初期化の一部に失敗しました。データが残っている可能性があります。\n\n"
+                + problems.joined(separator: "\n")
+            return
+        }
         NSLog("Lexime: Restarting after reset")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             // IME processes are managed by launchd; exit(0) triggers automatic restart.

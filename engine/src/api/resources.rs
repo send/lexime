@@ -282,11 +282,6 @@ impl LexUserHistory {
     fn open_report(&self) -> LexHistoryOpenReport {
         (&self.report).into()
     }
-
-    /// Clear all learning history (in-memory + WAL + checkpoint files).
-    fn clear(self: Arc<Self>) -> Result<(), LexError> {
-        self.clear_impl()
-    }
 }
 
 impl LexUserHistory {
@@ -382,7 +377,9 @@ impl LexUserHistory {
                     // scheduled below persists it in full.
                     Err(AppendError::SyncFailed { seq, source }) => {
                         warn!("tombstone durability sync failed (checkpoint fallback): {source}");
-                        scrub = true;
+                        // SyncFailed only arises from a Tombstone append, and a
+                        // real (non-no-op) Tombstone already set `scrub` above.
+                        debug_assert!(scrub, "SyncFailed implies a scrubbing Tombstone");
                         sequenced.push((record, Some(seq)));
                     }
                     // Frame not on disk: memory still applies — a confirmed
@@ -481,8 +478,21 @@ impl LexUserHistory {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
-                warn!("clear: commit-log removal failed: {e}");
-                deferred.get_or_insert(e.into());
+                // A privacy wipe must not leave input strings on disk, and
+                // the commit-log — unlike the WAL — has no startup scrub
+                // backstop (recovery never touches it). If it can't be
+                // unlinked (an external reader holds the inode, or the
+                // parent dir isn't writable), truncate it to zero instead:
+                // unlink needs parent-dir write while truncation needs only
+                // file write, so it can succeed where unlink can't, and
+                // zero-length scrubbing matches the WAL's own clear (§0
+                // excludes physical byte erasure). Only a failure of *both*
+                // is deferred and surfaced.
+                warn!("clear: commit-log removal failed ({e}); truncating to scrub");
+                if let Err(trunc) = std::fs::File::create(&commit_log_path) {
+                    warn!("clear: commit-log truncation also failed: {trunc}");
+                    deferred.get_or_insert(e.into());
+                }
             }
         }
         // Privacy wipe: quarantined bytes and the v1 migration backup must
