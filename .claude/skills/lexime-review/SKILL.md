@@ -18,9 +18,9 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 | Axis | Fires (→ run) when… (非網羅) |
 |---|---|
 | 1 辞書 SSoT | rewriter / postprocess / cost / dict_source / pos_map を触った |
-| 2 測定・コーパス | settings / コスト定数 / reranker / converter (viterbi) / corpus TOML を触った |
+| 2 測定・コーパス | settings / コスト定数 / reranker / converter (viterbi) / dict_source / `engine/data/` / corpus TOML を触った |
 | 3 構造的正しさ | lex-session / lex_engine / persistence / AsyncWorker / lock・epoch 系を触った |
-| 4 UniFFI 境界 | `engine/src/` / `Sources/` を触った |
+| 4 UniFFI 境界 | `engine/src/` / `Sources/` を触った、または FFI API から到達する lex-session / lex-core の経路を触った |
 | 5 文脈整合 | 上記いずれか + 挙動変更 / 新機構の追加 |
 
 **Review・enforcement tooling の編集 (`.claude/skills/**`, hooks) は inert 扱いにしない** — ゲートの挙動を変えるので full gate を通す。純 inert doc (typo / wording のみ) だけが skip 対象。
@@ -31,9 +31,10 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 
 ```bash
 git fetch --quiet origin main 2>/dev/null || echo "⚠ fetch 失敗 — base が stale の可能性" >&2
+BASE=$(git merge-base origin/main HEAD)
 DIFF=$(mktemp "${TMPDIR:-/tmp}/lexime-review-diff.XXXXXX")   # 並列セッションと衝突しない per-run パス
-git diff origin/main...HEAD > "$DIFF"
-git diff --stat origin/main...HEAD
+git diff "$BASE" > "$DIFF"   # worktree 込み — /pre-push 中の未コミット fix (/simplify 等) も review 対象に含める
+git diff --stat "$BASE"
 ```
 
 ### Step 2 — 5-agent 並列レビュー
@@ -47,6 +48,7 @@ Agent tool で 5 軸を並列起動 (1 agent = 1 軸)。プロンプト template
 - 重複統合 → axes.md Common で severity 再校正 (agent の申告を鵜呑みにしない)
 - **Fix discipline (哲学レンズ)**: 各 real finding に対し symptom vs root を CLAUDE.md 設計哲学で判定 — 明白な patch (guard / sort / 特例) より、辞書・データ根治 (Axis 1) や構造で不変条件が成立する形 (Axis 3) を優先
 - **Disposition**: real → 完全に fix (real MIN 含む、"edge だから defer" 禁止) / FP → 根拠つき reject。pragmatic な妥協を推奨形で user に丸投げしない
+- **Propagation sweep**: fix を当てたら、同種の記述・同じパターンの兄弟箇所 (path list / trigger 表 / 対応する doc) を全箇所 grep して同時に直す (判例: PR #284 R2 = R1 修正の propagation 漏れ 4 連発)
 
 ### Step 4 — fix 後の再検証
 

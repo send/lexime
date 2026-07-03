@@ -31,8 +31,10 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features 
 
 条件付き追加 (diff に該当パスがあれば必須):
 
-- **辞書・コスト・reranker・変換パス・corpus** (`dict_source/` / `engine/data/` [mozc-pin 等の辞書入力] / `settings.rs` / cost 定数 / `rewriter` / `postprocess` / `converter/` [viterbi 含む] / `testcorpus/`) → `mise run accuracy && mise run accuracy-history`。コスト・重み変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
-- **Swift / FFI 面** (`Sources/` / `Tests/` / `engine/src/` — CI の `ffi` filter と同一基準) → `mise run test-swift`
+条件は **CI の job ゲートと同一基準** (`.github/workflows/ci.yml` の `changes` filter が SSoT — ローカルと CI の判定をずらさない):
+
+- **accuracy** (CI accuracy job = core ∨ cli ∨ corpus): `engine/crates/lex-core/` / `engine/crates/lex-cli/` (dict_source 含む) / `engine/testcorpus/` / `engine/data/` を触った → `mise run accuracy && mise run accuracy-history`。コスト・重み変更なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト)
+- **swift** (CI swift job = core ∨ session ∨ ffi ∨ swift): `engine/crates/lex-core/` / `engine/crates/lex-session/` / `engine/src/` / `Sources/` / `Tests/` を触った → `mise run test-swift`
 
 ### Stage 3 — `/simplify`
 
