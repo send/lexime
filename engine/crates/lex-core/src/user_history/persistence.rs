@@ -19,12 +19,13 @@
 //!
 //! v1 (retained reader, ~30 lines): `LXUD` + version byte `1` + bincode body.
 
-use std::fs::{self, File};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io;
+use std::path::Path;
 
 use bincode::Options as _;
-use tracing::warn;
+
+use crate::persist::{bincode_reader, bincode_reader_v1, write_atomic};
 
 use super::{BigramRecord, HistoryEntry, UnigramRecord, UserHistory, UserHistoryData};
 
@@ -32,32 +33,6 @@ pub(super) const MAGIC: &[u8; 4] = b"LXUD";
 pub(super) const VERSION_V1: u8 = 1;
 pub(super) const VERSION: u8 = 2;
 pub(super) const HEADER_LEN: usize = 32;
-
-/// bincode config matching the wire format of `bincode::serialize` (fixint
-/// encoding) plus an explicit allocation cap. The plain
-/// `bincode::deserialize` is unlimited: a corrupt length prefix inside the
-/// body could trigger a giant allocation before any data is read.
-///
-/// Trailing bytes are rejected: v2 checkpoint bodies and WAL payloads are
-/// exact-length by construction (length fields + CRC), so leftovers can
-/// only mean a writer bug or corruption that happened to keep the CRC —
-/// surface it instead of silently succeeding.
-pub(super) fn bincode_reader(limit: usize) -> impl bincode::Options {
-    bincode::options()
-        .with_fixint_encoding()
-        .with_limit(limit as u64)
-}
-
-/// v1 reader config: the original v1 reader was `bincode::deserialize`,
-/// which tolerates trailing bytes — keep that parity so degraded-but-
-/// parseable v1 files still migrate (v1 has no CRC; strictness here would
-/// quarantine data the old code recovered).
-fn bincode_reader_v1(limit: usize) -> impl bincode::Options {
-    bincode::options()
-        .with_fixint_encoding()
-        .allow_trailing_bytes()
-        .with_limit(limit as u64)
-}
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -100,63 +75,6 @@ pub(super) fn load_checkpoint(path: &Path) -> io::Result<CheckpointLoaded> {
         v => Ok(CheckpointLoaded::Corrupt(invalid(format!(
             "unsupported version {v}"
         )))),
-    }
-}
-
-/// `create_dir_all` for the parent, tolerating bare relative paths whose
-/// parent is "" (the current directory — nothing to create).
-pub(super) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
-    match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => fs::create_dir_all(p),
-        _ => Ok(()),
-    }
-}
-
-/// Atomic write with content durability: tmp → sync_all (F_FULLFSYNC on
-/// macOS) → rename → best-effort parent-dir fsync. Without the tmp sync,
-/// the rename can become durable before the file contents, manufacturing a
-/// corrupt checkpoint on power loss. The parent-dir fsync only makes the
-/// rename itself durable; per the design (§6) it is deliberately
-/// best-effort and log-only — APFS journals renames, and the worst case of
-/// an unsynced rename is rolling back to the previous checkpoint, never
-/// corruption. The tmp name appends `.tmp` to the full file name
-/// (`with_extension` would strip `.lxud` and leave a stray
-/// `user_history.tmp`).
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = tmp_path(path);
-    ensure_parent_dir(path)?;
-    let mut f = File::create(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(&tmp, path)?;
-    if !sync_parent_dir(path) {
-        warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
-    }
-    Ok(())
-}
-
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    path.with_file_name(name)
-}
-
-/// Best-effort fsync of the parent directory so the rename itself is
-/// durable. APFS likely journals renames already; this is POSIX practice on
-/// a background path, so it costs nothing and failures are non-fatal.
-/// Returns whether the sync succeeded (callers only log on failure).
-pub(super) fn sync_parent_dir(path: &Path) -> bool {
-    let parent = match path.parent() {
-        // A bare relative path ("history.lxud") has parent "" — that means
-        // the current directory, and File::open("") would fail.
-        Some(p) if p.as_os_str().is_empty() => Path::new("."),
-        Some(p) => p,
-        None => return false,
-    };
-    match File::open(parent) {
-        Ok(dir) => dir.sync_all().is_ok(),
-        Err(_) => false,
     }
 }
 

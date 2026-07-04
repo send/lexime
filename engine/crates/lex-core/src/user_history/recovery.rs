@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
+use crate::persist;
+
 use super::persistence::{load_checkpoint, CheckpointLoaded};
 use super::wal::{
     classify_wal, legacy_valid_prefix, scan_legacy, scan_v2, wal_path_for, HistoryWal, WalFormat,
@@ -340,7 +342,7 @@ pub fn open_recovering(
         || wal.is_frozen();
 
     // --- 5. quarantine rotation + v1-backup GC ---
-    rotate_quarantined(checkpoint_path);
+    persist::rotate_quarantined(checkpoint_path, QUARANTINE_KEEP);
     gc_v1_backup(checkpoint_path);
 
     Ok((history, wal, report))
@@ -370,7 +372,7 @@ fn gc_v1_backup(checkpoint_path: &Path) {
 
 /// Path of the best-effort v1 checkpoint backup (`<name>.v1.bak`).
 pub fn v1_backup_path(checkpoint_path: &Path) -> PathBuf {
-    suffixed(checkpoint_path, ".v1.bak")
+    persist::suffixed(checkpoint_path, ".v1.bak")
 }
 
 /// Remove recovery artifacts (`.v1.bak`, `.corrupt-*`, stray `.tmp`) for
@@ -379,7 +381,7 @@ pub fn v1_backup_path(checkpoint_path: &Path) -> PathBuf {
 pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     for path in [
         v1_backup_path(checkpoint_path),
-        suffixed(checkpoint_path, ".tmp"),
+        persist::suffixed(checkpoint_path, ".tmp"),
         // The v1 writer used `with_extension("tmp")` (`user_history.tmp`):
         // a pre-upgrade crash before rename can leave a full serialized
         // history copy under that name.
@@ -391,7 +393,7 @@ pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    for path in quarantined_files(checkpoint_path) {
+    for path in persist::quarantined_files(checkpoint_path) {
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -401,52 +403,19 @@ pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn suffixed(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(suffix);
-    path.with_file_name(name)
-}
-
-/// Rename `path` aside as `<name>.corrupt-<epoch>[-n]`, preserving the
-/// bytes for manual rescue. If the rename fails, removal is attempted as a
-/// last resort — clearing the path so subsequent saves can recreate it is
-/// prioritized over byte preservation at that point (in practice rename and
-/// removal need the same directory permission, so a byte-destroying
-/// fallback is nearly unreachable); if even that fails, the file stays in
-/// place and later saves will try to overwrite it. Returns whether `path`
-/// is now clear.
+/// Adapter over [`persist::quarantine`] for the checkpoint/WAL recovery
+/// path: injects the recovery clock, records the rescued path in the report,
+/// and reports whether `path` is now clear (both rename and remove failing
+/// leaves it in place, which the WAL branch turns into a `freeze()`).
 fn quarantine(path: &Path, quarantined: &mut Vec<PathBuf>) -> bool {
-    let ts = super::now_epoch();
-    for n in 0..10 {
-        let suffix = if n == 0 {
-            format!(".corrupt-{ts}")
-        } else {
-            format!(".corrupt-{ts}-{n}")
-        };
-        let dest = suffixed(path, &suffix);
-        if dest.exists() {
-            continue;
+    match persist::quarantine(path, super::now_epoch()) {
+        persist::Quarantine::Renamed(dest) => {
+            quarantined.push(dest);
+            true
         }
-        return match fs::rename(path, &dest) {
-            Ok(()) => {
-                quarantined.push(dest);
-                true
-            }
-            Err(rename_err) => match fs::remove_file(path) {
-                Ok(()) => {
-                    warn!("quarantine rename failed ({rename_err}); removed corrupt file instead");
-                    true
-                }
-                Err(remove_err) => {
-                    warn!(
-                        "quarantine failed (rename: {rename_err}, remove: {remove_err}); continuing"
-                    );
-                    false
-                }
-            },
-        };
+        persist::Quarantine::Removed => true,
+        persist::Quarantine::Failed => false,
     }
-    false
 }
 
 /// Copy the v1 checkpoint bytes aside before migration overwrites the path.
@@ -484,66 +453,6 @@ fn reinitialize(wal: &mut HistoryWal, history: &UserHistory) -> bool {
             wal.adopt_empty(history.applied_seq());
             wal.freeze();
             false
-        }
-    }
-}
-
-fn quarantined_files(checkpoint_path: &Path) -> Vec<PathBuf> {
-    let parent = match checkpoint_path.parent() {
-        // Bare relative name ("history.lxud"): parent is "" = the current
-        // directory; read_dir("") would fail and hide quarantine files from
-        // rotation and the clear() privacy wipe.
-        Some(p) if p.as_os_str().is_empty() => Path::new("."),
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-    let Some(prefix) = checkpoint_path.file_name().and_then(|n| n.to_str()) else {
-        return Vec::new();
-    };
-    let Ok(entries) = fs::read_dir(parent) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(prefix) && name.contains(".corrupt-"))
-        })
-        .map(|e| e.path())
-        .collect()
-}
-
-/// Keep only the newest [`QUARANTINE_KEEP`] quarantined files (by epoch in
-/// the file name) so repeated corruption cannot accumulate junk forever.
-fn rotate_quarantined(checkpoint_path: &Path) {
-    let mut files = quarantined_files(checkpoint_path);
-    if files.len() <= QUARANTINE_KEEP {
-        return;
-    }
-    // `.corrupt-<epoch>[-n]`: sort newest first; unparsable names sort
-    // oldest and get cleaned up.
-    files.sort_by_key(|p| {
-        let key = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|name| name.rsplit_once(".corrupt-"))
-            .and_then(|(_, suffix)| {
-                let (epoch, n) = match suffix.split_once('-') {
-                    Some((e, n)) => (e, n.parse::<u64>().unwrap_or(0)),
-                    None => (suffix, 0),
-                };
-                epoch.parse::<u64>().ok().map(|e| (e, n))
-            })
-            .unwrap_or((0, 0));
-        std::cmp::Reverse(key)
-    });
-    for old in &files[QUARANTINE_KEEP..] {
-        if let Err(e) = fs::remove_file(old) {
-            warn!(
-                "failed to rotate old quarantine file {}: {e}",
-                old.display()
-            );
         }
     }
 }

@@ -35,7 +35,8 @@ use bincode::Options as _;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use super::persistence::bincode_reader;
+use crate::persist::bincode_reader;
+
 use super::UserHistory;
 
 pub(super) const WAL_MAGIC: &[u8; 4] = b"LXWL";
@@ -140,7 +141,7 @@ struct FileWalIo {
     file: Option<File>,
 }
 
-use super::persistence::ensure_parent_dir;
+use crate::persist::ensure_parent_dir;
 
 impl FileWalIo {
     fn open_file(&mut self) -> io::Result<&mut File> {
@@ -168,7 +169,7 @@ impl FileWalIo {
                 // A freshly created file's directory entry needs a parent
                 // fsync to be durable — otherwise a power loss could drop
                 // the whole file, frames included, past the barrier bound.
-                if !super::persistence::sync_parent_dir(&self.path) {
+                if !crate::persist::sync_parent_dir(&self.path) {
                     warn!("WAL parent dir sync failed; new file's durability unconfirmed");
                 }
             } else {
@@ -245,7 +246,7 @@ impl WalIo for FileWalIo {
         f.sync_data()?;
         // If create() made a new directory entry (file was removed
         // externally), it needs a parent fsync to be durable.
-        if !super::persistence::sync_parent_dir(&self.path) {
+        if !crate::persist::sync_parent_dir(&self.path) {
             warn!("WAL parent dir sync failed after truncation; durability unconfirmed");
         }
         Ok(())
