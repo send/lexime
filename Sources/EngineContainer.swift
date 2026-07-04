@@ -6,7 +6,13 @@ enum EngineInitFailure {
     /// System dictionary failed to load. Fatal: the engine cannot start.
     case dictionary(detail: String)
     /// User dictionary file could not be opened (entries unavailable).
+    /// Environmental read failures only (e.g. permissions) — corruption no
+    /// longer throws (it quarantines; see `.userDictionaryDataLoss`).
     case userDictionary(detail: String)
+    /// User dictionary recovery quarantined a corrupt file: registration keeps
+    /// working (empty dictionary), but the previously registered words were
+    /// lost (bytes preserved in `.corrupt-*` when the rename succeeded).
+    case userDictionaryDataLoss(detail: String)
     /// Composite (system + user) dictionary creation failed;
     /// user dictionary entries are not reflected in conversion.
     case compositeDictionary(detail: String)
@@ -91,6 +97,20 @@ final class EngineContainer {
         do {
             let ud = try LexUserDictionary.open(path: userDictPath)
             NSLog("Lexime: User dictionary loaded from %@", userDictPath)
+            // Recovery report: quarantine = user-visible data loss
+            // (registration keeps working with an empty dict; the corrupt
+            // bytes are preserved). Recorded here on the SUCCESS path, NOT in
+            // `catch`: corruption no longer throws — only environmental read
+            // failures do (which land in `.userDictionary` below).
+            let report = ud.openReport()
+            if report.dataLossSuspected {
+                var detail = "user dictionary corrupt; registered words lost"
+                if !report.quarantinedPaths.isEmpty {
+                    detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
+                }
+                NSLog("Lexime: %@", detail)
+                failures.append(.userDictionaryDataLoss(detail: detail))
+            }
             userDict = ud
         } catch {
             NSLog("Lexime: Failed to open user dictionary at %@: %@", userDictPath, "\(error)")

@@ -419,9 +419,11 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 - **データ構造**: `RwLock<HashMap<String, Vec<UserEntry>>>`（reading → entries）
 - **POS ID**: 1852（名詞,一般）、cost: -1（システム辞書より常に優先）
-- **形式**: LXUW（マジック `LXUW` + version 1 + bincode）、アトミック書き込み
+- **形式**: LXUW（マジック `LXUW` + version 1 + bincode）。LXUD と共有する persistence primitive で耐久アトミック書き込み（tmp + `sync_all` + rename + 親 dir fsync（best-effort・log-only））。読み込みは alloc 上限（`with_limit`）つきで巨大 alloc を防ぐ。フォーマットは CRC なし・単一ファイル・WAL なしのまま（数十エントリ・明示 `save` 駆動のため最小ハードニングに留める、design §9）
 - **場所**: `~/Library/Application Support/Lexime/user_dict.lxuw`
 - **操作**: `register` / `unregister` は write lock、`Dictionary` trait（lookup / predict 等）は read lock
+- **起動時（エンジン経路）**: `UserDictionary::open_recovering` — 破損（マジック / version / bincode / 長さ）は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空辞書で継続 + report 記録。破損ファイルが残存して毎起動 throw し登録語が永久に失われる経路を塞ぐ。Err は EACCES 等の環境障害のみ
+- **オフラインツール経路**: `UserDictionary::open` は無副作用・厳格エラーのまま（CLI の監査ツールが稼働中 IME のファイルを rename しない）
 - **CLI**: `dictool user-dict add/remove/list`
 
 ## 設定の外部化

@@ -10,15 +10,28 @@ mod tests;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+use bincode::Options as _;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::dict::{DictEntry, Dictionary, SearchResult};
 
 const MAGIC: &[u8; 4] = b"LXUW";
+/// On-disk format version. LXUW is intentionally CRC-less and single-file (a
+/// few-dozen-entry store with explicit `save`), so a future field addition
+/// bumps this byte. Per the LXUD version-bump policy (design §7), an unknown
+/// version must never hard-fail startup: [`open_recovering`] treats it as
+/// corruption → quarantine + empty (the bytes are preserved for a downgrade),
+/// and a bumped release must ship a reader + one-time rewrite for the old
+/// version.
 const VERSION: u8 = 1;
+
+/// How many quarantined (`.corrupt-*`) user-dict files to retain, matching the
+/// history store (design §8). Repeated corruption cannot accumulate junk.
+const QUARANTINE_KEEP: usize = 3;
 
 /// POS ID for 名詞,一般 (from id.def).
 const USER_POS_ID: u16 = 1852;
@@ -119,7 +132,13 @@ impl UserDictionary {
                 "unsupported version",
             ));
         }
-        let records: Vec<UserWordRecord> = bincode::deserialize(&bytes[5..])
+        // LXUW is a no-CRC / v1-class format, so use the trailing-tolerant
+        // reader (matches the original plain `bincode::deserialize`) with an
+        // allocation cap: a corrupt length prefix must not trigger a giant
+        // allocation before any data is read.
+        let body = &bytes[5..];
+        let records: Vec<UserWordRecord> = crate::persist::bincode_reader_v1(body.len())
+            .deserialize(body)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let mut map: HashMap<String, Vec<DictEntry>> = HashMap::new();
@@ -133,25 +152,87 @@ impl UserDictionary {
         })
     }
 
-    /// Atomic write: write to .tmp then rename.
+    /// Durable atomic write: tmp → fsync → rename → best-effort dir fsync (via
+    /// the shared [`crate::persist::write_atomic`]). Registration is off the
+    /// hot path, so the F_FULLFSYNC is free; without it a rename could become
+    /// durable before the contents (the self-inflicted corruption LXUD fixed),
+    /// and the old `with_extension("tmp")` also left a stray `<stem>.tmp`
+    /// outside the file family.
     pub fn save(&self, path: &Path) -> Result<(), io::Error> {
         let bytes = self.to_bytes()?;
-        let tmp = path.with_extension("tmp");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&tmp, &bytes)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        crate::persist::write_atomic(path, &bytes)
     }
 
-    /// Open from file, returning empty UserDictionary if file doesn't exist.
+    /// Strict open (no side effects, corrupt = `Err`), for offline tooling
+    /// (the CLI): an audit tool must never rename a live user's file. The
+    /// engine uses [`open_recovering`](Self::open_recovering) instead. Returns
+    /// an empty dictionary if the file doesn't exist.
     pub fn open(path: &Path) -> Result<Self, io::Error> {
         match fs::read(path) {
             Ok(bytes) => Self::from_bytes(&bytes),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::new()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Engine-side open with recovery: a corrupt file is quarantined (renamed
+    /// aside as `<name>.corrupt-<ts>`, bytes preserved) and an empty dictionary
+    /// is returned, so corruption never permanently disables user-word
+    /// registration (the pre-hardening path threw, leaving the corrupt file in
+    /// place to re-throw every startup — registered words lost forever). `Err`
+    /// is reserved for environmental read failures (EACCES etc.): visible
+    /// degradation, not a silent stop. Quarantine-rename failure is **not** an
+    /// `Err` — an empty usable dictionary is still returned and the next `save`
+    /// overwrites the file; the report still flags the loss.
+    pub fn open_recovering(path: &Path) -> Result<(Self, UserDictOpenReport), io::Error> {
+        match fs::read(path) {
+            Ok(bytes) => match Self::from_bytes(&bytes) {
+                Ok(dict) => Ok((dict, UserDictOpenReport::default())),
+                Err(e) => {
+                    warn!("user dictionary corrupt ({e}); quarantining");
+                    let mut report = UserDictOpenReport {
+                        quarantined: true,
+                        quarantined_paths: Vec::new(),
+                    };
+                    if let crate::persist::Quarantine::Renamed(dest) =
+                        crate::persist::quarantine(path, crate::user_history::now_epoch())
+                    {
+                        report.quarantined_paths.push(dest);
+                    }
+                    crate::persist::rotate_quarantined(path, QUARANTINE_KEEP);
+                    Ok((Self::new(), report))
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Ok((Self::new(), UserDictOpenReport::default()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// What [`UserDictionary::open_recovering`] found and did. The user dictionary
+/// has a single recovery event — corruption → quarantine — so the report is a
+/// flag plus the rescued path(s); policy (`data_loss_suspected`) is computed
+/// here so the Swift side stays presentational (mirrors the history report).
+#[derive(Default)]
+pub struct UserDictOpenReport {
+    /// The file was corrupt and quarantined (renamed aside, or removed if the
+    /// rename failed); an empty dictionary was returned and the previously
+    /// registered words are lost. Set regardless of whether the rename
+    /// succeeded, so a byte-destroying fallback is still surfaced.
+    pub quarantined: bool,
+    /// Where the corrupt bytes were preserved (`.corrupt-<ts>`), when the
+    /// rename succeeded. Empty if the file was removed as a last resort.
+    pub quarantined_paths: Vec<PathBuf>,
+}
+
+impl UserDictOpenReport {
+    /// Whether registered words were lost in a way the user should hear about.
+    /// Any quarantine qualifies (the corrupt file is gone from the live path),
+    /// including the byte-destroying `Removed`/`Failed` fallback.
+    pub fn data_loss_suspected(&self) -> bool {
+        self.quarantined
     }
 }
 

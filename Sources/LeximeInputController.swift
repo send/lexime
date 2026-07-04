@@ -190,6 +190,10 @@ class LeximeInputController: IMKInputController {
             return NSLocalizedString(
                 "⚠️ ユーザ辞書の読み込みに失敗",
                 comment: "Degraded status: user dictionary failed")
+        case .userDictionaryDataLoss:
+            return NSLocalizedString(
+                "⚠️ ユーザ辞書が破損していました（登録語を失いましたが登録は継続中）",
+                comment: "Degraded status: user dictionary quarantined, words lost, registration continues")
         case .compositeDictionary:
             return NSLocalizedString(
                 "⚠️ ユーザ辞書が変換に反映されていません",
