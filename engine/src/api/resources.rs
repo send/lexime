@@ -812,6 +812,7 @@ mod tests {
                 frames_replayed: 0,
                 frames_skipped: 0,
                 quarantined_paths: Vec::new(),
+                replayed_deletion: false,
                 compaction_recommended: false,
             },
         })

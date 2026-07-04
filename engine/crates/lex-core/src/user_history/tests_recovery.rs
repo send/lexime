@@ -845,6 +845,43 @@ fn tombstone_replay_removes_entries() {
 }
 
 #[test]
+fn replayed_tombstone_recommends_startup_scrub() {
+    // A crash between a Tombstone append and its async scrub: the loaded
+    // checkpoint still contains the deleted strings and the WAL carries an
+    // uncovered Tombstone. Replay applies the deletion but skips nothing
+    // (frames_skipped == 0), so the startup scrub must be driven by the
+    // replayed-deletion signal — otherwise the deleted input lingers in the
+    // old checkpoint until an unrelated compaction (§5.4 privacy).
+    let f = fx();
+    // Checkpoint (applied_seq = 0) that still contains A.
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    h.save(&f.cp).unwrap();
+    // WAL with an uncovered Tombstone (seq 1 > applied_seq 0).
+    let mut wal = HistoryWal::new(&f.cp);
+    wal.append_record(&WalRecord::Tombstone {
+        segments: seg(A),
+        timestamp: T0 + 1,
+    })
+    .unwrap();
+    drop(wal);
+
+    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    assert_contents(&h, &[], &[A]); // deletion applied
+    assert_eq!(report.checkpoint_state, CheckpointState::Loaded);
+    assert_eq!(report.frames_replayed, 1);
+    assert_eq!(report.frames_skipped, 0);
+    assert!(
+        report.replayed_deletion,
+        "a replayed tombstone was observed"
+    );
+    assert!(
+        report.compaction_recommended,
+        "delete-residue must schedule a startup scrub even with no skipped frames"
+    );
+}
+
+#[test]
 fn truncate_covered_requires_checkpoint_coverage() {
     let f = fx();
     let mut wal = HistoryWal::new(&f.cp);

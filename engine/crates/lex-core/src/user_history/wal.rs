@@ -658,6 +658,12 @@ pub(super) struct V2Scan {
     /// Scan stopped before EOF: corrupt CRC, truncated frame, undecodable
     /// payload, or non-monotonic seq.
     pub(super) truncated_tail: bool,
+    /// A `Tombstone` was among the replayed frames. Its deleted strings
+    /// still sit in the old checkpoint (and earlier Committed frames), so
+    /// recovery must schedule a scrub even when nothing was skipped — the
+    /// startup privacy backstop for a crash between a delete and its async
+    /// scrub (§5.4).
+    pub(super) replayed_deletion: bool,
 }
 
 /// Scan v2 frames, applying `seq > applied_seq` frames into `history`
@@ -670,6 +676,7 @@ pub(super) fn scan_v2(data: &[u8], history: &mut UserHistory) -> V2Scan {
         last_good_end: WAL_HEADER_LEN,
         max_seq: 0,
         truncated_tail: false,
+        replayed_deletion: false,
     };
     let applied_seq = history.applied_seq();
     let mut pos = WAL_HEADER_LEN;
@@ -722,6 +729,9 @@ pub(super) fn scan_v2(data: &[u8], history: &mut UserHistory) -> V2Scan {
                 .deserialize::<WalRecord>(&data[pos + FRAME_HEADER_LEN..end])
             {
                 Ok(record) => {
+                    if matches!(record, WalRecord::Tombstone { .. }) {
+                        scan.replayed_deletion = true;
+                    }
                     history.apply(&record, seq);
                     scan.frames_applied += 1;
                 }

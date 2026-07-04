@@ -82,6 +82,10 @@ pub struct OpenReport {
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
+    /// A replayed Tombstone left deleted strings in the old checkpoint /
+    /// earlier frames unscrubbed — feeds `compaction_recommended` (§5.4).
+    /// Not surfaced over UniFFI; an internal startup-scrub signal.
+    pub replayed_deletion: bool,
     /// Startup-compaction hint (§5.1-6): recovery results should be
     /// checkpointed early so the next startup is clean. Consumed in PR2.
     pub compaction_recommended: bool,
@@ -119,6 +123,7 @@ pub fn open_recovering(
         frames_replayed: 0,
         frames_skipped: 0,
         quarantined_paths: Vec::new(),
+        replayed_deletion: false,
         compaction_recommended: false,
     };
 
@@ -214,6 +219,7 @@ pub fn open_recovering(
                     let scan = scan_v2(&data, &mut history);
                     report.frames_replayed = scan.frames_applied;
                     report.frames_skipped = scan.frames_skipped;
+                    report.replayed_deletion = scan.replayed_deletion;
                     // wal_bytes reflects the on-disk size, so start from the
                     // valid-prefix length only when the repair below actually
                     // shrinks the file to it.
@@ -319,10 +325,17 @@ pub fn open_recovering(
     // backstop: a clear's leftover input strings are scrubbed on the next
     // startup even if the post-clear heal never ran (e.g. the reset flow
     // restarts the process immediately).
+    // replayed_deletion: the delete-residue counterpart of frames_skipped.
+    // A crash between a Tombstone append and its async scrub leaves the
+    // deleted strings in the old checkpoint (and earlier frames); on restart
+    // the Tombstone replays (deletion correct) but nothing is skipped, so
+    // without this signal no scrub would run until an unrelated compaction,
+    // leaving the input on disk indefinitely.
     report.compaction_recommended = report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
+        || report.replayed_deletion
         || wal.needs_compact()
         || wal.is_frozen();
 
