@@ -7,6 +7,7 @@ pub mod dict;
 #[cfg(feature = "neural")]
 pub mod neural;
 pub(crate) mod numeric;
+pub(crate) mod persist;
 pub mod romaji;
 pub mod settings;
 pub mod snippets;
