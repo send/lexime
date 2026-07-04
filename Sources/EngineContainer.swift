@@ -10,8 +10,12 @@ enum EngineInitFailure {
     /// Composite (system + user) dictionary creation failed;
     /// user dictionary entries are not reflected in conversion.
     case compositeDictionary(detail: String)
-    /// User history could not be opened (learning disabled).
+    /// User history could not be opened (learning disabled). Environmental
+    /// read failures only (e.g. permissions) — corruption no longer throws.
     case history(detail: String)
+    /// User history recovery quarantined corrupt data: learning is running,
+    /// but some past learning was lost (bytes preserved in `.corrupt-*`).
+    case historyDataLoss(detail: String)
     /// Custom settings.toml exists but failed to parse (defaults in effect).
     case customSettings(detail: String)
 }
@@ -110,6 +114,26 @@ final class EngineContainer {
         do {
             let h = try LexUserHistory.open(path: historyPath)
             NSLog("Lexime: User history loaded from %@", historyPath)
+            // Recovery report (§10): quarantine = user-visible data loss
+            // (learning keeps running); everything else is log-only (§8 ※1:
+            // tail repair is the expected power-loss residue, migration is
+            // routine).
+            let report = h.openReport()
+            if report.dataLossSuspected {
+                var detail =
+                    "checkpoint: \(report.checkpointState), wal: \(report.walState)"
+                if !report.quarantinedPaths.isEmpty {
+                    detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
+                }
+                NSLog("Lexime: User history recovered with data loss (%@)", detail)
+                failures.append(.historyDataLoss(detail: detail))
+            } else if report.migratedFromV1 {
+                NSLog("Lexime: User history migrated from v1 (\(report.framesReplayed) frames)")
+            } else if !report.clean {
+                NSLog(
+                    "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)"
+                )
+            }
             history = h
         } catch {
             NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")

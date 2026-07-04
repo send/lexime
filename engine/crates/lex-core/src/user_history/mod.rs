@@ -146,6 +146,32 @@ impl UserHistory {
     /// Apply one WAL record and advance `applied_seq`. Does not evict —
     /// replay applies many frames and evicts once afterwards.
     pub fn apply(&mut self, record: &wal::WalRecord, seq: u64) {
+        self.apply_effect(record);
+        self.advance_applied_seq(seq);
+    }
+
+    /// Apply a batch of records and settle capacity once (§5.2). A record's
+    /// `seq` is `None` when its frame never reached the WAL (append
+    /// failure): the effect still applies, but coverage must not advance —
+    /// a checkpoint claiming a frame that cannot replay would let the
+    /// conditional truncation destroy learning.
+    pub fn apply_batch(&mut self, records: &[(wal::WalRecord, Option<u64>)]) {
+        let mut any_committed = false;
+        for (record, seq) in records {
+            self.apply_effect(record);
+            if let Some(seq) = seq {
+                self.advance_applied_seq(*seq);
+            }
+            any_committed |= matches!(record, wal::WalRecord::Committed { .. });
+        }
+        // Deletions only shrink the maps; skip the O(entries) capacity scan
+        // unless something grew.
+        if any_committed {
+            self.evict();
+        }
+    }
+
+    fn apply_effect(&mut self, record: &wal::WalRecord) {
         match record {
             wal::WalRecord::Committed {
                 segments,
@@ -155,7 +181,6 @@ impl UserHistory {
                 self.remove_entries(segments);
             }
         }
-        self.advance_applied_seq(seq);
     }
 
     /// Record a confirmed conversion: list of (reading, surface) segments.
@@ -290,6 +315,28 @@ impl UserHistory {
         with_boost.iter().map(|(_, _, e)| (*e).clone()).collect()
     }
 
+    /// Whether any unigram/bigram entry exists for these segments — exactly
+    /// the set [`Self::remove_entries`] would touch (the equivalence is
+    /// pinned by a test). Lets the engine skip writing a Tombstone (and its
+    /// F_FULLFSYNC on the key-processing thread) for a no-op deletion, e.g.
+    /// pruning a dictionary-only candidate that was never learned. The
+    /// bigram probe scans keys linearly: the per-prev-surface maps are
+    /// small, and it avoids allocating a `(String, String)` key inside the
+    /// wal-mutex critical section.
+    pub fn contains_entries(&self, segments: &[(String, String)]) -> bool {
+        segments.iter().any(|(reading, surface)| {
+            self.unigrams
+                .get(reading)
+                .is_some_and(|inner| inner.contains_key(surface))
+        }) || segments.windows(2).any(|pair| {
+            self.bigrams.get(&pair[0].1).is_some_and(|inner| {
+                inner
+                    .keys()
+                    .any(|(r, s)| *r == pair[1].0 && *s == pair[1].1)
+            })
+        })
+    }
+
     /// Remove history entries for the given segments.
     /// Returns true if any entries were actually removed.
     pub fn remove_entries(&mut self, segments: &[(String, String)]) -> bool {
@@ -320,7 +367,9 @@ impl UserHistory {
         removed
     }
 
-    /// Evict lowest-score entries when exceeding capacity.
+    /// Evict lowest-score entries when exceeding capacity. Batch paths
+    /// ([`Self::apply_batch`], replay) apply many records and settle
+    /// capacity once afterwards.
     fn evict(&mut self) {
         let s = settings();
         let now = now_epoch();

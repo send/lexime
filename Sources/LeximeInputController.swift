@@ -198,6 +198,10 @@ class LeximeInputController: IMKInputController {
             return NSLocalizedString(
                 "⚠️ 学習履歴の読み込みに失敗",
                 comment: "Degraded status: user history failed")
+        case .historyDataLoss:
+            return NSLocalizedString(
+                "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）",
+                comment: "Degraded status: user history partially lost, learning continues")
         case .customSettings:
             return NSLocalizedString(
                 "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）",

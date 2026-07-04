@@ -29,6 +29,13 @@ use super::UserHistory;
 /// How many quarantined (`.corrupt-*`) files to retain per history family.
 const QUARANTINE_KEEP: usize = 3;
 
+/// GC horizon for the v1 migration backup (`.v1.bak`), ~90 days. Its value
+/// as a manual rescue hatch (downgrade / migration bug) concentrates right
+/// after migration; a time-based GC keeps cleanup independent of release
+/// cadence (no "remove in version N+2" bookkeeping). `clear()` removes it
+/// immediately regardless (privacy wipe).
+const V1_BACKUP_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CheckpointState {
     /// Read successfully (v2).
@@ -75,6 +82,10 @@ pub struct OpenReport {
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
+    /// A replayed Tombstone left deleted strings in the old checkpoint /
+    /// earlier frames unscrubbed — feeds `compaction_recommended` (§5.4).
+    /// Not surfaced over UniFFI; an internal startup-scrub signal.
+    pub replayed_deletion: bool,
     /// Startup-compaction hint (§5.1-6): recovery results should be
     /// checkpointed early so the next startup is clean. Consumed in PR2.
     pub compaction_recommended: bool,
@@ -112,6 +123,7 @@ pub fn open_recovering(
         frames_replayed: 0,
         frames_skipped: 0,
         quarantined_paths: Vec::new(),
+        replayed_deletion: false,
         compaction_recommended: false,
     };
 
@@ -207,6 +219,7 @@ pub fn open_recovering(
                     let scan = scan_v2(&data, &mut history);
                     report.frames_replayed = scan.frames_applied;
                     report.frames_skipped = scan.frames_skipped;
+                    report.replayed_deletion = scan.replayed_deletion;
                     // wal_bytes reflects the on-disk size, so start from the
                     // valid-prefix length only when the repair below actually
                     // shrinks the file to it.
@@ -305,16 +318,54 @@ pub fn open_recovering(
     // data_loss_suspected() keys off the quarantine *states*, not the path
     // list: quarantine() can succeed via the remove-file fallback without
     // recording a path, and that case still needs an early re-checkpoint.
+    // frames_skipped: every skipped frame is already covered by the
+    // checkpoint, so the whole file is truncation-eligible — this is the
+    // residue of a crash between checkpoint write and truncation, or of a
+    // clear whose truncation failed. The latter makes this a privacy
+    // backstop: a clear's leftover input strings are scrubbed on the next
+    // startup even if the post-clear heal never ran (e.g. the reset flow
+    // restarts the process immediately).
+    // replayed_deletion: the delete-residue counterpart of frames_skipped.
+    // A crash between a Tombstone append and its async scrub leaves the
+    // deleted strings in the old checkpoint (and earlier frames); on restart
+    // the Tombstone replays (deletion correct) but nothing is skipped, so
+    // without this signal no scrub would run until an unrelated compaction,
+    // leaving the input on disk indefinitely.
     report.compaction_recommended = report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
+        || report.frames_skipped > 0
+        || report.replayed_deletion
         || wal.needs_compact()
         || wal.is_frozen();
 
-    // --- 5. quarantine rotation ---
+    // --- 5. quarantine rotation + v1-backup GC ---
     rotate_quarantined(checkpoint_path);
+    gc_v1_backup(checkpoint_path);
 
     Ok((history, wal, report))
+}
+
+/// Best-effort removal of an expired `.v1.bak` (see [`V1_BACKUP_TTL_SECS`]).
+/// A backup written by this very startup has a fresh mtime and survives.
+fn gc_v1_backup(checkpoint_path: &Path) {
+    let path = v1_backup_path(checkpoint_path);
+    let Ok(meta) = fs::metadata(&path) else {
+        return;
+    };
+    let Ok(modified) = meta.modified() else {
+        return;
+    };
+    let age = std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default();
+    if age.as_secs() <= V1_BACKUP_TTL_SECS {
+        return;
+    }
+    match fs::remove_file(&path) {
+        Ok(()) => info!("removed expired v1 checkpoint backup {}", path.display()),
+        Err(e) => warn!("failed to remove expired v1 backup {}: {e}", path.display()),
+    }
 }
 
 /// Path of the best-effort v1 checkpoint backup (`<name>.v1.bak`).

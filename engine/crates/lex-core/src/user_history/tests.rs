@@ -568,3 +568,50 @@ fn test_remove_entries_preserves_other_entries() {
     // "京" should still exist
     assert!(h.unigram_boost("きょう", "京", now_epoch()) > 0);
 }
+
+#[test]
+fn test_contains_entries_matches_remove_entries() {
+    // The engine's no-op Tombstone skip relies on contains_entries being
+    // true exactly when remove_entries would remove something — this test
+    // pins the equivalence the doc comment claims.
+    let probes: Vec<Vec<(String, String)>> = vec![
+        vec![("きょう".into(), "今日".into())],
+        vec![("きょう".into(), "京".into())], // learned reading, other surface
+        vec![("なし".into(), "無し".into())], // never learned
+        vec![
+            ("あす".into(), "明日".into()),
+            ("いく".into(), "行く".into()),
+        ],
+        vec![
+            ("あす".into(), "明日".into()),
+            ("かう".into(), "買う".into()),
+        ], // bigram absent
+    ];
+    let build = || {
+        let mut h = UserHistory::new();
+        h.record(&[("きょう".into(), "今日".into())]);
+        h.record(&[
+            ("あす".into(), "明日".into()),
+            ("いく".into(), "行く".into()),
+        ]);
+        h
+    };
+    for probe in &probes {
+        let h = build();
+        let mut remover = h.clone();
+        assert_eq!(
+            h.contains_entries(probe),
+            remover.remove_entries(probe),
+            "contains/remove diverged for {probe:?}"
+        );
+    }
+    // Bigram-only presence (unigrams gone, bigram remains) must count.
+    let mut h = build();
+    h.unigrams.clear();
+    let probe = vec![
+        ("あす".to_string(), "明日".to_string()),
+        ("いく".to_string(), "行く".to_string()),
+    ];
+    assert!(h.contains_entries(&probe));
+    assert!(h.remove_entries(&probe));
+}
