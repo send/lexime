@@ -159,3 +159,120 @@ fn from_bytes_too_short() {
     let bytes = b"LX";
     assert!(UserDictionary::from_bytes(bytes).is_err());
 }
+
+// --- Hardening: durable save + recovering open (design §9) ---
+
+/// `.corrupt-*` quarantine files in `dir`.
+fn corrupt_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains(".corrupt-"))
+        })
+        .collect()
+}
+
+#[test]
+fn open_recovering_quarantines_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    let corrupt = b"BADX not a real lxuw file".to_vec();
+    std::fs::write(&path, &corrupt).unwrap();
+
+    let (dict, report) = UserDictionary::open_recovering(&path).unwrap();
+
+    // Empty but usable; data loss surfaced.
+    assert!(dict.list().is_empty());
+    assert!(report.data_loss_suspected());
+    assert_eq!(report.quarantined_paths.len(), 1);
+
+    // Original path cleared; bytes preserved verbatim in the quarantine file.
+    assert!(!path.exists());
+    let quarantined = corrupt_files(dir.path());
+    assert_eq!(quarantined.len(), 1);
+    assert_eq!(std::fs::read(&quarantined[0]).unwrap(), corrupt);
+}
+
+#[test]
+fn open_recovering_nonexistent_is_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    let (dict, report) = UserDictionary::open_recovering(&path).unwrap();
+    assert!(dict.list().is_empty());
+    assert!(!report.data_loss_suspected());
+}
+
+#[test]
+fn open_recovering_valid_is_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    let dict = UserDictionary::new();
+    dict.register("しゅうじ", "週次");
+    dict.save(&path).unwrap();
+
+    let (loaded, report) = UserDictionary::open_recovering(&path).unwrap();
+    assert!(!report.data_loss_suspected());
+    assert_eq!(loaded.lookup("しゅうじ")[0].surface, "週次");
+    assert!(corrupt_files(dir.path()).is_empty());
+}
+
+#[test]
+fn strict_open_corrupt_errors_without_side_effects() {
+    // The CLI's strict open must NOT quarantine — an audit tool must never
+    // rename a live user's file.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    std::fs::write(&path, b"BADX corrupt").unwrap();
+
+    assert!(UserDictionary::open(&path).is_err());
+    assert!(path.exists()); // untouched, not renamed aside
+    assert!(corrupt_files(dir.path()).is_empty());
+}
+
+#[test]
+fn save_leaves_no_stray_tmp() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    let dict = UserDictionary::new();
+    dict.register("かき", "柿");
+    dict.save(&path).unwrap();
+
+    // The durable write removes its tmp via rename and never leaves a stray
+    // sibling (the old `with_extension("tmp")` produced `user_dict.tmp`).
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["user_dict.lxuw".to_string()]);
+}
+
+#[test]
+fn from_bytes_rejects_oversized_length() {
+    // Valid header + a bincode Vec length prefix claiming u64::MAX elements.
+    // The allocation cap must reject it (fast Err), never attempt a giant
+    // allocation.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(VERSION);
+    bytes.extend_from_slice(&[0xFF; 8]);
+    assert!(UserDictionary::from_bytes(&bytes).is_err());
+}
+
+#[test]
+fn open_recovering_rotates_quarantine() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user_dict.lxuw");
+    // Each corrupt open quarantines then rotates; only the newest are kept.
+    for _ in 0..(QUARANTINE_KEEP + 1) {
+        std::fs::write(&path, b"BADX corrupt").unwrap();
+        let (_dict, report) = UserDictionary::open_recovering(&path).unwrap();
+        assert!(report.data_loss_suspected());
+    }
+    assert_eq!(corrupt_files(dir.path()).len(), QUARANTINE_KEEP);
+}

@@ -39,6 +39,16 @@ what a generic reviewer misses:
   back to the previous checkpoint, never corruption). Findings that couple
   rename-durability confirmation to WAL truncation or other behavior
   re-litigate a settled design decision — do not raise them.
+- **User-dictionary recovery visibility (settled)**: a corrupt user_dict is
+  quarantined and started empty (open no longer throws on corruption), and
+  Swift records it as a dedicated `.userDictionaryDataLoss` case distinct from
+  `.userDictionary` (which now means an environmental read failure → dict
+  unavailable). This mirrors the merged `.history` / `.historyDataLoss` split:
+  "registration keeps working but the registered words were lost" is a
+  different state with different remediation than "dictionary unavailable". It
+  supersedes design §10's earlier "reuse the existing `.userDictionary` case"
+  note, which predates the history split. Findings proposing to collapse the
+  two cases re-litigate a settled decision — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 
