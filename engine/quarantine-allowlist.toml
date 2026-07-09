@@ -10,3 +10,8 @@ candle-nn = "0.10.2"
 # Own crate — TrieError non_exhaustive + InvalidVersion(u8) + InvalidStructure
 # (see supply-chain/audits.toml).
 lexime-trie = "0.5.0"
+# Fixes RUSTSEC-2026-0190 (unsound Error::downcast_mut()).
+anyhow = "1.0.103"
+# Fixes RUSTSEC-2026-0204 (invalid pointer deref in fmt::Display for
+# Atomic/Shared).
+crossbeam-epoch = "0.9.20"

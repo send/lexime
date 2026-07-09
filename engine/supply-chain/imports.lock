@@ -914,7 +914,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2021-10-27"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -923,7 +923,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2021-10-27"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -932,7 +932,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2023-01-27"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -949,7 +949,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2021-10-27"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -958,7 +958,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2022-09-13"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -967,7 +967,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2021-10-27"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
@@ -976,7 +976,7 @@ who = "Ben Dean-Kawamura <bdk@mozilla.com>"
 criteria = "safe-to-deploy"
 user-id = 127697 # bendk
 start = "2023-10-18"
-end = "2026-02-01"
+end = "2027-04-23"
 notes = "Maintained by the Glean and Application Services teams"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
