@@ -31,25 +31,34 @@ impl InputSession {
         };
 
         let matches = store.all_entries();
-        let surfaces = snippet_surfaces(&matches);
+        if matches.is_empty() {
+            // No snippets configured: nothing to pick. Do not enter snippet
+            // mode — an empty composition would leak the confirming key to
+            // Chromium/Electron hosts (see SnippetState::display_text). Any
+            // commit from the composing state above is still returned.
+            base_resp.marked = Some(MarkedText {
+                text: String::new(),
+            });
+            base_resp.candidates = CandidateAction::Hide;
+            return base_resp;
+        }
 
-        self.state = SessionState::Snippet(SnippetState {
+        let state = SnippetState {
             filter: String::new(),
             matches,
             selected: 0,
-        });
-
+        };
+        let surfaces = snippet_surfaces(&state.matches);
+        // Non-empty marked text (the selected key) keeps the host in
+        // composition so the confirming Enter/Space is not sent to the app.
         base_resp.marked = Some(MarkedText {
-            text: String::new(),
+            text: state.display_text(),
         });
-        if surfaces.is_empty() {
-            base_resp.candidates = CandidateAction::Hide;
-        } else {
-            base_resp.candidates = CandidateAction::Show {
-                surfaces,
-                selected: 0,
-            };
-        }
+        base_resp.candidates = CandidateAction::Show {
+            surfaces,
+            selected: 0,
+        };
+        self.state = SessionState::Snippet(state);
         base_resp
     }
 
@@ -187,7 +196,7 @@ impl InputSession {
 }
 
 fn build_snippet_response(s: &SnippetState) -> KeyResponse {
-    let mut resp = KeyResponse::consumed().with_marked(s.filter.clone());
+    let mut resp = KeyResponse::consumed().with_marked(s.display_text());
     let surfaces = snippet_surfaces(&s.matches);
 
     if surfaces.is_empty() {

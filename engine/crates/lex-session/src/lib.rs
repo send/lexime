@@ -148,7 +148,7 @@ impl InputSession {
     pub fn composed_string(&self) -> String {
         match &self.state {
             SessionState::Composing(c) => c.display_kana(),
-            SessionState::Snippet(s) => s.filter.clone(),
+            SessionState::Snippet(s) => s.display_text(),
             SessionState::Idle => String::new(),
         }
     }

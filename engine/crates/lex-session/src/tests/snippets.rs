@@ -227,3 +227,64 @@ fn test_snippet_no_match_shows_no_candidates() {
     assert!(!session.is_composing());
     assert!(resp.commit.is_none());
 }
+
+#[test]
+fn test_snippet_trigger_marks_selected_key() {
+    // Entering snippet mode must emit non-empty marked text so Chromium/
+    // Electron hosts stay in composition — otherwise the confirming Enter is
+    // dispatched to the web page (e.g. submits a chat message). Before any
+    // filter is typed, that text is the selected snippet's key.
+    let mut session = make_session_with_snippets();
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    // Keys sort as: email, gh, gmail, sig → selected 0 = "email".
+    assert_eq!(resp.marked.expect("marked text").text, "email");
+}
+
+#[test]
+fn test_snippet_navigate_updates_marked_preview() {
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    let resp = session.handle_key(KeyEvent::ArrowDown); // selected 1 = "gh"
+    assert_eq!(resp.marked.expect("marked text").text, "gh");
+}
+
+#[test]
+fn test_snippet_marked_text_stays_nonempty() {
+    // Core invariant behind the Chromium Enter-leak fix: while in snippet mode
+    // the emitted marked text is never empty, across trigger / navigate /
+    // filter / backspace-to-empty.
+    let mut session = make_session_with_snippets();
+
+    let steps = [
+        KeyEvent::SnippetTrigger,
+        KeyEvent::ArrowDown,
+        KeyEvent::text("g"), // filter → "g"
+        KeyEvent::Backspace, // filter → "" (key preview again)
+    ];
+    for step in steps {
+        let resp = session.handle_key(step);
+        assert!(session.is_composing());
+        let marked = resp.marked.expect("snippet mode must emit marked text");
+        assert!(
+            !marked.text.is_empty(),
+            "marked text must stay non-empty in snippet mode"
+        );
+    }
+}
+
+#[test]
+fn test_snippet_trigger_empty_store_does_not_enter_mode() {
+    // With zero snippets there is nothing to preview, so we must not enter
+    // snippet mode with an empty composition (which would leak the confirming
+    // key to the host). The trigger is consumed but the session stays idle.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    let empty_store = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new()));
+    session.set_snippet_store(Some(Arc::new(empty_store)));
+
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(resp.consumed);
+    assert!(!session.is_composing());
+    assert!(resp.marked.expect("marked text").text.is_empty());
+    assert!(matches!(resp.candidates, CandidateAction::Hide));
+}
