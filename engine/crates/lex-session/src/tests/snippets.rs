@@ -288,3 +288,18 @@ fn test_snippet_trigger_empty_store_does_not_enter_mode() {
     assert!(resp.marked.expect("marked text").text.is_empty());
     assert!(matches!(resp.candidates, CandidateAction::Hide));
 }
+
+#[test]
+fn test_set_snippet_store_mid_mode_exits_snippet_mode() {
+    // Swapping the store while browsing invalidates the browse (it was built
+    // against the old store). The session must leave snippet mode rather than
+    // keep rendering a stale/empty store, which could emit empty marked text
+    // and leak the confirming key.
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(session.is_composing());
+
+    let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new()));
+    session.set_snippet_store(Some(Arc::new(empty)));
+    assert!(!session.is_composing(), "store swap must exit snippet mode");
+}

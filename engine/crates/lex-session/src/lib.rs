@@ -127,6 +127,14 @@ impl InputSession {
 
     pub fn set_snippet_store(&mut self, store: Option<Arc<SnippetStore>>) {
         self.snippet_store = store;
+        // A snippet browse in progress was built against the previous store;
+        // swapping it out invalidates that browse. Leave snippet mode so we
+        // never keep browsing a stale (possibly now-empty) store, which could
+        // emit empty marked text and reintroduce the confirming-key leak (see
+        // SnippetState::display_text). Composing / Idle states are unaffected.
+        if matches!(self.state, SessionState::Snippet(_)) {
+            self.reset_state();
+        }
     }
 
     pub fn is_abc_passthrough(&self) -> bool {
