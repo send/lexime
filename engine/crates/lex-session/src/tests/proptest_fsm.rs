@@ -3,15 +3,11 @@
 //! Generates random key-input sequences via proptest and verifies
 //! that structural invariants hold after every action.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use proptest::prelude::*;
 
 use lex_core::dict::Dictionary;
-use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
 
-use super::make_test_dict;
+use super::{make_snippet_store, make_test_dict};
 use crate::types::{KeyEvent, SessionState};
 use crate::{CandidateAction, ConversionMode, InputSession};
 
@@ -88,31 +84,53 @@ fn arb_action() -> impl Strategy<Value = Action> {
 // Snippet store fixture
 // ---------------------------------------------------------------------------
 
-/// Store used to make snippet states reachable in generated sequences.
+/// Entries that make snippet states reachable in generated sequences.
 ///
-/// Keys start with characters the romaji strategy emits frequently (vowels /
-/// common consonants) so generated `Text` actions actually narrow, hit, and
-/// miss the filter. `email`/`eta` share the `e` prefix so filtering exercises
-/// multi-match narrowing down to a single match; `sig` carries a variable so
-/// confirmation exercises expansion. All keys and bodies are non-empty (the
-/// constructor rejects empty keys), so `unwrap` cannot fire.
-fn make_test_snippet_store() -> Arc<SnippetStore> {
-    let mut entries = HashMap::new();
-    entries.insert("addr".to_string(), "123 Example St".to_string());
-    entries.insert("eta".to_string(), "on my way".to_string());
-    entries.insert("email".to_string(), "user@example.com".to_string());
-    entries.insert("sig".to_string(), "Best regards, $name".to_string());
-    entries.insert("ok".to_string(), "sounds good".to_string());
+/// The snippet filter takes typed characters verbatim (no romaji conversion),
+/// and `arb_romaji_char` draws each vowel far more often than any individual
+/// consonant — so vowel-initial keys are the ones generated `Text` actions can
+/// realistically hit, narrow, and miss. `email`/`eta` share the `e` prefix so
+/// filtering exercises narrowing from several matches down to one. Bodies are
+/// non-empty because confirming a snippet commits its body, which invariant #7
+/// requires to be non-empty.
+const SNIPPET_ENTRIES: &[(&str, &str)] = &[
+    ("addr", "123 Example St"),
+    ("email", "user@example.com"),
+    ("eta", "on my way"),
+    ("ok", "sounds good"),
+    ("sig", "Best regards, $name"),
+];
 
-    let mut user_vars = HashMap::new();
-    user_vars.insert(
-        "name".to_string(),
-        SnippetVariable::Static {
-            value: "Taro".to_string(),
-        },
-    );
-    let resolver = VariableResolver::new(user_vars);
-    Arc::new(SnippetStore::new(entries, resolver).unwrap())
+// ---------------------------------------------------------------------------
+// Pre-action state, for the transition invariants
+// ---------------------------------------------------------------------------
+
+/// The state kind observed *before* an action ran.
+///
+/// A single discriminant rather than a pair of booleans: `is_composing()` is
+/// the union of `Composing` and `Snippet`, so booleans would admit the illegal
+/// "not composing but snippet" combination and force the plain-composing case
+/// to be written as a subtraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrevState {
+    Idle,
+    Composing,
+    Snippet,
+}
+
+impl PrevState {
+    fn of(session: &InputSession) -> Self {
+        match session.state {
+            SessionState::Idle => Self::Idle,
+            SessionState::Composing(_) => Self::Composing,
+            SessionState::Snippet(_) => Self::Snippet,
+        }
+    }
+
+    /// Both composing kinds — the union `InputSession::is_composing()` reports.
+    fn is_composing(self) -> bool {
+        matches!(self, Self::Composing | Self::Snippet)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,8 +188,7 @@ fn assert_invariants(
     session: &InputSession,
     resp: &crate::KeyResponse,
     action: &Action,
-    was_composing: bool,
-    was_snippet: bool,
+    prev: PrevState,
 ) {
     // 1. Idle → composed_string is empty
     if !session.is_composing() {
@@ -183,26 +200,43 @@ fn assert_invariants(
         );
     }
 
-    // 1b. Composing → composed_string is non-empty (the composing-side dual of
-    //     #1). While is_composing() holds — plain Composing OR Snippet mode —
-    //     the inline marked text (composed_string) must never be empty: an empty
-    //     marked string drops Chromium/Electron hosts out of IME composition, so
-    //     the confirming Enter leaks to the web page (e.g. submits a chat
-    //     message). This is the invariant behind fix/snippet-enter-leak. It
-    //     would catch e.g. prefix_search("") no longer returning all_entries
-    //     (the backspace-to-empty-filter path repopulates matches through it).
+    // 1b. Composing → the composition is non-empty (the composing-side dual of
+    //     #1), asserted on both surfaces it is observable through.
+    //
+    //     Why it matters: Chromium/Electron hosts derive
+    //     `KeyboardEvent.isComposing` from whether marked text is present, so
+    //     an empty marked string drops them out of composition and the
+    //     confirming Enter also reaches the web page (e.g. sends the chat
+    //     message). This is the invariant behind fix/snippet-enter-leak.
+    //
+    //     Both surfaces are checked because they regress independently:
+    //     `composed_string()` re-derives the text from session state, so it
+    //     catches e.g. `prefix_search("")` no longer returning all_entries
+    //     (which the backspace-to-empty-filter path repopulates through),
+    //     while `resp.marked` is what actually reaches the host as
+    //     `LexEvent::SetMarkedText`, so it catches an emit path that goes
+    //     empty while the state behind it is still intact.
     if session.is_composing() {
         assert!(
             !session.composed_string().is_empty(),
             "Composing session must have non-empty composed_string after {:?}",
             action,
         );
+        // `marked: None` means "leave the host's marked text as-is", which is
+        // legitimate; only an explicitly emitted empty string is the bug.
+        if let Some(marked) = &resp.marked {
+            assert!(
+                !marked.text.is_empty(),
+                "Composing session must not emit empty marked text after {:?}",
+                action,
+            );
+        }
     }
 
     // 2. Enter from composing → Idle
     //    (Enter calls commit_current_state → reset_state → Idle.)
     //    Escape does NOT transition: it stays Composing for IMKit commitComposition.
-    if was_composing && matches!(action, Action::Enter) {
+    if prev.is_composing() && matches!(action, Action::Enter) {
         assert!(
             !session.is_composing(),
             "Enter must transition from Composing to Idle, after {:?}",
@@ -213,7 +247,7 @@ fn assert_invariants(
     // 3. Escape from *plain* composing → stays Composing (candidates cleared).
     //    IMKit externally calls commitComposition to finalize. Snippet mode is
     //    excluded — there Escape cancels the picker (see 3b).
-    if was_composing && !was_snippet && matches!(action, Action::Escape) {
+    if prev == PrevState::Composing && matches!(action, Action::Escape) {
         assert!(
             session.is_composing(),
             "Escape must keep plain composing in Composing (for IMKit commitComposition), after {:?}",
@@ -223,7 +257,7 @@ fn assert_invariants(
 
     // 3b. Escape from snippet mode → cancels back to Idle (the picker is torn
     //     down; no IMKit commitComposition is expected for a snippet browse).
-    if was_snippet && matches!(action, Action::Escape) {
+    if prev == PrevState::Snippet && matches!(action, Action::Escape) {
         assert!(
             !session.is_composing(),
             "Escape must cancel snippet mode back to Idle, after {:?}",
@@ -300,6 +334,26 @@ fn assert_invariants(
 }
 
 // ---------------------------------------------------------------------------
+// Sequence driver
+// ---------------------------------------------------------------------------
+
+/// Run one generated sequence against a fresh session, checking every
+/// invariant after each action. Shared by both proptests so they differ only
+/// by the one setting under test.
+fn run_sequence(actions: &[Action], defer_candidates: bool) {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(defer_candidates);
+    session.set_snippet_store(Some(make_snippet_store(SNIPPET_ENTRIES)));
+    for action in actions {
+        let prev = PrevState::of(&session);
+        if let Some(resp) = execute_action(&mut session, action, &*dict) {
+            assert_invariants(&session, &resp, action, prev);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // proptest entry point
 // ---------------------------------------------------------------------------
 
@@ -308,32 +362,13 @@ proptest! {
 
     #[test]
     fn session_invariants_hold(actions in prop::collection::vec(arb_action(), 1..100)) {
-        let dict = make_test_dict();
-        let mut session = InputSession::new(dict.clone(), None, None);
-        session.set_snippet_store(Some(make_test_snippet_store()));
-        for action in &actions {
-            let was_composing = session.is_composing();
-            let was_snippet = matches!(session.state, SessionState::Snippet(_));
-            if let Some(resp) = execute_action(&mut session, action, &*dict) {
-                assert_invariants(&session, &resp, action, was_composing, was_snippet);
-            }
-        }
+        run_sequence(&actions, false);
     }
 
     #[test]
     fn session_invariants_with_deferred_candidates(
         actions in prop::collection::vec(arb_action(), 1..100)
     ) {
-        let dict = make_test_dict();
-        let mut session = InputSession::new(dict.clone(), None, None);
-        session.set_defer_candidates(true);
-        session.set_snippet_store(Some(make_test_snippet_store()));
-        for action in &actions {
-            let was_composing = session.is_composing();
-            let was_snippet = matches!(session.state, SessionState::Snippet(_));
-            if let Some(resp) = execute_action(&mut session, action, &*dict) {
-                assert_invariants(&session, &resp, action, was_composing, was_snippet);
-            }
-        }
+        run_sequence(&actions, true);
     }
 }

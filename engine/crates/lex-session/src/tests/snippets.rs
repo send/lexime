@@ -1,33 +1,20 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
-
 use super::*;
 use crate::types::{CandidateAction, KeyEvent};
 
-fn make_snippet_store() -> Arc<SnippetStore> {
-    let mut entries = HashMap::new();
-    entries.insert("gh".to_string(), "https://github.com/".to_string());
-    entries.insert("gmail".to_string(), "https://mail.google.com/".to_string());
-    entries.insert("email".to_string(), "user@example.com".to_string());
-    entries.insert("sig".to_string(), "Best regards, $name".to_string());
-
-    let mut user_vars = HashMap::new();
-    user_vars.insert(
-        "name".to_string(),
-        SnippetVariable::Static {
-            value: "Taro".to_string(),
-        },
-    );
-    let resolver = VariableResolver::new(user_vars);
-    Arc::new(SnippetStore::new(entries, resolver).unwrap())
-}
+/// Entries these example tests assert against by exact match count and sort
+/// position (e.g. `"g"` → exactly `gh`, `gmail`; index 0 of all four →
+/// `email`). Changing this table breaks those expectations by design.
+const SNIPPET_ENTRIES: &[(&str, &str)] = &[
+    ("gh", "https://github.com/"),
+    ("gmail", "https://mail.google.com/"),
+    ("email", "user@example.com"),
+    ("sig", "Best regards, $name"),
+];
 
 fn make_session_with_snippets() -> InputSession {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    session.set_snippet_store(Some(make_snippet_store()));
+    session.set_snippet_store(Some(make_snippet_store(SNIPPET_ENTRIES)));
     session
 }
 
@@ -279,9 +266,7 @@ fn test_snippet_trigger_empty_store_does_not_enter_mode() {
     // key to the host). The trigger is consumed but the session stays idle.
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    let empty_store =
-        SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
-    session.set_snippet_store(Some(Arc::new(empty_store)));
+    session.set_snippet_store(Some(make_snippet_store(&[])));
 
     let resp = session.handle_key(KeyEvent::SnippetTrigger);
     assert!(resp.consumed);
@@ -301,8 +286,7 @@ fn test_snippet_browse_survives_store_swap() {
     assert!(session.is_composing());
 
     // Swap in an empty store mid-browse (worst case).
-    let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
-    session.set_snippet_store(Some(Arc::new(empty)));
+    session.set_snippet_store(Some(make_snippet_store(&[])));
 
     // Still browsing the original snapshot; marked text stays non-empty.
     assert!(session.is_composing());

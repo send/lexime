@@ -5,13 +5,41 @@ mod proptest_fsm;
 mod simulator;
 mod snippets;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
+use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
 
 use super::types::KeyEvent;
 use super::InputSession;
 use super::KeyResponse;
+
+/// Build a snippet store from `(key, body)` pairs, with `$name` expanding to
+/// "Taro".
+///
+/// Only the construction is shared: each caller keeps its own entry table,
+/// because the tables are not interchangeable. The example tests assert exact
+/// match counts and sort positions against theirs, while the proptest needs
+/// keys its randomly generated romaji can actually reach.
+pub(super) fn make_snippet_store(entries: &[(&str, &str)]) -> Arc<SnippetStore> {
+    let mut user_vars = HashMap::new();
+    user_vars.insert(
+        "name".to_string(),
+        SnippetVariable::Static {
+            value: "Taro".to_string(),
+        },
+    );
+    let entries: HashMap<String, String> = entries
+        .iter()
+        .map(|(key, body)| ((*key).to_string(), (*body).to_string()))
+        .collect();
+    // The constructor rejects only empty keys, and every call site passes
+    // non-empty literals.
+    let store = SnippetStore::new(entries, VariableResolver::new(user_vars))
+        .expect("snippet fixture keys must be non-empty");
+    Arc::new(store)
+}
 
 pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
     let entries = vec![
