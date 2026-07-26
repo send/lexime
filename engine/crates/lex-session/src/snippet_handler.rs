@@ -24,33 +24,36 @@ impl InputSession {
         };
 
         // If composing, commit first
-        let mut base_resp = if matches!(self.state, SessionState::Composing(_)) {
+        let base_resp = if matches!(self.state, SessionState::Composing(_)) {
             self.commit_current_state()
         } else {
             KeyResponse::consumed()
         };
 
         let matches = store.all_entries();
-        let surfaces = snippet_surfaces(&matches);
+        if matches.is_empty() {
+            // No snippets configured: nothing to pick. Do not enter snippet
+            // mode — an empty composition would leak the confirming key to
+            // Chromium/Electron hosts (see SnippetState::display_text). Any
+            // commit from the composing state above is still returned.
+            return base_resp.with_marked(String::new()).with_hide_candidates();
+        }
 
-        self.state = SessionState::Snippet(SnippetState {
+        // Render through the same builder as every later keystroke so the
+        // "snippet mode ⇒ non-empty marked text" invariant holds by
+        // construction: build_snippet_response is the single site that derives
+        // marked (from display_text) and candidates for a browsing state.
+        // with_display_from keeps any commit from the composing state above
+        // while taking the display fields from the render.
+        let state = SnippetState {
             filter: String::new(),
             matches,
             selected: 0,
-        });
-
-        base_resp.marked = Some(MarkedText {
-            text: String::new(),
-        });
-        if surfaces.is_empty() {
-            base_resp.candidates = CandidateAction::Hide;
-        } else {
-            base_resp.candidates = CandidateAction::Show {
-                surfaces,
-                selected: 0,
-            };
-        }
-        base_resp
+            store,
+        };
+        let resp = base_resp.with_display_from(build_snippet_response(&state));
+        self.state = SessionState::Snippet(state);
+        resp
     }
 
     /// Handle a key event while in snippet mode.
@@ -87,27 +90,19 @@ impl InputSession {
     }
 
     fn snippet_filter_append(&mut self, text: &str) -> KeyResponse {
-        let store = match &self.snippet_store {
-            Some(s) => s.clone(),
-            None => return self.snippet_cancel_passthrough(),
-        };
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
         s.filter.push_str(text);
-        s.matches = store.prefix_search(&s.filter);
+        // Filter against the browse's own store snapshot, not the live store —
+        // a mid-browse swap must not change what this picker shows.
+        s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
         build_snippet_response(s)
     }
 
     fn snippet_filter_pop(&mut self) -> KeyResponse {
-        let store = match &self.snippet_store {
-            Some(s) => s.clone(),
-            None => return self.snippet_cancel_passthrough(),
-        };
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
@@ -118,17 +113,13 @@ impl InputSession {
         }
 
         s.filter.pop();
-        s.matches = store.prefix_search(&s.filter);
+        s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
         build_snippet_response(s)
     }
 
     fn snippet_confirm(&mut self) -> KeyResponse {
-        if self.snippet_store.is_none() {
-            return self.snippet_cancel_passthrough();
-        }
-
         let SessionState::Snippet(ref s) = self.state else {
             unreachable!();
         };
@@ -150,10 +141,6 @@ impl InputSession {
     }
 
     fn snippet_navigate(&mut self, delta: i32) -> KeyResponse {
-        if self.snippet_store.is_none() {
-            return self.snippet_cancel_passthrough();
-        }
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
@@ -187,7 +174,7 @@ impl InputSession {
 }
 
 fn build_snippet_response(s: &SnippetState) -> KeyResponse {
-    let mut resp = KeyResponse::consumed().with_marked(s.filter.clone());
+    let mut resp = KeyResponse::consumed().with_marked(s.display_text());
     let surfaces = snippet_surfaces(&s.matches);
 
     if surfaces.is_empty() {

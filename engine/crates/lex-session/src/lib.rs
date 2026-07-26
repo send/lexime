@@ -126,6 +126,10 @@ impl InputSession {
     }
 
     pub fn set_snippet_store(&mut self, store: Option<Arc<SnippetStore>>) {
+        // Only swaps the store used to *start* the next browse. An in-progress
+        // browse holds its own snapshot (SnippetState::store), so it is
+        // unaffected — no active composition state changes here, so the host
+        // stays in sync and no epoch bump is needed.
         self.snippet_store = store;
     }
 
@@ -148,7 +152,7 @@ impl InputSession {
     pub fn composed_string(&self) -> String {
         match &self.state {
             SessionState::Composing(c) => c.display_kana(),
-            SessionState::Snippet(s) => s.filter.clone(),
+            SessionState::Snippet(s) => s.display_text(),
             SessionState::Idle => String::new(),
         }
     }

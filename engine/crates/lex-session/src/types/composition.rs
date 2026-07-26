@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use lex_core::candidates::{
     generate_candidates, generate_prediction_candidates, CandidateResponse,
 };
 use lex_core::converter::ConvertedSegment;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
+use lex_core::snippets::SnippetStore;
 use lex_core::user_history::UserHistory;
 
 /// Pluggable conversion mode: determines how candidates are generated
@@ -56,6 +59,33 @@ pub(crate) struct SnippetState {
     pub(crate) filter: String,
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) selected: usize,
+    /// Snapshot of the store this browse began against. Filtering reads this,
+    /// not the live `snippet_store`, so a mid-browse store swap
+    /// (`snippetsDidReload`) cannot disturb the active picker or desync the
+    /// host — the browse is a transaction against the store it started with.
+    pub(crate) store: Arc<SnippetStore>,
+}
+
+impl SnippetState {
+    /// Inline composition text shown to the host while browsing snippets.
+    ///
+    /// Must stay non-empty for every reachable snippet-mode state: Chromium/
+    /// Electron hosts derive `KeyboardEvent.isComposing` from whether marked
+    /// text is present, so a confirming Enter over *empty* marked text is
+    /// dispatched to the web page (e.g. sends the message in chat apps) even
+    /// though the IME also consumes it. Shows the typed filter, or — before
+    /// anything is typed — the key of the currently selected snippet (the one
+    /// Enter would insert). Empty only when there are no snippets at all, a
+    /// state `enter_snippet_mode` refuses to enter.
+    pub(crate) fn display_text(&self) -> String {
+        if !self.filter.is_empty() {
+            return self.filter.clone();
+        }
+        self.matches
+            .get(self.selected)
+            .map(|(key, _)| key.clone())
+            .unwrap_or_default()
+    }
 }
 
 pub(crate) struct Composition {

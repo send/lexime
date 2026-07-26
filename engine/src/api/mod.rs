@@ -142,6 +142,34 @@ fn snippets_build_store(
     validate_snippet_entries(&map, &known)
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
 
-    let store = SnippetStore::new(map, resolver);
+    let store = SnippetStore::new(map, resolver)
+        .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
     Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_store_rejects_empty_key() {
+        // An empty key would sort first and make the snippet picker emit empty
+        // marked text for a live selection, reintroducing the confirming-key
+        // leak on Chromium/Electron hosts. Reject it at the build boundary,
+        // like duplicate keys.
+        let result = snippets_build_store(vec![LexSnippetEntry {
+            key: String::new(),
+            body: "x".to_string(),
+        }]);
+        assert!(matches!(result, Err(LexError::InvalidData { .. })));
+    }
+
+    #[test]
+    fn build_store_accepts_non_empty_key() {
+        let store = snippets_build_store(vec![LexSnippetEntry {
+            key: "gh".to_string(),
+            body: "https://github.com/".to_string(),
+        }]);
+        assert!(store.is_ok());
+    }
 }
