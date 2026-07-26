@@ -60,33 +60,42 @@ pub struct Settings {
     pub snippets: SnippetSettings,
     #[serde(default)]
     keymap: HashMap<String, Vec<String>>,
-    /// Parsed keymap: key_code → (normal, shifted).
+    /// The keymap the engine actually reads, in canonical form: one entry per
+    /// key code, sides that are not remaps already dropped. `parse_keymap` is
+    /// the only thing that builds it.
     #[serde(skip)]
-    keymap_parsed: Vec<(u16, String, String)>,
+    keymap_parsed: BTreeMap<u16, KeyRemap>,
+    /// What `parse_keymap` dropped while building `keymap_parsed`, phrased for a
+    /// human. Recorded there rather than re-derived here, so the report cannot
+    /// disagree with the map about what the file does.
+    #[serde(skip)]
+    keymap_warnings: Vec<String>,
+}
+
+/// One key code's remap, as resolved by `parse_keymap`. `None` on a side means
+/// that side is not remapped. There is deliberately no representation for
+/// "remap to nothing": committing `""` inserts nothing yet still ends the host's
+/// marked-text session (SPEC.md § 不変条件（marked text と session の同期）③).
+#[derive(Debug, Clone)]
+struct KeyRemap {
+    normal: Option<String>,
+    shifted: Option<String>,
 }
 
 impl Settings {
     /// Look up a remapped key by key_code and shift state. `None` = not
     /// remapped, so the caller sends the key through its normal path.
     ///
-    /// An empty mapping reads as "this side is not remapped" rather than "remap
-    /// to nothing": remapping to nothing would commit an empty string, which
-    /// inserts nothing but still ends the host's marked-text session. See
-    /// `parse_keymap`, which warns about such an entry at load.
+    /// A lookup, not a search: `parse_keymap` has already picked the single
+    /// entry per key code and turned the sides that are not remaps into `None`,
+    /// so an unmapped side has no shadowed entry to fall through to.
     pub fn keymap_get(&self, key_code: u16, has_shift: bool) -> Option<&str> {
-        self.keymap_parsed
-            .iter()
-            .find_map(|(code, normal, shifted)| {
-                if *code != key_code {
-                    return None;
-                }
-                let mapped = if has_shift {
-                    shifted.as_str()
-                } else {
-                    normal.as_str()
-                };
-                (!mapped.is_empty()).then_some(mapped)
-            })
+        let remap = self.keymap_parsed.get(&key_code)?;
+        if has_shift {
+            remap.shifted.as_deref()
+        } else {
+            remap.normal.as_deref()
+        }
     }
 
     /// Parse the snippet trigger string into a structured key descriptor.
@@ -106,37 +115,13 @@ impl Settings {
     /// - several table entries naming the same key code. `u16::from_str` accepts
     ///   `10`, `010` and `+10` alike, and the raw TOML table is keyed on the
     ///   *string*, so those are three distinct entries resolving to one code.
-    ///   Only one can win; `parse_keymap` makes that deterministic, and this
-    ///   says which.
-    pub fn keymap_warnings(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for (code, normal, shifted) in &self.keymap_parsed {
-            for (side, mapped) in [("normal", normal), ("shifted", shifted)] {
-                if mapped.is_empty() {
-                    out.push(format!(
-                        "keymap.{code} {side} mapping is empty and will be ignored"
-                    ));
-                }
-            }
-        }
-        let mut by_code: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
-        for key in self.keymap.keys() {
-            if let Ok(code) = key.parse::<u16>() {
-                by_code.entry(code).or_default().push(key.as_str());
-            }
-        }
-        for (code, mut keys) in by_code {
-            if keys.len() > 1 {
-                keys.sort_unstable();
-                out.push(format!(
-                    "keymap has {} entries for key_code {code} ({}); only \"{}\" is used",
-                    keys.len(),
-                    keys.join(", "),
-                    keys[0],
-                ));
-            }
-        }
-        out
+    ///   Only one can win; `parse_keymap` picks it and this says which.
+    ///
+    /// `parse_keymap` records both as it makes each decision. Nothing here
+    /// re-derives which entry won or which side was dropped, which is why the
+    /// report and `keymap_get` cannot describe different files.
+    pub fn keymap_warnings(&self) -> &[String] {
+        &self.keymap_warnings
     }
 }
 
@@ -270,21 +255,28 @@ pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
     let mut s: Settings =
         toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
     validate(&s)?;
-    s.keymap_parsed = parse_keymap(&s.keymap)?;
+    let (parsed, warnings) = parse_keymap(&s.keymap)?;
+    s.keymap_parsed = parsed;
+    s.keymap_warnings = warnings;
     Ok(s)
 }
 
+/// The one place the `[keymap]` table's rules are applied: which entry a key
+/// code resolves to, and which sides of it are real remaps. Both the map the
+/// engine reads and the report of what was dropped come out of this single
+/// pass, so no reader has to re-apply either rule and arrive somewhere else.
 fn parse_keymap(
     raw: &HashMap<String, Vec<String>>,
-) -> Result<Vec<(u16, String, String)>, SettingsError> {
+) -> Result<(BTreeMap<u16, KeyRemap>, Vec<String>), SettingsError> {
     // Iterate the raw table in sorted key order. It is a `HashMap` keyed on the
     // *string*, and several strings can name one key code (`10` / `010` / `+10`
-    // all parse to 10), so without a fixed order which of them `keymap_get`
-    // finds would change between launches. Sorted, the smallest spelling wins,
-    // every time; `keymap_warnings` reports that it happened.
+    // all parse to 10), so without a fixed order which of them wins would change
+    // between launches. Sorted, the smallest spelling wins, every time.
     let mut raw_keys: Vec<&String> = raw.keys().collect();
     raw_keys.sort_unstable();
-    let mut result = Vec::new();
+    let mut parsed: BTreeMap<u16, KeyRemap> = BTreeMap::new();
+    let mut spellings: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
+    let mut warnings = Vec::new();
     for key_str in raw_keys {
         let values = &raw[key_str];
         let key_code: u16 = key_str.parse().map_err(|_| SettingsError::InvalidValue {
@@ -297,11 +289,21 @@ fn parse_keymap(
                 reason: "value must be [\"normal\", \"shifted\"]".to_string(),
             });
         }
+        let seen = spellings.entry(key_code).or_default();
+        seen.push(key_str.as_str());
+        if seen.len() > 1 {
+            // A later spelling of a code that is already resolved. Whatever it
+            // says is not read at all — including its sides, which is why the
+            // empty-side rule below runs only on the winner. Reported after the
+            // loop, once, naming the winner.
+            continue;
+        }
         // An empty mapping has nothing to insert, and the remap path would turn
         // it into a commit of "" — which inserts nothing yet still ends the
         // host's marked-text session (see `InputSession::
-        // debug_assert_response_contract`). So it must not produce a remap:
-        // `keymap_get` reports that side as unmapped.
+        // debug_assert_response_contract`). So it must not produce a remap: it
+        // becomes `None` here, and that is the whole reason `keymap_get` can
+        // report the side as unmapped.
         //
         // Ignored rather than rejected. This rule is newly tightened on a format
         // that already accepted such files, and `init_custom` is all-or-nothing
@@ -311,14 +313,40 @@ fn parse_keymap(
         // CLAUDE.md's 「設定の変更は migration 必須」 is about. Same treatment an
         // unusable snippet body gets in `SnippetStore::prefix_search`: drop what
         // cannot be used, keep the file, and say so.
-        if values.iter().any(|v| v.is_empty()) {
-            tracing::warn!(
-                "settings: keymap.{key_str} has an empty mapping; that side is left unmapped"
-            );
+        let remap = KeyRemap {
+            normal: usable_side(&values[0]),
+            shifted: usable_side(&values[1]),
+        };
+        for (side, mapped) in [("normal", &remap.normal), ("shifted", &remap.shifted)] {
+            if mapped.is_none() {
+                tracing::warn!(
+                    "settings: keymap.{key_str} has an empty {side} mapping; that side is left unmapped"
+                );
+                warnings.push(format!(
+                    "keymap.{key_str} {side} mapping is empty and will be ignored"
+                ));
+            }
         }
-        result.push((key_code, values[0].clone(), values[1].clone()));
+        parsed.insert(key_code, remap);
     }
-    Ok(result)
+    for (code, seen) in &spellings {
+        if seen.len() > 1 {
+            warnings.push(format!(
+                "keymap has {} entries for key_code {code} ({}); only \"{}\" is used",
+                seen.len(),
+                seen.join(", "),
+                seen[0],
+            ));
+        }
+    }
+    Ok((parsed, warnings))
+}
+
+/// The single definition of a usable mapping side. An empty one is not a remap
+/// (see `parse_keymap`); expressing that as `None` at parse time is what lets
+/// `keymap_get` stay a lookup instead of a search that can fall through.
+fn usable_side(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn validate(s: &Settings) -> Result<(), SettingsError> {
@@ -700,6 +728,46 @@ max_results = 20
                 .iter()
                 .any(|w| w.contains("3 entries for key_code 10")),
             "the shadowing must be reported, got {warnings:?}",
+        );
+    }
+
+    #[test]
+    fn keymap_empty_side_of_the_winning_entry_stays_unmapped() {
+        // The two rules meet here. `"+10"` sorts first, so it is the entry that
+        // resolves key code 10 — including its empty normal side, which means
+        // "not remapped". The shadowed `10 = ["b", "B"]` must not supply a
+        // normal mapping in its place: `keymap_warnings` says only `"+10"` is
+        // used, and `keymap_get` has to be describing that same file.
+        let base = KEYMAP_TEST_BASE;
+        let toml = format!("{base}\"+10\" = [\"\", \"A\"]\n10 = [\"b\", \"B\"]\n");
+        let s = parse_settings_toml(&toml).unwrap();
+
+        assert_eq!(
+            s.keymap_get(10, false),
+            None,
+            "the winner's empty side must not fall through to the shadowed entry",
+        );
+        assert_eq!(
+            s.keymap_get(10, true),
+            Some("A"),
+            "the winner supplies the side it does map",
+        );
+
+        let warnings = s.keymap_warnings();
+        assert!(
+            warnings.iter().any(|w| w.contains("only \"+10\" is used")),
+            "the shadowing must name the winner, got {warnings:?}",
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keymap.+10 normal mapping is empty")),
+            "the dropped side must be reported against the entry that owns it, got {warnings:?}",
+        );
+        // The shadowed entry is not read at all, so it produces no side report.
+        assert!(
+            !warnings.iter().any(|w| w.contains("keymap.10 ")),
+            "a shadowed entry's sides are never consulted, got {warnings:?}",
         );
     }
 
