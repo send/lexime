@@ -238,6 +238,20 @@ fn parse_keymap(
                 reason: "value must be [\"normal\", \"shifted\"]".to_string(),
             });
         }
+        // An empty mapping has nothing to insert, and the remap path would turn
+        // it into a commit of "" — which inserts nothing yet still ends the
+        // host's marked-text session (see `InputSession::
+        // debug_assert_response_contract`). There is no way to spell "disable
+        // this key" here, so an empty string is a config error, not a feature;
+        // omit the entry instead. Matches `parse_romaji_toml`, which rejects an
+        // empty mapping value the same way.
+        if values.iter().any(|v| v.is_empty()) {
+            return Err(SettingsError::InvalidValue {
+                field: format!("keymap.{}", key_str),
+                reason: "mappings must be non-empty; omit the entry to leave the key unmapped"
+                    .to_string(),
+            });
+        }
         result.push((key_code, values[0].clone(), values[1].clone()));
     }
     Ok(result)
@@ -530,6 +544,51 @@ abc = ["]", "}"]
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(err.to_string().contains("keymap.abc"));
+    }
+
+    #[test]
+    fn error_keymap_empty_mapping() {
+        // An empty mapping would reach the session as `Remapped { text: "" }`
+        // and be committed as "", which inserts nothing but still ends the
+        // host's marked-text session. Rejected at load like an empty romaji
+        // mapping; "unmapped" is spelled by omitting the entry.
+        let base = r#"
+[cost]
+segment_penalty = 5000
+mixed_script_bonus = 3000
+katakana_penalty = 5000
+pure_kanji_bonus = 1000
+latin_penalty = 20000
+unknown_word_cost = 10000
+
+[reranker]
+length_variance_weight = 2000
+structure_cost_filter = 6000
+
+[history]
+boost_per_use = 3000
+max_boost = 15000
+half_life_hours = 168.0
+max_unigrams = 10000
+max_bigrams = 10000
+
+[candidates]
+nbest = 5
+max_results = 20
+
+[keymap]
+"#;
+        for entry in [
+            "10 = [\"\", \"}\"]",
+            "10 = [\"]\", \"\"]",
+            "10 = [\"\", \"\"]",
+        ] {
+            let err = parse_settings_toml(&format!("{base}{entry}\n")).unwrap_err();
+            assert!(
+                err.to_string().contains("keymap.10"),
+                "expected a keymap.10 error for {entry:?}, got {err}",
+            );
+        }
     }
 
     #[test]

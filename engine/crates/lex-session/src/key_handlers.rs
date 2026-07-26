@@ -92,6 +92,16 @@ impl InputSession {
 
             // Keymap remap: feed remapped text through normal input path (trie, candidates, etc.)
             // Falls back to direct commit if the text isn't handled by trie/romaji (e.g. \ in idle).
+            //
+            // Empty remapped text has nothing to insert, and both fallbacks below
+            // would commit it — `insertText("")` inserts nothing but still ends
+            // the host's marked-text session. `parse_keymap` rejects empty
+            // mappings, so this is unreachable from our own config; the guard is
+            // here because `Remapped` arrives over FFI and any frontend can
+            // build one, and the engine must not turn frontend input into a
+            // contract violation.
+            KeyEvent::Remapped { ref text, .. } if text.is_empty() => KeyResponse::not_consumed(),
+
             KeyEvent::Remapped { text, .. } => {
                 if self.abc_passthrough {
                     let mut r = KeyResponse::consumed();

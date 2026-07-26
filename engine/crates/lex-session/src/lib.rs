@@ -160,7 +160,11 @@ impl InputSession {
     ///    marked session too, and `marked: None` means "leave it as it is", so
     ///    nothing re-opens it. Every current commit site also sets `marked`;
     ///    this keeps the next one from being the exception.
-    /// 3. An empty commit, which is (2) with nothing inserted for it.
+    /// 3. An empty commit, which is (2) with nothing inserted for it. Kept
+    ///    reachable-free by `parse_keymap` (rejects empty remap mappings, which
+    ///    would otherwise arrive as `Remapped { text: "" }` and be committed
+    ///    verbatim) and by `handle_key`'s empty-`Remapped` arm, since that event
+    ///    crosses the FFI and any frontend can build one.
     ///
     /// What this does *not* cover: whether the host is still composing several
     /// responses later, since `marked: None` carries the previous value forward.
