@@ -24,7 +24,7 @@ impl InputSession {
         };
 
         // If composing, commit first
-        let mut base_resp = if matches!(self.state, SessionState::Composing(_)) {
+        let base_resp = if matches!(self.state, SessionState::Composing(_)) {
             self.commit_current_state()
         } else {
             KeyResponse::consumed()
@@ -36,30 +36,23 @@ impl InputSession {
             // mode — an empty composition would leak the confirming key to
             // Chromium/Electron hosts (see SnippetState::display_text). Any
             // commit from the composing state above is still returned.
-            base_resp.marked = Some(MarkedText {
-                text: String::new(),
-            });
-            base_resp.candidates = CandidateAction::Hide;
-            return base_resp;
+            return base_resp.with_marked(String::new()).with_hide_candidates();
         }
 
+        // Render through the same builder as every later keystroke so the
+        // "snippet mode ⇒ non-empty marked text" invariant holds by
+        // construction: build_snippet_response is the single site that derives
+        // marked (from display_text) and candidates for a browsing state.
+        // with_display_from keeps any commit from the composing state above
+        // while taking the display fields from the render.
         let state = SnippetState {
             filter: String::new(),
             matches,
             selected: 0,
         };
-        let surfaces = snippet_surfaces(&state.matches);
-        // Non-empty marked text (the selected key) keeps the host in
-        // composition so the confirming Enter/Space is not sent to the app.
-        base_resp.marked = Some(MarkedText {
-            text: state.display_text(),
-        });
-        base_resp.candidates = CandidateAction::Show {
-            surfaces,
-            selected: 0,
-        };
+        let resp = base_resp.with_display_from(build_snippet_response(&state));
         self.state = SessionState::Snippet(state);
-        base_resp
+        resp
     }
 
     /// Handle a key event while in snippet mode.
