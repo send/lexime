@@ -49,6 +49,27 @@ what a generic reviewer misses:
   supersedes design §10's earlier "reuse the existing `.userDictionary` case"
   note, which predates the history split. Findings proposing to collapse the
   two cases re-litigate a settled decision — do not raise them.
+- **Non-empty inline text while composing (settled)**: a session that stays
+  composing while the host's marked text goes away leaks the confirming key to
+  the web page (PR #293). The rule, its enforcement, and what is deliberately
+  *not* covered are specified in SPEC.md § 不変条件（marked text と session の同期）
+  — read it before raising anything in this area. One decision is settled: the
+  session proptest models the host's marked text cumulatively, because `commit`
+  ends the marked session too, so a per-response check cannot see that shape;
+  findings proposing to replace the cumulative model with a per-response check
+  re-litigate it — do not raise them. Everything else is open, including the
+  unmodelled `currentDisplay` writers SPEC names.
+- **Unusable config entries are dropped, not rejected (settled)**: an empty
+  side in `[keymap]` and a snippet body that expands to nothing are ignored,
+  and the file still loads. Rejecting was tried and reversed: `init_custom` is
+  all-or-nothing, so one bad entry would revert every other custom value
+  (costs, history limits, snippet trigger, the working key mappings) to the
+  defaults. A *malformed* entry — unparseable key_code, wrong arity — is a
+  different case and still rejects the file. Both drops are reported, over the
+  FFI, because engine `tracing` does not reach the shipped build
+  (`settings_keymap_warnings`, `LexSnippetStore::unusable_keys`); the rules are
+  in SPEC.md § キーリマップ. Findings proposing to reject on an empty value, or
+  to log the drop instead of returning it, re-litigate this — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

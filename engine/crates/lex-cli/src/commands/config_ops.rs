@@ -34,4 +34,9 @@ pub fn settings_validate(file: &str) {
         "OK: cost.segment_penalty={}, candidates.nbest={}, candidates.max_results={}",
         s.cost.segment_penalty, s.candidates.nbest, s.candidates.max_results
     );
+    // Entries the loader keeps but will not act on. Not errors — the file is
+    // still valid — but the user gets no other signal that they do nothing.
+    for warning in s.keymap_warnings() {
+        println!("WARN: {warning}");
+    }
 }

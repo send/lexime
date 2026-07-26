@@ -258,6 +258,34 @@ fn test_keymap_yen_idle() {
 }
 
 #[test]
+fn test_keymap_empty_remap_is_not_consumed() {
+    // `keymap_get` reports an empty mapping as unmapped, but `Remapped` crosses
+    // the FFI and any frontend can build one. Empty text has nothing to insert, so it must
+    // not become `commit: Some("")` — that inserts nothing yet ends the host's
+    // marked-text session, the shape that leaks the next key (#293). Checked in
+    // all three states the remap path branches on.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let resp = session.handle_key(KeyEvent::remapped(""));
+    assert!(!resp.consumed);
+    assert!(resp.commit.is_none());
+
+    session.set_abc_passthrough(true);
+    let resp = session.handle_key(KeyEvent::remapped(""));
+    assert!(!resp.consumed);
+    assert!(resp.commit.is_none());
+    session.set_abc_passthrough(false);
+
+    type_string(&mut session, "ka");
+    assert!(session.is_composing());
+    let resp = session.handle_key(KeyEvent::remapped(""));
+    assert!(!resp.consumed);
+    assert!(resp.commit.is_none());
+    assert!(session.is_composing(), "composition must be left alone");
+}
+
+#[test]
 fn test_keymap_yen_shifted() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);

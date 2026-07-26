@@ -89,6 +89,20 @@ fn keymap_get(key_code: u16, has_shift: bool) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// `[keymap]` entries the loader kept but will not act on — an empty side, or a
+/// spelling shadowed by another naming the same key code. The file is still
+/// valid, so `settings_load_config` returns `Ok` and these would otherwise be
+/// invisible: the key just stops remapping.
+///
+/// Same crossing as `LexSnippetStore::unusable_keys`, for the same reason —
+/// engine `tracing` output does not reach the shipped build, so a diagnostic
+/// that only logs says nothing to a user. The frontend asks after a successful
+/// load and reports what it gets.
+#[uniffi::export]
+fn settings_keymap_warnings() -> Vec<String> {
+    crate::settings::settings().keymap_warnings().to_vec()
+}
+
 #[uniffi::export]
 fn trace_init(log_dir: String) {
     crate::trace_init::init_tracing(Path::new(&log_dir));
@@ -144,6 +158,15 @@ fn snippets_build_store(
 
     let store = SnippetStore::new(map, resolver)
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
+
+    // An entry whose body expands to nothing is dropped by `prefix_search` — it
+    // has nothing to insert — but the settings list still shows it, so the user
+    // would see an entry that never appears in the picker and get no
+    // explanation. Not an error: one unusable line should not take the rest of
+    // the file down with it (unlike an empty key, which cannot be rendered
+    // around at all). The frontend asks for them via
+    // `LexSnippetStore::unusable_keys` and reports them; nothing is logged here
+    // because engine `tracing` output does not reach the shipped build.
     Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
 }
 

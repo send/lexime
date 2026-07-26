@@ -6,21 +6,19 @@ use super::InputSession;
 impl InputSession {
     /// Enter snippet mode. If composing, commit first.
     pub(super) fn enter_snippet_mode(&mut self) -> KeyResponse {
-        let store = match &self.snippet_store {
-            Some(s) => s.clone(),
-            None => {
-                // Cancel stale snippet mode if active
-                if matches!(self.state, SessionState::Snippet(_)) {
-                    return self.snippet_cancel_passthrough();
-                }
-                // Mirror ModifiedKey: commit composing state but don't consume
-                if matches!(self.state, SessionState::Composing(_)) {
-                    let mut resp = self.commit_current_state();
-                    resp.consumed = false;
-                    return resp;
-                }
-                return KeyResponse::not_consumed();
-            }
+        // "No store" and "a store with nothing usable in it" are one situation:
+        // there is nothing to pick, so the trigger key is not ours. They must
+        // take the same exit — this used to be two branches, and the second one
+        // returned empty marked text while leaving the session in `Snippet`,
+        // which drops the host out of composition with the session still live
+        // (see `SnippetState::display_text`). Deciding before any state is
+        // touched is what keeps the two from drifting apart again.
+        let browse = self.snippet_store.as_ref().and_then(|store| {
+            let matches = store.all_entries();
+            (!matches.is_empty()).then(|| (store.clone(), matches))
+        });
+        let Some((store, matches)) = browse else {
+            return self.snippet_trigger_unavailable();
         };
 
         // If composing, commit first
@@ -29,15 +27,6 @@ impl InputSession {
         } else {
             KeyResponse::consumed()
         };
-
-        let matches = store.all_entries();
-        if matches.is_empty() {
-            // No snippets configured: nothing to pick. Do not enter snippet
-            // mode — an empty composition would leak the confirming key to
-            // Chromium/Electron hosts (see SnippetState::display_text). Any
-            // commit from the composing state above is still returned.
-            return base_resp.with_marked(String::new()).with_hide_candidates();
-        }
 
         // Render through the same builder as every later keystroke so the
         // "snippet mode ⇒ non-empty marked text" invariant holds by
@@ -54,6 +43,22 @@ impl InputSession {
         let resp = base_resp.with_display_from(build_snippet_response(&state));
         self.state = SessionState::Snippet(state);
         resp
+    }
+
+    /// The trigger key when there is nothing to offer. Tears down any stale
+    /// browse, commits any composition, and lets the key through to the client
+    /// — the same treatment `ModifiedKey` gets, since as far as the user is
+    /// concerned the IME has no binding for it.
+    fn snippet_trigger_unavailable(&mut self) -> KeyResponse {
+        if matches!(self.state, SessionState::Snippet(_)) {
+            return self.snippet_cancel_passthrough();
+        }
+        if matches!(self.state, SessionState::Composing(_)) {
+            let mut resp = self.commit_current_state();
+            resp.consumed = false;
+            return resp;
+        }
+        KeyResponse::not_consumed()
     }
 
     /// Handle a key event while in snippet mode.
@@ -93,6 +98,16 @@ impl InputSession {
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
+        // Nothing typed: leave the browse exactly as it is. Falling through
+        // would reset `selected` and re-derive `matches` from an unchanged
+        // filter — and if that re-derivation came back empty (bodies that stop
+        // expanding mid-browse), `display_text` would render empty marked text
+        // while the session is still in `Snippet`. `handle_key` returns early
+        // for snippet mode, so its own empty-text guard never reaches here;
+        // this is where both `Text` and `Remapped` arrive.
+        if text.is_empty() {
+            return build_snippet_response(s);
+        }
         s.filter.push_str(text);
         // Filter against the browse's own store snapshot, not the live store —
         // a mid-browse swap must not change what this picker shows.
@@ -116,6 +131,16 @@ impl InputSession {
         s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
+        // With a filter still typed, no matches is a normal state — the filter
+        // itself is what gets displayed. With an empty filter there is nothing
+        // left to render, so this is the same "nothing to offer" situation the
+        // trigger handles: tear the browse down rather than let `display_text`
+        // fall back to an empty string. Only reachable if the snapshot's bodies
+        // stopped expanding to something (`$date` is clock-dependent).
+        if s.filter.is_empty() && s.matches.is_empty() {
+            return self.snippet_cancel();
+        }
+
         build_snippet_response(s)
     }
 
@@ -128,6 +153,10 @@ impl InputSession {
             return self.snippet_cancel();
         }
 
+        // Non-empty by construction: `prefix_search` drops entries whose body
+        // expands to nothing, so an unusable snippet never reaches `matches`
+        // (and a store of only such entries never enters snippet mode at all).
+        // That is what keeps this commit non-empty without a check here.
         let (_key, body) = s.matches[s.selected].clone();
 
         self.reset_state();

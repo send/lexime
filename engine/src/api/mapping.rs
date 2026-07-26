@@ -205,4 +205,41 @@ mod tests {
         assert!(matches!(&result.events[1], LexEvent::SetMarkedText { .. }));
         assert!(matches!(&result.events[2], LexEvent::ShowCandidates { .. }));
     }
+
+    #[test]
+    fn commit_precedes_marked_text() {
+        // Order is load-bearing, not cosmetic. Applying `Commit` calls
+        // `insertText`, which ends the host's marked session and clears
+        // `SessionCoordinator.currentDisplay`; `SetMarkedText` then re-opens it.
+        // Emitted the other way round, a response that commits a stable prefix
+        // and keeps composing the remainder would leave the host with no marked
+        // text while the session is still composing — Chromium/Electron then
+        // report `isComposing == false` and the next confirming key reaches the
+        // web page as well as the IME (PR #293).
+        //
+        // The session-side proptest (`lex-session` `proptest_fsm::HostMarked`)
+        // models the host by assuming this order; it cannot call this function,
+        // since `lex_engine` depends on `lex-session` and not the reverse. This
+        // test is the other half of that contract.
+        let mut resp = empty_response();
+        resp.commit = Some("今日".to_string());
+        resp.marked = Some(MarkedText {
+            text: "は".to_string(),
+        });
+        let result = convert_to_events(resp, 0);
+        let commit_at = result
+            .events
+            .iter()
+            .position(|e| matches!(e, LexEvent::Commit { .. }))
+            .expect("commit event");
+        let marked_at = result
+            .events
+            .iter()
+            .position(|e| matches!(e, LexEvent::SetMarkedText { .. }))
+            .expect("marked event");
+        assert!(
+            commit_at < marked_at,
+            "Commit must precede SetMarkedText so the marked text survives the commit"
+        );
+    }
 }

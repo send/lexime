@@ -94,6 +94,20 @@ impl InputSession {
         surfaces: Vec<String>,
         paths: Vec<Vec<ConvertedSegment>>,
     ) -> Option<KeyResponse> {
+        let resp = self.receive_candidates_inner(epoch, reading, surfaces, paths);
+        if let Some(ref resp) = resp {
+            self.debug_assert_response_contract(resp);
+        }
+        resp
+    }
+
+    fn receive_candidates_inner(
+        &mut self,
+        epoch: u64,
+        reading: &str,
+        surfaces: Vec<String>,
+        paths: Vec<Vec<ConvertedSegment>>,
+    ) -> Option<KeyResponse> {
         // Correctness gate: the epoch must match. Every state-mutating entry
         // point bumps the epoch under the session lock, so a mismatch means
         // the user did something after this request was issued — even a

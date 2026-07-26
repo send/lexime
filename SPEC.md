@@ -173,8 +173,18 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 ### 状態遷移
 
 ```
-idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
+idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab=確定)──→ idle
+  │                               │
+  └──────(トリガーキー)──────────┬─┘  ※ composing からは先に確定する
+                                 ↓
+                              snippet ──(Enter/Space=展開, Escape=取消)──→ idle
 ```
+
+`is_composing()` は composing と snippet の**和**を返す（どちらもインライン表示を持つ状態）。
+
+Escape は composing に**留まる**（IMKit が後続で `commitComposition` を呼ぶ確定経路のため）。
+snippet 状態の Escape だけはピッカーを畳んで idle に戻る。この 2 つの違いは
+proptest の invariant 3 / 3b で固定している。
 
 ### 各状態でのキー操作
 
@@ -205,6 +215,34 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 | その他の文字 | composedKana に追加（Backspace で削除可能） |
 
+**snippet**
+
+トリガーキー（`settings.toml` `[snippets] trigger`、デフォルト `ctrl+shift+/`）で入る。composing 中なら先に確定してから入る。トリガーは ABC パススルーの判定より**先に**ディスパッチされるので、英数モード中でもピッカーが開く。定義は `~/Library/Application Support/Lexime/snippets.toml`（`key = "body"` のフラット形式、Swift が I/O と TOML パースを担当し Rust が変数参照を検証する）。
+
+提示できるスニペットが 1 件も無いときは snippet 状態に入らず、トリガーキーは**消費せずアプリに渡す**（IME にバインドが無いのと同じ扱い）。composing 中なら先に確定してから渡す（`ModifiedKey` と同じ形）。該当するのは: ファイル無し / エントリ 0 件 / 全エントリの body が空 / 起動時に設定エラーで読み込めなかった（空 key・重複 key・未定義変数）。
+
+**再読み込みの失敗は挙動が違う**: 一度読めた後に `snippets.toml` が壊れた場合、`ConfigStore.reloadSnippets()` は代入前に throw するので **直前に読めた store がそのまま残り**、ピッカーは従来どおり開く。タイプミス 1 つで動いていた機能を止めないための意図的な非対称であり（起動時は「保持すべき正しい store」が存在しない、という違い）、エラーは呼び出し元に伝播する。
+
+| キー | 動作 |
+|---|---|
+| 文字 | フィルタに追加（ローマ字変換しない）。前方一致で候補を絞る |
+| Backspace | フィルタを 1 文字削除（空フィルタなら取消して idle へ） |
+| Enter / Space | 選択中のスニペットを展開して確定（変数展開後の body を挿入） |
+| ↓ / ↑ | 候補選択（巡回） |
+| Escape | 取消して idle へ |
+| 英数キー / かなキー | 取消してモード切替を適用 |
+| その他 | 取消してキーをパススルー |
+
+### 不変条件（marked text と session の同期）
+
+`fix/snippet-enter-leak` (#293) 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、**session が composing のまま host の marked text が消えると、確定キーが IME に消費されると同時に web ページにも届く**（チャットアプリなら送信されてしまう）。したがって:
+
+- **composing を続ける response は、host の marked text を残さなければならない**。host が marked text を失う経路は 3 つあり、いずれも session 全体の不変条件（呼び出し箇所ごとの約束ではない）なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する: ①空の marked text を明示的に出す ②`commit` を出して marked text を出し直さない（`insertText` も marked セッションを終わらせ、`marked: None` は「そのまま」の意味なので誰も開き直さない）③空の `commit`（②の何も挿入しない版）
+- **検査の範囲**: 上記は per-response で見える形だけ。「数 response 後にまだ composing か」は `marked: None` が前の値を引き継ぐため累積的で、proptest 側の `HostMarked` モデルが担当する。また `debug_assert` なので出荷ビルド（`--release`）では落ちる — 構造的保証は下の各条項が担い、これは回帰検出器
+- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。落とされた key は `LexSnippetStore::unusable_keys()` で取得でき、Swift 側が再読み込み時に報告する。engine の `tracing` 出力は出荷ビルドに乗らないので、診断はログではなく FFI 経由で返す）。提示できるエントリが 0 件のときは snippet 状態に入らない
+- ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
+- **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
+
 **キーリマップ（settings.toml `[keymap]`）**
 
 | key_code | 通常 | Shift |
@@ -212,7 +250,11 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | 10 | `]` | `}` |
 | 93 | `\` | `\|` |
 
-keymap に登録されたキーはリマップ後のテキストとして処理される。
+keymap に登録されたキーはリマップ後のテキストとして処理される。値が空文字のとき、その側は**リマップ無し**として扱う（空文字を挿入すると host の marked セッションだけ終わってしまうため。§不変条件の ③）。ファイルは有効なまま読み込まれ、`dictool settings-validate` が該当エントリを WARN として表示する。
+
+TOML テーブルは**文字列**キーなので `10` / `010` / `"+10"` は同じ key_code を指す別エントリになる。1 つの key_code が解決するエントリは 1 つだけで、**キー文字列の辞書順で最小のものが勝つ**（起動ごとに変わらない）。負けたエントリの値は照合に使われない — 勝ったエントリの側が空文字なら、その側はリマップ無しのままで、負けたエントリが代わりを供給することはない（ただし妥当性検査は全エントリに適用される。key_code として解釈できない / 要素数が 2 でないエントリは、勝敗に関わらずファイル全体を reject する。空文字を許すのは「値が空」であって「壊れたファイル」ではない）。この解決は `parse_keymap` の 1 パスで行われ、`keymap_get` が読む map と WARN の両方をそこで作る（照合と診断が別々に導出して食い違わないようにするため）。
+
+WARN は `settings_keymap_warnings` で FFI を渡り、設定読み込み成功後に frontend が報告する（`dictool settings-validate` でも同じ内容が出る）。engine の `tracing` は出荷ビルドに届かないため、ログのみの診断はサイレント失敗になる。
 かなモードではリマップ後のテキストがローマ字 trie・通常入力パスを経由する（例: `]` → `」`）。
 trie にマッチしない文字（例: `\`）は直接確定。ABC モードでは常に直接確定。
 `settings.toml` の `[keymap]` セクションで追加・変更可能。
@@ -438,6 +480,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 | `[reranker]` | length_variance_weight, structure_cost_filter |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results |
+| `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
 | `[keymap]` | key_code = ["normal", "shifted"]（オプショナル、デフォルト: 10→]/}, 93→\\/\|） |
 
 `mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。

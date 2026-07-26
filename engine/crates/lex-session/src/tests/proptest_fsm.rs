@@ -7,8 +7,8 @@ use proptest::prelude::*;
 
 use lex_core::dict::Dictionary;
 
-use super::make_test_dict;
-use crate::types::KeyEvent;
+use super::{composing_reading, make_snippet_store, make_test_dict};
+use crate::types::{KeyEvent, SessionState};
 use crate::{CandidateAction, ConversionMode, InputSession};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,18 @@ enum Action {
     ReceiveCandidates,
     /// Switch to Predictive conversion mode.
     SetPredictiveMode,
+    /// Trigger snippet mode (opens the picker; commits any composing first).
+    SnippetTrigger,
+    /// Swap the live snippet store, as `snippetsDidReload` does when the user
+    /// edits snippets.toml. `true` installs an empty store — the case where the
+    /// user deletes their last snippet, which arrives as a present-but-empty
+    /// store rather than `None`, and which an in-progress browse must survive.
+    SetSnippetStore {
+        empty: bool,
+    },
+    /// IMKit `commitComposition` — the session's other public entry point.
+    /// Reached on focus loss and after Escape, so it can land in any state.
+    CommitComposition,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +89,159 @@ fn arb_action() -> impl Strategy<Value = Action> {
     ]
 }
 
+/// `arb_action` plus the snippet-mode actions, for the snippet-specific test.
+///
+/// These are deliberately kept out of `arb_action`: `SnippetTrigger` and
+/// `CommitComposition` both end any in-progress composition, so mixing them in
+/// would truncate the long composing runs the other tests exist to sample
+/// (measured over 4096 cases for the trigger alone: −31% of runs reaching 10
+/// composing actions, −40% at 20). Keeping them in their own generator leaves
+/// those distributions untouched by construction rather than by a case count
+/// tuned to compensate.
+fn arb_action_with_snippets() -> impl Strategy<Value = Action> {
+    // The ratios are approximate on purpose — nothing here needs to track the
+    // exact sum of `arb_action`'s weights (110).
+    prop_oneof![
+        27 => arb_action(),
+        1 => Just(Action::SnippetTrigger),
+        1 => any::<bool>().prop_map(|empty| Action::SetSnippetStore { empty }),
+        1 => Just(Action::CommitComposition),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Snippet store fixture
+// ---------------------------------------------------------------------------
+
+/// Entries that make snippet states reachable in generated sequences.
+///
+/// The snippet filter takes typed characters verbatim (no romaji conversion),
+/// and `arb_romaji_char` draws each vowel far more often than any individual
+/// consonant — so vowel-initial keys are the ones generated `Text` actions can
+/// realistically hit. With these entries a *single* generated keystroke reaches
+/// every match-count class the invariants distinguish: `a` → 1 match (`addr`),
+/// `e` → 2 (`email`, `eta`), `i`/`u` → 0. Narrowing 2 → 1 needs a following
+/// `m`/`t` and is correspondingly rare, so it is not what carries the coverage.
+/// Bodies are non-empty so that confirming actually reaches the commit path: an
+/// entry whose body expands to nothing is dropped by `prefix_search` and never
+/// offered (see `test_snippet_with_empty_body_is_never_offered`).
+const SNIPPET_ENTRIES: &[(&str, &str)] = &[
+    ("addr", "123 Example St"),
+    ("email", "user@example.com"),
+    ("eta", "on my way"),
+    ("ok", "sounds good"),
+    ("sig", "Best regards, $name"),
+];
+
+/// Pins the claim the comment above makes. The coupling between this table and
+/// `arb_romaji_char`'s weights is what decides how much of snippet mode the
+/// generated sequences actually reach, and nothing else would notice if a weight
+/// change or an edited entry quietly collapsed it to one match-count class.
+#[test]
+fn snippet_fixture_reaches_every_match_count_class() {
+    let store = make_snippet_store(SNIPPET_ENTRIES);
+    assert_eq!(store.prefix_search("a").len(), 1, "one match");
+    assert_eq!(store.prefix_search("e").len(), 2, "several matches");
+    assert_eq!(store.prefix_search("i").len(), 0, "no matches");
+    assert_eq!(store.prefix_search("u").len(), 0, "no matches");
+    // And the vowels above are the frequent draws: every entry key starts with a
+    // character `arb_romaji_char` can produce.
+    for (key, _) in SNIPPET_ENTRIES {
+        let first = key.chars().next().expect("non-empty key");
+        assert!(
+            first.is_ascii_lowercase(),
+            "key {key:?} starts with a character the generator cannot type",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-action state, for the transition invariants
+// ---------------------------------------------------------------------------
+
+/// The state kind observed *before* an action ran.
+///
+/// A single discriminant rather than a pair of booleans: `is_composing()` is
+/// the union of `Composing` and `Snippet`, so booleans would admit the illegal
+/// "not composing but snippet" combination and force the plain-composing case
+/// to be written as a subtraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrevState {
+    Idle,
+    Composing,
+    Snippet,
+}
+
+impl PrevState {
+    fn of(session: &InputSession) -> Self {
+        match session.state {
+            SessionState::Idle => Self::Idle,
+            SessionState::Composing(_) => Self::Composing,
+            SessionState::Snippet(_) => Self::Snippet,
+        }
+    }
+
+    /// Both composing kinds — the union `InputSession::is_composing()` reports.
+    ///
+    /// Phrased as "not idle" rather than as a list of the composing variants so
+    /// that a future `SessionState` variant is covered by the transition
+    /// invariants by default instead of silently dropping out of them.
+    fn is_composing(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side marked text model
+// ---------------------------------------------------------------------------
+
+/// What the *host* still has as marked text after a response has been applied
+/// — i.e. `SessionCoordinator.currentDisplay` as the response-application path
+/// leaves it.
+///
+/// The contract behind fix/snippet-enter-leak is cumulative, not per-response:
+/// `marked: None` means "leave the host's marked text alone", so whether the
+/// host is still in composition depends on every response so far, and on that
+/// path two events write it. `convert_to_events` emits `Commit` before
+/// `SetMarkedText`; on the Swift side (`SessionCoordinator.applyEvents`)
+/// `Commit` calls `insertText`, which ends the marked session, and clears
+/// `currentDisplay`, while `SetMarkedText` sets it — or clears it when the text
+/// is empty. So a response carrying a commit and no marked text takes the host
+/// out of composition even though it emitted no empty marked string.
+///
+/// Two things this deliberately does **not** model, so read a green run
+/// accordingly:
+///
+/// - The event order is assumed, not driven. `convert_to_events` lives in the
+///   `lex_engine` crate, which depends on this one, so it cannot be called from
+///   here; swapping its two pushes would regress the host while leaving these
+///   tests green. `mapping.rs::commit_precedes_marked_text` is what pins that
+///   end.
+/// - `currentDisplay` has two further writers outside this path —
+///   `SessionCoordinator.resetDisplay()` (from `activateServer`) and
+///   `deactivate()` (from `deactivateServer`) — which clear it without telling
+///   the session. A session left composing across those callbacks is the same
+///   desync, reachable only from the Swift side.
+#[derive(Debug, Default)]
+struct HostMarked(Option<String>);
+
+impl HostMarked {
+    fn apply(&mut self, resp: &crate::KeyResponse) {
+        if resp.commit.is_some() {
+            self.0 = None;
+        }
+        if let Some(marked) = &resp.marked {
+            self.0 = (!marked.text.is_empty()).then(|| marked.text.clone());
+        }
+    }
+
+    /// Whether the host would still report itself as composing — i.e. whether
+    /// `KeyboardEvent.isComposing` is true in a Chromium/Electron host.
+    fn is_composing(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Execute an Action against the session
 // ---------------------------------------------------------------------------
@@ -101,13 +266,9 @@ fn execute_action(
         Action::TypePunctuation(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
         Action::ForwardDelete => Some(session.handle_key(KeyEvent::ForwardDelete)),
         Action::ReceiveCandidates => {
-            if !session.is_composing() {
-                return None;
-            }
-            let reading = session.comp().kana.clone();
-            if reading.is_empty() {
-                return None;
-            }
+            // Async candidates only exist for a plain composition; snippet mode
+            // reports `is_composing()` but has none.
+            let reading = composing_reading(session)?.to_string();
             let mode = session.config.conversion_mode;
             let cand = mode.generate_candidates(dict, None, None, &reading, 20);
             // Simulate a fresh (non-stale) response: snapshot the current epoch.
@@ -118,6 +279,15 @@ fn execute_action(
             session.set_conversion_mode(ConversionMode::Predictive);
             None
         }
+        Action::SnippetTrigger => Some(session.handle_key(KeyEvent::SnippetTrigger)),
+        Action::SetSnippetStore { empty } => {
+            let entries: &[(&str, &str)] = if *empty { &[] } else { SNIPPET_ENTRIES };
+            session.set_snippet_store(Some(make_snippet_store(entries)));
+            // Not a response-producing entry point: the host is not told, which
+            // is the point — an in-progress browse holds its own snapshot.
+            None
+        }
+        Action::CommitComposition => Some(session.commit()),
     }
 }
 
@@ -129,9 +299,13 @@ fn assert_invariants(
     session: &InputSession,
     resp: &crate::KeyResponse,
     action: &Action,
-    was_composing: bool,
+    prev: PrevState,
+    host: &HostMarked,
+    store_empty: bool,
 ) {
-    // 1. Idle → composed_string is empty
+    // 1. Idle → composed_string is empty, and the host has been taken out of
+    //    composition too (a live marked string with no session behind it would
+    //    leave stale inline text on screen and a stale IMKit composedString).
     if !session.is_composing() {
         assert!(
             session.composed_string().is_empty(),
@@ -139,12 +313,74 @@ fn assert_invariants(
             session.composed_string(),
             action,
         );
+        assert!(
+            !host.is_composing(),
+            "Idle session must leave the host with no marked text, got {:?} after {:?}",
+            host.0,
+            action,
+        );
+    }
+
+    // 1b. Composing → the composition is non-empty (the composing-side dual of
+    //     #1), checked against both the session state and the host model.
+    //
+    //     Why it matters: Chromium/Electron hosts derive
+    //     `KeyboardEvent.isComposing` from whether marked text is present, so
+    //     losing the marked text drops them out of composition and the
+    //     confirming Enter also reaches the web page (e.g. sends the chat
+    //     message). This is the invariant behind fix/snippet-enter-leak.
+    //
+    //     The two checks are independent, and neither implies the other:
+    //
+    //     - `composed_string()` re-derives the text from session state. It is
+    //       not a host surface (Swift's `composedString` reads the coordinator's
+    //       own shadow, and the two diverge by design on Escape, where `flush()`
+    //       turns a pending `n` into `ん` with no marked text emitted). It
+    //       catches a state-side regression such as `SnippetState::display_text`
+    //       going empty for a live selection.
+    //     - `HostMarked` is the host's side, accumulated over the whole
+    //       sequence, so it also covers the writer that emits no marked text at
+    //       all: a response whose commit ends the marked session while the
+    //       session stays composing. That shape reproduces the
+    //       fix/snippet-enter-leak symptom without ever emitting an empty
+    //       string, so a per-response check on `resp.marked` cannot see it.
+    if session.is_composing() {
+        assert!(
+            !session.composed_string().is_empty(),
+            "Composing session must have non-empty composed_string after {:?}",
+            action,
+        );
+        assert!(
+            host.is_composing(),
+            "Composing session must leave the host in composition after {:?}",
+            action,
+        );
+    }
+
+    // 1c. In snippet mode the two sides must also *agree*, not merely both be
+    //     non-empty: `composed_string()` and the emitted marked text are both
+    //     `SnippetState::display_text()`, so anything that renders one of them
+    //     differently is a desync. Checking only non-emptiness misses it — e.g.
+    //     emitting the snippet body while the picker highlights its key leaves
+    //     both sides non-empty, and leaves the panel positioned from a string
+    //     length that does not match the inline text.
+    //
+    //     Restricted to snippet mode on purpose: for a plain composition the two
+    //     legitimately differ (marked carries the selected candidate surface,
+    //     `composed_string()` re-derives the reading).
+    if matches!(session.state, SessionState::Snippet(_)) {
+        assert_eq!(
+            host.0.as_deref(),
+            Some(session.composed_string().as_str()),
+            "snippet mode must show the host exactly what the state renders, after {:?}",
+            action,
+        );
     }
 
     // 2. Enter from composing → Idle
     //    (Enter calls commit_current_state → reset_state → Idle.)
     //    Escape does NOT transition: it stays Composing for IMKit commitComposition.
-    if was_composing && matches!(action, Action::Enter) {
+    if prev.is_composing() && matches!(action, Action::Enter) {
         assert!(
             !session.is_composing(),
             "Enter must transition from Composing to Idle, after {:?}",
@@ -152,12 +388,23 @@ fn assert_invariants(
         );
     }
 
-    // 3. Escape from composing → stays Composing (candidates cleared)
-    //    IMKit externally calls commitComposition to finalize.
-    if was_composing && matches!(action, Action::Escape) {
+    // 3. Escape from *plain* composing → stays Composing (candidates cleared).
+    //    IMKit externally calls commitComposition to finalize. Snippet mode is
+    //    excluded — there Escape cancels the picker (see 3b).
+    if prev == PrevState::Composing && matches!(action, Action::Escape) {
         assert!(
             session.is_composing(),
-            "Escape must keep session in Composing (for IMKit commitComposition), after {:?}",
+            "Escape must keep plain composing in Composing (for IMKit commitComposition), after {:?}",
+            action,
+        );
+    }
+
+    // 3b. Escape from snippet mode → cancels back to Idle (the picker is torn
+    //     down; no IMKit commitComposition is expected for a snippet browse).
+    if prev == PrevState::Snippet && matches!(action, Action::Escape) {
+        assert!(
+            !session.is_composing(),
+            "Escape must cancel snippet mode back to Idle, after {:?}",
             action,
         );
     }
@@ -228,6 +475,95 @@ fn assert_invariants(
             action,
         );
     }
+
+    // 9. SnippetTrigger opens a *fresh* browse whenever the live store has
+    //    something to offer, and tears the session down when it does not. The
+    //    trigger is dispatched ahead of every state and mode check in
+    //    `handle_key` (ABC passthrough included), so the store is the only thing
+    //    that decides which way it goes.
+    //
+    //    Asserting freshness, not just `matches!(state, Snippet(_))`: the
+    //    session may already *be* in snippet mode (re-trigger), in which case
+    //    the bare state check passes no matter what the trigger did — including
+    //    doing nothing at all. `filter` empty and `selected == 0` is what says a
+    //    new browse actually started.
+    //
+    //    This is also what keeps the snippet coverage honest, which is why the
+    //    two cases are keyed on `store_empty` (what the driver installed) rather
+    //    than on the state the session ended in. Deciding from the state would
+    //    accept either outcome and make the whole snippet half of these tests
+    //    vacuous: a regression in the store lookup — e.g. `prefix_search("")` no
+    //    longer returning every entry, the path a backspace-to-empty-filter
+    //    repopulates through — would send every trigger down the
+    //    nothing-to-offer exit, and every sequence would skip snippet mode with
+    //    the suite still green.
+    if matches!(action, Action::SnippetTrigger) {
+        if store_empty {
+            // Nothing to offer: anything but a full teardown would leave the
+            // session composing behind cleared marked text.
+            assert!(
+                matches!(session.state, SessionState::Idle),
+                "SnippetTrigger with an empty store must leave the session Idle, got {} after {:?}",
+                session.state_name(),
+                action,
+            );
+        } else {
+            match &session.state {
+                // Freshness, not just `matches!(state, Snippet(_))`: the session
+                // may already *be* in snippet mode (re-trigger), in which case
+                // the bare state check passes no matter what the trigger did —
+                // including doing nothing at all.
+                SessionState::Snippet(s) => assert!(
+                    s.filter.is_empty() && s.selected == 0,
+                    "SnippetTrigger must start a fresh browse, got filter {:?} selected {} after {:?}",
+                    s.filter,
+                    s.selected,
+                    action,
+                ),
+                _ => panic!(
+                    "SnippetTrigger with a usable store must enter snippet mode, got {} after {:?}",
+                    session.state_name(),
+                    action,
+                ),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sequence driver
+// ---------------------------------------------------------------------------
+
+/// Run one generated sequence against a fresh session, checking every
+/// invariant after each action. Shared by all three proptests so they differ
+/// only by the generator and the one setting under test.
+///
+/// A snippet store is installed up front, so snippet mode is reachable as soon
+/// as the generator produces `SnippetTrigger`; `SetSnippetStore` then swaps it
+/// (sometimes for an empty one) mid-sequence, which is how the trigger's
+/// nothing-to-offer path is reached with a browse already live. The one shape
+/// left to the unit tests is a store that is absent rather than empty
+/// (`set_snippet_store(None)`), since nothing in production removes a store once
+/// snippets.toml exists.
+fn run_sequence(actions: &[Action], defer_candidates: bool) {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(defer_candidates);
+    session.set_snippet_store(Some(make_snippet_store(SNIPPET_ENTRIES)));
+    let mut host = HostMarked::default();
+    // Tracks what the driver last installed, so invariant 9 can require the
+    // trigger to actually open a browse when there *is* something to offer.
+    let mut store_empty = false;
+    for action in actions {
+        let prev = PrevState::of(&session);
+        if let Action::SetSnippetStore { empty } = action {
+            store_empty = *empty;
+        }
+        if let Some(resp) = execute_action(&mut session, action, &*dict) {
+            host.apply(&resp);
+            assert_invariants(&session, &resp, action, prev, &host, store_empty);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,28 +575,24 @@ proptest! {
 
     #[test]
     fn session_invariants_hold(actions in prop::collection::vec(arb_action(), 1..100)) {
-        let dict = make_test_dict();
-        let mut session = InputSession::new(dict.clone(), None, None);
-        for action in &actions {
-            let was_composing = session.is_composing();
-            if let Some(resp) = execute_action(&mut session, action, &*dict) {
-                assert_invariants(&session, &resp, action, was_composing);
-            }
-        }
+        run_sequence(&actions, false);
     }
 
     #[test]
     fn session_invariants_with_deferred_candidates(
         actions in prop::collection::vec(arb_action(), 1..100)
     ) {
-        let dict = make_test_dict();
-        let mut session = InputSession::new(dict.clone(), None, None);
-        session.set_defer_candidates(true);
-        for action in &actions {
-            let was_composing = session.is_composing();
-            if let Some(resp) = execute_action(&mut session, action, &*dict) {
-                assert_invariants(&session, &resp, action, was_composing);
-            }
-        }
+        run_sequence(&actions, true);
+    }
+
+    /// Snippet mode on its own sampling budget (see `arb_action_with_snippets`).
+    /// `defer_candidates` is generated rather than fixed so both candidate paths
+    /// are crossed with snippet mode without splitting this into two tests.
+    #[test]
+    fn session_invariants_with_snippets(
+        actions in prop::collection::vec(arb_action_with_snippets(), 1..100),
+        defer_candidates in any::<bool>(),
+    ) {
+        run_sequence(&actions, defer_candidates);
     }
 }

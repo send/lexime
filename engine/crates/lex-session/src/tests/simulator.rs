@@ -4,7 +4,7 @@ use lex_core::candidates::CandidateResponse;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
 
-use super::type_string;
+use super::{composing_reading, type_string};
 use crate::types::{KeyEvent, MAX_CANDIDATES};
 use crate::InputSession;
 
@@ -80,13 +80,7 @@ impl HeadlessIME {
     /// Complete one async candidate cycle: generate candidates for current reading,
     /// then feed them back. Returns committed text from auto-commit chain, if any.
     fn resolve_async(&mut self) -> Option<String> {
-        if !self.session.is_composing() {
-            return None;
-        }
-        let reading = self.session.comp().kana.clone();
-        if reading.is_empty() {
-            return None;
-        }
+        let reading = composing_reading(&self.session)?.to_string();
 
         let mode = self.session.config.conversion_mode;
         let cand: CandidateResponse = mode.generate_candidates(

@@ -1,33 +1,20 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
-
 use super::*;
 use crate::types::{CandidateAction, KeyEvent};
 
-fn make_snippet_store() -> Arc<SnippetStore> {
-    let mut entries = HashMap::new();
-    entries.insert("gh".to_string(), "https://github.com/".to_string());
-    entries.insert("gmail".to_string(), "https://mail.google.com/".to_string());
-    entries.insert("email".to_string(), "user@example.com".to_string());
-    entries.insert("sig".to_string(), "Best regards, $name".to_string());
-
-    let mut user_vars = HashMap::new();
-    user_vars.insert(
-        "name".to_string(),
-        SnippetVariable::Static {
-            value: "Taro".to_string(),
-        },
-    );
-    let resolver = VariableResolver::new(user_vars);
-    Arc::new(SnippetStore::new(entries, resolver).unwrap())
-}
+/// Entries these example tests assert against by exact match count and sort
+/// position (e.g. `"g"` → exactly `gh`, `gmail`; index 0 of all four →
+/// `email`). Changing this table breaks those expectations by design.
+const SNIPPET_ENTRIES: &[(&str, &str)] = &[
+    ("gh", "https://github.com/"),
+    ("gmail", "https://mail.google.com/"),
+    ("email", "user@example.com"),
+    ("sig", "Best regards, $name"),
+];
 
 fn make_session_with_snippets() -> InputSession {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    session.set_snippet_store(Some(make_snippet_store()));
+    session.set_snippet_store(Some(make_snippet_store(SNIPPET_ENTRIES)));
     session
 }
 
@@ -48,6 +35,23 @@ fn test_snippet_trigger_without_store_not_consumed() {
     let resp = session.handle_key(KeyEvent::SnippetTrigger);
     assert!(!resp.consumed);
     assert!(!session.is_composing());
+}
+
+#[test]
+fn test_snippet_trigger_without_store_commits_composing() {
+    // No store configured, but a composition is in progress: the trigger key
+    // has to reach the host, so it commits (like ModifiedKey) and does not
+    // consume. Committing is what keeps the host out of an empty composition —
+    // the shape that leaks the next key on Chromium/Electron hosts.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    type_string(&mut session, "ka");
+    assert!(session.is_composing());
+
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(!resp.consumed);
+    assert!(!session.is_composing());
+    assert_eq!(resp.commit, Some("か".to_string()));
 }
 
 #[test]
@@ -138,6 +142,46 @@ fn test_snippet_backspace_removes_char() {
 }
 
 #[test]
+fn test_snippet_with_empty_body_is_never_offered() {
+    // A snippet whose body expands to nothing has nothing to insert, so
+    // `prefix_search` drops it before the picker ever sees it — confirming one
+    // would commit "". Here it is the only entry, so there is nothing to browse
+    // and the trigger behaves as it does with no store at all.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    session.set_snippet_store(Some(make_snippet_store(&[("blank", "")])));
+
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(!resp.consumed);
+    assert!(!session.is_composing());
+}
+
+#[test]
+fn test_snippet_with_empty_body_is_filtered_out_of_a_live_store() {
+    // Same rule when usable entries exist alongside it: the picker shows only
+    // the usable ones, so `selected` can never land on an unusable body.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    session.set_snippet_store(Some(make_snippet_store(&[
+        ("blank", ""),
+        ("real", "inserted"),
+    ])));
+
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    match resp.candidates {
+        CandidateAction::Show { surfaces, .. } => {
+            assert_eq!(surfaces.len(), 1);
+            assert!(surfaces[0].starts_with("real\t"));
+        }
+        _ => panic!("expected Show candidates"),
+    }
+    assert_eq!(resp.marked.expect("marked text").text, "real");
+
+    let resp = session.handle_key(KeyEvent::Enter);
+    assert_eq!(resp.commit, Some("inserted".to_string()));
+}
+
+#[test]
 fn test_snippet_navigate() {
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);
@@ -214,6 +258,48 @@ fn test_snippet_navigate_then_filter_resets_selected() {
 }
 
 #[test]
+fn test_snippet_empty_text_leaves_the_browse_untouched() {
+    // Empty text reaches `snippet_filter_append` over the FFI — the frontend
+    // builds `KeyEvent::Text` from `event.characters ?? ""`, and `Remapped`
+    // arrives the same way. Falling through would reset `selected` and
+    // re-derive `matches` from an unchanged filter; if that re-derivation came
+    // back empty (bodies that stop expanding mid-browse), the response would
+    // carry empty marked text with the session still in `Snippet` — the #293
+    // leak shape. Nothing typed, so nothing about the browse may move.
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    session.handle_key(KeyEvent::ArrowDown);
+    session.handle_key(KeyEvent::ArrowDown); // selected 2 = "gmail"
+
+    let before = session.handle_key(KeyEvent::ArrowUp); // selected 1 = "gh"
+    let resp = session.handle_key(KeyEvent::text(""));
+
+    assert!(resp.consumed, "snippet mode owns the key");
+    assert!(session.is_composing(), "the browse must still be open");
+
+    let (was, was_sel) = match before.candidates {
+        CandidateAction::Show { surfaces, selected } => (surfaces, selected),
+        _ => panic!("precondition: expected Show candidates"),
+    };
+    assert_eq!(was_sel, 1, "precondition: not on the first entry");
+    match resp.candidates {
+        CandidateAction::Show { surfaces, selected } => {
+            assert_eq!(selected, was_sel, "selection must not jump back to 0");
+            assert_eq!(surfaces, was, "the match list must not be re-derived");
+        }
+        _ => panic!("expected Show candidates"),
+    }
+
+    let marked = resp.marked.expect("marked text").text;
+    assert_eq!(
+        marked,
+        before.marked.expect("marked text").text,
+        "marked text must be unchanged",
+    );
+    assert!(!marked.is_empty(), "and non-empty — that is the leak shape");
+}
+
+#[test]
 fn test_snippet_no_match_shows_no_candidates() {
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);
@@ -273,19 +359,64 @@ fn test_snippet_marked_text_stays_nonempty() {
 }
 
 #[test]
-fn test_snippet_trigger_empty_store_does_not_enter_mode() {
-    // With zero snippets there is nothing to preview, so we must not enter
-    // snippet mode with an empty composition (which would leak the confirming
-    // key to the host). The trigger is consumed but the session stays idle.
+fn test_snippet_trigger_empty_store_behaves_like_no_store() {
+    // A store with zero entries is the same situation as no store: nothing to
+    // preview, so we must not enter snippet mode with an empty composition
+    // (which would leak the confirming key to the host), and the trigger key is
+    // not ours — it passes through, exactly as `test_snippet_trigger_without_
+    // store_not_consumed` asserts for a `None` store. Emptying snippets.toml
+    // must not silently swallow the keybinding.
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    let empty_store =
-        SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
-    session.set_snippet_store(Some(Arc::new(empty_store)));
+    session.set_snippet_store(Some(make_snippet_store(&[])));
 
     let resp = session.handle_key(KeyEvent::SnippetTrigger);
-    assert!(resp.consumed);
+    assert!(!resp.consumed);
     assert!(!session.is_composing());
+}
+
+#[test]
+fn test_snippet_retrigger_after_store_emptied_cancels_the_browse() {
+    // Regression: pressing the trigger again while browsing, after the live
+    // store was emptied (the user deleted their last snippet — snippetsDidReload
+    // delivers a present-but-empty store, not `None`), used to return empty
+    // marked text while leaving the session in Snippet. The host left
+    // composition with the session still live, so the next Enter was consumed
+    // here *and* delivered to the web page, committing a body the user never
+    // picked. The browse must be torn down instead.
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(session.is_composing());
+
+    session.set_snippet_store(Some(make_snippet_store(&[])));
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+
+    assert!(
+        !session.is_composing(),
+        "an empty live store must cancel the browse, not leave it live behind cleared marked text"
+    );
+    assert!(resp.marked.expect("marked text").text.is_empty());
+    assert!(matches!(resp.candidates, CandidateAction::Hide));
+
+    // And the next Enter must have nothing left to commit.
+    let resp = session.handle_key(KeyEvent::Enter);
+    assert!(resp.commit.is_none());
+}
+
+#[test]
+fn test_commit_composition_cancels_a_snippet_browse() {
+    // IMKit calls commitComposition on focus loss, which can land mid-browse.
+    // There is nothing to confirm — the user never picked an entry — so the
+    // browse is cancelled, and the empty marked text must be paired with leaving
+    // snippet mode or the host would keep inline text with no session behind it.
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    session.handle_key(KeyEvent::text("g"));
+    assert!(session.is_composing());
+
+    let resp = session.commit();
+    assert!(!session.is_composing());
+    assert!(resp.commit.is_none(), "a browse has nothing to commit");
     assert!(resp.marked.expect("marked text").text.is_empty());
     assert!(matches!(resp.candidates, CandidateAction::Hide));
 }
@@ -301,8 +432,7 @@ fn test_snippet_browse_survives_store_swap() {
     assert!(session.is_composing());
 
     // Swap in an empty store mid-browse (worst case).
-    let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
-    session.set_snippet_store(Some(Arc::new(empty)));
+    session.set_snippet_store(Some(make_snippet_store(&[])));
 
     // Still browsing the original snapshot; marked text stays non-empty.
     assert!(session.is_composing());
