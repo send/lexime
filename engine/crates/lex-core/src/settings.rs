@@ -93,6 +93,28 @@ impl Settings {
     pub fn snippet_trigger(&self) -> Option<TriggerKey> {
         parse_trigger_string(&self.snippets.trigger)
     }
+
+    /// `(key_code, side)` pairs whose mapping is empty and therefore ignored, so
+    /// the caller that owns the config can tell the user. `keymap_get` reports
+    /// these as unmapped, which is correct for input but invisible to whoever
+    /// wrote the file — `dictool settings-validate` prints them.
+    ///
+    /// Same shape as `SnippetStore::unusable_keys`: the load path keeps the
+    /// file and drops what cannot be used, and a separate query makes the drop
+    /// visible.
+    pub fn ignored_keymap_sides(&self) -> Vec<(u16, &'static str)> {
+        let mut out = Vec::new();
+        for (code, normal, shifted) in &self.keymap_parsed {
+            if normal.is_empty() {
+                out.push((*code, "normal"));
+            }
+            if shifted.is_empty() {
+                out.push((*code, "shifted"));
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

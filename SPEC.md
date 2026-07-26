@@ -239,7 +239,7 @@ proptest の invariant 3 / 3b で固定している。
 
 - **composing を続ける response は、host の marked text を残さなければならない**。host が marked text を失う経路は 3 つあり、いずれも session 全体の不変条件（呼び出し箇所ごとの約束ではない）なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する: ①空の marked text を明示的に出す ②`commit` を出して marked text を出し直さない（`insertText` も marked セッションを終わらせ、`marked: None` は「そのまま」の意味なので誰も開き直さない）③空の `commit`（②の何も挿入しない版）
 - **検査の範囲**: 上記は per-response で見える形だけ。「数 response 後にまだ composing か」は `marked: None` が前の値を引き継ぐため累積的で、proptest 側の `HostMarked` モデルが担当する。また `debug_assert` なので出荷ビルド（`--release`）では落ちる — 構造的保証は下の各条項が担い、これは回帰検出器
-- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。静的に空な分は `snippets_build_store` が警告ログに出す）。提示できるエントリが 0 件のときは snippet 状態に入らない
+- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。静的に空な分は `snippets_build_store` が警告ログに出す。ただし現状 engine の `tracing` 出力は出荷ビルドで無効化されているため実際には届かない — 別途修正予定）。提示できるエントリが 0 件のときは snippet 状態に入らない
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
 - **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
 
@@ -250,7 +250,7 @@ proptest の invariant 3 / 3b で固定している。
 | 10 | `]` | `}` |
 | 93 | `\` | `\|` |
 
-keymap に登録されたキーはリマップ後のテキストとして処理される。
+keymap に登録されたキーはリマップ後のテキストとして処理される。値が空文字のとき、その側は**リマップ無し**として扱う（空文字を挿入すると host の marked セッションだけ終わってしまうため。§不変条件の ③）。ファイルは有効なまま読み込まれ、`dictool settings-validate` が該当エントリを WARN として表示する。
 かなモードではリマップ後のテキストがローマ字 trie・通常入力パスを経由する（例: `]` → `」`）。
 trie にマッチしない文字（例: `\`）は直接確定。ABC モードでは常に直接確定。
 `settings.toml` の `[keymap]` セクションで追加・変更可能。

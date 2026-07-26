@@ -98,6 +98,16 @@ impl InputSession {
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
+        // Nothing typed: leave the browse exactly as it is. Falling through
+        // would reset `selected` and re-derive `matches` from an unchanged
+        // filter — and if that re-derivation came back empty (bodies that stop
+        // expanding mid-browse), `display_text` would render empty marked text
+        // while the session is still in `Snippet`. `handle_key` returns early
+        // for snippet mode, so its own empty-text guard never reaches here;
+        // this is where both `Text` and `Remapped` arrive.
+        if text.is_empty() {
+            return build_snippet_response(s);
+        }
         s.filter.push_str(text);
         // Filter against the browse's own store snapshot, not the live store —
         // a mid-browse swap must not change what this picker shows.

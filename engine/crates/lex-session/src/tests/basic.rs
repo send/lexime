@@ -259,8 +259,8 @@ fn test_keymap_yen_idle() {
 
 #[test]
 fn test_keymap_empty_remap_is_not_consumed() {
-    // `parse_keymap` rejects empty mappings, but `Remapped` crosses the FFI and
-    // any frontend can build one. Empty text has nothing to insert, so it must
+    // `keymap_get` reports an empty mapping as unmapped, but `Remapped` crosses
+    // the FFI and any frontend can build one. Empty text has nothing to insert, so it must
     // not become `commit: Some("")` — that inserts nothing yet ends the host's
     // marked-text session, the shape that leaks the next key (#293). Checked in
     // all three states the remap path branches on.
