@@ -21,7 +21,7 @@ fn make_snippet_store() -> Arc<SnippetStore> {
         },
     );
     let resolver = VariableResolver::new(user_vars);
-    Arc::new(SnippetStore::new(entries, resolver))
+    Arc::new(SnippetStore::new(entries, resolver).unwrap())
 }
 
 fn make_session_with_snippets() -> InputSession {
@@ -279,7 +279,8 @@ fn test_snippet_trigger_empty_store_does_not_enter_mode() {
     // key to the host). The trigger is consumed but the session stays idle.
     let dict = make_test_dict();
     let mut session = InputSession::new(dict, None, None);
-    let empty_store = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new()));
+    let empty_store =
+        SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
     session.set_snippet_store(Some(Arc::new(empty_store)));
 
     let resp = session.handle_key(KeyEvent::SnippetTrigger);
@@ -299,7 +300,7 @@ fn test_set_snippet_store_mid_mode_exits_snippet_mode() {
     session.handle_key(KeyEvent::SnippetTrigger);
     assert!(session.is_composing());
 
-    let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new()));
+    let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
     session.set_snippet_store(Some(Arc::new(empty)));
     assert!(!session.is_composing(), "store swap must exit snippet mode");
 }

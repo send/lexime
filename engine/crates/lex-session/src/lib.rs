@@ -132,7 +132,16 @@ impl InputSession {
         // never keep browsing a stale (possibly now-empty) store, which could
         // emit empty marked text and reintroduce the confirming-key leak (see
         // SnippetState::display_text). Composing / Idle states are unaffected.
+        //
+        // Bump the epoch because this mutates composition state — same contract
+        // as handle_key/commit (reject any in-flight async response). Caveat:
+        // unlike a key response this returns nothing, so it cannot tell the
+        // host to clear marked text / candidates. Safe today because the only
+        // reload trigger (settings save) deactivates the client first; a future
+        // same-session hot-reload (file watcher) must surface this reset to the
+        // frontend instead.
         if matches!(self.state, SessionState::Snippet(_)) {
+            self.bump_epoch();
             self.reset_state();
         }
     }

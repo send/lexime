@@ -125,14 +125,6 @@ fn snippets_build_store(
     let mut map: std::collections::HashMap<String, String> =
         std::collections::HashMap::with_capacity(entries.len());
     for LexSnippetEntry { key, body } in entries {
-        // An empty key cannot be selected distinctly and, sorting first, would
-        // make the snippet picker emit empty marked text for a live selection —
-        // reintroducing the confirming-key leak on Chromium/Electron hosts.
-        if key.is_empty() {
-            return Err(LexError::InvalidData {
-                msg: "snippet key must not be empty".to_string(),
-            });
-        }
         match map.entry(key) {
             std::collections::hash_map::Entry::Vacant(vacant) => {
                 vacant.insert(body);
@@ -150,7 +142,8 @@ fn snippets_build_store(
     validate_snippet_entries(&map, &known)
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
 
-    let store = SnippetStore::new(map, resolver);
+    let store = SnippetStore::new(map, resolver)
+        .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
     Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
 }
 

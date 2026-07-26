@@ -6,6 +6,8 @@ pub enum SnippetConfigError {
     Parse(String),
     #[error("undefined variable '{name}' in snippet '{key}'")]
     UndefinedVariable { key: String, name: String },
+    #[error("snippet key must not be empty")]
+    EmptyKey,
 }
 
 /// Validate that every `$name`/`${name}` reference in the snippet bodies

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::config::SnippetConfigError;
 use super::variables::VariableResolver;
 
 pub struct SnippetStore {
@@ -8,8 +9,22 @@ pub struct SnippetStore {
 }
 
 impl SnippetStore {
-    pub fn new(entries: HashMap<String, String>, resolver: VariableResolver) -> Self {
-        Self { entries, resolver }
+    /// Build a store, rejecting empty keys.
+    ///
+    /// An empty key sorts first and, with an empty filter, would make the
+    /// snippet picker render empty marked text for a live selection —
+    /// reintroducing the confirming-key leak on Chromium/Electron hosts. Making
+    /// the constructor fallible keeps the "every key is non-empty" invariant
+    /// with the data, so `SnippetState::display_text` cannot observe an empty
+    /// key (see its doc).
+    pub fn new(
+        entries: HashMap<String, String>,
+        resolver: VariableResolver,
+    ) -> Result<Self, SnippetConfigError> {
+        if entries.keys().any(|k| k.is_empty()) {
+            return Err(SnippetConfigError::EmptyKey);
+        }
+        Ok(Self { entries, resolver })
     }
 
     /// Return all entries matching the given prefix, with variables expanded.
@@ -44,7 +59,7 @@ mod tests {
         entries.insert("email".to_string(), "user@example.com".to_string());
 
         let resolver = VariableResolver::new(HashMap::new());
-        let store = SnippetStore::new(entries, resolver);
+        let store = SnippetStore::new(entries, resolver).unwrap();
 
         let results = store.prefix_search("g");
         assert_eq!(results.len(), 2);
@@ -59,7 +74,7 @@ mod tests {
         entries.insert("gh".to_string(), "https://github.com/".to_string());
 
         let resolver = VariableResolver::new(HashMap::new());
-        let store = SnippetStore::new(entries, resolver);
+        let store = SnippetStore::new(entries, resolver).unwrap();
 
         let results = store.prefix_search("gh");
         assert_eq!(results.len(), 1);
@@ -72,7 +87,7 @@ mod tests {
         entries.insert("gh".to_string(), "https://github.com/".to_string());
 
         let resolver = VariableResolver::new(HashMap::new());
-        let store = SnippetStore::new(entries, resolver);
+        let store = SnippetStore::new(entries, resolver).unwrap();
 
         let results = store.prefix_search("xyz");
         assert!(results.is_empty());
@@ -85,12 +100,20 @@ mod tests {
         entries.insert("a".to_string(), "alpha".to_string());
 
         let resolver = VariableResolver::new(HashMap::new());
-        let store = SnippetStore::new(entries, resolver);
+        let store = SnippetStore::new(entries, resolver).unwrap();
 
         let all = store.all_entries();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].0, "a");
         assert_eq!(all[1].0, "b");
+    }
+
+    #[test]
+    fn new_rejects_empty_key() {
+        let mut entries = HashMap::new();
+        entries.insert(String::new(), "body".to_string());
+        let result = SnippetStore::new(entries, VariableResolver::new(HashMap::new()));
+        assert!(matches!(result, Err(SnippetConfigError::EmptyKey)));
     }
 
     #[test]
@@ -106,7 +129,7 @@ mod tests {
             },
         );
         let resolver = VariableResolver::new(user_vars);
-        let store = SnippetStore::new(entries, resolver);
+        let store = SnippetStore::new(entries, resolver).unwrap();
 
         let results = store.prefix_search("sig");
         assert_eq!(results.len(), 1);
