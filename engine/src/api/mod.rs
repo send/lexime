@@ -146,22 +146,13 @@ fn snippets_build_store(
         .map_err(|e| LexError::InvalidData { msg: e.to_string() })?;
 
     // An entry whose body expands to nothing is dropped by `prefix_search` — it
-    // has nothing to insert — but the settings list still shows it, so without
-    // this the user sees an entry that never appears in the picker and gets no
+    // has nothing to insert — but the settings list still shows it, so the user
+    // would see an entry that never appears in the picker and get no
     // explanation. Not an error: one unusable line should not take the rest of
     // the file down with it (unlike an empty key, which cannot be rendered
-    // around at all). Keys only, never bodies: the key is what the user needs
-    // to find the line, while a body is the content they typed.
-    let unusable = store.unusable_keys();
-    if !unusable.is_empty() {
-        tracing::warn!(
-            "snippets: {} entr{} have an empty body and will not be offered: {}",
-            unusable.len(),
-            if unusable.len() == 1 { "y" } else { "ies" },
-            unusable.join(", "),
-        );
-    }
-
+    // around at all). The frontend asks for them via
+    // `LexSnippetStore::unusable_keys` and reports them; nothing is logged here
+    // because engine `tracing` output does not reach the shipped build.
     Ok(LexSnippetStore::new(std::sync::Arc::new(store)))
 }
 

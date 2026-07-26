@@ -30,6 +30,15 @@ final class ConfigStore {
                 let entries = try SnippetTOML.parse(content)
                 let store = try snippetsBuildStore(entries: entries)
                 NSLog("Lexime: Snippets reloaded from %@", snippetPath)
+                // Entries the store keeps but will never offer, because their
+                // body expands to nothing. The settings list still shows and
+                // counts them, so without this the picker would just be missing
+                // rows with no explanation anywhere.
+                let unusable = store.unusableKeys()
+                if !unusable.isEmpty {
+                    NSLog("Lexime: %d snippet(s) have an empty body and will not be offered: %@",
+                          unusable.count, unusable.joined(separator: ", "))
+                }
                 self.snippetStore = store
             } catch {
                 throw SnippetLoadError(path: snippetPath, underlying: error)
