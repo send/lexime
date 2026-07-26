@@ -150,7 +150,8 @@ fn snippets_build_store(
     // this the user sees an entry that never appears in the picker and gets no
     // explanation. Not an error: one unusable line should not take the rest of
     // the file down with it (unlike an empty key, which cannot be rendered
-    // around at all).
+    // around at all). Keys only, never bodies: the key is what the user needs
+    // to find the line, while a body is the content they typed.
     let unusable = store.unusable_keys();
     if !unusable.is_empty() {
         tracing::warn!(

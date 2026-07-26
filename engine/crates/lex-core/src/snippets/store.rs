@@ -49,10 +49,19 @@ impl SnippetStore {
             .iter()
             .filter(|(key, _)| key.starts_with(prefix))
             .map(|(key, body)| (key.clone(), self.resolver.expand(body)))
-            .filter(|(_, expanded)| !expanded.is_empty())
+            .filter(|(_, expanded)| Self::is_usable(expanded))
             .collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
         results
+    }
+
+    /// Whether an expanded body is worth offering. The single definition of
+    /// "usable": `prefix_search` drops what this rejects and `unusable_keys`
+    /// reports it, so the picker and the diagnostic cannot disagree about which
+    /// entries disappeared. Takes the *expanded* value so the hot path does not
+    /// have to expand twice.
+    fn is_usable(expanded: &str) -> bool {
+        !expanded.is_empty()
     }
 
     /// Every usable entry, with variables expanded (empty prefix). Callers use
@@ -69,7 +78,7 @@ impl SnippetStore {
         let mut keys: Vec<String> = self
             .entries
             .iter()
-            .filter(|(_, body)| self.resolver.expand(body).is_empty())
+            .filter(|(_, body)| !Self::is_usable(&self.resolver.expand(body)))
             .map(|(key, _)| key.clone())
             .collect();
         keys.sort();
