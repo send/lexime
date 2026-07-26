@@ -73,9 +73,11 @@ pub struct Settings {
 }
 
 /// One key code's remap, as resolved by `parse_keymap`. `None` on a side means
-/// that side is not remapped. There is deliberately no representation for
-/// "remap to nothing": committing `""` inserts nothing yet still ends the host's
-/// marked-text session (SPEC.md § 不変条件（marked text と session の同期）③).
+/// that side is not remapped — never "remap to nothing", which would commit `""`
+/// and end the host's marked-text session while inserting nothing (SPEC.md §
+/// 不変条件（marked text と session の同期）③). `usable_side` is the only thing
+/// that fills these in, and it never produces `Some("")`; the type does not
+/// forbid it, the single construction site does.
 #[derive(Debug, Clone)]
 struct KeyRemap {
     normal: Option<String>,
@@ -104,11 +106,16 @@ impl Settings {
     }
 
     /// Entries the loader kept but will not act on, phrased for a human, so the
-    /// caller that owns the config can tell the user. `dictool settings-validate`
-    /// prints them.
+    /// caller that owns the config can tell the user.
     ///
-    /// Same shape as `SnippetStore::unusable_keys`: the load path keeps the file
-    /// and drops what it cannot use, and a separate query makes the drop visible.
+    /// Same shape as `SnippetStore::unusable_keys`, down to the crossing: the
+    /// load path keeps the file and drops what it cannot use, and a separate
+    /// query makes the drop visible. `settings_keymap_warnings` puts this over
+    /// the FFI and the frontend reports it after a successful load — engine
+    /// `tracing` does not reach the shipped build, so logging here would be the
+    /// silent failure this exists to prevent. `dictool settings-validate`
+    /// prints the same list for a file the user has not loaded yet.
+    ///
     /// Two kinds:
     ///
     /// - an empty mapping, which `keymap_get` reports as unmapped;
@@ -292,10 +299,12 @@ fn parse_keymap(
         let seen = spellings.entry(key_code).or_default();
         seen.push(key_str.as_str());
         if seen.len() > 1 {
-            // A later spelling of a code that is already resolved. Whatever it
-            // says is not read at all — including its sides, which is why the
-            // empty-side rule below runs only on the winner. Reported after the
-            // loop, once, naming the winner.
+            // A later spelling of a code that is already resolved. Its *sides*
+            // are never consulted — which is why the empty-side rule below runs
+            // only on the winner — but it has already been checked for
+            // well-formedness above, like every other entry: whether the file
+            // parses is not a question resolution order gets to answer.
+            // Reported after the loop, once, naming the winner.
             continue;
         }
         // An empty mapping has nothing to insert, and the remap path would turn
@@ -309,19 +318,18 @@ fn parse_keymap(
         // that already accepted such files, and `init_custom` is all-or-nothing
         // — refusing the file would revert every *other* custom value (costs,
         // history limits, snippet trigger, the working key mappings) to the
-        // defaults over one bad entry, which is the disproportionate outcome
-        // CLAUDE.md's 「設定の変更は migration 必須」 is about. Same treatment an
-        // unusable snippet body gets in `SnippetStore::prefix_search`: drop what
-        // cannot be used, keep the file, and say so.
+        // defaults over one bad entry — the disproportionate outcome CLAUDE.md's
+        // 「オンディスク形式 (履歴 / user_dict / 設定) の変更は migration 必須」 is
+        // about. Same treatment an unusable snippet body gets in
+        // `SnippetStore::prefix_search`: drop what cannot be used, keep the
+        // file, and say so. A *malformed* entry is a different question and
+        // still rejects: this softens an empty value, not a broken file.
         let remap = KeyRemap {
             normal: usable_side(&values[0]),
             shifted: usable_side(&values[1]),
         };
         for (side, mapped) in [("normal", &remap.normal), ("shifted", &remap.shifted)] {
             if mapped.is_none() {
-                tracing::warn!(
-                    "settings: keymap.{key_str} has an empty {side} mapping; that side is left unmapped"
-                );
                 warnings.push(format!(
                     "keymap.{key_str} {side} mapping is empty and will be ignored"
                 ));

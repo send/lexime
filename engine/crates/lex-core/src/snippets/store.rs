@@ -40,9 +40,11 @@ impl SnippetStore {
     /// cover a store with nothing usable in it.
     ///
     /// The common case — a body written empty, or one that is only a static
-    /// variable with an empty value — *is* decidable when the store is built, and
-    /// `snippets_build_store` reports it there so it does not vanish silently.
-    /// This filter is the structural guarantee, not the diagnostic.
+    /// variable with an empty value — *is* decidable when the store is built,
+    /// and `unusable_keys` is what reports it so it does not vanish silently
+    /// (over the FFI, to the frontend; `snippets_build_store` logs nothing,
+    /// because engine `tracing` does not reach the shipped build). This filter
+    /// is the structural guarantee, not the diagnostic.
     pub fn prefix_search(&self, prefix: &str) -> Vec<(String, String)> {
         let mut results: Vec<(String, String)> = self
             .entries

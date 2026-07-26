@@ -59,6 +59,17 @@ what a generic reviewer misses:
   findings proposing to replace the cumulative model with a per-response check
   re-litigate it — do not raise them. Everything else is open, including the
   unmodelled `currentDisplay` writers SPEC names.
+- **Unusable config entries are dropped, not rejected (settled)**: an empty
+  side in `[keymap]` and a snippet body that expands to nothing are ignored,
+  and the file still loads. Rejecting was tried and reversed: `init_custom` is
+  all-or-nothing, so one bad entry would revert every other custom value
+  (costs, history limits, snippet trigger, the working key mappings) to the
+  defaults. A *malformed* entry — unparseable key_code, wrong arity — is a
+  different case and still rejects the file. Both drops are reported, over the
+  FFI, because engine `tracing` does not reach the shipped build
+  (`settings_keymap_warnings`, `LexSnippetStore::unusable_keys`); the rules are
+  in SPEC.md § キーリマップ. Findings proposing to reject on an empty value, or
+  to log the drop instead of returning it, re-litigate this — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

@@ -258,6 +258,48 @@ fn test_snippet_navigate_then_filter_resets_selected() {
 }
 
 #[test]
+fn test_snippet_empty_text_leaves_the_browse_untouched() {
+    // Empty text reaches `snippet_filter_append` over the FFI — the frontend
+    // builds `KeyEvent::Text` from `event.characters ?? ""`, and `Remapped`
+    // arrives the same way. Falling through would reset `selected` and
+    // re-derive `matches` from an unchanged filter; if that re-derivation came
+    // back empty (bodies that stop expanding mid-browse), the response would
+    // carry empty marked text with the session still in `Snippet` — the #293
+    // leak shape. Nothing typed, so nothing about the browse may move.
+    let mut session = make_session_with_snippets();
+    session.handle_key(KeyEvent::SnippetTrigger);
+    session.handle_key(KeyEvent::ArrowDown);
+    session.handle_key(KeyEvent::ArrowDown); // selected 2 = "gmail"
+
+    let before = session.handle_key(KeyEvent::ArrowUp); // selected 1 = "gh"
+    let resp = session.handle_key(KeyEvent::text(""));
+
+    assert!(resp.consumed, "snippet mode owns the key");
+    assert!(session.is_composing(), "the browse must still be open");
+
+    let (was, was_sel) = match before.candidates {
+        CandidateAction::Show { surfaces, selected } => (surfaces, selected),
+        _ => panic!("precondition: expected Show candidates"),
+    };
+    assert_eq!(was_sel, 1, "precondition: not on the first entry");
+    match resp.candidates {
+        CandidateAction::Show { surfaces, selected } => {
+            assert_eq!(selected, was_sel, "selection must not jump back to 0");
+            assert_eq!(surfaces, was, "the match list must not be re-derived");
+        }
+        _ => panic!("expected Show candidates"),
+    }
+
+    let marked = resp.marked.expect("marked text").text;
+    assert_eq!(
+        marked,
+        before.marked.expect("marked text").text,
+        "marked text must be unchanged",
+    );
+    assert!(!marked.is_empty(), "and non-empty — that is the leak shape");
+}
+
+#[test]
 fn test_snippet_no_match_shows_no_candidates() {
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);
