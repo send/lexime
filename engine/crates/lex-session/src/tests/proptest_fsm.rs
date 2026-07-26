@@ -7,7 +7,7 @@ use proptest::prelude::*;
 
 use lex_core::dict::Dictionary;
 
-use super::{composing_kana, make_snippet_store, make_test_dict};
+use super::{composing_reading, make_snippet_store, make_test_dict};
 use crate::types::{KeyEvent, SessionState};
 use crate::{CandidateAction, ConversionMode, InputSession};
 
@@ -36,6 +36,16 @@ enum Action {
     SetPredictiveMode,
     /// Trigger snippet mode (opens the picker; commits any composing first).
     SnippetTrigger,
+    /// Swap the live snippet store, as `snippetsDidReload` does when the user
+    /// edits snippets.toml. `true` installs an empty store — the case where the
+    /// user deletes their last snippet, which arrives as a present-but-empty
+    /// store rather than `None`, and which an in-progress browse must survive.
+    SetSnippetStore {
+        empty: bool,
+    },
+    /// IMKit `commitComposition` — the session's other public entry point.
+    /// Reached on focus loss and after Escape, so it can land in any state.
+    CommitComposition,
 }
 
 // ---------------------------------------------------------------------------
@@ -79,21 +89,23 @@ fn arb_action() -> impl Strategy<Value = Action> {
     ]
 }
 
-/// `arb_action` plus the snippet trigger, for the snippet-specific test.
+/// `arb_action` plus the snippet-mode actions, for the snippet-specific test.
 ///
-/// `SnippetTrigger` is deliberately kept out of `arb_action`: it commits any
-/// in-progress composition, so mixing it in would truncate the long composing
-/// runs the other tests exist to sample (measured over 4096 cases: −31% of runs
-/// reaching 10 composing actions, −40% at 20). Keeping the trigger in its own
-/// generator leaves those distributions untouched by construction rather than
-/// by a case count tuned to compensate.
+/// These are deliberately kept out of `arb_action`: `SnippetTrigger` and
+/// `CommitComposition` both end any in-progress composition, so mixing them in
+/// would truncate the long composing runs the other tests exist to sample
+/// (measured over 4096 cases for the trigger alone: −31% of runs reaching 10
+/// composing actions, −40% at 20). Keeping them in their own generator leaves
+/// those distributions untouched by construction rather than by a case count
+/// tuned to compensate.
 fn arb_action_with_snippets() -> impl Strategy<Value = Action> {
-    // ~3.5% of actions, matching the weight the trigger had when it shared the
-    // generator. The ratio is approximate on purpose — nothing here needs to
-    // track the exact sum of `arb_action`'s weights.
+    // The ratios are approximate on purpose — nothing here needs to track the
+    // exact sum of `arb_action`'s weights (110).
     prop_oneof![
         27 => arb_action(),
         1 => Just(Action::SnippetTrigger),
+        1 => any::<bool>().prop_map(|empty| Action::SetSnippetStore { empty }),
+        1 => Just(Action::CommitComposition),
     ]
 }
 
@@ -111,7 +123,8 @@ fn arb_action_with_snippets() -> impl Strategy<Value = Action> {
 /// `e` → 2 (`email`, `eta`), `i`/`u` → 0. Narrowing 2 → 1 needs a following
 /// `m`/`t` and is correspondingly rare, so it is not what carries the coverage.
 /// Bodies are non-empty so that confirming actually reaches the commit path: an
-/// empty body cancels instead (see `test_snippet_confirm_empty_body_cancels`).
+/// entry whose body expands to nothing is dropped by `prefix_search` and never
+/// offered (see `test_snippet_with_empty_body_is_never_offered`).
 const SNIPPET_ENTRIES: &[(&str, &str)] = &[
     ("addr", "123 Example St"),
     ("email", "user@example.com"),
@@ -160,18 +173,33 @@ impl PrevState {
 // Host-side marked text model
 // ---------------------------------------------------------------------------
 
-/// Mirror of `SessionCoordinator.currentDisplay` — what the *host* still has as
-/// marked text after a response has been applied.
+/// What the *host* still has as marked text after a response has been applied
+/// — i.e. `SessionCoordinator.currentDisplay` as the response-application path
+/// leaves it.
 ///
 /// The contract behind fix/snippet-enter-leak is cumulative, not per-response:
 /// `marked: None` means "leave the host's marked text alone", so whether the
-/// host is still in composition depends on every response so far, and it has
-/// **two** writers. `convert_to_events` emits `Commit` before `SetMarkedText`;
-/// on the Swift side (`SessionCoordinator.applyEvents`) `Commit` calls
-/// `insertText`, which ends the marked session, and clears `currentDisplay`,
-/// while `SetMarkedText` sets it — or clears it when the text is empty. So a
-/// response carrying a commit and no marked text takes the host out of
-/// composition even though it emitted no empty marked string.
+/// host is still in composition depends on every response so far, and on that
+/// path two events write it. `convert_to_events` emits `Commit` before
+/// `SetMarkedText`; on the Swift side (`SessionCoordinator.applyEvents`)
+/// `Commit` calls `insertText`, which ends the marked session, and clears
+/// `currentDisplay`, while `SetMarkedText` sets it — or clears it when the text
+/// is empty. So a response carrying a commit and no marked text takes the host
+/// out of composition even though it emitted no empty marked string.
+///
+/// Two things this deliberately does **not** model, so read a green run
+/// accordingly:
+///
+/// - The event order is assumed, not driven. `convert_to_events` lives in the
+///   `lex_engine` crate, which depends on this one, so it cannot be called from
+///   here; swapping its two pushes would regress the host while leaving these
+///   tests green. `mapping.rs::commit_precedes_marked_text` is what pins that
+///   end.
+/// - `currentDisplay` has two further writers outside this path —
+///   `SessionCoordinator.resetDisplay()` (from `activateServer`) and
+///   `deactivate()` (from `deactivateServer`) — which clear it without telling
+///   the session. A session left composing across those callbacks is the same
+///   desync, reachable only from the Swift side.
 #[derive(Debug, Default)]
 struct HostMarked(Option<String>);
 
@@ -218,10 +246,7 @@ fn execute_action(
         Action::ReceiveCandidates => {
             // Async candidates only exist for a plain composition; snippet mode
             // reports `is_composing()` but has none.
-            let reading = match composing_kana(session) {
-                Some(kana) if !kana.is_empty() => kana.to_string(),
-                _ => return None,
-            };
+            let reading = composing_reading(session)?.to_string();
             let mode = session.config.conversion_mode;
             let cand = mode.generate_candidates(dict, None, None, &reading, 20);
             // Simulate a fresh (non-stale) response: snapshot the current epoch.
@@ -233,6 +258,14 @@ fn execute_action(
             None
         }
         Action::SnippetTrigger => Some(session.handle_key(KeyEvent::SnippetTrigger)),
+        Action::SetSnippetStore { empty } => {
+            let entries: &[(&str, &str)] = if *empty { &[] } else { SNIPPET_ENTRIES };
+            session.set_snippet_store(Some(make_snippet_store(entries)));
+            // Not a response-producing entry point: the host is not told, which
+            // is the point — an in-progress browse holds its own snapshot.
+            None
+        }
+        Action::CommitComposition => Some(session.commit()),
     }
 }
 
@@ -297,6 +330,26 @@ fn assert_invariants(
         assert!(
             host.is_composing(),
             "Composing session must leave the host in composition after {:?}",
+            action,
+        );
+    }
+
+    // 1c. In snippet mode the two sides must also *agree*, not merely both be
+    //     non-empty: `composed_string()` and the emitted marked text are both
+    //     `SnippetState::display_text()`, so anything that renders one of them
+    //     differently is a desync. Checking only non-emptiness misses it — e.g.
+    //     emitting the snippet body while the picker highlights its key leaves
+    //     both sides non-empty, and leaves the panel positioned from a string
+    //     length that does not match the inline text.
+    //
+    //     Restricted to snippet mode on purpose: for a plain composition the two
+    //     legitimately differ (marked carries the selected candidate surface,
+    //     `composed_string()` re-derives the reading).
+    if matches!(session.state, SessionState::Snippet(_)) {
+        assert_eq!(
+            host.0.as_deref(),
+            Some(session.composed_string().as_str()),
+            "snippet mode must show the host exactly what the state renders, after {:?}",
             action,
         );
     }
@@ -400,10 +453,17 @@ fn assert_invariants(
         );
     }
 
-    // 9. SnippetTrigger always lands in snippet mode. The fixture store is
-    //    non-empty and the trigger is dispatched ahead of every state and mode
-    //    check in `handle_key` (ABC passthrough included), so nothing here can
-    //    legitimately refuse it.
+    // 9. SnippetTrigger opens a *fresh* browse whenever the live store has
+    //    something to offer, and tears the session down when it does not. The
+    //    trigger is dispatched ahead of every state and mode check in
+    //    `handle_key` (ABC passthrough included), so the store is the only thing
+    //    that decides which way it goes.
+    //
+    //    Asserting freshness, not just `matches!(state, Snippet(_))`: the
+    //    session may already *be* in snippet mode (re-trigger), in which case
+    //    the bare state check passes no matter what the trigger did — including
+    //    doing nothing at all. `filter` empty and `selected == 0` is what says a
+    //    new browse actually started.
     //
     //    This is also what keeps the snippet coverage honest. Snippet mode is
     //    reachable only if `enter_snippet_mode` finds entries, so a regression
@@ -413,11 +473,24 @@ fn assert_invariants(
     //    leave every proptest green. Asserting the transition turns that silent
     //    loss of coverage into a failure.
     if matches!(action, Action::SnippetTrigger) {
-        assert!(
-            matches!(session.state, SessionState::Snippet(_)),
-            "SnippetTrigger must enter snippet mode, after {:?}",
-            action,
-        );
+        match &session.state {
+            SessionState::Snippet(s) => {
+                assert!(
+                    s.filter.is_empty() && s.selected == 0,
+                    "SnippetTrigger must start a fresh browse, got filter {:?} selected {} after {:?}",
+                    s.filter,
+                    s.selected,
+                    action,
+                );
+            }
+            // The live store had nothing to offer. Anything but a full teardown
+            // would leave the session composing behind cleared marked text.
+            state => assert!(
+                matches!(state, SessionState::Idle),
+                "SnippetTrigger with nothing to offer must leave the session Idle, after {:?}",
+                action,
+            ),
+        }
     }
 }
 
@@ -429,10 +502,13 @@ fn assert_invariants(
 /// invariant after each action. Shared by all three proptests so they differ
 /// only by the generator and the one setting under test.
 ///
-/// A snippet store is always installed, so snippet mode is reachable whenever
-/// the generator can produce `SnippetTrigger`. The store-less variant of the
-/// trigger is a single fixed transition, covered by unit test
-/// `test_snippet_trigger_without_store_commits_composing`.
+/// A snippet store is installed up front, so snippet mode is reachable as soon
+/// as the generator produces `SnippetTrigger`; `SetSnippetStore` then swaps it
+/// (sometimes for an empty one) mid-sequence, which is how the trigger's
+/// nothing-to-offer path is reached with a browse already live. The one shape
+/// left to the unit tests is a store that is absent rather than empty
+/// (`set_snippet_store(None)`), since nothing in production removes a store once
+/// snippets.toml exists.
 fn run_sequence(actions: &[Action], defer_candidates: bool) {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);

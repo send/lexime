@@ -48,6 +48,12 @@ impl InputSession {
 
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
+        let resp = self.handle_key_inner(event);
+        self.debug_assert_response_contract(&resp);
+        resp
+    }
+
+    fn handle_key_inner(&mut self, event: KeyEvent) -> KeyResponse {
         let _span = debug_span!("handle_key", ?event).entered();
 
         // Every key event starts a new epoch so that in-flight async

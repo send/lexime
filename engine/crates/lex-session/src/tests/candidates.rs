@@ -1,3 +1,5 @@
+use lex_core::candidates::generate_candidates;
+
 use super::*;
 use crate::types::{CandidateAction, CandidateDispatch, KeyEvent};
 use crate::ConversionMode;
@@ -135,39 +137,24 @@ fn test_conversion_mode_switch() {
 
 #[test]
 fn test_deferred_auto_commit_shows_provisional_candidates() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
 
-    // Helper: complete one async candidate cycle.
-    // Returns the response from receive_candidates (None if stale).
-    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
-        let reading = session.comp().kana.clone();
-        if reading.is_empty() {
-            return None;
-        }
-        let cand = generate_candidates(dict, None, None, &reading, 20);
-        // Simulate a fresh (non-stale) response: snapshot the current epoch.
-        let epoch = session.epoch;
-        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
-    }
-
     // Build up "きょうはいいてんき" with async cycles after each romaji group.
     // Each cycle increments the stability counter (first segment = "きょう").
     type_string(&mut session, "kyou"); // "きょう"
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
 
     type_string(&mut session, "ha"); // "きょうは"
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(r.unwrap().commit.is_none(), "no auto-commit yet");
 
     type_string(&mut session, "ii"); // "きょうはいい"
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
     assert!(r.is_some());
     assert!(
         r.unwrap().commit.is_none(),
@@ -175,7 +162,7 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
     );
 
     type_string(&mut session, "tenki"); // "きょうはいいてんき"
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
     let resp = r.expect("receive_candidates should return a response");
 
     // Auto-commit should fire: first segment committed, remaining shown
@@ -214,8 +201,6 @@ fn test_deferred_auto_commit_shows_provisional_candidates() {
 /// `selected` to 0; the session-owned epoch rejects it.
 #[test]
 fn test_stale_epoch_response_does_not_rewind_selection() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
@@ -261,8 +246,6 @@ fn test_stale_epoch_response_does_not_rewind_selection() {
 /// re-show the panel.
 #[test]
 fn test_stale_epoch_response_does_not_reshow_hidden_panel() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
@@ -355,8 +338,6 @@ fn test_provisional_navigation_falls_back_to_sync_generation() {
 /// (the fallback only kicks in on navigation, not on Enter/Tab commits).
 #[test]
 fn test_provisional_cleared_by_async_response() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
@@ -376,33 +357,20 @@ fn test_provisional_cleared_by_async_response() {
 
 #[test]
 fn test_predictive_mode_no_auto_commit() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_conversion_mode(ConversionMode::Predictive);
     session.set_defer_candidates(true);
 
-    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
-        let reading = session.comp().kana.clone();
-        if reading.is_empty() {
-            return None;
-        }
-        let cand = generate_candidates(dict, None, None, &reading, 20);
-        // Simulate a fresh (non-stale) response: snapshot the current epoch.
-        let epoch = session.epoch;
-        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
-    }
-
     // Build up enough input that would trigger auto-commit in Standard mode
     type_string(&mut session, "kyou");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "ha");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "ii");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "tenki");
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
 
     // In Predictive mode, auto-commit should NOT fire
     if let Some(resp) = r {
@@ -415,34 +383,21 @@ fn test_predictive_mode_no_auto_commit() {
 
 #[test]
 fn test_auto_commit_skips_single_kana_first_segment() {
-    use lex_core::candidates::generate_candidates;
-
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
-
-    fn complete_cycle(session: &mut InputSession, dict: &dyn Dictionary) -> Option<KeyResponse> {
-        let reading = session.comp().kana.clone();
-        if reading.is_empty() {
-            return None;
-        }
-        let cand = generate_candidates(dict, None, None, &reading, 20);
-        // Simulate a fresh (non-stale) response: snapshot the current epoch.
-        let epoch = session.epoch;
-        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
-    }
 
     // Type a reading where Viterbi may produce a single-kana first segment.
     // Even if stability threshold is met, auto-commit must NOT fire when the
     // committed reading is shorter than 2 kana.
     type_string(&mut session, "ji");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "ji");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "ji");
-    complete_cycle(&mut session, &*dict);
+    complete_candidate_cycle(&mut session, &*dict);
     type_string(&mut session, "ji");
-    let r = complete_cycle(&mut session, &*dict);
+    let r = complete_candidate_cycle(&mut session, &*dict);
 
     // Verify auto-commit preconditions are met (stability >= 3),
     // so this test is actually exercising the min-length guard.

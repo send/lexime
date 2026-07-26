@@ -29,12 +29,23 @@ impl SnippetStore {
 
     /// Return all entries matching the given prefix, with variables expanded.
     /// Results are sorted by key for stable ordering.
+    ///
+    /// Entries whose body expands to nothing are dropped: confirming one would
+    /// insert an empty string, and a `KeyResponse::commit` is contractually
+    /// non-empty. Filtering here rather than at the picker or the commit site
+    /// is what makes that hold by construction — this is the only place bodies
+    /// are expanded, so it is the only place that can see a body that *becomes*
+    /// empty (a `$var` resolving to an empty string) rather than being written
+    /// that way. Callers therefore never have to handle an unusable entry, and
+    /// the existing "no matches" paths cover a store whose entries are all
+    /// unusable.
     pub fn prefix_search(&self, prefix: &str) -> Vec<(String, String)> {
         let mut results: Vec<(String, String)> = self
             .entries
             .iter()
             .filter(|(key, _)| key.starts_with(prefix))
             .map(|(key, body)| (key.clone(), self.resolver.expand(body)))
+            .filter(|(_, expanded)| !expanded.is_empty())
             .collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
         results
@@ -106,6 +117,32 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].0, "a");
         assert_eq!(all[1].0, "b");
+    }
+
+    #[test]
+    fn prefix_search_drops_entries_that_expand_to_nothing() {
+        // Both origins of an unusable body: written empty, and a variable that
+        // resolves to an empty string. Neither may reach the picker, because
+        // confirming one would commit "".
+        let mut entries = HashMap::new();
+        entries.insert("blank".to_string(), String::new());
+        entries.insert("viavar".to_string(), "$blank".to_string());
+        entries.insert("real".to_string(), "text".to_string());
+
+        let mut user_vars = HashMap::new();
+        user_vars.insert(
+            "blank".to_string(),
+            SnippetVariable::Static {
+                value: String::new(),
+            },
+        );
+        let store = SnippetStore::new(entries, VariableResolver::new(user_vars)).unwrap();
+
+        let all = store.all_entries();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "real");
+        assert!(store.prefix_search("blank").is_empty());
+        assert!(store.prefix_search("viavar").is_empty());
     }
 
     #[test]

@@ -49,21 +49,22 @@ what a generic reviewer misses:
   supersedes design §10's earlier "reuse the existing `.userDictionary` case"
   note, which predates the history split. Findings proposing to collapse the
   two cases re-litigate a settled decision — do not raise them.
-- **Non-empty inline text while composing (settled)**: Chromium/Electron hosts
-  derive `KeyboardEvent.isComposing` from whether marked text is present, so a
-  session that stays composing while the host's marked text goes away leaks the
-  confirming key to the web page (PR #293). Three consequences are settled and
-  enforced by construction, not by taste: snippet keys are rejected at
-  `SnippetStore::new` (an empty key would render empty marked text for a live
-  selection) while an empty snippet *body* is handled at `snippet_confirm` by
-  cancelling (a body can also expand to empty via variables, and unlike a key it
-  has a well-defined handling); a response that emits empty marked text must
-  also leave the session non-composing; and the proptest FSM models the host's
-  marked text cumulatively because `commit` ends the marked session too — a
-  per-response check on `marked` cannot see that shape. Findings proposing to
-  move the body check into the store constructor, to relax the empty-key
-  rejection, or to replace the cumulative host model with a per-response
-  assertion re-litigate settled decisions — do not raise them.
+- **Non-empty inline text while composing (settled)**: a session that stays
+  composing while the host's marked text goes away leaks the confirming key to
+  the web page (PR #293). The rule and its consequences are specified in
+  SPEC.md § 入力モデル → snippet (不変条件); `InputSession::
+  debug_assert_response_contract` is the choke point that enforces it for every
+  response leaving the session. Two decisions are settled: empty snippet *keys*
+  are rejected at `SnippetStore::new` while entries whose *body* expands to
+  nothing are dropped in `prefix_search` (a body can become empty through
+  variable expansion, so only the site that expands can see it); and the
+  session-side proptest models the host's marked text cumulatively, because
+  `commit` ends the marked session too and a per-response check on `marked`
+  cannot see that shape. Findings proposing to relax the empty-key rejection, or
+  to replace the cumulative host model with a per-response check, re-litigate
+  those — do not raise them. Everything else here is open: in particular the
+  `currentDisplay` writers outside the response path
+  (`SessionCoordinator.resetDisplay`/`deactivate`) are known to be unmodelled.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

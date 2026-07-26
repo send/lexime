@@ -92,12 +92,15 @@ func testSessionCoordinator() {
 
     // .commit followed by .setMarkedText → the marked text survives the commit
     do {
-        // The shape auto-commit emits: the stable prefix is inserted and the
-        // remaining composition stays marked. Both events write currentDisplay
-        // (.commit clears it, .setMarkedText sets it) and .commit comes first,
-        // so the composition must end up live — otherwise the session is still
-        // composing while the host has dropped out of composition, which is what
-        // leaks the next key on Chromium/Electron hosts.
+        // Pins the two currentDisplay writers that lex-session's proptest models
+        // (`proptest_fsm::HostMarked`): .commit clears it, .setMarkedText sets
+        // it, applied in event order. This is the pair auto-commit emits — the
+        // stable prefix is inserted while the remainder stays marked — so if
+        // applying them left currentDisplay nil, the session would still be
+        // composing with the host dropped out of composition, which is what
+        // leaks the next key on Chromium/Electron hosts. The Rust-side ordering
+        // that produces this pair is pinned separately by
+        // `api::mapping::commit_precedes_marked_text`.
         let session = FakeLexSession()
         session.handleKeyResponses = [
             LexKeyResponse(consumed: true, events: [
@@ -109,7 +112,9 @@ func testSessionCoordinator() {
         let client = FakeIMKClient()
         _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
         assertEqual(client.insertCalls.count, 1, "commit → one insertText")
+        assertEqual(client.insertCalls[0].text, "今日", "commit text passed through")
         assertEqual(client.markedCalls.count, 1, "marked text applied after commit")
+        assertEqual(client.markedCalls[0].text, "は", "client gets the marked text, not just the shadow")
         assertEqual(coordinator.currentDisplay, "は",
                     "marked text after a commit leaves the host composing")
     }

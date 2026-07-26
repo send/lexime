@@ -173,7 +173,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 ### 状態遷移
 
 ```
-idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
+idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Tab=確定)──→ idle
   │                               │
   └──────(トリガーキー)──────────┬─┘  ※ composing からは先に確定する
                                  ↓
@@ -181,6 +181,10 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 ```
 
 `is_composing()` は composing と snippet の**和**を返す（どちらもインライン表示を持つ状態）。
+
+Escape は composing に**留まる**（IMKit が後続で `commitComposition` を呼ぶ確定経路のため）。
+snippet 状態の Escape だけはピッカーを畳んで idle に戻る。この 2 つの違いは
+proptest の invariant 3 / 3b で固定している。
 
 ### 各状態でのキー操作
 
@@ -213,7 +217,9 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 
 **snippet**
 
-トリガーキー（`settings.toml` `[snippets] trigger`、デフォルト `ctrl+shift+/`）で入る。composing 中なら先に確定してから入る。定義は `~/Library/Application Support/Lexime/snippets.toml`（`key = "body"` のフラット形式、Swift が I/O と TOML パースを担当し Rust が変数参照を検証する）。
+トリガーキー（`settings.toml` `[snippets] trigger`、デフォルト `ctrl+shift+/`）で入る。composing 中なら先に確定してから入る。トリガーは ABC パススルーの判定より**先に**ディスパッチされるので、英数モード中でもピッカーが開く。定義は `~/Library/Application Support/Lexime/snippets.toml`（`key = "body"` のフラット形式、Swift が I/O と TOML パースを担当し Rust が変数参照を検証する）。
+
+提示できるスニペットが 1 件も無いとき（ファイル無し / 空 / 全エントリの body が空）は snippet 状態に入らず、トリガーキーは**消費せずアプリに渡す**（IME にバインドが無いのと同じ扱い）。
 
 | キー | 動作 |
 |---|---|
@@ -225,11 +231,15 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | 英数キー / かなキー | 取消してモード切替を適用 |
 | その他 | 取消してキーをパススルー |
 
-不変条件（`fix/snippet-enter-leak` 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、空のインライン表示は確定キーを web ページにも届けてしまう）:
+### 不変条件（marked text と session の同期）
 
-- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、スニペットが 0 件のときは snippet 状態に入らない
-- 展開する body が空のときは確定せず取消する（確定テキストは常に非空）
-- ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない
+`fix/snippet-enter-leak` (#293) 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、**session が composing のまま host の marked text が消えると、確定キーが IME に消費されると同時に web ページにも届く**（チャットアプリなら送信されてしまう）。したがって:
+
+- **空の marked text を出す response は、必ず session を非 composing にする**。逆向きも同じで、composing を続ける response は host の marked text を残さなければならない。これは特定の呼び出し箇所ではなく session 全体の不変条件なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する
+- **確定テキスト（`commit`）は常に非空**。`insertText("")` は何も挿入しないのに host の marked セッションを終わらせるので、上の条項に帰着する
+- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（変数展開で空になり得るので、展開を行う場所でしか判定できない）。提示できるエントリが 0 件のときは snippet 状態に入らない
+- ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
+- **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
 
 **キーリマップ（settings.toml `[keymap]`）**
 

@@ -141,6 +141,45 @@ impl InputSession {
         self.abc_passthrough = enabled;
     }
 
+    /// Check the two contracts every response leaving this session must
+    /// satisfy, at the three public entry points that produce one.
+    ///
+    /// Both are invariants of the *whole* session, not of any one call site, so
+    /// enforcing them at each site is how they drift: an emitting site added
+    /// later inherits nothing. Checked here they hold for every path the
+    /// existing test suite already walks.
+    ///
+    /// 1. Emitting empty marked text must leave the session non-composing.
+    ///    Chromium/Electron hosts derive `KeyboardEvent.isComposing` from
+    ///    whether marked text is present, so a live session behind a cleared
+    ///    marked string means the next confirming key is consumed here *and*
+    ///    delivered to the web page (PR #293).
+    /// 2. A commit is never empty. `insertText("")` changes nothing but still
+    ///    ends the host's marked session, which is case 1 by another route.
+    ///
+    /// `debug_assert` because these are engine bugs, not user-reachable
+    /// conditions: release builds must not panic across the UniFFI boundary.
+    fn debug_assert_response_contract(&self, resp: &KeyResponse) {
+        debug_assert!(
+            !(matches!(&resp.marked, Some(m) if m.text.is_empty()) && self.is_composing()),
+            "emitted empty marked text while still composing (state: {})",
+            self.state_name(),
+        );
+        debug_assert!(
+            !matches!(&resp.commit, Some(text) if text.is_empty()),
+            "emitted an empty commit (state: {})",
+            self.state_name(),
+        );
+    }
+
+    fn state_name(&self) -> &'static str {
+        match self.state {
+            SessionState::Idle => "Idle",
+            SessionState::Composing(_) => "Composing",
+            SessionState::Snippet(_) => "Snippet",
+        }
+    }
+
     /// Mutable reference to the composing state. Panics if not Composing.
     fn comp(&mut self) -> &mut Composition {
         match &mut self.state {
@@ -159,6 +198,12 @@ impl InputSession {
 
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
+        let resp = self.commit_inner();
+        self.debug_assert_response_contract(&resp);
+        resp
+    }
+
+    fn commit_inner(&mut self) -> KeyResponse {
         // Same contract as `handle_key`: every state-mutating entry point
         // invalidates in-flight async candidate responses.
         self.bump_epoch();
