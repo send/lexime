@@ -161,8 +161,11 @@ impl InputSession {
                 self.comp().flush();
                 // Escape cancels conversion/candidate selection — do not record history for unconfirmed input.
                 self.comp().candidates.clear();
-                // Escape: IMKit will call commitComposition after.
-                // composedString() uses display() which computes from current state.
+                // Escape: IMKit will call commitComposition after. No marked text
+                // is emitted, so the host keeps showing what it already has —
+                // including any pending romaji `flush()` just resolved above,
+                // which is why the session-derived text and the host's can
+                // legitimately differ on this path.
                 KeyResponse::consumed().with_hide_candidates()
             }
 

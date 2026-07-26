@@ -174,7 +174,13 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 
 ```
 idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape/Tab)──→ idle
+  │                               │
+  └──────(トリガーキー)──────────┬─┘  ※ composing からは先に確定する
+                                 ↓
+                              snippet ──(Enter/Space=展開, Escape=取消)──→ idle
 ```
+
+`is_composing()` は composing と snippet の**和**を返す（どちらもインライン表示を持つ状態）。
 
 ### 各状態でのキー操作
 
@@ -204,6 +210,26 @@ idle ──(ローマ字入力/句読点)──→ composing ──(Enter/Escape
 | Escape | ひらがなで確定（IMKit が commitComposition を呼ぶため） |
 | 句読点 | 現在の変換を確定し、句読点を直接挿入 |
 | その他の文字 | composedKana に追加（Backspace で削除可能） |
+
+**snippet**
+
+トリガーキー（`settings.toml` `[snippets] trigger`、デフォルト `ctrl+shift+/`）で入る。composing 中なら先に確定してから入る。定義は `~/Library/Application Support/Lexime/snippets.toml`（`key = "body"` のフラット形式、Swift が I/O と TOML パースを担当し Rust が変数参照を検証する）。
+
+| キー | 動作 |
+|---|---|
+| 文字 | フィルタに追加（ローマ字変換しない）。前方一致で候補を絞る |
+| Backspace | フィルタを 1 文字削除（空フィルタなら取消して idle へ） |
+| Enter / Space | 選択中のスニペットを展開して確定（変数展開後の body を挿入） |
+| ↓ / ↑ | 候補選択（巡回） |
+| Escape | 取消して idle へ |
+| 英数キー / かなキー | 取消してモード切替を適用 |
+| その他 | 取消してキーをパススルー |
+
+不変条件（`fix/snippet-enter-leak` 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、空のインライン表示は確定キーを web ページにも届けてしまう）:
+
+- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、スニペットが 0 件のときは snippet 状態に入らない
+- 展開する body が空のときは確定せず取消する（確定テキストは常に非空）
+- ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない
 
 **キーリマップ（settings.toml `[keymap]`）**
 
@@ -438,6 +464,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 | `[reranker]` | length_variance_weight, structure_cost_filter |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results |
+| `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
 | `[keymap]` | key_code = ["normal", "shifted"]（オプショナル、デフォルト: 10→]/}, 93→\\/\|） |
 
 `mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。

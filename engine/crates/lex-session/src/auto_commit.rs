@@ -110,7 +110,19 @@ impl InputSession {
         resp.commit = Some(committed_text);
 
         if self.comp().kana.is_empty() {
-            self.comp().candidates.clear();
+            // Nothing left to compose, and an empty composition *is* Idle. Every
+            // other empty-composition exit resets (`commit_composed`,
+            // `commit_current_state`, `snippet_cancel`); staying Composing while
+            // emitting empty marked text is the one shape that takes
+            // Chromium/Electron hosts out of composition with the session still
+            // live, so the next key reaches the page (see
+            // `SnippetState::display_text`).
+            //
+            // Unreachable as the guards stand — `best_path.len() >= 4` plus the
+            // `commit_count <= len - 1` cap always leave a segment, hence a
+            // reading, behind — but that argument lives in three separate
+            // places, so hold the transition by construction here instead.
+            self.reset_state();
             resp.candidates = CandidateAction::Hide;
             resp.marked = Some(MarkedText {
                 text: String::new(),

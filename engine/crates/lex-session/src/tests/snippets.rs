@@ -38,6 +38,23 @@ fn test_snippet_trigger_without_store_not_consumed() {
 }
 
 #[test]
+fn test_snippet_trigger_without_store_commits_composing() {
+    // No store configured, but a composition is in progress: the trigger key
+    // has to reach the host, so it commits (like ModifiedKey) and does not
+    // consume. Committing is what keeps the host out of an empty composition —
+    // the shape that leaks the next key on Chromium/Electron hosts.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    type_string(&mut session, "ka");
+    assert!(session.is_composing());
+
+    let resp = session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(!resp.consumed);
+    assert!(!session.is_composing());
+    assert_eq!(resp.commit, Some("か".to_string()));
+}
+
+#[test]
 fn test_snippet_filter_narrows_candidates() {
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);
@@ -122,6 +139,26 @@ fn test_snippet_backspace_removes_char() {
         }
         _ => panic!("expected Show candidates"),
     }
+}
+
+#[test]
+fn test_snippet_confirm_empty_body_cancels() {
+    // A snippet whose body is empty (written that way, or a body that is just a
+    // variable expanding to nothing) has nothing to insert. Confirming it must
+    // not emit `commit: Some("")` — a commit is contractually non-empty. It
+    // cancels instead, still consuming the key so the host never sees it.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict, None, None);
+    session.set_snippet_store(Some(make_snippet_store(&[("empty", "")])));
+
+    session.handle_key(KeyEvent::SnippetTrigger);
+    assert!(session.is_composing());
+
+    let resp = session.handle_key(KeyEvent::Enter);
+    assert!(resp.consumed);
+    assert!(resp.commit.is_none());
+    assert!(!session.is_composing());
+    assert!(resp.marked.expect("marked text").text.is_empty());
 }
 
 #[test]

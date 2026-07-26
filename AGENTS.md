@@ -49,6 +49,21 @@ what a generic reviewer misses:
   supersedes design §10's earlier "reuse the existing `.userDictionary` case"
   note, which predates the history split. Findings proposing to collapse the
   two cases re-litigate a settled decision — do not raise them.
+- **Non-empty inline text while composing (settled)**: Chromium/Electron hosts
+  derive `KeyboardEvent.isComposing` from whether marked text is present, so a
+  session that stays composing while the host's marked text goes away leaks the
+  confirming key to the web page (PR #293). Three consequences are settled and
+  enforced by construction, not by taste: snippet keys are rejected at
+  `SnippetStore::new` (an empty key would render empty marked text for a live
+  selection) while an empty snippet *body* is handled at `snippet_confirm` by
+  cancelling (a body can also expand to empty via variables, and unlike a key it
+  has a well-defined handling); a response that emits empty marked text must
+  also leave the session non-composing; and the proptest FSM models the host's
+  marked text cumulatively because `commit` ends the marked session too — a
+  per-response check on `marked` cannot see that shape. Findings proposing to
+  move the body check into the store constructor, to relax the empty-key
+  rejection, or to replace the cumulative host model with a per-response
+  assertion re-litigate settled decisions — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

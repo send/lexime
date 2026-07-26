@@ -130,6 +130,20 @@ impl InputSession {
 
         let (_key, body) = s.matches[s.selected].clone();
 
+        // Nothing to insert: cancel rather than commit an empty string. A commit
+        // is contractually non-empty — the host would end its marked session for
+        // an `insertText("")` that changes nothing — and this is the one commit
+        // site whose text is not derived from a non-empty composition (see
+        // `commit_composed` / `commit_current_state`, which both branch to empty
+        // marked text instead). The body can be empty either from the config or
+        // from a variable that expands to nothing, so the check belongs here
+        // rather than at `SnippetStore::new`: unlike an empty *key*, which
+        // `display_text` cannot render around, an empty body has a well-defined
+        // handling. Cancel still consumes the key, so nothing leaks to the host.
+        if body.is_empty() {
+            return self.snippet_cancel();
+        }
+
         self.reset_state();
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();
