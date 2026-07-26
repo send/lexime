@@ -75,8 +75,12 @@ impl SnippetState {
     /// dispatched to the web page (e.g. sends the message in chat apps) even
     /// though the IME also consumes it. Shows the typed filter, or — before
     /// anything is typed — the key of the currently selected snippet (the one
-    /// Enter would insert). Empty only when there are no snippets at all, a
-    /// state `enter_snippet_mode` refuses to enter.
+    /// Enter would insert).
+    ///
+    /// The `unwrap_or_default` is unreachable: the only state with both an empty
+    /// filter and no matches is a browse with nothing to offer, which
+    /// `enter_snippet_mode` refuses to start and `snippet_filter_pop` cancels
+    /// rather than render.
     pub(crate) fn display_text(&self) -> String {
         if !self.filter.is_empty() {
             return self.filter.clone();

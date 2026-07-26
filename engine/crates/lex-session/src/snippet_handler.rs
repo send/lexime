@@ -121,6 +121,16 @@ impl InputSession {
         s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
+        // With a filter still typed, no matches is a normal state — the filter
+        // itself is what gets displayed. With an empty filter there is nothing
+        // left to render, so this is the same "nothing to offer" situation the
+        // trigger handles: tear the browse down rather than let `display_text`
+        // fall back to an empty string. Only reachable if the snapshot's bodies
+        // stopped expanding to something (`$date` is clock-dependent).
+        if s.filter.is_empty() && s.matches.is_empty() {
+            return self.snippet_cancel();
+        }
+
         build_snippet_response(s)
     }
 

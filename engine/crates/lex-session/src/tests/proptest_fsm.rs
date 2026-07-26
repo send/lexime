@@ -133,6 +133,28 @@ const SNIPPET_ENTRIES: &[(&str, &str)] = &[
     ("sig", "Best regards, $name"),
 ];
 
+/// Pins the claim the comment above makes. The coupling between this table and
+/// `arb_romaji_char`'s weights is what decides how much of snippet mode the
+/// generated sequences actually reach, and nothing else would notice if a weight
+/// change or an edited entry quietly collapsed it to one match-count class.
+#[test]
+fn snippet_fixture_reaches_every_match_count_class() {
+    let store = make_snippet_store(SNIPPET_ENTRIES);
+    assert_eq!(store.prefix_search("a").len(), 1, "one match");
+    assert_eq!(store.prefix_search("e").len(), 2, "several matches");
+    assert_eq!(store.prefix_search("i").len(), 0, "no matches");
+    assert_eq!(store.prefix_search("u").len(), 0, "no matches");
+    // And the vowels above are the frequent draws: every entry key starts with a
+    // character `arb_romaji_char` can produce.
+    for (key, _) in SNIPPET_ENTRIES {
+        let first = key.chars().next().expect("non-empty key");
+        assert!(
+            first.is_ascii_lowercase(),
+            "key {key:?} starts with a character the generator cannot type",
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pre-action state, for the transition invariants
 // ---------------------------------------------------------------------------
@@ -279,6 +301,7 @@ fn assert_invariants(
     action: &Action,
     prev: PrevState,
     host: &HostMarked,
+    store_empty: bool,
 ) {
     // 1. Idle → composed_string is empty, and the host has been taken out of
     //    composition too (a live marked string with no session behind it would
@@ -465,31 +488,44 @@ fn assert_invariants(
     //    doing nothing at all. `filter` empty and `selected == 0` is what says a
     //    new browse actually started.
     //
-    //    This is also what keeps the snippet coverage honest. Snippet mode is
-    //    reachable only if `enter_snippet_mode` finds entries, so a regression
-    //    in the store lookup (e.g. `prefix_search("")` no longer returning
-    //    every entry, the path a backspace-to-empty-filter repopulates through)
-    //    would make every generated sequence skip snippet mode entirely and
-    //    leave every proptest green. Asserting the transition turns that silent
-    //    loss of coverage into a failure.
+    //    This is also what keeps the snippet coverage honest, which is why the
+    //    two cases are keyed on `store_empty` (what the driver installed) rather
+    //    than on the state the session ended in. Deciding from the state would
+    //    accept either outcome and make the whole snippet half of these tests
+    //    vacuous: a regression in the store lookup — e.g. `prefix_search("")` no
+    //    longer returning every entry, the path a backspace-to-empty-filter
+    //    repopulates through — would send every trigger down the
+    //    nothing-to-offer exit, and every sequence would skip snippet mode with
+    //    the suite still green.
     if matches!(action, Action::SnippetTrigger) {
-        match &session.state {
-            SessionState::Snippet(s) => {
-                assert!(
+        if store_empty {
+            // Nothing to offer: anything but a full teardown would leave the
+            // session composing behind cleared marked text.
+            assert!(
+                matches!(session.state, SessionState::Idle),
+                "SnippetTrigger with an empty store must leave the session Idle, got {} after {:?}",
+                session.state_name(),
+                action,
+            );
+        } else {
+            match &session.state {
+                // Freshness, not just `matches!(state, Snippet(_))`: the session
+                // may already *be* in snippet mode (re-trigger), in which case
+                // the bare state check passes no matter what the trigger did —
+                // including doing nothing at all.
+                SessionState::Snippet(s) => assert!(
                     s.filter.is_empty() && s.selected == 0,
                     "SnippetTrigger must start a fresh browse, got filter {:?} selected {} after {:?}",
                     s.filter,
                     s.selected,
                     action,
-                );
+                ),
+                _ => panic!(
+                    "SnippetTrigger with a usable store must enter snippet mode, got {} after {:?}",
+                    session.state_name(),
+                    action,
+                ),
             }
-            // The live store had nothing to offer. Anything but a full teardown
-            // would leave the session composing behind cleared marked text.
-            state => assert!(
-                matches!(state, SessionState::Idle),
-                "SnippetTrigger with nothing to offer must leave the session Idle, after {:?}",
-                action,
-            ),
         }
     }
 }
@@ -515,11 +551,17 @@ fn run_sequence(actions: &[Action], defer_candidates: bool) {
     session.set_defer_candidates(defer_candidates);
     session.set_snippet_store(Some(make_snippet_store(SNIPPET_ENTRIES)));
     let mut host = HostMarked::default();
+    // Tracks what the driver last installed, so invariant 9 can require the
+    // trigger to actually open a browse when there *is* something to offer.
+    let mut store_empty = false;
     for action in actions {
         let prev = PrevState::of(&session);
+        if let Action::SetSnippetStore { empty } = action {
+            store_empty = *empty;
+        }
         if let Some(resp) = execute_action(&mut session, action, &*dict) {
             host.apply(&resp);
-            assert_invariants(&session, &resp, action, prev, &host);
+            assert_invariants(&session, &resp, action, prev, &host, store_empty);
         }
     }
 }

@@ -141,28 +141,50 @@ impl InputSession {
         self.abc_passthrough = enabled;
     }
 
-    /// Check the two contracts every response leaving this session must
-    /// satisfy, at the three public entry points that produce one.
+    /// Check the contracts every response leaving this session must satisfy, at
+    /// the three public entry points that produce one.
     ///
-    /// Both are invariants of the *whole* session, not of any one call site, so
+    /// These are invariants of the *whole* session, not of any one call site, so
     /// enforcing them at each site is how they drift: an emitting site added
     /// later inherits nothing. Checked here they hold for every path the
     /// existing test suite already walks.
     ///
-    /// 1. Emitting empty marked text must leave the session non-composing.
-    ///    Chromium/Electron hosts derive `KeyboardEvent.isComposing` from
-    ///    whether marked text is present, so a live session behind a cleared
-    ///    marked string means the next confirming key is consumed here *and*
-    ///    delivered to the web page (PR #293).
-    /// 2. A commit is never empty. `insertText("")` changes nothing but still
-    ///    ends the host's marked session, which is case 1 by another route.
+    /// A session that stays composing while the host's marked text goes away
+    /// leaks the confirming key: Chromium/Electron hosts derive
+    /// `KeyboardEvent.isComposing` from whether marked text is present, so the
+    /// key is consumed here *and* delivered to the web page (PR #293). The host
+    /// loses its marked text three ways, so all three are checked:
+    ///
+    /// 1. An explicitly emitted empty marked string.
+    /// 2. A commit with no marked text after it — `insertText` ends the host's
+    ///    marked session too, and `marked: None` means "leave it as it is", so
+    ///    nothing re-opens it. Every current commit site also sets `marked`;
+    ///    this keeps the next one from being the exception.
+    /// 3. An empty commit, which is (2) with nothing inserted for it.
+    ///
+    /// What this does *not* cover: whether the host is still composing several
+    /// responses later, since `marked: None` carries the previous value forward.
+    /// That is cumulative, so it lives in the session proptest's `HostMarked`
+    /// model rather than here.
     ///
     /// `debug_assert` because these are engine bugs, not user-reachable
-    /// conditions: release builds must not panic across the UniFFI boundary.
+    /// conditions, and nothing may panic across the UniFFI boundary. The shipped
+    /// library is built by `mise run engine-lib` with `cargo build --release`
+    /// and the workspace sets no `[profile.release] debug-assertions`, so these
+    /// are compiled out of the binary the app loads (verified against
+    /// `build/liblex_engine.a`); they hold for `cargo test`, the accuracy/CLI
+    /// tools, and CI. The guarantee is profile-conditional: adding
+    /// `[profile.release] debug-assertions = true` would arm them on the FFI
+    /// path.
     fn debug_assert_response_contract(&self, resp: &KeyResponse) {
         debug_assert!(
             !(matches!(&resp.marked, Some(m) if m.text.is_empty()) && self.is_composing()),
             "emitted empty marked text while still composing (state: {})",
+            self.state_name(),
+        );
+        debug_assert!(
+            !(resp.commit.is_some() && resp.marked.is_none() && self.is_composing()),
+            "committed without re-opening marked text while still composing (state: {})",
             self.state_name(),
         );
         debug_assert!(

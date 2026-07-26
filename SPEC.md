@@ -219,7 +219,7 @@ proptest の invariant 3 / 3b で固定している。
 
 トリガーキー（`settings.toml` `[snippets] trigger`、デフォルト `ctrl+shift+/`）で入る。composing 中なら先に確定してから入る。トリガーは ABC パススルーの判定より**先に**ディスパッチされるので、英数モード中でもピッカーが開く。定義は `~/Library/Application Support/Lexime/snippets.toml`（`key = "body"` のフラット形式、Swift が I/O と TOML パースを担当し Rust が変数参照を検証する）。
 
-提示できるスニペットが 1 件も無いとき（ファイル無し / 空 / 全エントリの body が空）は snippet 状態に入らず、トリガーキーは**消費せずアプリに渡す**（IME にバインドが無いのと同じ扱い）。
+提示できるスニペットが 1 件も無いときは snippet 状態に入らず、トリガーキーは**消費せずアプリに渡す**（IME にバインドが無いのと同じ扱い）。composing 中なら先に確定してから渡す（`ModifiedKey` と同じ形）。該当するのは: ファイル無し / エントリ 0 件 / 全エントリの body が空 / **設定エラーで読み込みに失敗**（空 key・重複 key・未定義変数はいずれも throw して store が nil になる）。
 
 | キー | 動作 |
 |---|---|
@@ -235,9 +235,9 @@ proptest の invariant 3 / 3b で固定している。
 
 `fix/snippet-enter-leak` (#293) 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、**session が composing のまま host の marked text が消えると、確定キーが IME に消費されると同時に web ページにも届く**（チャットアプリなら送信されてしまう）。したがって:
 
-- **空の marked text を出す response は、必ず session を非 composing にする**。逆向きも同じで、composing を続ける response は host の marked text を残さなければならない。これは特定の呼び出し箇所ではなく session 全体の不変条件なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する
-- **確定テキスト（`commit`）は常に非空**。`insertText("")` は何も挿入しないのに host の marked セッションを終わらせるので、上の条項に帰着する
-- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（変数展開で空になり得るので、展開を行う場所でしか判定できない）。提示できるエントリが 0 件のときは snippet 状態に入らない
+- **composing を続ける response は、host の marked text を残さなければならない**。host が marked text を失う経路は 3 つあり、いずれも session 全体の不変条件（呼び出し箇所ごとの約束ではない）なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する: ①空の marked text を明示的に出す ②`commit` を出して marked text を出し直さない（`insertText` も marked セッションを終わらせ、`marked: None` は「そのまま」の意味なので誰も開き直さない）③空の `commit`（②の何も挿入しない版）
+- **検査の範囲**: 上記は per-response で見える形だけ。「数 response 後にまだ composing か」は `marked: None` が前の値を引き継ぐため累積的で、proptest 側の `HostMarked` モデルが担当する。また `debug_assert` なので出荷ビルド（`--release`）では落ちる — 構造的保証は下の各条項が担い、これは回帰検出器
+- snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。静的に空な分は `snippets_build_store` が警告ログに出す）。提示できるエントリが 0 件のときは snippet 状態に入らない
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
 - **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
 

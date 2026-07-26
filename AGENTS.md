@@ -51,20 +51,14 @@ what a generic reviewer misses:
   two cases re-litigate a settled decision — do not raise them.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
-  the web page (PR #293). The rule and its consequences are specified in
-  SPEC.md § 入力モデル → snippet (不変条件); `InputSession::
-  debug_assert_response_contract` is the choke point that enforces it for every
-  response leaving the session. Two decisions are settled: empty snippet *keys*
-  are rejected at `SnippetStore::new` while entries whose *body* expands to
-  nothing are dropped in `prefix_search` (a body can become empty through
-  variable expansion, so only the site that expands can see it); and the
-  session-side proptest models the host's marked text cumulatively, because
-  `commit` ends the marked session too and a per-response check on `marked`
-  cannot see that shape. Findings proposing to relax the empty-key rejection, or
-  to replace the cumulative host model with a per-response check, re-litigate
-  those — do not raise them. Everything else here is open: in particular the
-  `currentDisplay` writers outside the response path
-  (`SessionCoordinator.resetDisplay`/`deactivate`) are known to be unmodelled.
+  the web page (PR #293). The rule, its enforcement, and what is deliberately
+  *not* covered are specified in SPEC.md § 不変条件（marked text と session の同期）
+  — read it before raising anything in this area. One decision is settled: the
+  session proptest models the host's marked text cumulatively, because `commit`
+  ends the marked session too, so a per-response check cannot see that shape;
+  findings proposing to replace the cumulative model with a per-response check
+  re-litigate it — do not raise them. Everything else is open, including the
+  unmodelled `currentDisplay` writers SPEC names.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 
