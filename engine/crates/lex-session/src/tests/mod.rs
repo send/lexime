@@ -11,9 +11,22 @@ use std::sync::Arc;
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
 
-use super::types::KeyEvent;
+use super::types::{KeyEvent, SessionState};
 use super::InputSession;
 use super::KeyResponse;
+
+/// The reading being composed, or `None` in every state that has no
+/// `Composition`.
+///
+/// The single form for "read the composition if there is one". `comp()` panics
+/// outside `Composing`, and `is_composing()` is *not* a safe guard for it: it
+/// also reports snippet mode, which has no `Composition` behind it.
+pub(super) fn composing_kana(session: &InputSession) -> Option<&str> {
+    match &session.state {
+        SessionState::Composing(c) => Some(&c.kana),
+        SessionState::Idle | SessionState::Snippet(_) => None,
+    }
+}
 
 /// Build a snippet store from `(key, body)` pairs, with `$name` expanding to
 /// "Taro".
@@ -35,7 +48,8 @@ pub(super) fn make_snippet_store(entries: &[(&str, &str)]) -> Arc<SnippetStore> 
         .map(|(key, body)| ((*key).to_string(), (*body).to_string()))
         .collect();
     // The constructor rejects only empty keys, and every call site passes
-    // non-empty literals.
+    // non-empty key literals. Empty *bodies* are constructible on purpose —
+    // `test_snippet_confirm_empty_body_cancels` needs one.
     let store = SnippetStore::new(entries, VariableResolver::new(user_vars))
         .expect("snippet fixture keys must be non-empty");
     Arc::new(store)

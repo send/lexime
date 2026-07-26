@@ -90,6 +90,30 @@ func testSessionCoordinator() {
                    "empty marked text → currentDisplay nil")
     }
 
+    // .commit followed by .setMarkedText → the marked text survives the commit
+    do {
+        // The shape auto-commit emits: the stable prefix is inserted and the
+        // remaining composition stays marked. Both events write currentDisplay
+        // (.commit clears it, .setMarkedText sets it) and .commit comes first,
+        // so the composition must end up live — otherwise the session is still
+        // composing while the host has dropped out of composition, which is what
+        // leaks the next key on Chromium/Electron hosts.
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+        assertEqual(client.insertCalls.count, 1, "commit → one insertText")
+        assertEqual(client.markedCalls.count, 1, "marked text applied after commit")
+        assertEqual(coordinator.currentDisplay, "は",
+                    "marked text after a commit leaves the host composing")
+    }
+
     // .showCandidates → CandidateManager populated + panel.show called
     do {
         let session = FakeLexSession()
