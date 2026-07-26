@@ -34,9 +34,9 @@ pub fn settings_validate(file: &str) {
         "OK: cost.segment_penalty={}, candidates.nbest={}, candidates.max_results={}",
         s.cost.segment_penalty, s.candidates.nbest, s.candidates.max_results
     );
-    // Entries the loader keeps but ignores. Not errors — the file is still
-    // valid — but the user gets no other signal that the mapping does nothing.
-    for (code, side) in s.ignored_keymap_sides() {
-        println!("WARN: keymap.{code} {side} mapping is empty and will be ignored");
+    // Entries the loader keeps but will not act on. Not errors — the file is
+    // still valid — but the user gets no other signal that they do nothing.
+    for warning in s.keymap_warnings() {
+        println!("WARN: {warning}");
     }
 }

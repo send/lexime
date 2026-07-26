@@ -4,7 +4,7 @@
 //! - `settings()` returns `&'static Settings` (lazy-init singleton)
 //! - Default values are embedded via `include_str!("default_settings.toml")`
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -94,25 +94,48 @@ impl Settings {
         parse_trigger_string(&self.snippets.trigger)
     }
 
-    /// `(key_code, side)` pairs whose mapping is empty and therefore ignored, so
-    /// the caller that owns the config can tell the user. `keymap_get` reports
-    /// these as unmapped, which is correct for input but invisible to whoever
-    /// wrote the file — `dictool settings-validate` prints them.
+    /// Entries the loader kept but will not act on, phrased for a human, so the
+    /// caller that owns the config can tell the user. `dictool settings-validate`
+    /// prints them.
     ///
-    /// Same shape as `SnippetStore::unusable_keys`: the load path keeps the
-    /// file and drops what cannot be used, and a separate query makes the drop
-    /// visible.
-    pub fn ignored_keymap_sides(&self) -> Vec<(u16, &'static str)> {
+    /// Same shape as `SnippetStore::unusable_keys`: the load path keeps the file
+    /// and drops what it cannot use, and a separate query makes the drop visible.
+    /// Two kinds:
+    ///
+    /// - an empty mapping, which `keymap_get` reports as unmapped;
+    /// - several table entries naming the same key code. `u16::from_str` accepts
+    ///   `10`, `010` and `+10` alike, and the raw TOML table is keyed on the
+    ///   *string*, so those are three distinct entries resolving to one code.
+    ///   Only one can win; `parse_keymap` makes that deterministic, and this
+    ///   says which.
+    pub fn keymap_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         for (code, normal, shifted) in &self.keymap_parsed {
-            if normal.is_empty() {
-                out.push((*code, "normal"));
-            }
-            if shifted.is_empty() {
-                out.push((*code, "shifted"));
+            for (side, mapped) in [("normal", normal), ("shifted", shifted)] {
+                if mapped.is_empty() {
+                    out.push(format!(
+                        "keymap.{code} {side} mapping is empty and will be ignored"
+                    ));
+                }
             }
         }
-        out.sort();
+        let mut by_code: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
+        for key in self.keymap.keys() {
+            if let Ok(code) = key.parse::<u16>() {
+                by_code.entry(code).or_default().push(key.as_str());
+            }
+        }
+        for (code, mut keys) in by_code {
+            if keys.len() > 1 {
+                keys.sort_unstable();
+                out.push(format!(
+                    "keymap has {} entries for key_code {code} ({}); only \"{}\" is used",
+                    keys.len(),
+                    keys.join(", "),
+                    keys[0],
+                ));
+            }
+        }
         out
     }
 }
@@ -254,8 +277,16 @@ pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
 fn parse_keymap(
     raw: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<(u16, String, String)>, SettingsError> {
+    // Iterate the raw table in sorted key order. It is a `HashMap` keyed on the
+    // *string*, and several strings can name one key code (`10` / `010` / `+10`
+    // all parse to 10), so without a fixed order which of them `keymap_get`
+    // finds would change between launches. Sorted, the smallest spelling wins,
+    // every time; `keymap_warnings` reports that it happened.
+    let mut raw_keys: Vec<&String> = raw.keys().collect();
+    raw_keys.sort_unstable();
     let mut result = Vec::new();
-    for (key_str, values) in raw {
+    for key_str in raw_keys {
+        let values = &raw[key_str];
         let key_code: u16 = key_str.parse().map_err(|_| SettingsError::InvalidValue {
             field: format!("keymap.{}", key_str),
             reason: "key_code must be a u16 integer".to_string(),
@@ -579,15 +610,9 @@ abc = ["]", "}"]
         assert!(err.to_string().contains("keymap.abc"));
     }
 
-    #[test]
-    fn keymap_empty_mapping_is_unmapped_not_a_load_error() {
-        // An empty mapping would reach the session as `Remapped { text: "" }`
-        // and be committed as "", which inserts nothing but still ends the
-        // host's marked-text session — so it must not produce a remap. It must
-        // also not take the file down: `init_custom` is all-or-nothing, so
-        // rejecting would revert every other custom value to the defaults over
-        // one bad entry, on a format that already accepted such files.
-        let base = r#"
+    /// Minimal valid settings TOML ending at an open `[keymap]` table, so a test
+    /// can append the entries it wants to exercise.
+    const KEYMAP_TEST_BASE: &str = r#"
 [cost]
 segment_penalty = 5000
 mixed_script_bonus = 3000
@@ -613,6 +638,16 @@ max_results = 20
 
 [keymap]
 "#;
+
+    #[test]
+    fn keymap_empty_mapping_is_unmapped_not_a_load_error() {
+        // An empty mapping would reach the session as `Remapped { text: "" }`
+        // and be committed as "", which inserts nothing but still ends the
+        // host's marked-text session — so it must not produce a remap. It must
+        // also not take the file down: `init_custom` is all-or-nothing, so
+        // rejecting would revert every other custom value to the defaults over
+        // one bad entry, on a format that already accepted such files.
+        let base = KEYMAP_TEST_BASE;
         // (entry, expected normal, expected shifted)
         let cases = [
             ("10 = [\"\", \"}\"]", None, Some("}")),
@@ -626,7 +661,46 @@ max_results = 20
             assert_eq!(s.keymap_get(10, true), shifted, "shifted side of {entry:?}");
             // The rest of the file survives — that is the point of not rejecting.
             assert_eq!(s.candidates.nbest, 5);
+            // ...and the drop is reportable rather than silent.
+            assert!(
+                s.keymap_warnings().iter().any(|w| w.contains("empty")),
+                "{entry:?} should warn about the empty side",
+            );
         }
+    }
+
+    #[test]
+    fn keymap_duplicate_key_codes_resolve_deterministically() {
+        // The raw table is keyed on the *string*, and `u16::from_str` accepts
+        // `10`, `010` and `+10` alike — so these are three distinct entries for
+        // one key code. Which one wins used to depend on `HashMap` iteration
+        // order, i.e. it could differ between launches for an unchanged file.
+        let base = KEYMAP_TEST_BASE;
+        let toml =
+            format!("{base}10 = [\"a\", \"A\"]\n010 = [\"b\", \"B\"]\n\"+10\" = [\"c\", \"C\"]\n");
+
+        let first = parse_settings_toml(&toml).unwrap();
+        assert_eq!(
+            first.keymap_get(10, false),
+            Some("c"),
+            "\"+10\" sorts first"
+        );
+        assert_eq!(first.keymap_get(10, true), Some("C"));
+
+        // Stable across repeated parses of the same input.
+        for _ in 0..8 {
+            let s = parse_settings_toml(&toml).unwrap();
+            assert_eq!(s.keymap_get(10, false), first.keymap_get(10, false));
+            assert_eq!(s.keymap_get(10, true), first.keymap_get(10, true));
+        }
+
+        let warnings = first.keymap_warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("3 entries for key_code 10")),
+            "the shadowing must be reported, got {warnings:?}",
+        );
     }
 
     #[test]
