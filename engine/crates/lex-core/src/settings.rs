@@ -66,20 +66,26 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Look up a remapped key by key_code and shift state.
+    /// Look up a remapped key by key_code and shift state. `None` = not
+    /// remapped, so the caller sends the key through its normal path.
+    ///
+    /// An empty mapping reads as "this side is not remapped" rather than "remap
+    /// to nothing": remapping to nothing would commit an empty string, which
+    /// inserts nothing but still ends the host's marked-text session. See
+    /// `parse_keymap`, which warns about such an entry at load.
     pub fn keymap_get(&self, key_code: u16, has_shift: bool) -> Option<&str> {
         self.keymap_parsed
             .iter()
             .find_map(|(code, normal, shifted)| {
-                if *code == key_code {
-                    Some(if has_shift {
-                        shifted.as_str()
-                    } else {
-                        normal.as_str()
-                    })
-                } else {
-                    None
+                if *code != key_code {
+                    return None;
                 }
+                let mapped = if has_shift {
+                    shifted.as_str()
+                } else {
+                    normal.as_str()
+                };
+                (!mapped.is_empty()).then_some(mapped)
             })
     }
 
@@ -241,16 +247,21 @@ fn parse_keymap(
         // An empty mapping has nothing to insert, and the remap path would turn
         // it into a commit of "" — which inserts nothing yet still ends the
         // host's marked-text session (see `InputSession::
-        // debug_assert_response_contract`). There is no way to spell "disable
-        // this key" here, so an empty string is a config error, not a feature;
-        // omit the entry instead. Matches `parse_romaji_toml`, which rejects an
-        // empty mapping value the same way.
+        // debug_assert_response_contract`). So it must not produce a remap:
+        // `keymap_get` reports that side as unmapped.
+        //
+        // Ignored rather than rejected. This rule is newly tightened on a format
+        // that already accepted such files, and `init_custom` is all-or-nothing
+        // — refusing the file would revert every *other* custom value (costs,
+        // history limits, snippet trigger, the working key mappings) to the
+        // defaults over one bad entry, which is the disproportionate outcome
+        // CLAUDE.md's 「設定の変更は migration 必須」 is about. Same treatment an
+        // unusable snippet body gets in `SnippetStore::prefix_search`: drop what
+        // cannot be used, keep the file, and say so.
         if values.iter().any(|v| v.is_empty()) {
-            return Err(SettingsError::InvalidValue {
-                field: format!("keymap.{}", key_str),
-                reason: "mappings must be non-empty; omit the entry to leave the key unmapped"
-                    .to_string(),
-            });
+            tracing::warn!(
+                "settings: keymap.{key_str} has an empty mapping; that side is left unmapped"
+            );
         }
         result.push((key_code, values[0].clone(), values[1].clone()));
     }
@@ -547,11 +558,13 @@ abc = ["]", "}"]
     }
 
     #[test]
-    fn error_keymap_empty_mapping() {
+    fn keymap_empty_mapping_is_unmapped_not_a_load_error() {
         // An empty mapping would reach the session as `Remapped { text: "" }`
         // and be committed as "", which inserts nothing but still ends the
-        // host's marked-text session. Rejected at load like an empty romaji
-        // mapping; "unmapped" is spelled by omitting the entry.
+        // host's marked-text session — so it must not produce a remap. It must
+        // also not take the file down: `init_custom` is all-or-nothing, so
+        // rejecting would revert every other custom value to the defaults over
+        // one bad entry, on a format that already accepted such files.
         let base = r#"
 [cost]
 segment_penalty = 5000
@@ -578,16 +591,19 @@ max_results = 20
 
 [keymap]
 "#;
-        for entry in [
-            "10 = [\"\", \"}\"]",
-            "10 = [\"]\", \"\"]",
-            "10 = [\"\", \"\"]",
-        ] {
-            let err = parse_settings_toml(&format!("{base}{entry}\n")).unwrap_err();
-            assert!(
-                err.to_string().contains("keymap.10"),
-                "expected a keymap.10 error for {entry:?}, got {err}",
-            );
+        // (entry, expected normal, expected shifted)
+        let cases = [
+            ("10 = [\"\", \"}\"]", None, Some("}")),
+            ("10 = [\"]\", \"\"]", Some("]"), None),
+            ("10 = [\"\", \"\"]", None, None),
+        ];
+        for (entry, normal, shifted) in cases {
+            let s = parse_settings_toml(&format!("{base}{entry}\n"))
+                .unwrap_or_else(|e| panic!("{entry:?} must still load, got {e}"));
+            assert_eq!(s.keymap_get(10, false), normal, "normal side of {entry:?}");
+            assert_eq!(s.keymap_get(10, true), shifted, "shifted side of {entry:?}");
+            // The rest of the file survives — that is the point of not rejecting.
+            assert_eq!(s.candidates.nbest, 5);
         }
     }
 
