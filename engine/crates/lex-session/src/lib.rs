@@ -126,24 +126,11 @@ impl InputSession {
     }
 
     pub fn set_snippet_store(&mut self, store: Option<Arc<SnippetStore>>) {
+        // Only swaps the store used to *start* the next browse. An in-progress
+        // browse holds its own snapshot (SnippetState::store), so it is
+        // unaffected — no active composition state changes here, so the host
+        // stays in sync and no epoch bump is needed.
         self.snippet_store = store;
-        // A snippet browse in progress was built against the previous store;
-        // swapping it out invalidates that browse. Leave snippet mode so we
-        // never keep browsing a stale (possibly now-empty) store, which could
-        // emit empty marked text and reintroduce the confirming-key leak (see
-        // SnippetState::display_text). Composing / Idle states are unaffected.
-        //
-        // Bump the epoch because this mutates composition state — same contract
-        // as handle_key/commit (reject any in-flight async response). Caveat:
-        // unlike a key response this returns nothing, so it cannot tell the
-        // host to clear marked text / candidates. Safe today because the only
-        // reload trigger (settings save) deactivates the client first; a future
-        // same-session hot-reload (file watcher) must surface this reset to the
-        // frontend instead.
-        if matches!(self.state, SessionState::Snippet(_)) {
-            self.bump_epoch();
-            self.reset_state();
-        }
     }
 
     pub fn is_abc_passthrough(&self) -> bool {

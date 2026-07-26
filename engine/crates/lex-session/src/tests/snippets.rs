@@ -291,16 +291,36 @@ fn test_snippet_trigger_empty_store_does_not_enter_mode() {
 }
 
 #[test]
-fn test_set_snippet_store_mid_mode_exits_snippet_mode() {
-    // Swapping the store while browsing invalidates the browse (it was built
-    // against the old store). The session must leave snippet mode rather than
-    // keep rendering a stale/empty store, which could emit empty marked text
-    // and leak the confirming key.
+fn test_snippet_browse_survives_store_swap() {
+    // A snippet browse is a transaction against the store snapshot it began
+    // with. Swapping the live store mid-browse (e.g. snippetsDidReload firing
+    // while a picker is up) must not disturb the active picker or emit empty
+    // marked text — otherwise the confirming key could leak to the host.
     let mut session = make_session_with_snippets();
     session.handle_key(KeyEvent::SnippetTrigger);
     assert!(session.is_composing());
 
+    // Swap in an empty store mid-browse (worst case).
     let empty = SnippetStore::new(HashMap::new(), VariableResolver::new(HashMap::new())).unwrap();
     session.set_snippet_store(Some(Arc::new(empty)));
-    assert!(!session.is_composing(), "store swap must exit snippet mode");
+
+    // Still browsing the original snapshot; marked text stays non-empty.
+    assert!(session.is_composing());
+    let resp = session.handle_key(KeyEvent::text("g")); // filters the snapshot, not the empty store
+    assert!(!resp.marked.expect("marked text").text.is_empty());
+    match resp.candidates {
+        CandidateAction::Show { surfaces, .. } => assert_eq!(surfaces.len(), 2), // gh, gmail
+        _ => panic!("expected Show candidates from the snapshot"),
+    }
+
+    // Backspace to empty filter — snapshot repopulates, still non-empty.
+    let resp = session.handle_key(KeyEvent::Backspace);
+    assert!(session.is_composing());
+    assert!(!resp.marked.expect("marked text").text.is_empty());
+
+    // Confirm inserts from the snapshot, not the swapped-in empty store.
+    session.handle_key(KeyEvent::text("g"));
+    session.handle_key(KeyEvent::text("h"));
+    let resp = session.handle_key(KeyEvent::Enter);
+    assert_eq!(resp.commit, Some("https://github.com/".to_string()));
 }

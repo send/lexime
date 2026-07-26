@@ -49,6 +49,7 @@ impl InputSession {
             filter: String::new(),
             matches,
             selected: 0,
+            store,
         };
         let resp = base_resp.with_display_from(build_snippet_response(&state));
         self.state = SessionState::Snippet(state);
@@ -89,27 +90,19 @@ impl InputSession {
     }
 
     fn snippet_filter_append(&mut self, text: &str) -> KeyResponse {
-        let store = match &self.snippet_store {
-            Some(s) => s.clone(),
-            None => return self.snippet_cancel_passthrough(),
-        };
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
         s.filter.push_str(text);
-        s.matches = store.prefix_search(&s.filter);
+        // Filter against the browse's own store snapshot, not the live store —
+        // a mid-browse swap must not change what this picker shows.
+        s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
         build_snippet_response(s)
     }
 
     fn snippet_filter_pop(&mut self) -> KeyResponse {
-        let store = match &self.snippet_store {
-            Some(s) => s.clone(),
-            None => return self.snippet_cancel_passthrough(),
-        };
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
@@ -120,17 +113,13 @@ impl InputSession {
         }
 
         s.filter.pop();
-        s.matches = store.prefix_search(&s.filter);
+        s.matches = s.store.prefix_search(&s.filter);
         s.selected = 0;
 
         build_snippet_response(s)
     }
 
     fn snippet_confirm(&mut self) -> KeyResponse {
-        if self.snippet_store.is_none() {
-            return self.snippet_cancel_passthrough();
-        }
-
         let SessionState::Snippet(ref s) = self.state else {
             unreachable!();
         };
@@ -152,10 +141,6 @@ impl InputSession {
     }
 
     fn snippet_navigate(&mut self, delta: i32) -> KeyResponse {
-        if self.snippet_store.is_none() {
-            return self.snippet_cancel_passthrough();
-        }
-
         let SessionState::Snippet(ref mut s) = self.state else {
             unreachable!();
         };
