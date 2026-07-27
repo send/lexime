@@ -25,7 +25,7 @@
 
 ```bash
 # Rust lint + test
-cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features
+cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
 # アプリビルド・インストール
 mise run build && mise run install && mise run reload

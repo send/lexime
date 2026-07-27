@@ -28,7 +28,7 @@ cd engine && cargo fmt --all
 **順序規則: screen-before-build**。依存変更 (CI で screen + audit が走る変更) がある場合、build を伴う cargo (clippy / test / check) より**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
 
 ```sh
-cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features
+cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
 
 条件付き追加 (diff に該当パスがあれば必須):

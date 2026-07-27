@@ -102,7 +102,13 @@ jobs:
           shared-key: engine
 
       - run: cd engine && cargo fmt --all --check
-      - run: cd engine && cargo clippy --workspace --all-features -- -D warnings
+
+      # --all-targets is load-bearing: without it clippy checks only lib+bins,
+      # so benches / examples compile in no gate at all and rot silently
+      # (issue #299 — lex-core benches had been uncompilable for some time).
+      # `cargo test` does not cover them either: both benches are
+      # `harness = false`, which excludes them from the test target set.
+      - run: cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
     needs: [changes, screen]

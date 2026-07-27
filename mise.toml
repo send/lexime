@@ -381,7 +381,9 @@ run = "cd engine && cargo bench -p lex-core"
 description = "Run cargo fmt --check and clippy"
 run = [
   "cd engine && cargo fmt --all --check",
-  "cd engine && cargo clippy --workspace --all-features -- -D warnings",
+  # --all-targets keeps benches / examples compiling: they are in no other
+  # gate (`harness = false` benches are excluded from `cargo test`). See #299.
+  "cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings",
 ]
 
 [tasks.audit]
