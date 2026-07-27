@@ -104,10 +104,10 @@ jobs:
       - run: cd engine && cargo fmt --all --check
 
       # --all-targets is load-bearing: without it clippy checks only lib+bins,
-      # so benches / examples compile in no gate at all and rot silently
-      # (issue #299 — lex-core benches had been uncompilable for some time).
-      # `cargo test` does not cover them either: both benches are
-      # `harness = false`, which excludes them from the test target set.
+      # which leaves benches in no gate at all — `cargo test` does not build
+      # `[[bench]]` targets either (they default to `test = false`; `harness`
+      # is not the lever). That is how #299 rotted unnoticed. Examples are
+      # already covered by `cargo test`, which does build them.
       - run: cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
