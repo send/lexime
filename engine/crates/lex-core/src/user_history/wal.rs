@@ -30,8 +30,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use bincode::Options as _;
 use serde::{Deserialize, Serialize};
@@ -298,13 +296,11 @@ pub struct HistoryWal {
     /// compaction, whose checkpoint contains the full state) re-establishes
     /// v2 form and lifts the freeze.
     ///
-    /// Shared as an `Arc<AtomicBool>` purely so the state can be read
-    /// without the mutex this struct lives behind (the engine reports it on
-    /// the UI thread). Every assignment below remains the single source of
-    /// truth — a separate mirror kept in sync by hand is what let a failed
-    /// migration report a clean startup, and adding update sites is exactly
-    /// the shape that regresses.
-    frozen: Arc<AtomicBool>,
+    /// Assigned only through `set_frozen`, so the state has one write path
+    /// rather than a list of sites a future branch can forget — a branch
+    /// that froze without recording it is what let a failed migration
+    /// report a clean startup.
+    frozen: bool,
 }
 
 impl HistoryWal {
@@ -323,7 +319,7 @@ impl HistoryWal {
             next_seq: 1,
             last_appended_seq: 0,
             frames_since_barrier: 0,
-            frozen: Arc::new(AtomicBool::new(false)),
+            frozen: false,
         }
     }
 
@@ -573,17 +569,11 @@ impl HistoryWal {
 
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
-        self.frozen.load(Ordering::SeqCst)
-    }
-
-    /// Handle on the freeze state for readers that cannot take this
-    /// struct's mutex (see the `frozen` field docs).
-    pub fn frozen_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.frozen)
+        self.frozen
     }
 
     fn set_frozen(&mut self, value: bool) {
-        self.frozen.store(value, Ordering::SeqCst);
+        self.frozen = value;
     }
 
     /// Path to the checkpoint file.

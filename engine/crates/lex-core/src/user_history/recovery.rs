@@ -371,7 +371,7 @@ pub fn open_recovering(
         || report.frames_skipped > 0
         || report.replayed_deletion
         || wal.needs_compact()
-        || wal.is_frozen();
+        || report.appends_frozen;
 
     // --- 5. quarantine rotation + v1-backup GC ---
     persist::rotate_quarantined(checkpoint_path, QUARANTINE_KEEP);

@@ -139,30 +139,35 @@ final class EngineContainer {
             // tail repair is the expected power-loss residue, migration is
             // routine).
             let report = h.openReport()
+            // migrationFailed / appendsFrozen are appended to every branch,
+            // not just the last one: both leave checkpointState and walState
+            // at their healthy values, and both can co-occur with a
+            // migration or a quarantine — so a line built from the other
+            // fields alone reads exactly like a clean startup.
+            var degraded = ""
+            if report.migrationFailed {
+                degraded += " migration=failed(retries next launch)"
+            }
+            if report.appendsFrozen {
+                degraded += " appends=frozen(memory-only until compaction)"
+            }
             if report.dataLossSuspected {
                 var detail =
                     "checkpoint: \(report.checkpointState), wal: \(report.walState)"
                 if !report.quarantinedPaths.isEmpty {
                     detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
                 }
+                detail += degraded
                 NSLog("Lexime: User history recovered with data loss (%@)", detail)
                 failures.append(.historyDataLoss(detail: detail))
             } else if report.migratedFromV1 {
-                NSLog("Lexime: User history migrated from v1 (\(report.framesReplayed) frames)")
+                NSLog(
+                    "Lexime: User history migrated from v1 (\(report.framesReplayed) frames)\(degraded)"
+                )
             } else if !report.clean {
-                // migrationFailed / appendsFrozen are named explicitly: both
-                // leave checkpointState and walState at their healthy values,
-                // so a line built from those two alone reads exactly like a
-                // clean startup.
-                var detail =
-                    "checkpoint=\(report.checkpointState) wal=\(report.walState)"
-                if report.migrationFailed {
-                    detail += " migration=failed(retries next launch)"
-                }
-                if report.appendsFrozen {
-                    detail += " appends=frozen(memory-only until compaction)"
-                }
-                NSLog("Lexime: User history recovery events: \(detail)")
+                NSLog(
+                    "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)\(degraded)"
+                )
             }
             history = h
         } catch {

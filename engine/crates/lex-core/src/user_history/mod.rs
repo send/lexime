@@ -54,74 +54,127 @@ pub struct UserHistory {
 /// work: it is idempotent, so a key re-raised while a checkpoint is being
 /// written is indistinguishable from the same key raised before it, and the
 /// covering pass would drop a key the new checkpoint still holds.
+///
+/// The maps nest exactly like [`UserHistory`]'s own, so probing them borrows
+/// instead of building owned keys — this check runs on the key-processing
+/// thread inside the wal mutex, which is why
+/// [`UserHistory::contains_entries`] avoids allocating there too.
 #[derive(Clone, Default, Debug)]
-pub struct DurableResidue {
-    /// (reading, surface) → epoch raised
-    unigrams: HashMap<(String, String), u64>,
-    /// (prev_surface, next_reading, next_surface) → epoch raised
-    bigrams: HashMap<(String, String, String), u64>,
+struct DurableResidue {
+    /// reading → (surface → epoch raised)
+    unigrams: HashMap<String, HashMap<String, u64>>,
+    /// prev_surface → ((next_reading, next_surface) → epoch raised)
+    bigrams: HashMap<String, HashMap<(String, String), u64>>,
+    /// Tracked keys across both maps, so the size check need not walk them.
+    tracked: usize,
     /// Monotonic; advances on every raise, including ones dropped while
     /// saturated. That is what lets `cover` tell a quiescent moment from one
     /// where untracked keys appeared.
     epoch: u64,
-    /// Key tracking was abandoned past [`MAX_RESIDUE`]; every query answers
+    /// Key tracking was abandoned past [`max_residue`]; every query answers
     /// "possible" until a checkpoint lands on a quiescent state.
     saturated: bool,
 }
 
-/// Cap on tracked residue keys. Reached only when checkpoints keep failing
-/// (a healthy compaction clears the set), so the bound exists to keep a
-/// failing disk from growing the set without limit — not as a steady-state
-/// budget. Sized against the history's own capacity: past this the set is no
-/// longer cheaper than being conservative.
-const MAX_RESIDUE: usize = 10_000;
+/// Cap on tracked residue keys, derived from the history's own capacity:
+/// past that the set stops being cheaper than answering conservatively.
+///
+/// This is not only a failure-mode structure — a user at capacity raises one
+/// key per eviction and clears them at the next compaction — so the cap is
+/// approached only when checkpoints keep failing across many compaction
+/// intervals.
+fn max_residue() -> usize {
+    let s = settings();
+    s.history.max_unigrams + s.history.max_bigrams
+}
+
+/// The bigram keys a segment list touches: for each adjacent pair, the
+/// previous surface plus the next (reading, surface). Every bigram map in
+/// this module is keyed this way, and one definition is what keeps the
+/// history and its residue answering about the same key space.
+fn bigram_keys(segments: &[(String, String)]) -> impl Iterator<Item = (&str, &str, &str)> {
+    segments
+        .windows(2)
+        .map(|pair| (pair[0].1.as_str(), pair[1].0.as_str(), pair[1].1.as_str()))
+}
 
 impl DurableResidue {
-    fn raise_unigram(&mut self, reading: String, surface: String) {
-        self.epoch += 1;
-        if self.saturate_if_full() {
-            return;
+    /// Raise every key a segment list touches (the deletion path, which
+    /// works in segments rather than map keys).
+    fn raise_segments(&mut self, segments: &[(String, String)]) {
+        for (reading, surface) in segments {
+            self.raise_unigram(reading.clone(), surface.clone());
         }
-        self.unigrams.insert((reading, surface), self.epoch);
+        for (prev, next_reading, next_surface) in bigram_keys(segments) {
+            self.raise_bigram(
+                prev.to_string(),
+                next_reading.to_string(),
+                next_surface.to_string(),
+            );
+        }
+    }
+
+    fn raise_unigram(&mut self, reading: String, surface: String) {
+        let Some(epoch) = self.stamp() else { return };
+        if self
+            .unigrams
+            .entry(reading)
+            .or_default()
+            .insert(surface, epoch)
+            .is_none()
+        {
+            self.tracked += 1;
+        }
     }
 
     fn raise_bigram(&mut self, prev: String, next_reading: String, next_surface: String) {
-        self.epoch += 1;
-        if self.saturate_if_full() {
-            return;
+        let Some(epoch) = self.stamp() else { return };
+        if self
+            .bigrams
+            .entry(prev)
+            .or_default()
+            .insert((next_reading, next_surface), epoch)
+            .is_none()
+        {
+            self.tracked += 1;
         }
-        self.bigrams
-            .insert((prev, next_reading, next_surface), self.epoch);
     }
 
-    /// Drop key tracking (and its memory) once the set stops being worth its
-    /// size. Returns whether the residue is now saturated.
-    fn saturate_if_full(&mut self) -> bool {
+    /// Advance the epoch and report the stamp to record under, or `None`
+    /// once tracking has been abandoned. The epoch advances either way: a
+    /// raise that went untracked is exactly what must stop [`Self::cover`]
+    /// from lifting saturation.
+    fn stamp(&mut self) -> Option<u64> {
+        self.epoch += 1;
         if self.saturated {
-            return true;
+            return None;
         }
-        if self.unigrams.len() + self.bigrams.len() < MAX_RESIDUE {
-            return false;
+        if self.tracked >= max_residue() {
+            self.saturated = true;
+            self.unigrams.clear();
+            self.bigrams.clear();
+            self.tracked = 0;
+            return None;
         }
-        self.saturated = true;
-        self.unigrams.clear();
-        self.bigrams.clear();
-        true
+        Some(self.epoch)
     }
 
     /// Whether these segments could still be in the durable set. Mirrors
-    /// [`UserHistory::contains_entries`]'s shape so the two answer the same
-    /// question about the same key space.
+    /// [`UserHistory::contains_entries`] over the same keys.
     fn contains_entries(&self, segments: &[(String, String)]) -> bool {
         if self.saturated {
             return true;
         }
         segments.iter().any(|(reading, surface)| {
             self.unigrams
-                .contains_key(&(reading.clone(), surface.clone()))
-        }) || segments.windows(2).any(|pair| {
-            self.bigrams
-                .contains_key(&(pair[0].1.clone(), pair[1].0.clone(), pair[1].1.clone()))
+                .get(reading)
+                .is_some_and(|inner| inner.contains_key(surface))
+        }) || bigram_keys(segments).any(|(prev, next_reading, next_surface)| {
+            self.bigrams.get(prev).is_some_and(|inner| {
+                inner
+                    .keys()
+                    .any(|(r, s)| r == next_reading && s == next_surface)
+            })
         })
     }
 
@@ -138,14 +191,33 @@ impl DurableResidue {
     /// raise (tracked or dropped) happened during the write. Otherwise keys
     /// may have been discarded untracked and the conservative answer stands.
     fn cover(&mut self, snapshot: &DurableResidue) {
-        self.unigrams
-            .retain(|k, e| snapshot.unigrams.get(k).is_none_or(|se| *e > *se));
-        self.bigrams
-            .retain(|k, e| snapshot.bigrams.get(k).is_none_or(|se| *e > *se));
+        retain_newer(&mut self.unigrams, &snapshot.unigrams);
+        retain_newer(&mut self.bigrams, &snapshot.bigrams);
+        self.tracked = count_keys(&self.unigrams) + count_keys(&self.bigrams);
         if self.saturated && self.epoch == snapshot.epoch {
             self.saturated = false;
         }
     }
+}
+
+/// Drop every key whose stamp has not advanced past the one `snapshot` saw.
+fn retain_newer<K: Eq + std::hash::Hash>(
+    map: &mut HashMap<String, HashMap<K, u64>>,
+    snapshot: &HashMap<String, HashMap<K, u64>>,
+) {
+    map.retain(|outer, inner| {
+        let covered = snapshot.get(outer);
+        inner.retain(|k, epoch| {
+            covered
+                .and_then(|c| c.get(k))
+                .is_none_or(|seen| *epoch > *seen)
+        });
+        !inner.is_empty()
+    });
+}
+
+fn count_keys<K>(map: &HashMap<String, HashMap<K, u64>>) -> usize {
+    map.values().map(|inner| inner.len()).sum()
 }
 
 #[derive(Clone)]
@@ -227,14 +299,16 @@ fn evict_map<K: Clone + Eq + std::hash::Hash>(
         a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut evicted = Vec::with_capacity(to_remove);
-    for (outer_key, inner_key, _) in all[..to_remove].iter() {
-        if let Some(inner) = map.get_mut(outer_key) {
-            if inner.remove(inner_key).is_some() {
-                evicted.push((outer_key.clone(), inner_key.clone()));
-            }
-            if inner.is_empty() {
-                map.remove(outer_key);
-            }
+    for (outer_key, inner_key, _) in all.drain(..to_remove) {
+        let Some(inner) = map.get_mut(&outer_key) else {
+            continue;
+        };
+        let removed = inner.remove(&inner_key).is_some();
+        if inner.is_empty() {
+            map.remove(&outer_key);
+        }
+        if removed {
+            evicted.push((outer_key, inner_key));
         }
     }
     evicted
@@ -283,8 +357,18 @@ impl UserHistory {
         let mut any_committed = false;
         for (record, seq) in records {
             self.apply_effect(record);
-            if let Some(seq) = seq {
-                self.advance_applied_seq(*seq);
+            match seq {
+                Some(seq) => self.advance_applied_seq(*seq),
+                // No frame reached the WAL. For a deletion that means the
+                // entry left memory while the durable set kept it, with no
+                // tombstone to neutralise it — the same divergence eviction
+                // creates, recorded from the same witness that already gates
+                // `applied_seq`, so the two cannot drift apart.
+                None => {
+                    if let wal::WalRecord::Tombstone { segments, .. } = record {
+                        self.durable_residue.raise_segments(segments);
+                    }
+                }
             }
             any_committed |= matches!(record, wal::WalRecord::Committed { .. });
         }
@@ -452,11 +536,11 @@ impl UserHistory {
             self.unigrams
                 .get(reading)
                 .is_some_and(|inner| inner.contains_key(surface))
-        }) || segments.windows(2).any(|pair| {
-            self.bigrams.get(&pair[0].1).is_some_and(|inner| {
+        }) || bigram_keys(segments).any(|(prev, next_reading, next_surface)| {
+            self.bigrams.get(prev).is_some_and(|inner| {
                 inner
                     .keys()
-                    .any(|(r, s)| *r == pair[1].0 && *s == pair[1].1)
+                    .any(|(r, s)| r == next_reading && s == next_surface)
             })
         })
     }
@@ -475,16 +559,16 @@ impl UserHistory {
                 }
             }
         }
-        for pair in segments.windows(2) {
-            let (_, prev_surface) = &pair[0];
-            let (next_reading, next_surface) = &pair[1];
-            let key = (next_reading.clone(), next_surface.clone());
-            if let Some(inner) = self.bigrams.get_mut(prev_surface) {
+        for (prev_surface, next_reading, next_surface) in
+            bigram_keys(segments).map(|(p, r, s)| (p.to_string(), r.to_string(), s.to_string()))
+        {
+            let key = (next_reading, next_surface);
+            if let Some(inner) = self.bigrams.get_mut(&prev_surface) {
                 if inner.remove(&key).is_some() {
                     removed = true;
                 }
                 if inner.is_empty() {
-                    self.bigrams.remove(prev_surface);
+                    self.bigrams.remove(&prev_surface);
                 }
             }
         }
@@ -495,11 +579,15 @@ impl UserHistory {
     /// ([`Self::apply_batch`], replay) apply many records and settle
     /// capacity once afterwards.
     ///
+    /// Eviction is the one mutation that drops an entry from memory without
+    /// dropping it from disk, so the evicted keys are recorded as residue
+    /// here — inside the operation itself, where no caller can forget.
+    ///
     /// Both maps are always processed — binding each call separately rather
     /// than combining them with `||`, which would short-circuit the bigram
     /// eviction whenever unigrams evicted and let `max_bigrams` go
     /// unenforced.
-    pub fn evict(&mut self) {
+    fn evict(&mut self) {
         let s = settings();
         let now = now_epoch();
         let uni = evict_map(&mut self.unigrams, s.history.max_unigrams, now);
@@ -513,46 +601,21 @@ impl UserHistory {
         }
     }
 
-    /// Whether these segments could still be in the durable set even though
-    /// memory no longer holds them (see [`DurableResidue`]). The engine ORs
-    /// this with [`Self::contains_entries`] before skipping a deletion as a
-    /// no-op: memory-absent does not imply disk-absent.
-    pub fn durable_residue_contains(&self, segments: &[(String, String)]) -> bool {
-        self.durable_residue.contains_entries(segments)
-    }
-
-    /// Record that a deletion never became durable, so the entry it removed
-    /// from memory may still be in the durable set with no tombstone to
-    /// neutralise it.
-    pub fn raise_durable_residue(&mut self, segments: &[(String, String)]) {
-        for (reading, surface) in segments {
-            self.durable_residue
-                .raise_unigram(reading.clone(), surface.clone());
-        }
-        for pair in segments.windows(2) {
-            self.durable_residue.raise_bigram(
-                pair[0].1.clone(),
-                pair[1].0.clone(),
-                pair[1].1.clone(),
-            );
-        }
-    }
-
-    /// The residue as it stands, for a compaction to carry with its snapshot
-    /// and hand back to [`Self::cover_durable_residue`].
-    pub fn durable_residue(&self) -> &DurableResidue {
-        &self.durable_residue
+    /// Whether a deletion of these segments could have any durable effect —
+    /// the question the engine must ask before skipping one as a no-op.
+    ///
+    /// It is deliberately one predicate rather than two the caller ORs
+    /// together: answering only the in-memory half is exactly the bug this
+    /// exists to prevent (an entry evicted for capacity is gone from the
+    /// maps while the last checkpoint still holds it).
+    pub fn deletion_has_durable_target(&self, segments: &[(String, String)]) -> bool {
+        self.contains_entries(segments) || self.durable_residue.contains_entries(segments)
     }
 
     /// Retire the residue keys a landed checkpoint accounts for. `snapshot`
-    /// must be the residue of the very state that was saved.
-    pub fn cover_durable_residue(&mut self, snapshot: &DurableResidue) {
-        self.durable_residue.cover(snapshot);
-    }
-
-    /// Drop the whole residue: the caller made the durable set empty
-    /// (`clear`), so nothing can be left on disk that memory lacks.
-    pub fn reset_durable_residue(&mut self) {
-        self.durable_residue = DurableResidue::default();
+    /// must be the very state that was saved, so its residue is the one this
+    /// checkpoint settles.
+    pub fn cover_durable_residue(&mut self, snapshot: &UserHistory) {
+        self.durable_residue.cover(&snapshot.durable_residue);
     }
 }
