@@ -126,6 +126,10 @@ jobs:
       # bump or code change that needs a newer Rust fails here even though every
       # other job builds on stable. Default features only — the optional
       # `neural` feature pulls candle, whose MSRV is tracked separately.
+      # Default *targets* only, for the same reason: do NOT propagate the
+      # `lint` job's --all-targets here. It would put criterion / proptest and
+      # first-party bench source under the MSRV constraint, so a dev-dep bump
+      # could turn CI red over code that never ships.
       - uses: dtolnay/rust-toolchain@1.88.0
 
       - uses: Swatinem/rust-cache@v2

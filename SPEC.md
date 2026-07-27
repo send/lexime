@@ -611,8 +611,8 @@ macOS で動作する最小限の IME を構築。
 | `conn` | 接続行列のコンパイル |
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `test` | lint + `cargo test --workspace --all-features` |
-| `lint` | `cargo fmt --check` + `cargo clippy` |
-| `audit` | cargo-audit（脆弱性）+ cargo-machete（未使用 deps） |
+| `lint` | `cargo fmt --check` + `cargo clippy --all-targets` |
+| `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny + cargo-vet + cargo-machete（未使用 deps） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
@@ -637,16 +637,19 @@ macOS で動作する最小限の IME を構築。
 
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
-| `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / swift） |
-| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy` |
+| `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
+| `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo は依存の build.rs を実行するので、cargo を呼ぶ全ジョブをこれが gate する |
+| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets` |
+| `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
-| `audit` | ubuntu-latest | core 変更時 | `cargo-audit` + `cargo-machete` |
-| `swift` | macos-latest | engine + Swift 両方変更時 | `mise run test-swift` |
+| `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定） |
+| `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
+| `swift` | macos-latest | engine または Swift 変更時 | `mise run test-swift` |
 
-全 Rust ジョブは `Swatinem/rust-cache@v2` で `shared-key: engine` キャッシュを共有。
+Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` / `accuracy` は別プロファイルをビルドするため専用キー、`screen` は unlocked な `cargo metadata` が `--locked` 検査より先に Cargo.lock を繕ってしまうため意図的にキャッシュなし）。
 
 ## 未決事項
 
