@@ -166,6 +166,14 @@ pub struct LexHistoryOpenReport {
     pub checkpoint_state: LexHistoryCheckpointState,
     pub wal_state: LexHistoryWalState,
     pub migrated_from_v1: bool,
+    /// A v1->v2 migration was needed and its commit failed; the v1 files
+    /// are kept for the next startup to retry. Surfaced because `clean`
+    /// alone only says "something happened" — without it the log line reads
+    /// `checkpoint: Loaded, wal: Clean`, i.e. exactly like a healthy start.
+    pub migration_failed: bool,
+    /// Appends were frozen at open: this session's learning stays in memory
+    /// until a compaction restores appendable form.
+    pub appends_frozen: bool,
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<String>,
@@ -192,6 +200,8 @@ impl From<&OpenReport> for LexHistoryOpenReport {
                 WalState::RepairFailed => LexHistoryWalState::RepairFailed,
             },
             migrated_from_v1: r.migrated_from_v1,
+            migration_failed: r.migration_failed,
+            appends_frozen: r.appends_frozen,
             frames_replayed: r.frames_replayed,
             frames_skipped: r.frames_skipped,
             // Lossy on purpose: display-only, and a non-UTF-8 path must not
@@ -355,6 +365,12 @@ impl LexUserHistory {
         // not left to an async scrub that a crash could preempt.
         let mut durability_failed = false;
         let mut needs_threshold_compact = false;
+        // Deletions whose frame never reached disk: their entries are gone
+        // from memory but not from the durable set. Collected here and
+        // raised together with the apply, never inside the loop — a raise
+        // observed before its effect is in memory could be covered by a
+        // checkpoint that does not contain it.
+        let mut residue_raised: Vec<Vec<(String, String)>> = Vec::new();
         if !wal_records.is_empty() {
             let mut wal = lock_recover(&self.wal);
             let mut sequenced: Vec<(WalRecord, Option<u64>)> =
@@ -366,7 +382,19 @@ impl LexUserHistory {
                     // a key-thread F_FULLFSYNC. Check-then-append is
                     // race-free because every history mutation runs under
                     // the wal mutex we hold (wal -> inner is the §4 order).
-                    if !read_recover(&self.inner).contains_entries(segments) {
+                    //
+                    // Memory alone cannot answer this: an entry evicted for
+                    // capacity is gone from the maps while the checkpoint
+                    // still holds it, and skipping there makes the deletion
+                    // a silent no-op that a restart undoes. The residue
+                    // carries exactly those keys. Scoped so the read guard
+                    // is released before the append below, which for a
+                    // Tombstone includes a full flush.
+                    let durable_reachable = {
+                        let h = read_recover(&self.inner);
+                        h.contains_entries(segments) || h.durable_residue_contains(segments)
+                    };
+                    if !durable_reachable {
                         continue;
                     }
                     scrub = true;
@@ -409,8 +437,14 @@ impl LexUserHistory {
                         // the deletion synchronously below (privacy), not just
                         // via the async heal a re-learnable Committed loss can
                         // wait for.
-                        if matches!(record, WalRecord::Tombstone { .. }) {
+                        if let WalRecord::Tombstone { segments, .. } = &record {
                             durability_failed = true;
+                            // The entry leaves memory but stays in the
+                            // checkpoint with no frame to neutralise it, so
+                            // a later deletion of the same pair must not be
+                            // skipped as a no-op. Raised after the apply
+                            // below, with the rest of the batch.
+                            residue_raised.push(segments.clone());
                         }
                         sequenced.push((record, None));
                     }
@@ -418,7 +452,11 @@ impl LexUserHistory {
             }
             needs_threshold_compact = wal.needs_compact();
             if !sequenced.is_empty() {
-                write_recover(&self.inner).apply_batch(&sequenced);
+                let mut h = write_recover(&self.inner);
+                h.apply_batch(&sequenced);
+                for segments in &residue_raised {
+                    h.raise_durable_residue(segments);
+                }
             }
         }
 
@@ -493,6 +531,12 @@ impl LexUserHistory {
             // applied_seq carries over (§5.5 step 5); next_seq in the wal
             // continues its numbering (§3).
             *h = empty;
+            // The durable set is empty too, so nothing can be left on disk
+            // that memory lacks. Safe to drop wholesale — not because
+            // memory is empty at this instant (it is only becoming so
+            // here), but because the wal mutex has been held since before
+            // the commit point, and every residue raise happens under it.
+            h.reset_durable_residue();
         }
 
         // Drop the commit-log handle before removing the file so a later
@@ -665,6 +709,12 @@ impl LexUserHistory {
             return CompactOutcome::Failed;
         }
 
+        // The checkpoint is a full snapshot, so everything it contains is
+        // now both on disk and in the state it was cloned from: the residue
+        // keys that snapshot carried are settled. Keys raised *since* the
+        // clone carry a newer epoch and survive — the file does hold those.
+        write_recover(&self.inner).cover_durable_residue(snapshot.durable_residue());
+
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
         // snapshot time) may be destroyed.
@@ -809,6 +859,8 @@ mod tests {
                 checkpoint_state: CheckpointState::Missing,
                 wal_state: WalState::Missing,
                 migrated_from_v1: false,
+                migration_failed: false,
+                appends_frozen: false,
                 frames_replayed: 0,
                 frames_skipped: 0,
                 quarantined_paths: Vec::new(),
@@ -897,6 +949,120 @@ mod tests {
         assert!(
             !hist.scrub_pending.load(Ordering::SeqCst),
             "no scrub needed for a no-op deletion"
+        );
+    }
+
+    /// Put the history into the state capacity eviction leaves behind: the
+    /// entry is gone from the maps but the last checkpoint still holds it.
+    /// `evict()` does exactly this pair of operations (pinned in lex-core's
+    /// `test_evict_records_evicted_keys_as_residue`); reproducing it here
+    /// avoids seeding 10,000 entries to cross `max_unigrams`.
+    fn simulate_eviction(hist: &LexUserHistory, reading: &str, surface: &str) {
+        let segments = vec![(reading.to_string(), surface.to_string())];
+        let mut h = write_recover(&hist.inner);
+        assert!(
+            h.remove_entries(&segments),
+            "entry must be present to evict"
+        );
+        h.raise_durable_residue(&segments);
+    }
+
+    #[test]
+    fn test_deleting_an_evicted_entry_still_persists() {
+        // #286: an entry evicted for capacity is absent from memory but
+        // still in the checkpoint until the next compaction re-snapshots.
+        // Gating the tombstone on memory alone made the deletion a silent
+        // no-op that the next startup undid.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        simulate_eviction(&hist, "きょう", "今日");
+        assert!(
+            learned(&hist, "きょう").is_empty(),
+            "evicted: absent from memory"
+        );
+
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert!(
+            lock_recover(&hist.wal).entry_count() > 0,
+            "the deletion must reach the WAL: memory-absent is not disk-absent"
+        );
+
+        wait_until(
+            || lock_recover(&hist.wal).entry_count() == 0,
+            "scrub compaction to truncate the WAL",
+        );
+        drop(hist);
+        let hist2 = open_hist(&cp);
+        assert!(
+            learned(&hist2, "きょう").is_empty(),
+            "the deleted conversion must not come back"
+        );
+    }
+
+    #[test]
+    fn test_unrelated_residue_does_not_cost_a_flush() {
+        // The residue is per-key, not a global "something was evicted" bit:
+        // being at capacity must not make every ForwardDelete of a
+        // never-learned candidate pay a key-thread F_FULLFSYNC plus a full
+        // checkpoint.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        simulate_eviction(&hist, "きょう", "今日");
+
+        hist.apply_records(&[deletion("あした", "明日")]);
+        assert_eq!(
+            lock_recover(&hist.wal).entry_count(),
+            0,
+            "a pair in neither memory nor the residue is still a no-op"
+        );
+        assert!(!hist.scrub_pending.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_compaction_restores_the_no_op_fast_path() {
+        // Once a checkpoint has been written from the post-eviction state,
+        // the key really is absent from disk and the skip is safe again.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        simulate_eviction(&hist, "きょう", "今日");
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert_eq!(
+            lock_recover(&hist.wal).entry_count(),
+            0,
+            "covered by a checkpoint that no longer contains the entry"
+        );
+    }
+
+    #[test]
+    fn test_clear_drops_the_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        simulate_eviction(&hist, "きょう", "今日");
+
+        hist.clear_impl().unwrap();
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert_eq!(
+            lock_recover(&hist.wal).entry_count(),
+            0,
+            "the wipe emptied the durable set; nothing can be left on disk"
         );
     }
 

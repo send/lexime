@@ -30,6 +30,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use bincode::Options as _;
 use serde::{Deserialize, Serialize};
@@ -295,7 +297,14 @@ pub struct HistoryWal {
     /// so appends fail fast instead; a successful truncate (e.g. by the next
     /// compaction, whose checkpoint contains the full state) re-establishes
     /// v2 form and lifts the freeze.
-    frozen: bool,
+    ///
+    /// Shared as an `Arc<AtomicBool>` purely so the state can be read
+    /// without the mutex this struct lives behind (the engine reports it on
+    /// the UI thread). Every assignment below remains the single source of
+    /// truth — a separate mirror kept in sync by hand is what let a failed
+    /// migration report a clean startup, and adding update sites is exactly
+    /// the shape that regresses.
+    frozen: Arc<AtomicBool>,
 }
 
 impl HistoryWal {
@@ -314,7 +323,7 @@ impl HistoryWal {
             next_seq: 1,
             last_appended_seq: 0,
             frames_since_barrier: 0,
-            frozen: false,
+            frozen: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -346,7 +355,7 @@ impl HistoryWal {
         match classify_wal(&data) {
             WalFormat::Stub => {
                 self.adopt_empty(history.applied_seq());
-                self.frozen = !data.is_empty();
+                self.set_frozen(!data.is_empty());
                 Ok(ReplaySummary::default())
             }
             // A whole-file format mismatch must fail loudly in the strict
@@ -375,7 +384,7 @@ impl HistoryWal {
                     // Migration-crash residue: already covered by the v2
                     // checkpoint (§2.3) — do not replay.
                     self.adopt_empty(history.applied_seq());
-                    self.frozen = true;
+                    self.set_frozen(true);
                     return Ok(ReplaySummary::default());
                 }
                 let scan = scan_legacy(&data, history);
@@ -388,7 +397,8 @@ impl HistoryWal {
                     0,
                     history.applied_seq(),
                 );
-                self.frozen = true; // v2 frames must not follow v1 bytes
+                // v2 frames must not follow v1 bytes
+                self.set_frozen(true);
                 Ok(ReplaySummary {
                     frames_replayed: scan.frames_applied,
                     frames_skipped: 0,
@@ -407,7 +417,7 @@ impl HistoryWal {
                 );
                 // An unrepaired corrupt tail would swallow anything appended
                 // after it (strict mode never truncates the file).
-                self.frozen = scan.truncated_tail;
+                self.set_frozen(scan.truncated_tail);
                 Ok(ReplaySummary {
                     frames_replayed: scan.frames_applied,
                     frames_skipped: scan.frames_skipped,
@@ -452,7 +462,7 @@ impl HistoryWal {
     ///   durability is the operation's contract. The frame remains appended
     ///   and must be covered by the caller (variant docs).
     pub fn append_record(&mut self, record: &WalRecord) -> Result<u64, AppendError> {
-        if self.frozen {
+        if self.is_frozen() {
             return Err(io::Error::other(
                 "WAL file is not in appendable v2 form (pending compaction)",
             )
@@ -480,7 +490,7 @@ impl HistoryWal {
         frame.extend_from_slice(&seq.to_le_bytes());
         frame.extend_from_slice(&payload);
         if let Err(e) = self.io.append(&frame) {
-            self.frozen = true;
+            self.set_frozen(true);
             return Err(AppendError::Io(e));
         }
 
@@ -530,7 +540,7 @@ impl HistoryWal {
         self.wal_bytes = WAL_HEADER_LEN as u64;
         self.frames_since_barrier = 0;
         self.last_appended_seq = 0;
-        self.frozen = false;
+        self.set_frozen(false);
         Ok(())
     }
 
@@ -563,7 +573,17 @@ impl HistoryWal {
 
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
-        self.frozen
+        self.frozen.load(Ordering::SeqCst)
+    }
+
+    /// Handle on the freeze state for readers that cannot take this
+    /// struct's mutex (see the `frozen` field docs).
+    pub fn frozen_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.frozen)
+    }
+
+    fn set_frozen(&mut self, value: bool) {
+        self.frozen.store(value, Ordering::SeqCst);
     }
 
     /// Path to the checkpoint file.
@@ -608,7 +628,7 @@ impl HistoryWal {
     /// the engine's clear when its truncation fails: appends must not land
     /// after bytes replay cannot read.
     pub fn freeze(&mut self) {
-        self.frozen = true;
+        self.set_frozen(true);
     }
 }
 

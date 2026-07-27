@@ -150,9 +150,19 @@ final class EngineContainer {
             } else if report.migratedFromV1 {
                 NSLog("Lexime: User history migrated from v1 (\(report.framesReplayed) frames)")
             } else if !report.clean {
-                NSLog(
-                    "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)"
-                )
+                // migrationFailed / appendsFrozen are named explicitly: both
+                // leave checkpointState and walState at their healthy values,
+                // so a line built from those two alone reads exactly like a
+                // clean startup.
+                var detail =
+                    "checkpoint=\(report.checkpointState) wal=\(report.walState)"
+                if report.migrationFailed {
+                    detail += " migration=failed(retries next launch)"
+                }
+                if report.appendsFrozen {
+                    detail += " appends=frozen(memory-only until compaction)"
+                }
+                NSLog("Lexime: User history recovery events: \(detail)")
             }
             history = h
         } catch {

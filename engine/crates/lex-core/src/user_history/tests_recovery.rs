@@ -741,10 +741,75 @@ fn t5_migration_commit_failure_leaves_v1_intact_and_freezes_appends() {
     // Appends are frozen: v2 frames after v1 bytes would be unreadable
     assert!(wal.is_frozen());
     assert!(wal.append(&seg(D), T0 + 5).is_err());
+    // The report must not describe this as an ordinary startup: every field
+    // the pre-existing states carry (checkpoint_state, wal_state,
+    // migrated_from_v1) stays at its healthy value here, so without the two
+    // derived flags `is_clean()` answers true and no consumer branches.
+    assert!(report.migration_failed);
+    assert!(report.appends_frozen);
+    assert!(!report.is_clean());
+    // Not data loss: nothing has been lost, the v1 files are intact.
+    assert!(!report.data_loss_suspected());
+    assert!(report.compaction_recommended);
     // And the retry succeeds once the environment recovers
     let (h2, _, r2) = open_recovering(&f.cp).unwrap();
     assert!(r2.migrated_from_v1);
+    assert!(!r2.migration_failed);
     assert_contents(&h2, &[A, B, C], &[]);
+}
+
+/// The other half of a failed migration commit: a v1 checkpoint with no
+/// legacy WAL beside it. `legacy_wal_consumed` is false, so the `Err` branch
+/// freezes nothing and the WAL stays perfectly appendable — which means a
+/// report derived from `is_frozen()` sees nothing wrong. Deriving from the
+/// migration's own outcome is what covers this case, and covering it also
+/// schedules the heal: a compaction writes exactly the v2 checkpoint whose
+/// write just failed.
+#[cfg(unix)]
+#[test]
+fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx();
+    let mut seed = UserHistory::new();
+    seed.record_at(&seg(A), T0);
+    let v1_cp = v1_checkpoint_bytes(&seed);
+    fs::write(&f.cp, &v1_cp).unwrap();
+    // No WAL at all — the state a v1 install reaches after a clean shutdown
+    // whose last compaction truncated the log.
+    assert!(!f.wal.exists());
+    let dir = f.cp.parent().unwrap().to_path_buf();
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(dir.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: directory permissions are not enforced here");
+        return;
+    }
+    let result = open_recovering(&f.cp);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (h, wal, report) = result.unwrap();
+    assert_contents(&h, &[A], &[]);
+    assert!(!report.migrated_from_v1, "commit did not happen");
+    assert_eq!(fs::read(&f.cp).unwrap(), v1_cp, "v1 checkpoint kept");
+
+    assert!(report.migration_failed);
+    // The distinguishing feature of this half: appends are fine.
+    assert!(!wal.is_frozen());
+    assert!(!report.appends_frozen);
+    // Still not a clean startup, and still worth an early compaction.
+    assert!(!report.is_clean());
+    assert!(!report.data_loss_suspected());
+    assert!(
+        report.compaction_recommended,
+        "nothing else in the report fires here, so without migration_failed \
+         the migration would only be retried on the next launch"
+    );
+
+    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    assert!(r2.migrated_from_v1);
+    assert!(!r2.migration_failed);
+    assert_contents(&h2, &[A], &[]);
 }
 
 // ---------------------------------------------------------------------------
@@ -958,12 +1023,18 @@ fn wal_unknown_version_quarantined() {
     data[4] = 9; // future version
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, wal, report) = open_recovering(&f.cp).unwrap();
     assert_eq!(report.wal_state, WalState::Quarantined);
     assert!(report.data_loss_suspected());
     assert_contents(&h, &[A, B], &[C, D, E]);
     assert!(!f.wal.exists(), "unreadable WAL renamed away");
     assert_eq!(quarantine_count(&f), 1);
+    // A quarantine that succeeded leaves a fresh, appendable WAL: the state
+    // is data loss, not degraded persistence. Folding "frozen" into
+    // `wal_state` would have conflated the two and reported this healthy
+    // file as memory-only.
+    assert!(!wal.is_frozen());
+    assert!(!report.appends_frozen);
 }
 
 #[test]

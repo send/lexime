@@ -84,6 +84,20 @@ pub struct OpenReport {
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
+    /// A v1→v2 migration was needed but its commit (the v2 checkpoint
+    /// write) failed, so the v1 files are kept for the next startup to
+    /// retry. Derived from the migration's own outcome rather than from a
+    /// side effect of it: the `Err` branch only freezes the WAL when a
+    /// legacy WAL was consumed, so `is_frozen()` misses the v1-checkpoint-
+    /// with-fresh-WAL case entirely — and that case reported a clean
+    /// startup while learning quietly failed to migrate.
+    pub migration_failed: bool,
+    /// Appends were frozen when this WAL was opened: everything learned
+    /// this session stays in memory until a compaction restores appendable
+    /// form. Derived once from `wal.is_frozen()` rather than assigned in
+    /// each branch that freezes — a branch forgetting to set its state is
+    /// precisely how a failed migration came to look clean.
+    pub appends_frozen: bool,
     /// A replayed Tombstone left deleted strings in the old checkpoint /
     /// earlier frames unscrubbed — feeds `compaction_recommended` (§5.4).
     /// Not surfaced over UniFFI; an internal startup-scrub signal.
@@ -110,6 +124,8 @@ impl OpenReport {
             CheckpointState::Loaded | CheckpointState::Missing
         ) && matches!(self.wal_state, WalState::Clean | WalState::Missing)
             && !self.migrated_from_v1
+            && !self.migration_failed
+            && !self.appends_frozen
     }
 }
 
@@ -125,6 +141,8 @@ pub fn open_recovering(
         frames_replayed: 0,
         frames_skipped: 0,
         quarantined_paths: Vec::new(),
+        migration_failed: false,
+        appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
     };
@@ -305,7 +323,17 @@ pub fn open_recovering(
                 }
             }
         }
+        // Derived from the outcome, not from the freeze above: that freeze
+        // is conditional on a legacy WAL, so a v1 checkpoint next to a fresh
+        // v2 WAL fails the commit without freezing anything.
+        report.migration_failed = !report.migrated_from_v1;
     }
+
+    // Whatever branch froze the WAL — or left it frozen — this session's
+    // appends are memory-only until a compaction heals the file. Derived
+    // once, here, so a future freeze site cannot report a clean startup by
+    // omission.
+    report.appends_frozen = wal.is_frozen();
 
     // Anomaly (§8 missing x non-empty): a checkpoint should only be absent
     // when the WAL is too. Recoverable via replay, but checkpoint early.
@@ -333,7 +361,11 @@ pub fn open_recovering(
     // the Tombstone replays (deletion correct) but nothing is skipped, so
     // without this signal no scrub would run until an unrelated compaction,
     // leaving the input on disk indefinitely.
+    // migration_failed: without it the no-legacy-WAL case schedules nothing
+    // and the migration is retried only on the next launch. A compaction
+    // writes the v2 checkpoint, which is exactly the commit that failed.
     report.compaction_recommended = report.migrated_from_v1
+        || report.migration_failed
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
