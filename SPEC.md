@@ -605,6 +605,8 @@ macOS で動作する最小限の IME を構築。
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
+| `fetch-dict-symbols` | バンドル記号 TSV の生成（ギリシャ文字・数学記号） |
+| `fetch-dict-extras` | curated ドメイン TSV の生成（IT / 食 / 地理 ほか） |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
 | `dict` | 辞書のコピー |
 | `dict-clean` | コンパイル済み辞書の削除（次回ビルドで再コンパイル） |
@@ -612,7 +614,7 @@ macOS で動作する最小限の IME を構築。
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy --all-targets` |
-| `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny + cargo-vet + cargo-machete（未使用 deps） |
+| `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
@@ -622,6 +624,7 @@ macOS で動作する最小限の IME を構築。
 | `diff-snapshot` | スナップショット差分比較 |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml） |
 | `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
+| `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |
@@ -638,7 +641,7 @@ macOS で動作する最小限の IME を構築。
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
-| `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo は依存の build.rs を実行するので、cargo を呼ぶ全ジョブをこれが gate する |
+| `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
 | `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets` |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
@@ -649,7 +652,9 @@ macOS で動作する最小限の IME を構築。
 | `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run test-swift` |
 
-Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` / `accuracy` は別プロファイルをビルドするため専用キー、`screen` は unlocked な `cargo metadata` が `--locked` 検査より先に Cargo.lock を繕ってしまうため意図的にキャッシュなし）。
+Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
+
+> この表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/ci.yml` と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
 ## 未決事項
 
