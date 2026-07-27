@@ -50,10 +50,12 @@ what a generic reviewer misses:
   note, which predates the history split. Findings proposing to collapse the
   two cases re-litigate a settled decision — do not raise them.
 - **Deletion durability vs. the durable set (settled)**: the no-op-deletion
-  skip is gated on `contains_entries` **or** `durable_residue_contains`, not
-  memory alone — an entry evicted for capacity is gone from the maps while the
+  skip is gated on `UserHistory::deletion_has_durable_target`, not on memory
+  alone — an entry evicted for capacity is gone from the maps while the
   checkpoint still holds it, and skipping there made the deletion a silent
-  no-op that a restart undid (#286). Two sub-decisions are settled. (a) The
+  no-op that a restart undid (#286). That predicate is deliberately one
+  method rather than two the caller ORs together: answering only the
+  in-memory half is the bug itself. Two sub-decisions are settled. (a) The
   residue tracks *keys*, not a single "something was evicted" bit: a bit is
   permanently set once a heavy user reaches `max_unigrams`, which would make
   every ForwardDelete of a never-learned candidate pay a key-thread
@@ -64,7 +66,12 @@ what a generic reviewer misses:
   identical to one raised before it, and covering would retire a key the
   written checkpoint still contains — reopening #286. Findings proposing to
   collapse the residue to a boolean, or to drop the epoch stamps for a plain
-  set difference, re-litigate these — do not raise them.
+  set difference, re-litigate these — do not raise them. Past a memory cap
+  the residue drops key tracking and answers conservatively for everything;
+  the cap is a constant, not a function of `max_unigrams`/`max_bigrams`,
+  because those are user-settable while the compaction that clears the
+  residue fires on a fixed frame threshold — deriving it would let a
+  small-capacity configuration saturate during ordinary typing.
 - **`wal_state` does not carry freeze or migration failure (settled)**:
   `OpenReport` reports appends-frozen and migration-commit-failure as their own
   fields rather than folding them into `wal_state`. `WalState::Quarantined`
@@ -76,8 +83,13 @@ what a generic reviewer misses:
   own outcome (`migrate && !migrated_from_v1`), not from `is_frozen()`: the
   `Err` branch only freezes when a legacy WAL was consumed, so a v1 checkpoint
   beside a fresh WAL fails the commit without freezing anything and would
-  report a clean startup. Findings proposing either fold re-litigate a settled
-  decision — do not raise them.
+  report a clean startup. A dedicated `CheckpointState::MigrationFailed` (the
+  other option #296 floated) is rejected for the same reason as the
+  `wal_state` fold: the two facts are independent — a migration can fail with
+  appends healthy, and appends can freeze with no migration in sight — so one
+  enum cannot carry both without a state per combination. Findings proposing
+  either fold, or a migration-specific `CheckpointState`, re-litigate a
+  settled decision — do not raise them.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately

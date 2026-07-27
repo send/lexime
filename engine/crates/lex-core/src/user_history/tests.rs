@@ -754,7 +754,7 @@ fn test_residue_reraised_during_a_checkpoint_write_survives_it() {
 #[test]
 fn test_residue_saturation_is_conservative_and_lifts_only_when_quiescent() {
     let mut h = UserHistory::new();
-    for i in 0..(max_residue() + 1) {
+    for i in 0..(MAX_RESIDUE + 1) {
         raise_residue(&mut h, &pair(&format!("r{i}"), &format!("s{i}")));
     }
     // Past the cap the set is dropped and every query answers "possible".

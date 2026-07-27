@@ -167,9 +167,10 @@ pub struct LexHistoryOpenReport {
     pub wal_state: LexHistoryWalState,
     pub migrated_from_v1: bool,
     /// A v1->v2 migration was needed and its commit failed; the v1 files
-    /// are kept for the next startup to retry. Surfaced because `clean`
-    /// alone only says "something happened" — without it the log line reads
-    /// `checkpoint: Loaded, wal: Clean`, i.e. exactly like a healthy start.
+    /// are kept, and a startup compaction retries the write in-session.
+    /// Surfaced because `clean` alone only says "something happened" —
+    /// without it the log line reads `checkpoint: Loaded, wal: Clean`, i.e.
+    /// exactly like a healthy start.
     pub migration_failed: bool,
     /// Appends were frozen at open: this session's learning stays in memory
     /// until a compaction restores appendable form.
@@ -694,16 +695,24 @@ impl LexUserHistory {
             return CompactOutcome::Failed;
         }
 
-        // The checkpoint is a full snapshot, so everything it contains is
-        // now both on disk and in the state it was cloned from: the residue
-        // keys that snapshot carried are settled. Keys raised *since* the
-        // clone carry a newer epoch and survive — the file does hold those.
-        write_recover(&self.inner).cover_durable_residue(&snapshot);
-
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
         // snapshot time) may be destroyed.
         let mut wal = lock_recover(&self.wal);
+
+        // The checkpoint is a full snapshot, so everything it contains is
+        // now both on disk and in the state it was cloned from: the residue
+        // keys that snapshot carried are settled. Keys raised *since* the
+        // clone carry a newer epoch and survive — the file does hold those.
+        //
+        // Under the wal mutex, not beside it: "every history mutation runs
+        // under the wal mutex" is the invariant the deletion-skip check
+        // cites for being race-free, and it is also what lets §4 promise
+        // that swapping the RwLock for an ArcSwap stays a local change. The
+        // retain is O(residue) — a few hundred µs at capacity, once per
+        // compaction — which is cheaper than carving an exception into that
+        // invariant.
+        write_recover(&self.inner).cover_durable_residue(&snapshot);
         match wal.truncate_covered(snapshot.applied_seq()) {
             Ok(true) => CompactOutcome::Done,
             Ok(false) => {

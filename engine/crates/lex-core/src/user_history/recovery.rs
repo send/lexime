@@ -85,8 +85,10 @@ pub struct OpenReport {
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
     /// A v1→v2 migration was needed but its commit (the v2 checkpoint
-    /// write) failed, so the v1 files are kept for the next startup to
-    /// retry. Derived from the migration's own outcome rather than from a
+    /// write) failed, so the v1 files are kept intact. This also drives
+    /// `compaction_recommended`, so the write is retried in-session rather
+    /// than only on the next launch. Derived from the migration's own
+    /// outcome rather than from a
     /// side effect of it: the `Err` branch only freezes the WAL when a
     /// legacy WAL was consumed, so `is_frozen()` misses the v1-checkpoint-
     /// with-fresh-WAL case entirely — and that case reported a clean

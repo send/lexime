@@ -437,9 +437,9 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 候補選択中に Fn+Delete を押すと、選択中の候補に対応する学習エントリ（ユニグラム + バイグラム）を削除する。削除は WAL に `Tombstone` frame を書き込んで（書き込み時に `F_FULLFSYNC`）耐久化し、replay 時に削除が再適用されるため WAL リプレイで復活しない。物理スクラブ（旧 checkpoint と過去 Committed frame に残る文字列の消去）は直後に非同期 compaction をスケジュールして行い、`scrub_pending` + `compact_gate`（Mutex）で直列化する。
 
-学習されていない候補の削除（no-op）には Tombstone を書かず `F_FULLFSYNC` を払わない。**ただし「メモリに無い」は「ディスクに無い」を意味しない** — 退避（§退避）で落ちたエントリや、耐久化が確立しなかった削除の対象は、メモリから消えていても直近の checkpoint には残っている。これらのキーは `DurableResidue` として記録され、no-op 判定から除外して必ず Tombstone を書く（そうしないと削除が黙って無効になり、次回起動で復活する）。キー単位で追跡するため、退避が起きても**それ以外の未学習候補の削除は fast path のまま**。この状態は次の compaction 成功で解ける。
+学習されていない候補の削除（no-op）には Tombstone を書かず `F_FULLFSYNC` を払わない。**ただし「メモリに無い」は「ディスクに無い」を意味しない** — 退避（§退避）で落ちたエントリや、耐久化が確立しなかった削除の対象は、メモリから消えていても直近の checkpoint には残っている。これらのキーは `DurableResidue` として記録され、no-op 判定から除外して必ず Tombstone を書く（そうしないと削除が黙って無効になり、次回起動で復活する）。キー単位で追跡するため、退避が起きても**それ以外の未学習候補の削除は fast path のまま**。この状態は次の compaction 成功で解ける（追跡キーが上限に達した場合のみ、キー単位の追跡を諦めて「常に Tombstone を書く」保守動作に退避する。上限は 1 compaction 区間では到達しないよう設定してあるので、これは checkpoint が失敗し続けている状態の症状）。
 
-Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は §5.4 のフォールバックとして checkpoint を**同期的に**書き出して削除を永続化する（`durability_failed` → `run_gated_compact`）。
+Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、フォールバックとして checkpoint を**同期的に**書き出して削除を永続化する（`durability_failed` → `run_gated_compact`、design §5.4）。
 
 ### 保存（WAL + Checkpoint、LXUD v2）
 
@@ -448,7 +448,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は §5
 - **seq**: WAL フレームは単調増加の連番を持ち、checkpoint ヘッダの `applied_seq` が「効果を含む最後の seq」を記録。replay は `seq > applied_seq` のフレームのみ適用するため、checkpoint 書き込みと WAL truncate の間でクラッシュしても二重適用が構造的に起きない
 - **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync（best-effort・log-only）で書き出し + 条件付き WAL truncate）。compaction の排他は `compact_gate` (Mutex)、削除・障害後の即時要求は `scrub_pending` で直列化。削除は `Tombstone` frame（削除の WAL 表現、書き込み時に毎回 `F_FULLFSYNC`）を append し、直後に非同期スクラブ compaction をスケジュールして物理消去する。全消去（`clear`）は空 checkpoint（`applied_seq` = 現 WAL 最大 seq）を先行書き込みしてコミットポイントとし、以後どのクラッシュ点でも空履歴に収束する（旧 WAL frame は全て skip される）
 - **場所**: `~/Library/Application Support/Lexime/user_history.lxud`
-- **起動時（エンジン経路）**: `recovery::open_recovering` — checkpoint ロード → WAL replay（evict なし + 事後 1 回）→ in-memory 復元。破損は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空で継続、WAL 末尾破損は last-good オフセットで物理修復。どのファイル状態でも起動は成功し学習は継続する（`OpenReport` に結果を記録。Err は EACCES 等の環境障害のみ）。`OpenReport` は v1→v2 migration の commit 失敗（`migration_failed`。v1 ファイルを温存して次回起動が再試行する）と append 凍結（`appends_frozen`。このセッションの学習は compaction が heal するまでメモリのみ）も持つ — どちらも `checkpoint_state` / `wal_state` は健全な値のままなので、それらだけでは正常起動と区別できない
+- **起動時（エンジン経路）**: `recovery::open_recovering` — checkpoint ロード → WAL replay（evict なし + 事後 1 回）→ in-memory 復元。破損は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空で継続、WAL 末尾破損は last-good オフセットで物理修復。どのファイル状態でも起動は成功し学習は継続する（`OpenReport` に結果を記録。Err は EACCES 等の環境障害のみ）。`OpenReport` は v1→v2 migration の commit 失敗（`migration_failed`。v1 ファイルは温存し、起動時 compaction が同一セッション内で書き込みを再試行する）と append 凍結（`appends_frozen`。このセッションの学習は compaction が heal するまでメモリのみ）も持つ — どちらも `checkpoint_state` / `wal_state` は健全な値のままなので、それらだけでは正常起動と区別できない
 - **オフラインツール経路**: `UserHistory::open` / `open_with_wal` は無副作用・厳格エラーのまま（監査ツールが稼働中 IME のファイルを rename しない）
 
 ### 退避

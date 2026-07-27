@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::dict::DictEntry;
 use crate::settings::settings;
@@ -44,11 +45,17 @@ pub struct UserHistory {
 /// Keys that may survive in the durable set (checkpoint, or WAL frames a
 /// replay would re-apply) after memory dropped them.
 ///
-/// Memory and the durable set diverge in this direction through exactly two
-/// routes — capacity eviction, and a deletion whose durability was never
-/// established — and both are settled by one event: a checkpoint that lands.
-/// While a key is listed here, "absent from memory" no longer proves "absent
-/// from disk", so the no-op-deletion skip must not fire for it.
+/// Within a process, memory and the durable set diverge in this direction
+/// through two routes — capacity eviction, and a deletion whose frame never
+/// reached the WAL — and both are settled by one event: a checkpoint that
+/// lands. While a key is listed here, "absent from memory" no longer proves
+/// "absent from disk", so the no-op-deletion skip must not fire for it.
+///
+/// A deletion whose frame *did* reach the WAL but whose flush failed
+/// (`SyncFailed`) is deliberately not tracked: the frame is readable, so a
+/// replay re-applies the deletion, and the synchronous checkpoint fallback
+/// covers the flush. Only power loss can undo that, and it takes this
+/// process-local set with it.
 ///
 /// Each entry carries the `epoch` at which it was raised. A plain set cannot
 /// work: it is idempotent, so a key re-raised while a checkpoint is being
@@ -59,7 +66,11 @@ pub struct UserHistory {
 /// instead of building owned keys — this check runs on the key-processing
 /// thread inside the wal mutex, which is why
 /// [`UserHistory::contains_entries`] avoids allocating there too.
-#[derive(Clone, Default, Debug)]
+///
+/// No `Debug`: the keys are raw readings and surfaces, and neither
+/// [`UserHistory`] nor [`HistoryEntry`] derives it either — user input must
+/// not become reachable through a `{:?}` in a log line.
+#[derive(Clone, Default)]
 struct DurableResidue {
     /// reading → (surface → epoch raised)
     unigrams: HashMap<String, HashMap<String, u64>>,
@@ -71,22 +82,26 @@ struct DurableResidue {
     /// saturated. That is what lets `cover` tell a quiescent moment from one
     /// where untracked keys appeared.
     epoch: u64,
-    /// Key tracking was abandoned past [`max_residue`]; every query answers
+    /// Key tracking was abandoned past [`MAX_RESIDUE`]; every query answers
     /// "possible" until a checkpoint lands on a quiescent state.
     saturated: bool,
 }
 
-/// Cap on tracked residue keys, derived from the history's own capacity:
-/// past that the set stops being cheaper than answering conservatively.
+/// Cap on tracked residue keys.
 ///
-/// This is not only a failure-mode structure — a user at capacity raises one
-/// key per eviction and clears them at the next compaction — so the cap is
-/// approached only when checkpoints keep failing across many compaction
-/// intervals.
-fn max_residue() -> usize {
-    let s = settings();
-    s.history.max_unigrams + s.history.max_bigrams
-}
+/// This bounds memory, so it is a constant rather than a function of
+/// `max_unigrams` / `max_bigrams`. Deriving it from those was tried and is
+/// wrong: they are user-settable, the compaction that clears the residue
+/// fires on a fixed WAL-frame threshold instead, and a configuration with
+/// small caps would then saturate during ordinary typing on a healthy disk
+/// — reinstating exactly the per-delete flush the per-key design avoids.
+///
+/// Sized so a single compaction interval cannot reach it (a commit raises a
+/// handful of keys at most, and compaction runs every ~1000 frames), which
+/// keeps saturation a symptom of checkpoints failing repeatedly, whatever
+/// the configured capacity. At ~100 bytes per key the ceiling is a few MB,
+/// held only while the disk is refusing writes.
+const MAX_RESIDUE: usize = 50_000;
 
 /// The bigram keys a segment list touches: for each adjacent pair, the
 /// previous surface plus the next (reading, surface). Every bigram map in
@@ -149,7 +164,11 @@ impl DurableResidue {
         if self.saturated {
             return None;
         }
-        if self.tracked >= max_residue() {
+        if self.tracked >= MAX_RESIDUE {
+            warn!(
+                "durable-residue tracking saturated at {MAX_RESIDUE} keys (checkpoints \
+                 are not landing); every deletion now pays a full flush until one does"
+            );
             self.saturated = true;
             self.unigrams.clear();
             self.bigrams.clear();
@@ -559,16 +578,14 @@ impl UserHistory {
                 }
             }
         }
-        for (prev_surface, next_reading, next_surface) in
-            bigram_keys(segments).map(|(p, r, s)| (p.to_string(), r.to_string(), s.to_string()))
-        {
-            let key = (next_reading, next_surface);
-            if let Some(inner) = self.bigrams.get_mut(&prev_surface) {
+        for (prev_surface, next_reading, next_surface) in bigram_keys(segments) {
+            let key = (next_reading.to_string(), next_surface.to_string());
+            if let Some(inner) = self.bigrams.get_mut(prev_surface) {
                 if inner.remove(&key).is_some() {
                     removed = true;
                 }
                 if inner.is_empty() {
-                    self.bigrams.remove(&prev_surface);
+                    self.bigrams.remove(prev_surface);
                 }
             }
         }

@@ -139,14 +139,16 @@ final class EngineContainer {
             // tail repair is the expected power-loss residue, migration is
             // routine).
             let report = h.openReport()
-            // migrationFailed / appendsFrozen are appended to every branch,
-            // not just the last one: both leave checkpointState and walState
-            // at their healthy values, and both can co-occur with a
-            // migration or a quarantine — so a line built from the other
-            // fields alone reads exactly like a clean startup.
+            // Appended to every branch, not just the last one: both flags
+            // leave checkpointState and walState at their healthy values, and
+            // appendsFrozen can co-occur with a migration or a quarantine —
+            // so a line built from the other fields alone reads exactly like
+            // a clean startup. (migrationFailed cannot co-occur with
+            // migratedFromV1, being defined as its negation; it is appended
+            // uniformly rather than special-cased.)
             var degraded = ""
             if report.migrationFailed {
-                degraded += " migration=failed(retries next launch)"
+                degraded += " migration=failed(retrying via startup compaction)"
             }
             if report.appendsFrozen {
                 degraded += " appends=frozen(memory-only until compaction)"

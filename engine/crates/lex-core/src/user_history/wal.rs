@@ -296,10 +296,11 @@ pub struct HistoryWal {
     /// compaction, whose checkpoint contains the full state) re-establishes
     /// v2 form and lifts the freeze.
     ///
-    /// Assigned only through `set_frozen`, so the state has one write path
-    /// rather than a list of sites a future branch can forget — a branch
-    /// that froze without recording it is what let a failed migration
-    /// report a clean startup.
+    /// Assigned only through `set_frozen`, which keeps the write path
+    /// greppable — but that is readability, not enforcement. What keeps a
+    /// freeze from going unreported is that `open_recovering` derives
+    /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
+    /// branch has run, instead of asking each branch to record it.
     frozen: bool,
 }
 
