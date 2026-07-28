@@ -74,13 +74,30 @@ pub struct UserHistory {
 struct DurableResidue {
     /// reading → (surface → epoch raised)
     unigrams: HashMap<String, HashMap<String, u64>>,
-    /// prev_surface → ((next_reading, next_surface) → epoch raised)
-    bigrams: HashMap<String, HashMap<(String, String), u64>>,
+    /// prev_surface → (next_reading → (next_surface → epoch raised))
+    ///
+    /// One level deeper than [`UserHistory::bigrams`] on purpose. That map's
+    /// linear scan over a prev-surface bucket is justified by the bucket
+    /// being small — a surface has few successors in practice. The residue's
+    /// buckets are not filled by successor distribution but by eviction,
+    /// which picks the globally lowest-scoring entries and so piles up under
+    /// whatever prev-surfaces are common (particles), bounded only by
+    /// [`MAX_RESIDUE`]. Nesting keeps the probe an O(1) borrowed lookup on
+    /// the key-processing thread instead of a scan whose length is set by
+    /// how long the disk has been failing.
+    bigrams: HashMap<String, HashMap<String, HashMap<String, u64>>>,
     /// Tracked keys across both maps, so the size check need not walk them.
     tracked: usize,
-    /// Monotonic; advances on every raise, including ones dropped while
-    /// saturated. That is what lets `cover` tell a quiescent moment from one
-    /// where untracked keys appeared.
+    /// Advances on every raise, including ones dropped while saturated —
+    /// that is what lets `cover` tell a quiescent moment from one where
+    /// untracked keys appeared.
+    ///
+    /// Rising within a residue, but NOT across `clear`: that installs a
+    /// fresh `UserHistory`, so the counter restarts at 0. Comparing stamps
+    /// from either side of a clear is therefore meaningless, and what keeps
+    /// `cover` from doing so is `compact_gate` — the clear protocol parks on
+    /// it, so a wipe cannot land inside a compaction's save window (the one
+    /// stretch where `run_compact_impl` holds no lock at all).
     epoch: u64,
     /// Key tracking was abandoned past [`MAX_RESIDUE`]; every query answers
     /// "possible" until a checkpoint lands on a quiescent state.
@@ -131,28 +148,26 @@ impl DurableResidue {
 
     fn raise_unigram(&mut self, reading: String, surface: String) {
         let Some(epoch) = self.stamp() else { return };
-        if self
+        let added = self
             .unigrams
             .entry(reading)
             .or_default()
             .insert(surface, epoch)
-            .is_none()
-        {
-            self.tracked += 1;
-        }
+            .is_none();
+        self.account(added);
     }
 
     fn raise_bigram(&mut self, prev: String, next_reading: String, next_surface: String) {
         let Some(epoch) = self.stamp() else { return };
-        if self
+        let added = self
             .bigrams
             .entry(prev)
             .or_default()
-            .insert((next_reading, next_surface), epoch)
-            .is_none()
-        {
-            self.tracked += 1;
-        }
+            .entry(next_reading)
+            .or_default()
+            .insert(next_surface, epoch)
+            .is_none();
+        self.account(added);
     }
 
     /// Advance the epoch and report the stamp to record under, or `None`
@@ -164,18 +179,33 @@ impl DurableResidue {
         if self.saturated {
             return None;
         }
-        if self.tracked >= MAX_RESIDUE {
-            warn!(
-                "durable-residue tracking saturated at {MAX_RESIDUE} keys (checkpoints \
-                 are not landing); every deletion now pays a full flush until one does"
-            );
-            self.saturated = true;
-            self.unigrams.clear();
-            self.bigrams.clear();
-            self.tracked = 0;
-            return None;
-        }
         Some(self.epoch)
+    }
+
+    /// Fold a completed insert into the size accounting, saturating once the
+    /// set actually outgrows the cap.
+    ///
+    /// The check lives here, after the insert, rather than in [`Self::stamp`]
+    /// before it: a re-raise of an already-tracked key cannot grow the set,
+    /// and gating on raise *count* let one such duplicate at the cap throw
+    /// away every tracked key — turning a precise residue into the blanket
+    /// "everything might be on disk" answer for no gain.
+    fn account(&mut self, added: bool) {
+        if !added {
+            return;
+        }
+        self.tracked += 1;
+        if self.tracked <= MAX_RESIDUE {
+            return;
+        }
+        warn!(
+            "durable-residue tracking saturated at {MAX_RESIDUE} keys (checkpoints \
+             are not landing); every deletion now pays a full flush until one does"
+        );
+        self.saturated = true;
+        self.unigrams.clear();
+        self.bigrams.clear();
+        self.tracked = 0;
     }
 
     /// Whether these segments could still be in the durable set. Mirrors
@@ -189,11 +219,10 @@ impl DurableResidue {
                 .get(reading)
                 .is_some_and(|inner| inner.contains_key(surface))
         }) || bigram_keys(segments).any(|(prev, next_reading, next_surface)| {
-            self.bigrams.get(prev).is_some_and(|inner| {
-                inner
-                    .keys()
-                    .any(|(r, s)| r == next_reading && s == next_surface)
-            })
+            self.bigrams
+                .get(prev)
+                .and_then(|by_reading| by_reading.get(next_reading))
+                .is_some_and(|by_surface| by_surface.contains_key(next_surface))
         })
     }
 
@@ -210,20 +239,29 @@ impl DurableResidue {
     /// raise (tracked or dropped) happened during the write. Otherwise keys
     /// may have been discarded untracked and the conservative answer stands.
     fn cover(&mut self, snapshot: &DurableResidue) {
-        retain_newer(&mut self.unigrams, &snapshot.unigrams);
-        retain_newer(&mut self.bigrams, &snapshot.bigrams);
-        self.tracked = count_keys(&self.unigrams) + count_keys(&self.bigrams);
+        let uni = retain_newer(&mut self.unigrams, &snapshot.unigrams);
+        let bi = retain_newer_nested(&mut self.bigrams, &snapshot.bigrams);
+        self.tracked = uni + bi;
+        // Strict on purpose: an equal epoch is the only proof that nothing
+        // was raised — and therefore silently dropped — while the checkpoint
+        // was being written. Lifting after a busier window would re-arm the
+        // precise answer without the keys to back it, which is the one way
+        // this structure could under-report.
         if self.saturated && self.epoch == snapshot.epoch {
             self.saturated = false;
         }
     }
 }
 
-/// Drop every key whose stamp has not advanced past the one `snapshot` saw.
-fn retain_newer<K: Eq + std::hash::Hash>(
-    map: &mut HashMap<String, HashMap<K, u64>>,
-    snapshot: &HashMap<String, HashMap<K, u64>>,
-) {
+/// Drop every key whose stamp has not advanced past the one `snapshot` saw,
+/// returning how many survived. The count comes from the same pass that does
+/// the dropping — a second walk to recount runs under both the wal mutex and
+/// the `inner` write lock, where the conversion path is waiting.
+fn retain_newer(
+    map: &mut HashMap<String, HashMap<String, u64>>,
+    snapshot: &HashMap<String, HashMap<String, u64>>,
+) -> usize {
+    let mut kept = 0;
     map.retain(|outer, inner| {
         let covered = snapshot.get(outer);
         inner.retain(|k, epoch| {
@@ -231,12 +269,33 @@ fn retain_newer<K: Eq + std::hash::Hash>(
                 .and_then(|c| c.get(k))
                 .is_none_or(|seen| *epoch > *seen)
         });
+        kept += inner.len();
         !inner.is_empty()
     });
+    kept
 }
 
-fn count_keys<K>(map: &HashMap<String, HashMap<K, u64>>) -> usize {
-    map.values().map(|inner| inner.len()).sum()
+/// [`retain_newer`] for the residue's three-level bigram map.
+fn retain_newer_nested(
+    map: &mut HashMap<String, HashMap<String, HashMap<String, u64>>>,
+    snapshot: &HashMap<String, HashMap<String, HashMap<String, u64>>>,
+) -> usize {
+    let mut kept = 0;
+    map.retain(|outer, by_reading| {
+        let covered = snapshot.get(outer);
+        by_reading.retain(|reading, by_surface| {
+            let covered = covered.and_then(|c| c.get(reading));
+            by_surface.retain(|surface, epoch| {
+                covered
+                    .and_then(|c| c.get(surface))
+                    .is_none_or(|seen| *epoch > *seen)
+            });
+            kept += by_surface.len();
+            !by_surface.is_empty()
+        });
+        !by_reading.is_empty()
+    });
+    kept
 }
 
 #[derive(Clone)]
@@ -439,14 +498,11 @@ impl UserHistory {
         }
 
         // Bigram: consecutive pairs
-        for pair in segments.windows(2) {
-            let (_, prev_surface) = &pair[0];
-            let (next_reading, next_surface) = &pair[1];
-
-            let key = (next_reading.clone(), next_surface.clone());
+        for (prev_surface, next_reading, next_surface) in bigram_keys(segments) {
+            let key = (next_reading.to_string(), next_surface.to_string());
             let entry = self
                 .bigrams
-                .entry(prev_surface.clone())
+                .entry(prev_surface.to_string())
                 .or_default()
                 .entry(key)
                 .or_insert(HistoryEntry {
@@ -627,6 +683,15 @@ impl UserHistory {
     /// maps while the last checkpoint still holds it).
     pub fn deletion_has_durable_target(&self, segments: &[(String, String)]) -> bool {
         self.contains_entries(segments) || self.durable_residue.contains_entries(segments)
+    }
+
+    /// Drop the residue wholesale, for a caller that just made the durable
+    /// set equal to (or a superset of) this very state — a checkpoint
+    /// written from `self`, or a wipe that emptied both sides. Unlike
+    /// [`Self::cover_durable_residue`] there is no snapshot to compare
+    /// against, because the saved state *is* this one.
+    pub(super) fn reset_durable_residue(&mut self) {
+        self.durable_residue = DurableResidue::default();
     }
 
     /// Retire the residue keys a landed checkpoint accounts for. `snapshot`

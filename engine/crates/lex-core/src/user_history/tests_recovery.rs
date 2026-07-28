@@ -797,19 +797,61 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
     // The distinguishing feature of this half: appends are fine.
     assert!(!wal.is_frozen());
     assert!(!report.appends_frozen);
-    // Still not a clean startup, and still worth an early compaction.
+    // Still not a clean startup.
     assert!(!report.is_clean());
     assert!(!report.data_loss_suspected());
+    // No in-session retry here, deliberately: the same unwritable directory
+    // that failed the commit also failed the `.v1.bak` copy, and a startup
+    // compaction is not the migration — it would write a v2 checkpoint over
+    // the v1 file without the commit's preconditions, destroying the only
+    // copy of the v1 bytes. The next launch re-attempts properly, backup
+    // first.
+    assert!(!v1_backup_path(&f.cp).exists(), "backup could not be made");
     assert!(
-        report.compaction_recommended,
-        "nothing else in the report fires here, so without migration_failed \
-         the migration would only be retried on the next launch"
+        !report.compaction_recommended,
+        "must not schedule a compaction that would overwrite an unrescued v1 checkpoint"
     );
 
     let (h2, _, r2) = open_recovering(&f.cp).unwrap();
     assert!(r2.migrated_from_v1);
     assert!(!r2.migration_failed);
     assert_contents(&h2, &[A], &[]);
+}
+
+/// Same failure, but a previous attempt already made the `.v1.bak` rescue
+/// copy. The v1 bytes are safe, so the in-session retry is scheduled — this
+/// is the half that `migration_failed` exists to reach, and it is what makes
+/// the gate a gate rather than a revert.
+#[cfg(unix)]
+#[test]
+fn t5_migration_commit_failure_retries_in_session_once_v1_is_rescued() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx();
+    let mut seed = UserHistory::new();
+    seed.record_at(&seg(A), T0);
+    let v1_cp = v1_checkpoint_bytes(&seed);
+    fs::write(&f.cp, &v1_cp).unwrap();
+    // A rescue copy an earlier startup managed to write before the disk went
+    // bad.
+    fs::write(v1_backup_path(&f.cp), &v1_cp).unwrap();
+    let dir = f.cp.parent().unwrap().to_path_buf();
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(dir.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: directory permissions are not enforced here");
+        return;
+    }
+    let result = open_recovering(&f.cp);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (_, _, report) = result.unwrap();
+    assert!(report.migration_failed);
+    assert!(!report.is_clean());
+    assert!(
+        report.compaction_recommended,
+        "the v1 bytes are preserved, so the write may be retried in-session"
+    );
 }
 
 // ---------------------------------------------------------------------------

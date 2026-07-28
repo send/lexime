@@ -284,9 +284,13 @@ pub fn open_recovering(
     history.evict();
 
     // --- 3. migration commit (§7) ---
+    // Whether the v1 bytes are safe somewhere other than the checkpoint path.
+    // Vacuously true when there is no v1 checkpoint to lose (v1 data that
+    // came only from a headerless WAL).
+    let mut v1_rescued = true;
     if migrate {
         if v1_checkpoint_present {
-            backup_v1_checkpoint(checkpoint_path);
+            v1_rescued = backup_v1_checkpoint(checkpoint_path);
         }
         // applied_seq is usually 0 here (v1 data carries no seqs), but not
         // always: if a previous startup's migration commit failed with no
@@ -296,6 +300,13 @@ pub fn open_recovering(
         // replay) and they are correctly skipped from now on.
         match history.save(checkpoint_path) {
             Ok(()) => {
+                // This checkpoint was written from `history` itself, so it
+                // contains everything memory contains: nothing can be left on
+                // disk that memory lacks, and the residue the post-replay
+                // `evict()` raised is settled. (The non-migrating startup
+                // path writes no checkpoint, so its residue correctly stands
+                // until the first compaction.)
+                history.reset_durable_residue();
                 // Commit point passed: from here any crash leaves a v2
                 // checkpoint, and a leftover v1 WAL is discarded on the next
                 // startup (idempotent).
@@ -366,8 +377,17 @@ pub fn open_recovering(
     // migration_failed: without it the no-legacy-WAL case schedules nothing
     // and the migration is retried only on the next launch. A compaction
     // writes the v2 checkpoint, which is exactly the commit that failed.
+    //
+    // Gated on the rescue copy existing, because that compaction is NOT the
+    // migration: `run_compact_impl` writes a v2 checkpoint straight over the
+    // v1 file without any of the commit's preconditions — no `.v1.bak`, no
+    // `Migrated` state, no `migrated_from_v1`. If the backup could not be
+    // made (the same unwritable directory that failed the commit), letting
+    // it run would destroy the v1 bytes and the downgrade / migration-bug
+    // hatch with them. Leaving the file alone costs an in-session retry; the
+    // next launch re-attempts the migration, backup first.
     report.compaction_recommended = report.migrated_from_v1
-        || report.migration_failed
+        || (report.migration_failed && v1_rescued)
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
@@ -455,10 +475,21 @@ fn quarantine(path: &Path, quarantined: &mut Vec<PathBuf>) -> bool {
 /// Copy the v1 checkpoint bytes aside before migration overwrites the path.
 /// Best-effort: the backup is a manual rescue hatch for downgrades and
 /// migration bugs, not a correctness dependency.
-fn backup_v1_checkpoint(checkpoint_path: &Path) {
+/// Copy the v1 checkpoint bytes aside before migration overwrites the path.
+/// Returns whether the rescue copy is in place — either written now, or left
+/// by an earlier attempt. Migration itself continues either way (the backup
+/// is a manual rescue hatch, not a correctness dependency), but callers that
+/// would let something *else* overwrite the v1 file need to know.
+fn backup_v1_checkpoint(checkpoint_path: &Path) -> bool {
     let dest = v1_backup_path(checkpoint_path);
-    if let Err(e) = fs::copy(checkpoint_path, &dest) {
-        warn!("v1 checkpoint backup failed ({e}); continuing migration");
+    match fs::copy(checkpoint_path, &dest) {
+        Ok(_) => true,
+        Err(e) => {
+            warn!("v1 checkpoint backup failed ({e}); continuing migration");
+            // An earlier startup may have made the copy before the disk went
+            // bad; that one is just as good a rescue hatch as a fresh one.
+            dest.exists()
+        }
     }
 }
 

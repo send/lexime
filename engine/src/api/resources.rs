@@ -384,8 +384,21 @@ impl LexUserHistory {
                     // a silent no-op that a restart undoes. Scoped so the
                     // read guard is released before the append below, which
                     // for a Tombstone includes a full flush.
-                    let has_target =
-                        read_recover(&self.inner).deletion_has_durable_target(segments);
+                    // The memory probe sees state as of *before* this
+                    // batch — `apply_batch` runs once, after the loop — so an
+                    // earlier record in the same batch has to be consulted
+                    // separately. Without that, a batch of
+                    // [Committed(X), Deletion(X)] finds X nowhere, skips the
+                    // tombstone, and then learns X: the deletion loses to a
+                    // commit it was supposed to undo.
+                    let has_target = read_recover(&self.inner)
+                        .deletion_has_durable_target(segments)
+                        || sequenced.iter().any(|(earlier, _)| match earlier {
+                            WalRecord::Committed { segments: c, .. } => {
+                                c.iter().any(|pair| segments.contains(pair))
+                            }
+                            WalRecord::Tombstone { .. } => false,
+                        });
                     if !has_target {
                         continue;
                     }
@@ -708,10 +721,20 @@ impl LexUserHistory {
         // Under the wal mutex, not beside it: "every history mutation runs
         // under the wal mutex" is the invariant the deletion-skip check
         // cites for being race-free, and it is also what lets §4 promise
-        // that swapping the RwLock for an ArcSwap stays a local change. The
-        // retain is O(residue) — a few hundred µs at capacity, once per
-        // compaction — which is cheaper than carving an exception into that
-        // invariant.
+        // that swapping the RwLock for an ArcSwap stays a local change.
+        //
+        // Cost: one pass over the residue, holding the wal mutex and the
+        // `inner` write lock — so both the key thread and conversion reads
+        // wait on it. ~550 µs at 10k tracked keys and ~3 ms at the 50k cap
+        // (M-series, release), against ~0 in the steady state where the
+        // residue is empty. The cap is only approached when checkpoints have
+        // been failing for many intervals, which is also when this run is
+        // the thing about to fix that.
+        //
+        // Comparing stamps across this call is only meaningful because
+        // `compact_gate` keeps a `clear` out of the window above — the one
+        // stretch where no lock is held — and a clear resets the residue
+        // epoch to 0. See `DurableResidue::epoch`.
         write_recover(&self.inner).cover_durable_residue(&snapshot);
         match wal.truncate_covered(snapshot.applied_seq()) {
             Ok(true) => CompactOutcome::Done,
@@ -986,9 +1009,14 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let hist = hist_with_evicted_entry(&cp);
 
+        let before = read_recover(&hist.inner).applied_seq();
         hist.apply_records(&[deletion("きょう", "今日")]);
+        // Not `entry_count() > 0`: this call also spawns the scrub
+        // compaction, which may truncate the WAL before the assertion runs.
+        // `applied_seq` records the same fact (a frame was appended and
+        // applied) and truncation does not roll it back.
         assert!(
-            lock_recover(&hist.wal).entry_count() > 0,
+            read_recover(&hist.inner).applied_seq() > before,
             "the deletion must reach the WAL: memory-absent is not disk-absent"
         );
 
@@ -1001,6 +1029,35 @@ mod tests {
         assert!(
             learned(&hist2, "きょう").is_empty(),
             "the deleted conversion must not come back"
+        );
+    }
+
+    #[test]
+    fn test_deletion_beats_a_commit_earlier_in_the_same_batch() {
+        // The memory probe sees pre-batch state, so a Deletion that follows a
+        // Committed for the same pair in one batch would find the pair
+        // nowhere, skip the tombstone, and then learn it — the ForwardDelete
+        // silently losing to the commit it was meant to undo.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日"), deletion("きょう", "今日")]);
+
+        assert!(
+            learned(&hist, "きょう").is_empty(),
+            "the deletion must win over a commit earlier in the same batch"
+        );
+        assert!(
+            hist.scrub_pending.load(Ordering::SeqCst) || lock_recover(&hist.wal).entry_count() >= 2,
+            "a tombstone must have been written, not skipped as a no-op"
+        );
+
+        drop(hist);
+        let hist2 = open_hist(&cp);
+        assert!(
+            learned(&hist2, "きょう").is_empty(),
+            "and it must not come back on restart"
         );
     }
 
