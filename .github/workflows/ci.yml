@@ -38,10 +38,19 @@ jobs:
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
+              # mise.toml defines the gates themselves ([tasks.lint] is the
+              # local twin of this workflow's lint job). Without this, an edit
+              # weakening a gate would skip the very jobs that would catch it.
+              - 'mise.toml'
             session:
               - 'engine/crates/lex-session/**'
+            # Root `lex_engine` package. examples/ and uniffi-bindgen.rs are
+            # cargo targets too, and lint now compiles them via --all-targets;
+            # unfiltered they would merge green and fail on someone else's PR.
             ffi:
               - 'engine/src/**'
+              - 'engine/examples/**'
+              - 'engine/uniffi-bindgen.rs'
             cli:
               - 'engine/crates/lex-cli/**'
             corpus:
@@ -102,7 +111,12 @@ jobs:
           shared-key: engine
 
       - run: cd engine && cargo fmt --all --check
-      - run: cd engine && cargo clippy --workspace --all-features -- -D warnings
+
+      # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
+      # leaving benches in no gate at all — `cargo test` skips `[[bench]]`
+      # targets too (they default to `test = false`; `harness` is not the
+      # lever). That is how #299 rotted unnoticed.
+      - run: cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
     needs: [changes, screen]
@@ -119,7 +133,10 @@ jobs:
       # `rust-version` in engine/Cargo.toml ([workspace.package]): a dependency
       # bump or code change that needs a newer Rust fails here even though every
       # other job builds on stable. Default features only — the optional
-      # `neural` feature pulls candle, whose MSRV is tracked separately.
+      # `neural` feature pulls candle, whose MSRV is tracked separately, and
+      # default targets only — do NOT propagate the `lint` job's --all-targets
+      # here, or criterion / proptest and bench source come under the MSRV
+      # constraint and a dev-dep bump turns CI red over code that never ships.
       - uses: dtolnay/rust-toolchain@1.88.0
 
       - uses: Swatinem/rust-cache@v2

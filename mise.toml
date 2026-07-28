@@ -381,7 +381,9 @@ run = "cd engine && cargo bench -p lex-core"
 description = "Run cargo fmt --check and clippy"
 run = [
   "cd engine && cargo fmt --all --check",
-  "cd engine && cargo clippy --workspace --all-features -- -D warnings",
+  # --all-targets is load-bearing — see the lint job in .github/workflows/ci.yml
+  # for why (benches are in no other gate). Keep the two in step. #299.
+  "cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings",
 ]
 
 [tasks.audit]

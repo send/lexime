@@ -11,7 +11,7 @@ invoked from this repo. The multi-round loop variant's calibration
 
 ## build_verify
 
-`cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features`
+`cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
 
 Per CLAUDE.md「ビルド・テスト」. When a fix touches any accuracy-impacting
 input — dictionary sources (dict_source / `engine/data/`) / connection

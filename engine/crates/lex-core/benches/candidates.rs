@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use lex_core::candidates::{generate_candidates, generate_prediction_candidates};
-use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
+use lex_core::dict::{DictEntry, TrieDictionary};
 
-fn bench_dict() -> Arc<dyn Dictionary> {
+fn bench_dict() -> TrieDictionary {
     let entries = vec![
         (
             "きょう".into(),
@@ -266,7 +264,7 @@ fn bench_dict() -> Arc<dyn Dictionary> {
             }],
         ),
     ];
-    Arc::new(TrieDictionary::from_entries(entries))
+    TrieDictionary::from_entries(entries)
 }
 
 static INPUTS: &[(&str, &str)] = &[

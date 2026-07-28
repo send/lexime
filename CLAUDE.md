@@ -24,8 +24,8 @@
 ## ビルド・テスト
 
 ```bash
-# Rust lint + test
-cd engine && cargo fmt --all --check && cargo clippy --workspace --all-features -- -D warnings && cargo test --workspace --all-features
+# Rust lint + test (--all-targets は必須: bench はこれ以外のゲートに載らない — #299)
+cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
 # アプリビルド・インストール
 mise run build && mise run install && mise run reload
