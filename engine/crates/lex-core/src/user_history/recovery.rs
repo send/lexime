@@ -85,9 +85,18 @@ pub struct OpenReport {
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
     /// A v1→v2 migration was needed but its commit (the v2 checkpoint
-    /// write) failed, so the v1 files are kept intact and the next launch
-    /// retries. Reported, not healed in-session: the only thing that could
-    /// heal it is a compaction, and a compaction is not the migration.
+    /// write) failed, so the v1 files are kept intact.
+    ///
+    /// This flag itself schedules nothing — a compaction is not the
+    /// migration, so using one as the retry would overwrite the v1
+    /// checkpoint on exactly the path where the commit is already failing.
+    /// When a legacy WAL was consumed the conversion does still complete
+    /// in-session, but for an unrelated reason: that path freezes the WAL,
+    /// and the compaction `appends_frozen` schedules to thaw it writes the
+    /// v2 checkpoint as a side effect. Otherwise the next launch retries.
+    /// So the timing is not a property of this flag, which is why the
+    /// shipped log line states the fact and not a schedule.
+    ///
     /// Derived from the migration's own outcome rather than from a
     /// side effect of it: the `Err` branch only freezes the WAL when a
     /// legacy WAL was consumed, so `is_frozen()` misses the v1-checkpoint-

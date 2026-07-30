@@ -103,8 +103,11 @@ what a generic reviewer misses:
   wipe site had to join a rescue protocol, and three review rounds each found
   another site that had not. Findings proposing to gate writes on the backup,
   or to retry a failed migration with a compaction, re-litigate this — do not
-  raise them. (The legacy-WAL variant still heals, but via `appends_frozen`:
-  there the WAL really is frozen, which a compaction genuinely fixes.)
+  raise them. (The legacy-WAL variant does still complete in-session, but for
+  an unrelated reason: that path freezes the WAL, and the compaction
+  `appends_frozen` schedules to thaw it writes the v2 checkpoint as a side
+  effect. The retry timing is therefore not a property of `migration_failed`,
+  which is why the shipped log line states the fact and not a schedule.)
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately
