@@ -18,8 +18,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use super::recovery::{
-    ensure_v1_rescued, open_recovering, remove_recovery_artifacts, v1_backup_path, CheckpointState,
-    WalState,
+    open_recovering, remove_recovery_artifacts, v1_backup_path, CheckpointState, WalState,
 };
 use super::wal::{
     HistoryWal, LegacyWalEntry, WalRecord, FRAME_HEADER_LEN, WAL_HEADER, WAL_HEADER_LEN,
@@ -801,14 +800,15 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
     // Still not a clean startup.
     assert!(!report.is_clean());
     assert!(!report.data_loss_suspected());
-    // The rescue copy could not be made (same unwritable directory), so the
-    // v1 bytes exist only at the checkpoint path. Scheduling a compaction is
-    // still fine — the guard is on the checkpoint *write*, which refuses
-    // while this flag is set, so it does not have to be repeated at each of
-    // the several places a compaction can start.
-    assert!(!v1_backup_path(&f.cp).exists(), "backup could not be made");
-    assert!(report.v1_unrescued, "v1 bytes exist nowhere else");
-    assert!(report.compaction_recommended);
+    // Deliberately no in-session retry: a compaction is not the migration
+    // (no `.v1.bak`, no `Migrated` state), so using one as the retry would
+    // overwrite the v1 checkpoint on exactly the path where the commit is
+    // already failing. The next launch re-attempts properly. Appends are
+    // fine here, so nothing else is degraded enough to warrant one either.
+    assert!(
+        !report.compaction_recommended,
+        "a failed migration must not schedule a generic compaction"
+    );
 
     let (h2, _, r2) = open_recovering(&f.cp).unwrap();
     assert!(r2.migrated_from_v1);
@@ -816,13 +816,12 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
     assert_contents(&h2, &[A], &[]);
 }
 
-/// Same failure, but a previous attempt already made the `.v1.bak` rescue
-/// copy. The v1 bytes are safe, so the in-session retry is scheduled — this
-/// is the half that `migration_failed` exists to reach, and it is what makes
-/// the gate a gate rather than a revert.
+/// Same failure with a `.v1.bak` already on disk: the backup is best-effort
+/// and changes nothing about scheduling. Pinned so a future change cannot
+/// quietly reintroduce a compaction-as-migration retry on either variant.
 #[cfg(unix)]
 #[test]
-fn t5_migration_commit_failure_retries_in_session_once_v1_is_rescued() {
+fn t5_migration_commit_failure_schedules_nothing_even_with_a_backup() {
     use std::os::unix::fs::PermissionsExt;
     let f = fx();
     let mut seed = UserHistory::new();
@@ -846,42 +845,7 @@ fn t5_migration_commit_failure_retries_in_session_once_v1_is_rescued() {
     let (_, _, report) = result.unwrap();
     assert!(report.migration_failed);
     assert!(!report.is_clean());
-    assert!(report.compaction_recommended);
-    assert!(
-        !report.v1_unrescued,
-        "a matching rescue copy is already on disk, so the write is unblocked"
-    );
-}
-
-/// `.v1.bak` merely existing is not proof of a rescue: `fs::copy` truncates
-/// its destination first, so a copy that dies partway leaves a short file,
-/// and a backup left by an older v1 state is not a rescue for these bytes.
-#[test]
-fn t5_partial_or_stale_v1_backup_does_not_count_as_rescued() {
-    let f = fx();
-    let mut seed = UserHistory::new();
-    seed.record_at(&seg(A), T0);
-    let v1_cp = v1_checkpoint_bytes(&seed);
-
-    for (name, bytes) in [
-        ("truncated", v1_cp[..v1_cp.len() / 2].to_vec()),
-        ("empty", Vec::new()),
-        ("stale", v1_checkpoint_bytes(&UserHistory::new())),
-    ] {
-        fs::write(&f.cp, &v1_cp).unwrap();
-        fs::write(v1_backup_path(&f.cp), &bytes).unwrap();
-        // Writable dir: the rescue can be completed, and must be.
-        assert!(
-            ensure_v1_rescued(&f.cp),
-            "{name}: a fresh copy should replace the unusable one"
-        );
-        assert_eq!(
-            fs::read(v1_backup_path(&f.cp)).unwrap(),
-            v1_cp,
-            "{name}: the backup must match the checkpoint byte for byte"
-        );
-        fs::remove_file(v1_backup_path(&f.cp)).ok();
-    }
+    assert!(!report.compaction_recommended);
 }
 
 // ---------------------------------------------------------------------------

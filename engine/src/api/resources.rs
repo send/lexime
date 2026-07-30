@@ -130,13 +130,6 @@ pub struct LexUserHistory {
     /// serializes appends across all sessions sharing this history so
     /// concurrent commits cannot interleave partial lines.
     commit_log: Mutex<CommitLog>,
-    /// The checkpoint path still holds v1 bytes that exist nowhere else
-    /// (a migration commit failed and its rescue copy failed with it).
-    /// While set, `run_compact_impl` will not write over them — a
-    /// compaction is not the migration and carries none of its steps, so
-    /// letting one land would destroy the only copy. Retried, and cleared,
-    /// at the write itself rather than at any one scheduler.
-    v1_unrescued: AtomicBool,
     /// What recovery found and did at open time (§10). Served to Swift via
     /// `open_report()` for the degraded-state menu (data loss) and NSLog
     /// (benign events).
@@ -282,7 +275,6 @@ impl LexUserHistory {
             compact_gate: Mutex::new(()),
             scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
-            v1_unrescued: AtomicBool::new(report.v1_unrescued),
             report,
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
@@ -711,26 +703,6 @@ impl LexUserHistory {
         let cp_path = lock_recover(&self.wal).checkpoint_path().to_path_buf();
 
         // 2. Write checkpoint (no locks held, slow I/O)
-        //
-        // Refuse while the path still holds the only copy of a v1
-        // checkpoint. This guard lives here, at the write, rather than on
-        // the startup scheduling hint: a compaction is reachable from
-        // several places (startup, the deletion scrub, the entry-count
-        // threshold, a heal after an append failure), and guarding one of
-        // them leaves the rest. Retry the rescue first — if the disk has
-        // recovered enough to copy, it has recovered enough to write, and
-        // the state clears itself.
-        if self.v1_unrescued.load(Ordering::SeqCst) {
-            if crate::user_history::recovery::ensure_v1_rescued(&cp_path) {
-                self.v1_unrescued.store(false, Ordering::SeqCst);
-            } else {
-                warn!(
-                    "checkpoint write skipped: the v1 checkpoint is still the only \
-                     copy of its data and could not be backed up"
-                );
-                return CompactOutcome::Failed;
-            }
-        }
         if let Err(e) = snapshot.save(&cp_path) {
             warn!("checkpoint write failed: {e}");
             return CompactOutcome::Failed;
@@ -900,14 +872,12 @@ mod tests {
                 path: cp.with_file_name("commit-log.jsonl"),
                 file: None,
             }),
-            v1_unrescued: AtomicBool::new(false),
             report: OpenReport {
                 checkpoint_state: CheckpointState::Missing,
                 wal_state: WalState::Missing,
                 migrated_from_v1: false,
                 migration_failed: false,
                 appends_frozen: false,
-                v1_unrescued: false,
                 frames_replayed: 0,
                 frames_skipped: 0,
                 quarantined_paths: Vec::new(),
@@ -1059,57 +1029,6 @@ mod tests {
         assert!(
             learned(&hist2, "きょう").is_empty(),
             "the deleted conversion must not come back"
-        );
-    }
-
-    #[test]
-    fn test_compaction_refuses_to_overwrite_an_unrescued_v1_checkpoint() {
-        // The guard is on the checkpoint write, not on the startup
-        // scheduling hint, because a compaction is reachable from several
-        // places (startup, the deletion scrub, the entry-count threshold, a
-        // heal after an append failure). This drives it through a plain
-        // compaction — a path a scheduling-level gate does not cover at all.
-        let dir = tempfile::tempdir().unwrap();
-        let cp = dir.path().join("history.lxud");
-        let hist = open_hist(&cp);
-        hist.apply_records(&[committed("きょう", "今日")]);
-
-        // v1 bytes sitting at the checkpoint path with no copy anywhere.
-        // Only the magic and version byte matter here — the guard refuses
-        // before anything parses the body.
-        let v1 = b"LXUD\x01some-v1-body".to_vec();
-        std::fs::write(&cp, &v1).unwrap();
-        hist.v1_unrescued.store(true, Ordering::SeqCst);
-
-        // Make the rescue impossible: a directory at the backup path means
-        // `write_atomic`'s rename cannot land.
-        let bak = crate::user_history::recovery::v1_backup_path(&cp);
-        std::fs::create_dir(&bak).unwrap();
-
-        assert!(
-            matches!(hist.run_compact(), CompactOutcome::Failed),
-            "the write must be refused, not attempted"
-        );
-        assert_eq!(
-            std::fs::read(&cp).unwrap(),
-            v1,
-            "the v1 checkpoint must be byte-for-byte untouched"
-        );
-        assert!(hist.v1_unrescued.load(Ordering::SeqCst), "still unrescued");
-
-        // Once the rescue can be made, the same call clears the flag,
-        // preserves the v1 bytes, and proceeds.
-        std::fs::remove_dir(&bak).unwrap();
-        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
-        assert!(!hist.v1_unrescued.load(Ordering::SeqCst));
-        assert_eq!(
-            std::fs::read(&bak).unwrap(),
-            v1,
-            "the v1 bytes must survive the overwrite"
-        );
-        assert!(
-            std::fs::read(&cp).unwrap().starts_with(b"LXUD\x02"),
-            "and the checkpoint is now v2"
         );
     }
 

@@ -89,17 +89,22 @@ what a generic reviewer misses:
   appends healthy, and appends can freeze with no migration in sight — so one
   enum cannot carry both without a state per combination. Findings proposing
   either fold, or a migration-specific `CheckpointState`, re-litigate a
-  settled decision — do not raise them. Relatedly: a compaction is not the
-  migration — `run_compact_impl` writes a v2 checkpoint over the v1 file with
-  none of the commit's steps (no backup, no `Migrated` state) — so it refuses
-  while `v1_unrescued` is set, retrying the rescue copy first. That guard is
-  deliberately on the *write* rather than on `compaction_recommended`: a
-  compaction starts from startup recovery, the deletion scrub, the entry-count
-  threshold and the append-failure heal, so a scheduling-level gate covers one
-  of four. `.v1.bak` merely existing is not proof of rescue (`fs::copy`
-  truncates its destination, and a backup from an older v1 state is not a
-  rescue for these bytes) — it is written atomically and accepted only on a
-  byte-for-byte match.
+  settled decision — do not raise them.
+- **A failed migration is reported, not healed in-session (settled)**: a
+  `migration_failed` startup deliberately schedules no compaction. A
+  compaction is *not* the migration — `run_compact_impl` writes a v2
+  checkpoint over the v1 file with none of the commit's steps (no `.v1.bak`,
+  no `Migrated` state) — so using one as the retry destroys the v1 bytes on
+  exactly the path where the commit is already failing. The next launch
+  re-attempts properly. `.v1.bak` stays **best-effort** per LXUD v2 decision
+  #13: it is a manual rescue hatch, not a correctness dependency, and
+  migration proceeds whether or not it lands. Making it a precondition was
+  tried and reverted — turning it into a dependency meant every write, GC and
+  wipe site had to join a rescue protocol, and three review rounds each found
+  another site that had not. Findings proposing to gate writes on the backup,
+  or to retry a failed migration with a compaction, re-litigate this — do not
+  raise them. (The legacy-WAL variant still heals, but via `appends_frozen`:
+  there the WAL really is frozen, which a compaction genuinely fixes.)
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately
