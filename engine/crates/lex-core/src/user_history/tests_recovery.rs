@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use super::recovery::{
-    open_recovering, remove_recovery_artifacts, v1_backup_path, CheckpointState, WalState,
+    ensure_v1_rescued, open_recovering, remove_recovery_artifacts, v1_backup_path, CheckpointState,
+    WalState,
 };
 use super::wal::{
     HistoryWal, LegacyWalEntry, WalRecord, FRAME_HEADER_LEN, WAL_HEADER, WAL_HEADER_LEN,
@@ -800,17 +801,14 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
     // Still not a clean startup.
     assert!(!report.is_clean());
     assert!(!report.data_loss_suspected());
-    // No in-session retry here, deliberately: the same unwritable directory
-    // that failed the commit also failed the `.v1.bak` copy, and a startup
-    // compaction is not the migration — it would write a v2 checkpoint over
-    // the v1 file without the commit's preconditions, destroying the only
-    // copy of the v1 bytes. The next launch re-attempts properly, backup
-    // first.
+    // The rescue copy could not be made (same unwritable directory), so the
+    // v1 bytes exist only at the checkpoint path. Scheduling a compaction is
+    // still fine — the guard is on the checkpoint *write*, which refuses
+    // while this flag is set, so it does not have to be repeated at each of
+    // the several places a compaction can start.
     assert!(!v1_backup_path(&f.cp).exists(), "backup could not be made");
-    assert!(
-        !report.compaction_recommended,
-        "must not schedule a compaction that would overwrite an unrescued v1 checkpoint"
-    );
+    assert!(report.v1_unrescued, "v1 bytes exist nowhere else");
+    assert!(report.compaction_recommended);
 
     let (h2, _, r2) = open_recovering(&f.cp).unwrap();
     assert!(r2.migrated_from_v1);
@@ -848,10 +846,42 @@ fn t5_migration_commit_failure_retries_in_session_once_v1_is_rescued() {
     let (_, _, report) = result.unwrap();
     assert!(report.migration_failed);
     assert!(!report.is_clean());
+    assert!(report.compaction_recommended);
     assert!(
-        report.compaction_recommended,
-        "the v1 bytes are preserved, so the write may be retried in-session"
+        !report.v1_unrescued,
+        "a matching rescue copy is already on disk, so the write is unblocked"
     );
+}
+
+/// `.v1.bak` merely existing is not proof of a rescue: `fs::copy` truncates
+/// its destination first, so a copy that dies partway leaves a short file,
+/// and a backup left by an older v1 state is not a rescue for these bytes.
+#[test]
+fn t5_partial_or_stale_v1_backup_does_not_count_as_rescued() {
+    let f = fx();
+    let mut seed = UserHistory::new();
+    seed.record_at(&seg(A), T0);
+    let v1_cp = v1_checkpoint_bytes(&seed);
+
+    for (name, bytes) in [
+        ("truncated", v1_cp[..v1_cp.len() / 2].to_vec()),
+        ("empty", Vec::new()),
+        ("stale", v1_checkpoint_bytes(&UserHistory::new())),
+    ] {
+        fs::write(&f.cp, &v1_cp).unwrap();
+        fs::write(v1_backup_path(&f.cp), &bytes).unwrap();
+        // Writable dir: the rescue can be completed, and must be.
+        assert!(
+            ensure_v1_rescued(&f.cp),
+            "{name}: a fresh copy should replace the unusable one"
+        );
+        assert_eq!(
+            fs::read(v1_backup_path(&f.cp)).unwrap(),
+            v1_cp,
+            "{name}: the backup must match the checkpoint byte for byte"
+        );
+        fs::remove_file(v1_backup_path(&f.cp)).ok();
+    }
 }
 
 // ---------------------------------------------------------------------------

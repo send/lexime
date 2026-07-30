@@ -150,7 +150,7 @@ final class EngineContainer {
             // rather than special-cased.)
             var degraded = ""
             if report.migrationFailed {
-                degraded += " migration=failed(v1 kept; retried next launch)"
+                degraded += " migration=failed(v1 kept; retry pending)"
             }
             if report.appendsFrozen {
                 degraded += " appends=frozen(memory-only until compaction)"

@@ -89,12 +89,17 @@ what a generic reviewer misses:
   appends healthy, and appends can freeze with no migration in sight — so one
   enum cannot carry both without a state per combination. Findings proposing
   either fold, or a migration-specific `CheckpointState`, re-litigate a
-  settled decision — do not raise them. `migration_failed` drives
-  `compaction_recommended` only when the `.v1.bak` rescue copy exists: that
-  compaction is not the migration — `run_compact_impl` writes a v2 checkpoint
-  over the v1 file without the commit's preconditions (no backup, no
-  `Migrated` state) — so without a rescue copy it would destroy the only copy
-  of the v1 bytes.
+  settled decision — do not raise them. Relatedly: a compaction is not the
+  migration — `run_compact_impl` writes a v2 checkpoint over the v1 file with
+  none of the commit's steps (no backup, no `Migrated` state) — so it refuses
+  while `v1_unrescued` is set, retrying the rescue copy first. That guard is
+  deliberately on the *write* rather than on `compaction_recommended`: a
+  compaction starts from startup recovery, the deletion scrub, the entry-count
+  threshold and the append-failure heal, so a scheduling-level gate covers one
+  of four. `.v1.bak` merely existing is not proof of rescue (`fs::copy`
+  truncates its destination, and a backup from an older v1 state is not a
+  rescue for these bytes) — it is written atomically and accepted only on a
+  byte-for-byte match.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately

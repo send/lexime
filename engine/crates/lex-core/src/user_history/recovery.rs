@@ -100,6 +100,12 @@ pub struct OpenReport {
     /// each branch that freezes — a branch forgetting to set its state is
     /// precisely how a failed migration came to look clean.
     pub appends_frozen: bool,
+    /// The checkpoint path still holds v1 bytes that exist nowhere else.
+    /// Until a rescue copy is made, no checkpoint write may land on it — a
+    /// generic compaction has none of the migration commit's steps and would
+    /// destroy the only copy. The engine clears this by retrying
+    /// [`ensure_v1_rescued`] before it saves.
+    pub v1_unrescued: bool,
     /// A replayed Tombstone left deleted strings in the old checkpoint /
     /// earlier frames unscrubbed — feeds `compaction_recommended` (§5.4).
     /// Not surfaced over UniFFI; an internal startup-scrub signal.
@@ -145,6 +151,7 @@ pub fn open_recovering(
         quarantined_paths: Vec::new(),
         migration_failed: false,
         appends_frozen: false,
+        v1_unrescued: false,
         replayed_deletion: false,
         compaction_recommended: false,
     };
@@ -290,7 +297,7 @@ pub fn open_recovering(
     let mut v1_rescued = true;
     if migrate {
         if v1_checkpoint_present {
-            v1_rescued = backup_v1_checkpoint(checkpoint_path);
+            v1_rescued = ensure_v1_rescued(checkpoint_path);
         }
         // applied_seq is usually 0 here (v1 data carries no seqs), but not
         // always: if a previous startup's migration commit failed with no
@@ -347,6 +354,7 @@ pub fn open_recovering(
     // once, here, so a future freeze site cannot report a clean startup by
     // omission.
     report.appends_frozen = wal.is_frozen();
+    report.v1_unrescued = report.migration_failed && !v1_rescued;
 
     // Anomaly (§8 missing x non-empty): a checkpoint should only be absent
     // when the WAL is too. Recoverable via replay, but checkpoint early.
@@ -378,16 +386,12 @@ pub fn open_recovering(
     // and the migration is retried only on the next launch. A compaction
     // writes the v2 checkpoint, which is exactly the commit that failed.
     //
-    // Gated on the rescue copy existing, because that compaction is NOT the
-    // migration: `run_compact_impl` writes a v2 checkpoint straight over the
-    // v1 file without any of the commit's preconditions — no `.v1.bak`, no
-    // `Migrated` state, no `migrated_from_v1`. If the backup could not be
-    // made (the same unwritable directory that failed the commit), letting
-    // it run would destroy the v1 bytes and the downgrade / migration-bug
-    // hatch with them. Leaving the file alone costs an in-session retry; the
-    // next launch re-attempts the migration, backup first.
+    // Scheduling a compaction is safe even when the v1 bytes are still
+    // unrescued: `v1_unrescued` below makes the checkpoint *write* refuse
+    // until a rescue copy exists, so the guard does not have to be repeated
+    // at each of the several places a compaction can be started.
     report.compaction_recommended = report.migrated_from_v1
-        || (report.migration_failed && v1_rescued)
+        || report.migration_failed
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
@@ -472,25 +476,47 @@ fn quarantine(path: &Path, quarantined: &mut Vec<PathBuf>) -> bool {
     }
 }
 
-/// Copy the v1 checkpoint bytes aside before migration overwrites the path.
-/// Best-effort: the backup is a manual rescue hatch for downgrades and
-/// migration bugs, not a correctness dependency.
-/// Copy the v1 checkpoint bytes aside before migration overwrites the path.
-/// Returns whether the rescue copy is in place — either written now, or left
-/// by an earlier attempt. Migration itself continues either way (the backup
-/// is a manual rescue hatch, not a correctness dependency), but callers that
-/// would let something *else* overwrite the v1 file need to know.
-fn backup_v1_checkpoint(checkpoint_path: &Path) -> bool {
+/// Ensure the v1 checkpoint's bytes exist somewhere other than the
+/// checkpoint path, and report whether they now do.
+///
+/// This is the precondition for letting *anything* overwrite that path: a
+/// generic compaction writes a v2 checkpoint there with none of the
+/// migration commit's steps, so without a rescue copy it destroys the only
+/// copy of the v1 data. Callable after startup because the retry belongs at
+/// the write, not at one scheduler — see `LexUserHistory::run_compact_impl`.
+///
+/// Existence of `.v1.bak` is not taken as proof. `fs::copy` truncates its
+/// destination first, so a copy that fails partway (ENOSPC) leaves a short
+/// file behind, and a backup left by an older v1 state is not a rescue for
+/// *these* bytes. The copy is therefore written atomically and accepted only
+/// when it matches the checkpoint byte for byte.
+pub fn ensure_v1_rescued(checkpoint_path: &Path) -> bool {
+    let Ok(current) = fs::read(checkpoint_path) else {
+        // Unreadable: nothing to protect that we could act on, and the
+        // caller's write will fail for the same reason.
+        return false;
+    };
+    if !is_v1_checkpoint(&current) {
+        // Already migrated (or never v1) — the path holds nothing a rescue
+        // copy would preserve.
+        return true;
+    }
     let dest = v1_backup_path(checkpoint_path);
-    match fs::copy(checkpoint_path, &dest) {
-        Ok(_) => true,
+    if fs::read(&dest).is_ok_and(|existing| existing == current) {
+        return true;
+    }
+    match persist::write_atomic(&dest, &current) {
+        Ok(()) => true,
         Err(e) => {
-            warn!("v1 checkpoint backup failed ({e}); continuing migration");
-            // An earlier startup may have made the copy before the disk went
-            // bad; that one is just as good a rescue hatch as a fresh one.
-            dest.exists()
+            warn!("v1 checkpoint backup failed ({e}); v1 bytes stay unrescued");
+            false
         }
     }
+}
+
+/// Whether these bytes are an LXUD v1 checkpoint (magic + version byte 1).
+fn is_v1_checkpoint(bytes: &[u8]) -> bool {
+    bytes.len() > 4 && &bytes[0..4] == super::persistence::MAGIC && bytes[4] == 1
 }
 
 /// Physically truncate the WAL at the last good frame boundary so appends
