@@ -249,7 +249,8 @@ proptest の invariant 3 / 3b で固定している。
   - settle は渡された文字列を**そのまま**確定する — prefix の再結合も `flush()` も行わない（pending の `n` を `ん` に変えると画面に無かった文字を入れることになる）。proptest invariant 10 が `HostMarked` モデルの値をそのまま渡して「表示していたものと確定されたものが一致する」ことを全生成列で固定する
   - **再入するホストへの防御**: client コールバック（`insertText`）が同期的に `deactivateServer` を再入し得る。epoch watermark は*別途キューされた* response しか弾けないので、実行中の delivery には効かない。
     - **response は 1 つの host 遷移の不可分な記述**である。auto-commit の `.commit` + `.setMarkedText` は「marked を A から B へ移す」1 手であり、両方揃って初めて host は一貫した状態になる。その途中（`insertText` の中）で settle すると、engine には remainder があり host には prefix だけが渡った、**存在しなかった状態**に対して確定することになる
-    - したがって **teardown は delivery の完了まで遅延する**（`SessionCoordinator.isApplyingEvents` / `deferredDeactivateClient`）。途中で気づいて残りを捨てる方式は、remainder が挿入も再 marked もされずに消える
+    - したがって **teardown は delivery の完了まで遅延する**（`SessionCoordinator.isApplyingEvents` / `deferredTeardown`）。途中で気づいて残りを捨てる方式は、remainder が挿入も再 marked もされずに消える
+    - **teardown は 2 層にまたがる**（coordinator の settle/表示/パネル と、controller の `super.deactivateServer`）。遅延は**両方**に効かなければならない — coordinator 側だけ遅らせると、残りの `.setMarkedText` が既に畳まれた host に届いて落ちる。`deactivate(client:completion:)` の completion が controller 側の後半を同じ順序で走らせる
     - あわせて `applyEvents` は **client を呼ぶ前に `currentDisplay` を更新する**（`.setMarkedText` は元からこの順、`.commit` を揃えた）。settle の入力はこの値なので、確定前の composition を見せると挿入中の文字列を二重に確定してしまう
 
 - **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§候補操作: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:

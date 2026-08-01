@@ -296,7 +296,23 @@ class LeximeInputController: IMKInputController {
         // "deactivate caused by focus moving away" would need a signal IMKit
         // does not provide.
         _ = modeController.takePendingEscapeCommit()
-        coordinator?.deactivate(client: sender as? IMKTextInput)
+        guard let coordinator else {
+            super.deactivateServer(sender)
+            return
+        }
+        // `super.deactivateServer` is the other half of the same teardown, so it
+        // has to wait on the same condition. If the coordinator defers (a client
+        // callback re-entered us from inside `insertText`), deactivating the
+        // host here would strand the rest of the response: its `.setMarkedText`
+        // would land on an already torn-down client.
+        coordinator.deactivate(client: sender as? IMKTextInput) { [weak self] in
+            self?.finishDeactivateServer(sender)
+        }
+    }
+
+    /// The superclass half of `deactivateServer`, split out so it can run after
+    /// a deferred coordinator teardown (`super` cannot be called from a closure).
+    private func finishDeactivateServer(_ sender: Any!) {
         super.deactivateServer(sender)
     }
 

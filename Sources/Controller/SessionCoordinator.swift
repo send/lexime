@@ -49,7 +49,7 @@ final class SessionCoordinator {
     /// abandoning the rest of the response, which was the earlier shape: it
     /// left the remainder neither inserted nor re-marked.
     private var isApplyingEvents = false
-    private var deferredDeactivateClient: IMKTextInput??
+    private var deferredTeardown: (client: IMKTextInput?, completion: (() -> Void)?)?
 
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
@@ -186,14 +186,28 @@ final class SessionCoordinator {
     ///
     /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
-    func deactivate(client: IMKTextInput?) {
+    /// `completion` runs after this coordinator's teardown, deferred or not, so
+    /// the caller's own teardown keeps the same order. `LeximeInputController`
+    /// uses it for `super.deactivateServer`: deferring only the coordinator's
+    /// half would deactivate the host while the response still had a
+    /// `.setMarkedText` to apply, and those calls land on a torn-down client.
+    ///
+    /// Returns whether it was deferred, for callers that want to know.
+    @discardableResult
+    func deactivate(client: IMKTextInput?, completion: (() -> Void)? = nil) -> Bool {
         // Re-entered from inside a delivery (a client callback under
         // `insertText`). Let that response finish describing its transition,
         // then tear down — see `isApplyingEvents`.
         if isApplyingEvents {
-            deferredDeactivateClient = .some(client)
-            return
+            deferredTeardown = (client, completion)
+            return true
         }
+        performDeactivate(client: client)
+        completion?()
+        return false
+    }
+
+    private func performDeactivate(client: IMKTextInput?) {
         // Invalidate first. `applyEvents` below calls into the client and the
         // panel, and a deferred show queued by the last keystroke is guarded by
         // `CandidateManager.generation`, not by the epoch watermark — bumping it
@@ -238,9 +252,10 @@ final class SessionCoordinator {
         isApplyingEvents = true
         defer {
             isApplyingEvents = wasApplying
-            if !isApplyingEvents, case .some(let client) = deferredDeactivateClient {
-                deferredDeactivateClient = nil
-                deactivate(client: client)
+            if !isApplyingEvents, let pending = deferredTeardown {
+                deferredTeardown = nil
+                performDeactivate(client: pending.client)
+                pending.completion?()
             }
         }
         for event in resp.events {

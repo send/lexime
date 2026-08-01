@@ -485,6 +485,53 @@ func testSessionCoordinator() {
                    "never the stale pre-commit composition (that would duplicate)")
     }
 
+    // PR315 Codex R7: the caller's half of the teardown must keep the same
+    // order as the coordinator's. `LeximeInputController.deactivateServer` runs
+    // `super.deactivateServer` through this completion — if it fired before the
+    // deferred teardown, the host would be deactivated while the response still
+    // had a `.setMarkedText` to apply, and that call would land on a torn-down
+    // client. The controller cannot be unit-tested here (it needs IMKit), so
+    // the ordering is expressed and pinned at this seam instead.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "は")])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var order: [String] = []
+
+        client.onInsertText = { [weak coordinator] in
+            guard order.isEmpty else { return }   // only the first insert re-enters
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil) { order.append("callerHalf") }
+            order.append("deactivateReturned")
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(order, ["deactivateReturned", "callerHalf"],
+                    "the caller's half runs after the deferred teardown, not before it")
+        assertTrue(client.markedCalls.contains { $0.text == "は" },
+                   "and the remainder was still marked while the client was live")
+    }
+
+    // Not deferred: with no delivery in flight the completion runs inline, so
+    // the caller's ordering is unchanged on the ordinary path.
+    do {
+        let session = FakeLexSession()
+        let (coordinator, _) = makeCoordinator(session: session)
+        var ran = false
+        let deferred = coordinator.deactivate(client: nil) { ran = true }
+        assertTrue(!deferred, "no delivery in flight → not deferred")
+        assertTrue(ran, "completion ran inline")
+    }
+
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
     // harmless (commit_current_state early-returns with no events), so this
     // gate is an optimization, not a host-correctness guard — pinned here so a
