@@ -89,6 +89,10 @@ final class SessionCoordinator {
     /// `session.commit()` settles it regardless.
     private func settle(deliveringTo client: IMKTextInput?) {
         let resp = session.commit()
+        // Raise the watermark *before* applying. `applyEvents` calls into the
+        // client and the panel; if either ever pumped the run loop, a re-entrant
+        // `applyAsyncResponse` would find `lastClient` still set and be stopped
+        // only by the epoch guard. This ordering is what makes that safe.
         highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
         if let client {
             applyEvents(resp, client: client)
