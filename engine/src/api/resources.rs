@@ -1874,6 +1874,14 @@ mod tests {
         // permanently — the checkpoint is blocked so nothing can cover, and
         // appends stay failing so nothing can thaw — and any poll returning
         // anything other than both rows has torn the pair.
+        //
+        // Disclosure, measured: this does NOT reliably catch the defect it
+        // describes. Reverting `durability_issues` to two independent loads
+        // leaves it green across repeated runs, because the window is three
+        // atomic loads wide and a raise has to land inside it. What it does
+        // pin is that the retry loop terminates and stays correct under
+        // concurrent raises. The tear itself is closed by construction — the
+        // same standing as the ledger's own packed counters.
         let dir = tempfile::tempdir().unwrap();
         let cp = blocked_checkpoint(dir.path());
         let io = FaultyIo::default();
