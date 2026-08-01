@@ -293,10 +293,78 @@ func testSessionCoordinator() {
         let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
         _ = coordinator.handleKey(.text(text: "y", shift: false), client: FakeIMKClient())
         let genBefore = manager.generation
-        coordinator.deactivate()
+        coordinator.deactivate(client: nil)
         assertTrue(manager.generation == genBefore &+ 1,
                    "deactivate invalidates generation")
         assertTrue(panel.hideCount >= 1, "deactivate hides panel")
         assertTrue(coordinator.currentDisplay == nil, "deactivate clears display")
+    }
+
+    // #298: deactivate settles a live composition instead of orphaning it.
+    // Measured 2026-08-01 — IMKit delivers deactivateServer with the session
+    // still composing and, in most focus changes, never sends
+    // commitComposition at all. Clearing the display while the session keeps
+    // composing is the #293 leak shape reached from the Swift side.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        session.commitResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "にほんご",
+                    "precondition: composing with a display")
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.commitCalls, 1,
+                    "deactivate commits the pending composition")
+        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
+                   "the committed text reaches the client that had focus")
+        assertTrue(coordinator.currentDisplay == nil,
+                   "deactivate still clears the display")
+    }
+
+    // #298: IMKit can hand deactivateServer a sender that is not an
+    // IMKTextInput. The composition still has to be settled, so fall back to
+    // the client it was typed into rather than orphaning the session.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        session.commitResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: nil)
+
+        assertEqual(session.commitCalls, 1, "settles through lastClient")
+        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
+                   "the committed text reaches the client it was typed into")
+    }
+
+    // #298: nothing composing → nothing to settle. deactivate must not
+    // manufacture a commit, which would insert an empty string and end the
+    // host's marked-text session for no reason.
+    do {
+        let session = FakeLexSession()
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        session.isComposingValue = false
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.commitCalls, 0, "no commit when not composing")
+        assertTrue(client.insertCalls.isEmpty, "no text inserted when not composing")
     }
 }

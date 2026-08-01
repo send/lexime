@@ -279,7 +279,7 @@ class LeximeInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
-        coordinator?.deactivate()
+        coordinator?.deactivate(client: sender as? IMKTextInput)
         super.deactivateServer(sender)
     }
 

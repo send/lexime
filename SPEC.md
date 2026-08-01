@@ -241,7 +241,8 @@ proptest の invariant 3 / 3b で固定している。
 - **検査の範囲**: 上記は per-response で見える形だけ。「数 response 後にまだ composing か」は `marked: None` が前の値を引き継ぐため累積的で、proptest 側の `HostMarked` モデルが担当する。また `debug_assert` なので出荷ビルド（`--release`）では落ちる — 構造的保証は下の各条項が担い、これは回帰検出器
 - snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。落とされた key は `LexSnippetStore::unusable_keys()` で取得でき、Swift 側が再読み込み時に報告する。engine の `tracing` 出力は出荷ビルドに乗らないので、診断はログではなく FFI 経由で返す）。提示できるエントリが 0 件のときは snippet 状態に入らない
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
-- **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
+- **フォーカス喪失時の settle**（#298。以前は「未モデル」として保留していたが、実測の結果**到達可能**だった）: `deactivateServer` はホストが marked セッションを畳むことを意味するので、session を composing のまま残してはならない。IMKit は先に `commitComposition` を送るとは限らない（2026-08-01 実測: composing のまま `deactivateServer` が届き、その大半で `commitComposition` は最後まで来なかった）。したがって `SessionCoordinator.deactivate(client:)` が**表示を消すのと同じ呼び出しの中で** session を確定させる — 分かれていたから乖離した。破棄ではなく確定なのは、`commitComposition` が行う settle と同形で、かつ打った文字を失わないため。到達指標は `activateServer` 時点で composing が残っていた回数（修正前 4 → 修正後 0）。`resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに debug assert を置く（Rust 側 `debug_assert_response_contract` と同じく、構造が防ぎ assert は回帰検出器）
+- **ホスト差（未解決、#309 で追跡）**: Chromium / Electron 系ホストは blur で**自前の composition を確定する**ため、そこに残るのは表示していた読みであり、こちらの `insertText` は視覚的に効かない（実測: こちらは常に選択サーフェスを commit しているのに Slack には読みが残る）。上の settle 前も commit 自体を発行していなかったので、これらのホストで見える結果は変わっていない。根にあるのはマークドテキストが読みを表示する一方 commit が選択サーフェスに解決するという不一致で、ネイティブホストではこちらの commit が勝つため見えない
 
 **キーリマップ（settings.toml `[keymap]`）**
 
