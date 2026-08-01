@@ -123,7 +123,13 @@ what a generic reviewer misses:
   (a) it settles through **`settle_focus_loss()`, not `commit()`** — focus loss
   is not acceptance, so it keeps what the host was showing and records no
   history, where a voluntary commit would resolve to the selected candidate and
-  learn from it (Codex raised both halves as P1 on #315). It settles rather
+  learn from it (Codex raised both halves as P1 on #315). "What the host was
+  showing" is **recorded, not inferred**: `InputSession::last_marked` holds the
+  marked text emitted at the response choke point. Re-deriving it from
+  selection state was tried and reverted — such a rule must be re-synchronised
+  at every site that re-renders (Backspace after navigating, ForwardDelete,
+  auto-commit) and goes stale at the first one missed. Findings proposing a
+  selection-derived flag re-litigate this. It settles rather
   than discards because IMKit does not reliably send `commitComposition` first
   (measured, #298) and discarding would throw away text the user typed on every
   app switch; (b) settling is **unconditional

@@ -55,6 +55,23 @@ pub struct InputSession {
     /// detect those.
     epoch: u64,
 
+    /// The marked text the host is currently showing.
+    ///
+    /// `marked: None` in a response means "unchanged", so this accumulates:
+    /// it is updated only when a response actually carries one. Recorded at
+    /// the same choke point that checks the response contract, because that
+    /// set — `handle_key` / `commit` / `settle_focus_loss` /
+    /// `receive_candidates` — is exactly where a response reaches the host.
+    ///
+    /// This is *the* answer to "what is on screen", and no consumer should
+    /// re-derive it. A composing response emits the reading while a selection
+    /// response emits the surface, so any flag tracking which of those applies
+    /// has to be re-synchronised at every site that re-renders — and goes
+    /// stale the moment one is missed (a Backspace after navigating renders
+    /// the reading again; ForwardDelete and auto-commit emit a surface).
+    /// Recording what was emitted has no such sites.
+    last_marked: String,
+
     /// Incremental Viterbi-input cache, independent of the UI `Composition`.
     pub(crate) lattice_cache: LatticeCache,
 
@@ -87,6 +104,7 @@ impl InputSession {
             history_records: Vec::new(),
             abc_passthrough: false,
             snippet_store: None,
+            last_marked: String::new(),
         }
     }
 
@@ -180,6 +198,17 @@ impl InputSession {
     /// tools, and CI. The guarantee is profile-conditional: adding
     /// `[profile.release] debug-assertions = true` would arm them on the FFI
     /// path.
+    /// Record what this response shows the host, then check the contract.
+    ///
+    /// Every response that can reach the host goes through here, which is what
+    /// makes `last_marked` authoritative rather than inferred.
+    fn note_response(&mut self, resp: &KeyResponse) {
+        if let Some(ref m) = resp.marked {
+            self.last_marked = m.text.clone();
+        }
+        self.debug_assert_response_contract(resp);
+    }
+
     fn debug_assert_response_contract(&self, resp: &KeyResponse) {
         debug_assert!(
             !(matches!(&resp.marked, Some(m) if m.text.is_empty()) && self.is_composing()),
@@ -225,7 +254,7 @@ impl InputSession {
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
         let resp = self.commit_inner();
-        self.debug_assert_response_contract(&resp);
+        self.note_response(&resp);
         resp
     }
 
@@ -253,7 +282,7 @@ impl InputSession {
     /// exactly as `commit` does: there is nothing confirmed to keep.
     pub fn settle_focus_loss(&mut self) -> KeyResponse {
         let resp = self.settle_focus_loss_inner();
-        self.debug_assert_response_contract(&resp);
+        self.note_response(&resp);
         resp
     }
 

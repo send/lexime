@@ -96,7 +96,7 @@ impl InputSession {
     ) -> Option<KeyResponse> {
         let resp = self.receive_candidates_inner(epoch, reading, surfaces, paths);
         if let Some(ref resp) = resp {
-            self.debug_assert_response_contract(resp);
+            self.note_response(resp);
         }
         resp
     }

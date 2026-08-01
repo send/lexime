@@ -60,11 +60,11 @@ impl InputSession {
     /// Differs from `commit_current_state` in exactly the two ways an
     /// involuntary end differs from a voluntary one:
     ///
-    /// - **Commits what the host was showing.** A voluntary commit resolves to
-    ///   the selected surface because the user asked to convert. Here nobody
-    ///   asked: if they never navigated, the marked text was the reading
-    ///   (`display_kana()`), and committing `surfaces[0]` instead would put a
-    ///   conversion they never saw into their document just for switching apps.
+    /// - **Commits what the host was showing** — `last_marked`, recorded by
+    ///   `note_response` when the response was emitted. A voluntary commit
+    ///   resolves to the selected surface because the user asked to convert.
+    ///   Here nobody asked, so putting `surfaces[0]` into the document for
+    ///   merely switching apps would insert a conversion never seen.
     /// - **Records no history.** An app switch is not acceptance. Treating it as
     ///   one trains top-1 on a non-signal and, over time, degrades the 1発目精度
     ///   that CLAUDE.md makes the metric — while quietly writing to what it
@@ -76,32 +76,24 @@ impl InputSession {
         if !matches!(self.state, SessionState::Composing(_)) {
             return KeyResponse::consumed();
         }
-        let SessionState::Composing(ref mut c) = self.state else {
-            unreachable!();
-        };
+
+        // Commit exactly the marked text the host is showing — recorded by
+        // `note_response`, not re-derived here. Deriving it is what R2 broke:
+        // any rule reconstructing "reading or surface?" from selection state
+        // has to be re-applied at every site that re-renders (Backspace after
+        // navigating, ForwardDelete, auto-commit), and goes stale at the first
+        // one missed. Reading it also means **no `flush()`**: forcing pending
+        // romaji would convert a trailing `n` to `ん` and commit text that was
+        // never on screen.
+        let shown = std::mem::take(&mut self.last_marked);
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();
-        c.flush();
-
-        let prefix_text = std::mem::take(&mut c.prefix.text);
-        // `user_selected` is precisely "the host is showing `display()`, not
-        // `display_kana()`" — so this commits the text that was on screen.
-        let shown = if c.candidates.user_selected {
-            c.candidates
-                .surfaces
-                .get(c.candidates.selected)
-                .cloned()
-                .unwrap_or_else(|| c.kana.clone())
-        } else {
-            c.kana.clone()
-        };
-
-        if !shown.is_empty() || !prefix_text.is_empty() {
-            resp.commit = Some(format!("{}{}", prefix_text, shown));
-        } else {
+        if shown.is_empty() {
             resp.marked = Some(MarkedText {
                 text: String::new(),
             });
+        } else {
+            resp.commit = Some(shown);
         }
 
         self.reset_state();

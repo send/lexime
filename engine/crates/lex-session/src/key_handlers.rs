@@ -31,10 +31,6 @@ impl InputSession {
         }
         let c = self.comp();
         if !c.candidates.is_empty() {
-            // From here on the host is shown `display()` (the surface) rather
-            // than `display_kana()` (the reading), so an involuntary settle has
-            // to commit the surface too. See `CandidateState::user_selected`.
-            c.candidates.user_selected = true;
             if skip_current && c.candidates.selected == 0 && c.candidates.surfaces.len() > 1 {
                 c.candidates.selected = 1;
             } else {
@@ -53,7 +49,7 @@ impl InputSession {
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let resp = self.handle_key_inner(event);
-        self.debug_assert_response_contract(&resp);
+        self.note_response(&resp);
         resp
     }
 
