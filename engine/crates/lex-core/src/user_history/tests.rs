@@ -882,3 +882,37 @@ fn test_residue_is_not_part_of_the_checkpoint_body() {
     let with = bincode::serialize(&h.to_data()).unwrap();
     assert_eq!(without, with, "residue must not change the checkpoint body");
 }
+
+// ---------------------------------------------------------------------------
+// Shared freeze flag (#288): the engine reports "learning is memory-only"
+// from outside the wal mutex, so freeze transitions have to be observable
+// without it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_adopted_frozen_flag_is_seeded_and_published() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("history.lxud");
+    let mut wal = HistoryWal::new(&cp);
+
+    // Seeding, not just publishing: recovery can hand back a WAL that is
+    // already frozen (failed tail repair, failed migration commit), and that
+    // freeze has no later transition to observe. An adopt that only wired up
+    // future writes would report a healthy history until the first append
+    // failed.
+    wal.freeze();
+    let flag = Arc::new(AtomicBool::new(false));
+    wal.adopt_frozen_flag(Arc::clone(&flag));
+    assert!(flag.load(Ordering::SeqCst), "adopt must seed from the WAL");
+
+    // And subsequent transitions reach the same flag, in both directions.
+    wal.truncate_wal().unwrap();
+    assert!(!flag.load(Ordering::SeqCst));
+    assert!(!wal.is_frozen());
+    wal.freeze();
+    assert!(flag.load(Ordering::SeqCst));
+    assert!(wal.is_frozen());
+}

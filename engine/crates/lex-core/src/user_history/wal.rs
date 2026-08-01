@@ -30,6 +30,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use bincode::Options as _;
 use serde::{Deserialize, Serialize};
@@ -301,7 +303,12 @@ pub struct HistoryWal {
     /// freeze from going unreported is that `open_recovering` derives
     /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
     /// branch has run, instead of asking each branch to record it.
-    frozen: bool,
+    ///
+    /// Shared rather than plain `bool` so an owner outside the mutex can
+    /// observe freeze transitions without taking it (see
+    /// [`Self::adopt_frozen_flag`]). It stays the single source of truth —
+    /// a mirrored `bool` beside it would be a second one, free to drift.
+    frozen: Arc<AtomicBool>,
 }
 
 impl HistoryWal {
@@ -320,7 +327,7 @@ impl HistoryWal {
             next_seq: 1,
             last_appended_seq: 0,
             frames_since_barrier: 0,
-            frozen: false,
+            frozen: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -570,11 +577,25 @@ impl HistoryWal {
 
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
-        self.frozen
+        self.frozen.load(Ordering::SeqCst)
+    }
+
+    /// Publish freeze transitions into a caller-owned flag, so an owner
+    /// holding this WAL behind a mutex can report "learning is memory-only"
+    /// without taking it — the key-processing thread holds that mutex for
+    /// every append, and a UI poll must not queue behind one.
+    ///
+    /// The flag is seeded with the current state before being adopted: a WAL
+    /// that `open_recovering` already froze (failed tail repair, failed
+    /// migration commit) has no later transition to publish, and would
+    /// otherwise read as healthy until the first append failed.
+    pub fn adopt_frozen_flag(&mut self, flag: Arc<AtomicBool>) {
+        flag.store(self.is_frozen(), Ordering::SeqCst);
+        self.frozen = flag;
     }
 
     fn set_frozen(&mut self, value: bool) {
-        self.frozen = value;
+        self.frozen.store(value, Ordering::SeqCst);
     }
 
     /// Path to the checkpoint file.

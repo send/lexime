@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use tracing::warn;
@@ -134,6 +134,45 @@ pub struct LexUserHistory {
     /// `open_report()` for the degraded-state menu (data loss) and NSLog
     /// (benign events).
     report: OpenReport,
+    /// Runtime durability ledger for #295: raised whenever a deletion's WAL
+    /// durability fails, covered when a checkpoint that excludes it becomes
+    /// durable. Outstanding iff `gen > covered`.
+    ///
+    /// A generation pair rather than a flag because raise and cover race:
+    /// a compactor reads the generation *before* snapshotting, so a deletion
+    /// raised after that snapshot cannot be cleared by it. A flag would be
+    /// cleared by a checkpoint that never contained the deletion.
+    ///
+    /// There is deliberately no matching ledger for commits. `append_record`
+    /// only returns `Io` from its frozen guard or from a failing `append`
+    /// that freezes (wal.rs), so "a commit is memory-only" is exactly "the
+    /// WAL is frozen" — `appends_frozen` below already reports it, and a
+    /// second ledger would be a duplicate book, free to disagree.
+    unpersisted_deletion_gen: AtomicU64,
+    unpersisted_deletion_covered: AtomicU64,
+    /// Mirror of `HistoryWal::is_frozen()`, readable without the wal mutex
+    /// (#288). The key-processing thread holds that mutex for every append;
+    /// a UI poll for the menu must not queue behind one.
+    appends_frozen: Arc<AtomicBool>,
+}
+
+/// A durability problem that is true *right now*, as opposed to
+/// [`LexHistoryOpenReport`]'s record of what startup recovery found.
+///
+/// Kept as a list rather than collapsed into one enum or a bool: on a
+/// failing volume both conditions hold at once — that is the steady state,
+/// not a corner — and collapsing would hide the memory-only learning (#288)
+/// behind the unpersisted deletion (#295), or the reverse.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LexHistoryDurabilityIssue {
+    /// A deletion the user asked for reached neither the WAL nor a
+    /// checkpoint. Unlike the others this has no startup heal: the old
+    /// checkpoint still holds the entry and simply wins on the next start.
+    DeletionNotPersisted,
+    /// Appends are frozen, so this session's learning lives only in memory
+    /// until a compaction restores appendable form. A restart recovers what
+    /// the last checkpoint holds; anything since is lost.
+    LearningMemoryOnly,
 }
 
 /// UniFFI mirror of [`CheckpointState`].
@@ -259,7 +298,13 @@ impl LexUserHistory {
         // startup, so learning never silently stops. Err = environmental
         // read failure only (EACCES etc.). Swift consumes the report via
         // `open_report()`; the logs here cover headless/CLI contexts.
-        let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        let (history, mut wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        // Own the freeze flag and lend it to the WAL (#288). Adopting seeds
+        // it from the WAL's current state, so a freeze recovery already
+        // applied — a failed tail repair or migration commit — is reported
+        // from the first menu open, without waiting for an append to fail.
+        let appends_frozen = Arc::new(AtomicBool::new(false));
+        wal.adopt_frozen_flag(Arc::clone(&appends_frozen));
         if report.data_loss_suspected() {
             warn!("user history recovered with suspected data loss: {report:?}");
         } else if !report.is_clean() {
@@ -276,6 +321,9 @@ impl LexUserHistory {
             scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
             report,
+            unpersisted_deletion_gen: AtomicU64::new(0),
+            unpersisted_deletion_covered: AtomicU64::new(0),
+            appends_frozen,
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -293,9 +341,65 @@ impl LexUserHistory {
     fn open_report(&self) -> LexHistoryOpenReport {
         (&self.report).into()
     }
+
+    /// Durability problems that hold right now, most severe first.
+    ///
+    /// Polled by the UI (the status menu re-reads on every open), so it must
+    /// not block: both answers come from atomics, never from the wal mutex
+    /// the key-processing thread holds across appends.
+    fn durability_issues(&self) -> Vec<LexHistoryDurabilityIssue> {
+        let mut issues = Vec::new();
+        // First: a deletion that did not persist has no startup heal, and it
+        // is the one the user explicitly asked for.
+        if self.has_unpersisted_deletion() {
+            issues.push(LexHistoryDurabilityIssue::DeletionNotPersisted);
+        }
+        if self.appends_frozen.load(Ordering::SeqCst) {
+            issues.push(LexHistoryDurabilityIssue::LearningMemoryOnly);
+        }
+        issues
+    }
 }
 
 impl LexUserHistory {
+    /// Record that a deletion is not on disk anywhere (#295).
+    ///
+    /// Called under the wal mutex, after the in-memory apply. Both placements
+    /// are load-bearing:
+    /// - after the apply, so a compactor that observes this raise is
+    ///   guaranteed to snapshot a history that already excludes the entry
+    ///   (the apply released `inner` before the store, and the compactor
+    ///   acquires it after the load);
+    /// - under the wal mutex, so it cannot land inside `clear_impl`'s
+    ///   read-then-cover window. A raise slipping in there would outlive a
+    ///   wipe that made it vacuously true, leaving a privacy warning on a
+    ///   history that is provably empty.
+    fn raise_unpersisted_deletion(&self) {
+        self.unpersisted_deletion_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Read the generation to cover *before* taking the snapshot whose
+    /// durability will cover it. Reading it afterwards would clear deletions
+    /// raised in between, which that snapshot may not contain.
+    fn deletion_gen_to_cover(&self) -> u64 {
+        self.unpersisted_deletion_gen.load(Ordering::SeqCst)
+    }
+
+    /// Mark every deletion raised up to `generation` as persisted. Called
+    /// only once a checkpoint that excludes them is durable on disk.
+    ///
+    /// `fetch_max`, not a store: compactions can overlap, and a slower one
+    /// carrying an older generation must not un-cover a newer one's work.
+    fn cover_unpersisted_deletions(&self, generation: u64) {
+        self.unpersisted_deletion_covered
+            .fetch_max(generation, Ordering::SeqCst);
+    }
+
+    fn has_unpersisted_deletion(&self) -> bool {
+        self.unpersisted_deletion_gen.load(Ordering::SeqCst)
+            > self.unpersisted_deletion_covered.load(Ordering::SeqCst)
+    }
+
     /// Apply a batch of learning records (§5.2): WAL append first
     /// (write-ahead), then the in-memory apply — both in one critical
     /// section under the wal mutex (§4).
@@ -456,6 +560,13 @@ impl LexUserHistory {
                 // the checkpoint with nothing to neutralise it.
                 write_recover(&self.inner).apply_batch(&sequenced);
             }
+            if durability_failed {
+                // Still holding the wal mutex, and after the apply above —
+                // see `raise_unpersisted_deletion` for why both matter. The
+                // gated compaction that tries to cover this runs below, once
+                // the mutex is released (it needs it itself).
+                self.raise_unpersisted_deletion();
+            }
         }
 
         for line in &log_lines {
@@ -496,6 +607,12 @@ impl LexUserHistory {
         // history), so conversion reads stay unblocked during the I/O.
         let mut wal = lock_recover(&self.wal);
 
+        // Read before the write, mirroring the compaction path. The wal mutex
+        // (held since above) is what makes this window tight rather than
+        // merely narrow: every raise happens under it, so none can land
+        // between this read and the cover below.
+        let covered_gen = self.deletion_gen_to_cover();
+
         // Commit point. On Err nothing has changed — including
         // scrub_pending, so a pre-clear Tombstone's scrub request stays
         // posted for the next compaction.
@@ -506,6 +623,12 @@ impl LexUserHistory {
         // Consumed only after the commit point: the wipe supersedes every
         // scrub request posted so far.
         self.scrub_pending.store(false, Ordering::SeqCst);
+        // Likewise for the durability ledger (#295). An empty durable set
+        // contains no un-deleted entry, so every raised deletion is now
+        // vacuously persisted. Without this second cover point, wiping
+        // everything would leave a standing "a deletion did not persist"
+        // warning on a history that provably holds nothing.
+        self.cover_unpersisted_deletions(covered_gen);
 
         // Physical deletions below are deferred-error: the logical clear is
         // committed, so every step runs (the memory reset especially —
@@ -698,6 +821,10 @@ impl LexUserHistory {
     /// whether the checkpoint became durable and whether a follow-up is
     /// warranted (see [`CompactOutcome`]).
     fn run_compact_impl(&self) -> CompactOutcome {
+        // Read before snapshotting (#295): this checkpoint can only vouch for
+        // deletions already applied when it was cloned.
+        let covered_gen = self.deletion_gen_to_cover();
+
         // 1. Clone history under read lock (brief)
         let snapshot = read_recover(&self.inner).clone();
         let cp_path = lock_recover(&self.wal).checkpoint_path().to_path_buf();
@@ -707,6 +834,14 @@ impl LexUserHistory {
             warn!("checkpoint write failed: {e}");
             return CompactOutcome::Failed;
         }
+
+        // The deletion is persisted the moment this full-snapshot checkpoint
+        // is durable — before the truncation below, and regardless of whether
+        // it runs. Truncation is the physical scrub of superseded frames, not
+        // what makes the deletion survive a restart, so tying the cover to it
+        // would leave a permanent warning whenever frames land mid-run
+        // (FollowUp) or the truncate fails on an otherwise durable write.
+        self.cover_unpersisted_deletions(covered_gen);
 
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
@@ -863,9 +998,12 @@ mod tests {
         cp: &Path,
         io: Box<dyn crate::user_history::wal::WalIo>,
     ) -> Arc<LexUserHistory> {
+        let mut wal = HistoryWal::with_io(cp, io);
+        let appends_frozen = Arc::new(AtomicBool::new(false));
+        wal.adopt_frozen_flag(Arc::clone(&appends_frozen));
         Arc::new(LexUserHistory {
             inner: Arc::new(RwLock::new(UserHistory::new())),
-            wal: Mutex::new(HistoryWal::with_io(cp, io)),
+            wal: Mutex::new(wal),
             compact_gate: Mutex::new(()),
             scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(CommitLog {
@@ -884,7 +1022,14 @@ mod tests {
                 replayed_deletion: false,
                 compaction_recommended: false,
             },
+            unpersisted_deletion_gen: AtomicU64::new(0),
+            unpersisted_deletion_covered: AtomicU64::new(0),
+            appends_frozen,
         })
+    }
+
+    fn issues(hist: &LexUserHistory) -> Vec<LexHistoryDurabilityIssue> {
+        hist.durability_issues()
     }
 
     #[test]
@@ -1255,14 +1400,28 @@ mod tests {
     // T6 (engine side): append-failure fallbacks over a mock WalIo
     // -----------------------------------------------------------------------
 
-    /// WalIo whose appends fail while `fail_appends` is set; truncation
-    /// heals it (mirroring a disk that recovered).
-    struct FlakyIo {
+    /// WalIo with independently switchable failures. One mock rather than a
+    /// family of near-identical ones: the durability matrix needs appends,
+    /// full syncs and truncations to fail in several combinations, and on a
+    /// real failing volume they fail *together* — the correlated case the
+    /// issue list exists for.
+    ///
+    /// Every switch is live, so a test can also heal the disk mid-run.
+    #[derive(Default, Clone)]
+    struct FaultyIo {
         fail_appends: Arc<AtomicBool>,
+        fail_full_sync: Arc<AtomicBool>,
+        fail_truncates: Arc<AtomicBool>,
         truncates: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl crate::user_history::wal::WalIo for FlakyIo {
+    impl FaultyIo {
+        fn boxed(&self) -> Box<dyn crate::user_history::wal::WalIo> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl crate::user_history::wal::WalIo for FaultyIo {
         fn append(&mut self, _buf: &[u8]) -> std::io::Result<()> {
             if self.fail_appends.load(Ordering::SeqCst) {
                 return Err(std::io::Error::other("injected append failure"));
@@ -1273,28 +1432,43 @@ mod tests {
             Ok(())
         }
         fn sync_full(&mut self) -> std::io::Result<()> {
+            if self.fail_full_sync.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("injected sync failure"));
+            }
             Ok(())
         }
         fn truncate_to_header(&mut self) -> std::io::Result<()> {
             self.truncates
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail_truncates.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("injected truncate failure"));
+            }
             Ok(())
         }
+    }
+
+    /// A checkpoint path whose parent is a *file*, so `save()` can never
+    /// succeed. `unblock_checkpoint` turns it into a real directory, healing
+    /// the disk.
+    fn blocked_checkpoint(dir: &Path) -> PathBuf {
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        blocker.join("history.lxud")
+    }
+
+    fn unblock_checkpoint(cp: &Path) {
+        let blocker = cp.parent().unwrap();
+        std::fs::remove_file(blocker).unwrap();
+        std::fs::create_dir(blocker).unwrap();
     }
 
     #[test]
     fn test_append_failure_keeps_memory_and_heals() {
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
-        let fail_appends = Arc::new(AtomicBool::new(true));
-        let truncates = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let hist = hist_with_io(
-            &cp,
-            Box::new(FlakyIo {
-                fail_appends: Arc::clone(&fail_appends),
-                truncates: Arc::clone(&truncates),
-            }),
-        );
+        let io = FaultyIo::default();
+        io.fail_appends.store(true, Ordering::SeqCst);
+        let hist = hist_with_io(&cp, io.boxed());
 
         hist.apply_records(&[committed("きょう", "今日")]);
 
@@ -1304,16 +1478,26 @@ mod tests {
         assert_eq!(learned(&hist, "きょう"), vec!["今日".to_string()]);
         assert_eq!(read_recover(&hist.inner).applied_seq(), 0);
         assert!(lock_recover(&hist.wal).is_frozen());
+        // F10 (#288): the frozen window is what makes this session's learning
+        // memory-only, and it is reportable while it lasts — not only after
+        // the fact via the next startup's OpenReport.
+        assert_eq!(
+            issues(&hist),
+            vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
+        );
 
         // The healing compaction checkpoints memory (covering the effect)
         // and re-truncates the WAL back to appendable form.
-        fail_appends.store(false, Ordering::SeqCst);
+        io.fail_appends.store(false, Ordering::SeqCst);
         wait_until(
             || !lock_recover(&hist.wal).is_frozen(),
             "heal compaction to unfreeze the WAL",
         );
         assert!(cp.exists(), "healed checkpoint persists the effect");
-        assert!(truncates.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert!(io.truncates.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        // F11: the issue is clearable, not a latch — which is exactly why it
+        // is polled rather than folded into Swift's `initFailures`.
+        assert!(issues(&hist).is_empty(), "the heal must clear the report");
 
         // Nothing was lost: reopen from disk sees the entry (via checkpoint).
         drop(hist);
@@ -1321,35 +1505,13 @@ mod tests {
         assert_eq!(learned(&hist2, "きょう"), vec!["今日".to_string()]);
     }
 
-    /// WalIo whose sync_full fails once (tombstone durability failure).
-    struct SyncFailOnceIo {
-        failed: bool,
-    }
-
-    impl crate::user_history::wal::WalIo for SyncFailOnceIo {
-        fn append(&mut self, _buf: &[u8]) -> std::io::Result<()> {
-            Ok(())
-        }
-        fn sync_barrier(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-        fn sync_full(&mut self) -> std::io::Result<()> {
-            if !self.failed {
-                self.failed = true;
-                return Err(std::io::Error::other("injected sync failure"));
-            }
-            Ok(())
-        }
-        fn truncate_to_header(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn test_tombstone_sync_failure_applies_with_real_seq() {
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
-        let hist = hist_with_io(&cp, Box::new(SyncFailOnceIo { failed: false }));
+        let io = FaultyIo::default();
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        let hist = hist_with_io(&cp, io.boxed());
 
         hist.apply_records(&[committed("きょう", "今日")]);
         let commit_seq = lock_recover(&hist.wal).last_appended_seq();
@@ -1392,23 +1554,24 @@ mod tests {
         // would otherwise resurrect the deleted entry from the old checkpoint.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
-        let fail_appends = Arc::new(AtomicBool::new(false));
-        let hist = hist_with_io(
-            &cp,
-            Box::new(FlakyIo {
-                fail_appends: Arc::clone(&fail_appends),
-                truncates: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            }),
-        );
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
 
         hist.apply_records(&[committed("きょう", "今日")]);
         hist.run_compact(); // the entry now lives in the checkpoint
         assert!(cp.exists());
 
         // The tombstone's frame fails to append (frozen WAL, memory-only delete).
-        fail_appends.store(true, Ordering::SeqCst);
+        io.fail_appends.store(true, Ordering::SeqCst);
         hist.apply_records(&[deletion("きょう", "今日")]);
         assert!(learned(&hist, "きょう").is_empty(), "memory delete runs");
+        // F1: the deletion *was* raised, and the synchronous fallback
+        // checkpoint covered it before returning — so nothing is reported.
+        // The WAL is still frozen, which is its own (accurate) issue.
+        assert!(
+            !issues(&hist).contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            "a deletion the fallback persisted must not be reported as lost"
+        );
 
         // Synchronous durability: reopening immediately (no wait for a
         // background scrub) must not resurrect the deletion.
@@ -1427,11 +1590,10 @@ mod tests {
         // retries it — the deletion must not be silently dropped with the
         // pending flag consumed.
         let dir = tempfile::tempdir().unwrap();
-        // Parent of the checkpoint is a *file*: save() can never create it.
-        let blocker = dir.path().join("blocker");
-        std::fs::write(&blocker, b"x").unwrap();
-        let cp = blocker.join("history.lxud");
-        let hist = hist_with_io(&cp, Box::new(SyncFailOnceIo { failed: false }));
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        let hist = hist_with_io(&cp, io.boxed());
 
         // Learn, then delete: the tombstone's sync_full fails (SyncFailed)
         // AND the synchronous checkpoint save fails (blocked parent).
@@ -1454,28 +1616,313 @@ mod tests {
         // checkpoint is durable. A failed checkpoint write must leave the
         // frames in place.
         let dir = tempfile::tempdir().unwrap();
-        // Parent of the checkpoint path is a *file*: save() cannot create it.
-        let blocker = dir.path().join("blocker");
-        std::fs::write(&blocker, b"x").unwrap();
-        let cp = blocker.join("history.lxud");
-        let truncates = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let hist = hist_with_io(
-            &cp,
-            Box::new(FlakyIo {
-                fail_appends: Arc::new(AtomicBool::new(false)),
-                truncates: Arc::clone(&truncates),
-            }),
-        );
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
 
         hist.apply_records(&[committed("きょう", "今日")]);
         assert_eq!(lock_recover(&hist.wal).entry_count(), 1);
         hist.run_compact();
         assert_eq!(
-            truncates.load(std::sync::atomic::Ordering::SeqCst),
+            io.truncates.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "no truncation without a durable checkpoint"
         );
         assert_eq!(lock_recover(&hist.wal).entry_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Runtime durability channel (#295 / #288). A deletion that reaches
+    // neither the WAL nor a checkpoint has no startup heal — the old
+    // checkpoint simply wins — so the only thing that can save it is telling
+    // the user. These pin the raise/cover ledger and the frozen mirror.
+    // -----------------------------------------------------------------------
+
+    /// A history whose tombstone durability has failed with no checkpoint to
+    /// fall back on: the #295 double failure, minus the WAL freeze so the
+    /// deletion issue can be observed on its own.
+    fn hist_with_unpersisted_deletion(dir: &Path) -> (Arc<LexUserHistory>, PathBuf) {
+        let cp = blocked_checkpoint(dir);
+        let io = FaultyIo::default();
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        let hist = hist_with_io(&cp, io.boxed());
+        hist.apply_records(&[committed("きょう", "今日")]);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        (hist, cp)
+    }
+
+    #[test]
+    fn test_sync_failed_deletion_with_failed_checkpoint_is_reported() {
+        // F3. SyncFailed leaves the frame on disk, so a *process* crash still
+        // replays the deletion — but the flush the Tombstone contract (§6)
+        // promises did not happen, and the fallback checkpoint failed too.
+        // The window the design puts at zero is open, so it is reported: the
+        // raise deliberately does not branch on the error variant.
+        let dir = tempfile::tempdir().unwrap();
+        let (hist, _cp) = hist_with_unpersisted_deletion(dir.path());
+
+        assert!(
+            learned(&hist, "きょう").is_empty(),
+            "memory delete still runs"
+        );
+        assert!(
+            !lock_recover(&hist.wal).is_frozen(),
+            "SyncFailed does not freeze: the frame itself is valid"
+        );
+        assert_eq!(
+            issues(&hist),
+            vec![LexHistoryDurabilityIssue::DeletionNotPersisted],
+            "the deletion is unpersisted, and only that"
+        );
+    }
+
+    #[test]
+    fn test_deletion_double_failure_reports_both_issues_in_severity_order() {
+        // F2 + F14. One failing volume breaks appends and checkpoint writes
+        // together, so both conditions hold — the steady state, not a corner.
+        // Collapsing the channel into a single enum would hide the
+        // memory-only learning (#288) behind the lost deletion (#295).
+        let dir = tempfile::tempdir().unwrap();
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+
+        assert_eq!(
+            issues(&hist),
+            vec![
+                // The deletion first: it is what the user explicitly asked
+                // for, and unlike a frozen WAL nothing heals it on restart.
+                LexHistoryDurabilityIssue::DeletionNotPersisted,
+                LexHistoryDurabilityIssue::LearningMemoryOnly,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_later_successful_compaction_clears_the_deletion_issue() {
+        // F4. The report tracks the current state, so a disk that recovers
+        // must retract it — otherwise the warning is permanent and the user
+        // learns to ignore it.
+        let dir = tempfile::tempdir().unwrap();
+        let (hist, cp) = hist_with_unpersisted_deletion(dir.path());
+        assert!(!issues(&hist).is_empty());
+
+        unblock_checkpoint(&cp);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        assert!(issues(&hist).is_empty());
+
+        // And the deletion really is on disk now, not merely unreported.
+        drop(hist);
+        assert!(learned(&open_hist(&cp), "きょう").is_empty());
+    }
+
+    #[test]
+    fn test_clear_covers_the_unpersisted_deletion() {
+        // F5. clear writes an empty checkpoint, so every raised deletion
+        // becomes vacuously persisted. Without this second cover point,
+        // wiping *everything* would leave a standing "a deletion did not
+        // persist" warning on a history that provably holds nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let (hist, cp) = hist_with_unpersisted_deletion(dir.path());
+        assert!(!issues(&hist).is_empty());
+
+        unblock_checkpoint(&cp);
+        hist.clear_impl().unwrap();
+        assert!(
+            issues(&hist).is_empty(),
+            "a full wipe persists every deletion"
+        );
+    }
+
+    #[test]
+    fn test_failed_clear_does_not_cover_the_deletion() {
+        // F9. clear's empty checkpoint is its commit point; if it never
+        // lands, the durable set is unchanged and the deletion is still only
+        // in memory. The cover has to be tied to the write, not the attempt.
+        let dir = tempfile::tempdir().unwrap();
+        let (hist, _cp) = hist_with_unpersisted_deletion(dir.path());
+
+        assert!(
+            hist.clear_impl().is_err(),
+            "blocked checkpoint fails the clear"
+        );
+        assert!(
+            issues(&hist).contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            "a clear that did not commit persists nothing"
+        );
+    }
+
+    #[test]
+    fn test_a_deletion_raised_after_the_snapshot_stays_reported() {
+        // F6. The compaction reads the generation to cover *before* cloning,
+        // so a deletion raised in between is not cleared by a checkpoint that
+        // may not contain it. Exercised through the ledger directly: the
+        // window is between two statements inside `run_compact_impl` with no
+        // seam to interpose on, and inventing one would add a mechanism the
+        // design does not need. The raise and cover call sites themselves are
+        // pinned by F2-F5.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        let observed = hist.deletion_gen_to_cover(); // compactor, pre-snapshot
+        hist.raise_unpersisted_deletion(); // deletion lands after the clone
+        hist.cover_unpersisted_deletions(observed); // compactor's checkpoint
+
+        assert!(
+            hist.has_unpersisted_deletion(),
+            "a checkpoint cannot vouch for a deletion taken after its snapshot"
+        );
+        // The next compaction, which reads a fresh generation, does clear it.
+        hist.cover_unpersisted_deletions(hist.deletion_gen_to_cover());
+        assert!(!hist.has_unpersisted_deletion());
+    }
+
+    #[test]
+    fn test_a_durable_checkpoint_covers_even_without_truncation() {
+        // F7 + F8. The deletion is persisted the moment the full-snapshot
+        // checkpoint is durable. Truncation is the physical scrub of
+        // superseded frames — tying the cover to it would leave a permanent
+        // warning whenever frames land mid-run (FollowUp) or the truncate
+        // fails on an otherwise durable write.
+        let dir = tempfile::tempdir().unwrap();
+
+        // FollowUp: a frame appended after the snapshot's applied_seq.
+        let cp = dir.path().join("followup.lxud");
+        let hist = open_hist(&cp);
+        hist.apply_records(&[committed("きょう", "今日")]);
+        hist.raise_unpersisted_deletion();
+        lock_recover(&hist.wal)
+            .append_record(&WalRecord::Committed {
+                segments: vec![("あす".to_string(), "明日".to_string())],
+                timestamp: 0,
+            })
+            .unwrap();
+        assert!(matches!(hist.run_compact(), CompactOutcome::FollowUp));
+        assert!(
+            issues(&hist).is_empty(),
+            "FollowUp still wrote a durable checkpoint"
+        );
+
+        // Failed truncation: reported as Done, and equally durable.
+        let cp2 = dir.path().join("truncfail.lxud");
+        let io = FaultyIo::default();
+        io.fail_truncates.store(true, Ordering::SeqCst);
+        let hist2 = hist_with_io(&cp2, io.boxed());
+        hist2.apply_records(&[committed("きょう", "今日")]);
+        hist2.raise_unpersisted_deletion();
+        assert!(matches!(hist2.run_compact(), CompactOutcome::Done));
+        assert!(
+            issues(&hist2).is_empty(),
+            "the checkpoint is durable regardless"
+        );
+    }
+
+    #[test]
+    fn test_clear_truncate_failure_reports_memory_only() {
+        // F13. clear freezes the WAL when it cannot truncate it, which makes
+        // every later commit memory-only. The Err tells the caller the wipe
+        // was partial; the issue tells the user learning has stopped
+        // persisting — two different facts with two different lifetimes.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_truncates.store(true, Ordering::SeqCst);
+        assert!(hist.clear_impl().is_err());
+        assert!(lock_recover(&hist.wal).is_frozen());
+        assert_eq!(
+            issues(&hist),
+            vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
+        );
+    }
+
+    #[test]
+    fn test_frozen_at_open_is_reported_without_any_append() {
+        // F12. Recovery can hand back an already-frozen WAL (here: a failed
+        // WAL repair). That freeze has no transition left to publish, so the
+        // flag has to be seeded when it is adopted — otherwise the history
+        // reads as healthy until the first append fails, which for a user who
+        // is not typing may be never.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        // 0-7 bytes: the crash-during-truncation residue recovery re-creates.
+        let wal_path = cp.with_extension("lxud.wal");
+        std::fs::write(&wal_path, b"\0\0\0").unwrap();
+        // Read-only, so the re-creation fails and recovery freezes appends.
+        std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .is_ok()
+        {
+            eprintln!("skipping: file permissions are not enforced here (root?)");
+            return;
+        }
+
+        let hist = open_hist(&cp);
+        assert!(hist.open_report().appends_frozen, "fixture must freeze");
+        assert_eq!(
+            issues(&hist),
+            vec![LexHistoryDurabilityIssue::LearningMemoryOnly],
+            "a freeze inherited from recovery is live from the first poll"
+        );
+        std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn test_healthy_history_reports_nothing() {
+        // F15. The channel must stay silent through the ordinary lifecycle,
+        // or the menu row becomes noise the user learns to ignore.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        hist.apply_records(&[deletion("あした", "明日")]); // no-op deletion
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        hist.apply_records(&[deletion("きょう", "今日")]); // real deletion
+        hist.clear_impl().unwrap();
+
+        assert!(issues(&hist).is_empty());
+    }
+
+    #[test]
+    fn test_durability_issues_does_not_take_the_wal_lock() {
+        // F15b. The menu polls this on the main thread while the key thread
+        // holds the wal mutex across every append (including a Tombstone's
+        // F_FULLFSYNC). Reading through that mutex would stall the UI behind
+        // disk I/O — the answer comes from atomics instead.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        let held = Arc::new(AtomicBool::new(false));
+        let holder = {
+            let hist = Arc::clone(&hist);
+            let held = Arc::clone(&held);
+            std::thread::spawn(move || {
+                let _wal = lock_recover(&hist.wal);
+                held.store(true, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            })
+        };
+        wait_until(|| held.load(Ordering::SeqCst), "the wal mutex to be held");
+
+        let started = std::time::Instant::now();
+        let _ = issues(&hist);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "the poll queued behind the wal mutex"
+        );
+        holder.join().unwrap();
     }
 
     // -----------------------------------------------------------------------
@@ -1627,6 +2074,11 @@ mod tests {
                     collect(&mem),
                     "checkpoint + WAL replay must equal the in-memory state"
                 );
+                // Nothing failed on this tempdir, so the durability channel
+                // must have stayed silent through all the raise/cover
+                // interleavings above — a ledger that drifted under
+                // concurrency would surface as a phantom warning.
+                assert!(issues(&hist).is_empty(), "no failures, no issues");
                 drop(gate);
                 break;
             }
