@@ -238,6 +238,7 @@ impl UserHistory {
             unigrams,
             bigrams,
             applied_seq: 0,
+            durable_residue: super::DurableResidue::default(),
         }
     }
 }

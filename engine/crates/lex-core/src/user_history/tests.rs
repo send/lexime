@@ -615,3 +615,270 @@ fn test_contains_entries_matches_remove_entries() {
     assert!(h.contains_entries(&probe));
     assert!(h.remove_entries(&probe));
 }
+
+// ---------------------------------------------------------------------------
+// Durable residue (#286): memory-absent must stop implying disk-absent
+// ---------------------------------------------------------------------------
+
+fn pair(reading: &str, surface: &str) -> Vec<(String, String)> {
+    vec![(reading.to_string(), surface.to_string())]
+}
+
+/// Raise residue the way production does: a tombstone whose frame never
+/// reached the WAL (`seq: None`) removes the entry from memory while the
+/// durable set keeps it.
+fn raise_residue(h: &mut UserHistory, segments: &[(String, String)]) {
+    h.apply_batch(&[(
+        wal::WalRecord::Tombstone {
+            segments: segments.to_vec(),
+            timestamp: 0,
+        },
+        None,
+    )]);
+}
+
+/// Fill both maps past capacity without paying an `evict()` per insert
+/// (the batch/replay shape: apply many, settle capacity once).
+fn over_capacity(unigrams: usize, bigrams: usize) -> UserHistory {
+    let mut h = UserHistory::new();
+    for i in 0..unigrams {
+        h.unigrams.entry(format!("r{i}")).or_default().insert(
+            format!("s{i}"),
+            HistoryEntry {
+                frequency: 1,
+                last_used: 1000 + i as u64,
+            },
+        );
+    }
+    for i in 0..bigrams {
+        h.bigrams.entry(format!("p{i}")).or_default().insert(
+            (format!("n{i}"), format!("t{i}")),
+            HistoryEntry {
+                frequency: 1,
+                last_used: 1000 + i as u64,
+            },
+        );
+    }
+    h
+}
+
+#[test]
+fn test_evict_enforces_both_caps_and_reports_bigram_residue() {
+    // Both maps must be processed, and BOTH halves must record what they
+    // dropped. The bigram half is the easy one to lose: it is the only
+    // residue path with no unigram counterpart to notice, so an evicted
+    // bigram that stays in the checkpoint would make a later deletion of
+    // that pair a silent no-op — #286 on the bigram axis.
+    let (max_unigrams, max_bigrams) = {
+        let s = settings();
+        (s.history.max_unigrams, s.history.max_bigrams)
+    };
+    let mut h = over_capacity(max_unigrams + 1, max_bigrams + 3);
+    h.evict();
+
+    let unigrams: usize = h.unigrams.values().map(|inner| inner.len()).sum();
+    let bigrams: usize = h.bigrams.values().map(|inner| inner.len()).sum();
+    assert!(unigrams <= max_unigrams, "unigram cap enforced: {unigrams}");
+    assert!(bigrams <= max_bigrams, "bigram cap enforced: {bigrams}");
+
+    // p0..p2 are the oldest bigrams, so they are the ones evicted. Probe
+    // them as a two-segment list, which is how a deletion arrives: the
+    // residue must derive the same (prev_surface, next_reading,
+    // next_surface) triple the history is keyed by. A transposed triple
+    // answers false here.
+    for i in 0..3 {
+        let segs = vec![
+            ("_".to_string(), format!("p{i}")),
+            (format!("n{i}"), format!("t{i}")),
+        ];
+        assert!(
+            h.deletion_has_durable_target(&segs),
+            "evicted bigram p{i} must stay answerable as possibly-durable"
+        );
+    }
+    // A bigram still in memory is not residue, and neither is one that never
+    // existed — the triple must be matched in full, not by prev-surface.
+    let retained = vec![
+        ("_".to_string(), format!("p{}", max_bigrams + 2)),
+        (
+            format!("n{}", max_bigrams + 2),
+            format!("t{}", max_bigrams + 2),
+        ),
+    ];
+    assert!(!h.durable_residue.contains_entries(&retained));
+    let wrong_surface = vec![
+        ("_".to_string(), "p0".to_string()),
+        ("n0".to_string(), "no-such-surface".to_string()),
+    ];
+    assert!(
+        !h.durable_residue.contains_entries(&wrong_surface),
+        "the residue is keyed by the whole triple, not by prev+reading"
+    );
+}
+
+#[test]
+fn test_evict_selection_is_unchanged_and_reports_residue() {
+    // Two claims that must hold together: reporting the evicted keys must
+    // not disturb *which* keys are chosen (lowest `frequency ×
+    // decay(last_used)` first), and every key it drops must become residue.
+    // The accuracy corpora cannot catch a selection regression here — they
+    // seed ~30 entries against a cap of 10000, so eviction never runs.
+    let max_unigrams = settings().history.max_unigrams;
+    let mut h = over_capacity(max_unigrams + 3, 0);
+    // r0..r2 are the oldest (lowest last_used ⇒ lowest score at equal
+    // frequency), so they are exactly the three that must go.
+    h.evict();
+    for i in 0..3 {
+        let p = pair(&format!("r{i}"), &format!("s{i}"));
+        assert!(!h.contains_entries(&p), "oldest entries evicted first");
+        assert!(
+            h.deletion_has_durable_target(&p),
+            "an evicted key must stay answerable as possibly-durable"
+        );
+    }
+    for i in 3..6 {
+        assert!(
+            h.contains_entries(&pair(&format!("r{i}"), &format!("s{i}"))),
+            "newer entries retained"
+        );
+    }
+    // Entries still in memory are not residue: the fast path for a deletion
+    // that is genuinely a no-op has to survive being at capacity.
+    assert!(!h.deletion_has_durable_target(&pair("r9", "no-such-surface")));
+    // And the residue is keyed by (reading, surface), not by reading alone:
+    // r0 IS an evicted reading, so a probe for a different surface under it
+    // must still answer false. Without this, deleting any never-learned
+    // candidate that merely shares a reading with an evicted entry would pay
+    // a key-thread full flush plus a checkpoint.
+    assert!(
+        !h.durable_residue
+            .contains_entries(&pair("r0", "no-such-surface")),
+        "residue outer key present, inner surface absent"
+    );
+}
+
+#[test]
+fn test_residue_cleared_by_the_checkpoint_that_covers_it() {
+    let mut h = UserHistory::new();
+    h.record(&pair("きのう", "昨日"));
+    raise_residue(&mut h, &pair("あす", "明日"));
+    assert!(h.deletion_has_durable_target(&pair("あす", "明日")));
+
+    // A checkpoint written from this very state settles what it saw.
+    let snapshot = h.clone();
+    h.cover_durable_residue(&snapshot);
+    assert!(!h.deletion_has_durable_target(&pair("あす", "明日")));
+}
+
+#[test]
+fn test_residue_reraised_during_a_checkpoint_write_survives_it() {
+    // The case a plain set cannot express. A key is raised, re-learned, and
+    // raised again while the checkpoint is being written. That checkpoint
+    // was cloned while the entry was in memory, so the file DOES contain it
+    // — retiring the key would let a later deletion be skipped as a no-op
+    // and resurrect on restart.
+    let mut h = UserHistory::new();
+    raise_residue(&mut h, &pair("あす", "明日"));
+
+    // Re-learned, then cloned for the checkpoint: the snapshot holds both
+    // the entry and the stale residue key.
+    h.record(&pair("あす", "明日"));
+    let snapshot = h.clone();
+    assert!(snapshot.contains_entries(&pair("あす", "明日")));
+
+    // Evicted again while the slow write is in flight.
+    h.remove_entries(&pair("あす", "明日"));
+    raise_residue(&mut h, &pair("あす", "明日"));
+
+    h.cover_durable_residue(&snapshot);
+    assert!(
+        h.deletion_has_durable_target(&pair("あす", "明日")),
+        "a key re-raised after the snapshot is still in the written checkpoint"
+    );
+}
+
+#[test]
+fn test_residue_duplicate_raise_at_the_cap_does_not_saturate() {
+    // Saturation must key off the set's SIZE, not the number of raises. A
+    // re-raise of an already-tracked key cannot grow the set, so throwing
+    // away every tracked key for it would drop a precise residue to the
+    // blanket "everything might be on disk" answer for no gain. Reachable
+    // without any timing window: a segment list containing the same
+    // (reading, surface) twice raises the same key twice in one deletion.
+    let mut h = UserHistory::new();
+    for i in 0..MAX_RESIDUE {
+        raise_residue(&mut h, &pair(&format!("r{i}"), &format!("s{i}")));
+    }
+    assert_eq!(h.durable_residue.tracked, MAX_RESIDUE);
+    assert!(!h.durable_residue.saturated);
+
+    raise_residue(&mut h, &pair("r0", "s0"));
+    assert!(
+        !h.durable_residue.saturated,
+        "a re-raise of a tracked key adds nothing and must not discard the set"
+    );
+    assert!(h.deletion_has_durable_target(&pair("r0", "s0")));
+
+    // A genuinely new key past the cap does saturate.
+    raise_residue(&mut h, &pair("brand", "new"));
+    assert!(h.durable_residue.saturated);
+}
+
+#[test]
+fn test_residue_saturation_is_conservative_and_lifts_only_when_quiescent() {
+    let mut h = UserHistory::new();
+    for i in 0..(MAX_RESIDUE + 1) {
+        raise_residue(&mut h, &pair(&format!("r{i}"), &format!("s{i}")));
+    }
+    // Past the cap the set is dropped and every query answers "possible".
+    assert!(h.deletion_has_durable_target(&pair("never", "raised")));
+
+    // A checkpoint taken while raises are still arriving cannot lift it:
+    // keys discarded during the write were never tracked.
+    let snapshot = h.clone();
+    raise_residue(&mut h, &pair("during", "write"));
+    h.cover_durable_residue(&snapshot);
+    assert!(h.deletion_has_durable_target(&pair("never", "raised")));
+
+    // A checkpoint over a quiescent state does.
+    let snapshot = h.clone();
+    h.cover_durable_residue(&snapshot);
+    assert!(!h.deletion_has_durable_target(&pair("never", "raised")));
+}
+
+#[test]
+fn test_residue_matches_contains_entries_shape() {
+    // The residue answers the same question over the same key space as
+    // `contains_entries`, bigram pairs included — otherwise the two halves
+    // of the deletion check would disagree about what a segment list means.
+    let segs = vec![
+        ("あす".to_string(), "明日".to_string()),
+        ("いく".to_string(), "行く".to_string()),
+    ];
+    let mut h = UserHistory::new();
+    raise_residue(&mut h, &segs);
+    // Both halves answer over the same key space: what the residue records
+    // for a segment list is exactly what `contains_entries` would find if
+    // the entries were in memory.
+    let mut in_memory = UserHistory::new();
+    in_memory.record(&segs);
+    assert!(in_memory.contains_entries(&segs));
+    assert!(h.durable_residue.contains_entries(&segs));
+
+    // Bigram-only residue must count, as it does for `contains_entries`.
+    h.durable_residue.unigrams.clear();
+    assert!(h.deletion_has_durable_target(&segs));
+}
+
+#[test]
+fn test_residue_is_not_part_of_the_checkpoint_body() {
+    // The residue is process-local state. `to_data`/`from_data` enumerate
+    // their fields explicitly, so it cannot reach the file — pinned here
+    // because the format is on-disk user data.
+    let mut h = UserHistory::new();
+    h.record(&pair("きょう", "今日"));
+    let without = bincode::serialize(&h.to_data()).unwrap();
+    raise_residue(&mut h, &pair("あす", "明日"));
+    let with = bincode::serialize(&h.to_data()).unwrap();
+    assert_eq!(without, with, "residue must not change the checkpoint body");
+}

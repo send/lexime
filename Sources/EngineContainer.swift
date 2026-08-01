@@ -139,19 +139,38 @@ final class EngineContainer {
             // tail repair is the expected power-loss residue, migration is
             // routine).
             let report = h.openReport()
+            // Appended to every branch, not just the last one. migrationFailed
+            // leaves checkpointState and walState at their healthy values, so
+            // a line without it reads exactly like a clean startup.
+            // appendsFrozen is the other way round — it usually accompanies
+            // RepairFailed or Quarantined — but it also co-occurs with a
+            // successful migration and with a quarantine, and those branches
+            // return first. (migrationFailed cannot co-occur with
+            // migratedFromV1, being its negation; it is appended uniformly
+            // rather than special-cased.)
+            var degraded = ""
+            if report.migrationFailed {
+                degraded += " migration=failed(v1 kept)"
+            }
+            if report.appendsFrozen {
+                degraded += " appends=frozen(memory-only until compaction)"
+            }
             if report.dataLossSuspected {
                 var detail =
                     "checkpoint: \(report.checkpointState), wal: \(report.walState)"
                 if !report.quarantinedPaths.isEmpty {
                     detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
                 }
+                detail += degraded
                 NSLog("Lexime: User history recovered with data loss (%@)", detail)
                 failures.append(.historyDataLoss(detail: detail))
             } else if report.migratedFromV1 {
-                NSLog("Lexime: User history migrated from v1 (\(report.framesReplayed) frames)")
+                NSLog(
+                    "Lexime: User history migrated from v1 (\(report.framesReplayed) frames)\(degraded)"
+                )
             } else if !report.clean {
                 NSLog(
-                    "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)"
+                    "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)\(degraded)"
                 )
             }
             history = h

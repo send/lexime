@@ -49,6 +49,65 @@ what a generic reviewer misses:
   supersedes design §10's earlier "reuse the existing `.userDictionary` case"
   note, which predates the history split. Findings proposing to collapse the
   two cases re-litigate a settled decision — do not raise them.
+- **Deletion durability vs. the durable set (settled)**: the no-op-deletion
+  skip is gated on `UserHistory::deletion_has_durable_target`, not on memory
+  alone — an entry evicted for capacity is gone from the maps while the
+  checkpoint still holds it, and skipping there made the deletion a silent
+  no-op that a restart undid (#286). That predicate is deliberately one
+  method rather than two the caller ORs together: answering only the
+  in-memory half is the bug itself. Two sub-decisions are settled. (a) The
+  residue tracks *keys*, not a single "something was evicted" bit: a bit is
+  permanently set once a heavy user reaches `max_unigrams`, which would make
+  every ForwardDelete of a never-learned candidate pay a key-thread
+  F_FULLFSYNC (measured 5.9ms p50 / 11.7ms max) plus a full checkpoint.
+  (b) Each residue key carries the epoch it was raised at, and the covering
+  pass retires a key only if that epoch has not moved. A plain set is
+  idempotent, so a key re-raised while a checkpoint is being written looks
+  identical to one raised before it, and covering would retire a key the
+  written checkpoint still contains — reopening #286. Findings proposing to
+  collapse the residue to a boolean, or to drop the epoch stamps for a plain
+  set difference, re-litigate these — do not raise them. Past a memory cap
+  the residue drops key tracking and answers conservatively for everything;
+  the cap is a constant, not a function of `max_unigrams`/`max_bigrams`,
+  because those are user-settable while the compaction that clears the
+  residue fires on a fixed frame threshold — deriving it would let a
+  small-capacity configuration saturate during ordinary typing.
+- **`wal_state` does not carry freeze or migration failure (settled)**:
+  `OpenReport` reports appends-frozen and migration-commit-failure as their own
+  fields rather than folding them into `wal_state`. `WalState::Quarantined`
+  does *not* imply frozen (a quarantine that succeeds leaves a fresh,
+  appendable WAL), so folding them conflates data loss with degraded
+  persistence; and `wal_state` is string-interpolated into the one diagnostic
+  line that survives the shipped build, so overloading a variant makes that
+  line wrong. Relatedly, `migration_failed` is derived from the migration's
+  own outcome (`migrate && !migrated_from_v1`), not from `is_frozen()`: the
+  `Err` branch only freezes when a legacy WAL was consumed, so a v1 checkpoint
+  beside a fresh WAL fails the commit without freezing anything and would
+  report a clean startup. A dedicated `CheckpointState::MigrationFailed` (the
+  other option #296 floated) is rejected for the same reason as the
+  `wal_state` fold: the two facts are independent — a migration can fail with
+  appends healthy, and appends can freeze with no migration in sight — so one
+  enum cannot carry both without a state per combination. Findings proposing
+  either fold, or a migration-specific `CheckpointState`, re-litigate a
+  settled decision — do not raise them.
+- **A failed migration is reported, not healed in-session (settled)**: a
+  `migration_failed` startup deliberately schedules no compaction. A
+  compaction is *not* the migration — `run_compact_impl` writes a v2
+  checkpoint over the v1 file with none of the commit's steps (no `.v1.bak`,
+  no `Migrated` state) — so using one as the retry destroys the v1 bytes on
+  exactly the path where the commit is already failing. The next launch
+  re-attempts properly. `.v1.bak` stays **best-effort** per LXUD v2 decision
+  #13: it is a manual rescue hatch, not a correctness dependency, and
+  migration proceeds whether or not it lands. Making it a precondition was
+  tried and reverted — turning it into a dependency meant every write, GC and
+  wipe site had to join a rescue protocol, and three review rounds each found
+  another site that had not. Findings proposing to gate writes on the backup,
+  or to retry a failed migration with a compaction, re-litigate this — do not
+  raise them. (The legacy-WAL variant does still complete in-session, but for
+  an unrelated reason: that path freezes the WAL, and the compaction
+  `appends_frozen` schedules to thaw it writes the v2 checkpoint as a side
+  effect. The retry timing is therefore not a property of `migration_failed`,
+  which is why the shipped log line states the fact and not a schedule.)
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately

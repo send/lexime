@@ -295,6 +295,12 @@ pub struct HistoryWal {
     /// so appends fail fast instead; a successful truncate (e.g. by the next
     /// compaction, whose checkpoint contains the full state) re-establishes
     /// v2 form and lifts the freeze.
+    ///
+    /// Assigned only through `set_frozen`, which keeps the write path
+    /// greppable — but that is readability, not enforcement. What keeps a
+    /// freeze from going unreported is that `open_recovering` derives
+    /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
+    /// branch has run, instead of asking each branch to record it.
     frozen: bool,
 }
 
@@ -346,7 +352,7 @@ impl HistoryWal {
         match classify_wal(&data) {
             WalFormat::Stub => {
                 self.adopt_empty(history.applied_seq());
-                self.frozen = !data.is_empty();
+                self.set_frozen(!data.is_empty());
                 Ok(ReplaySummary::default())
             }
             // A whole-file format mismatch must fail loudly in the strict
@@ -375,7 +381,7 @@ impl HistoryWal {
                     // Migration-crash residue: already covered by the v2
                     // checkpoint (§2.3) — do not replay.
                     self.adopt_empty(history.applied_seq());
-                    self.frozen = true;
+                    self.set_frozen(true);
                     return Ok(ReplaySummary::default());
                 }
                 let scan = scan_legacy(&data, history);
@@ -388,7 +394,8 @@ impl HistoryWal {
                     0,
                     history.applied_seq(),
                 );
-                self.frozen = true; // v2 frames must not follow v1 bytes
+                // v2 frames must not follow v1 bytes
+                self.set_frozen(true);
                 Ok(ReplaySummary {
                     frames_replayed: scan.frames_applied,
                     frames_skipped: 0,
@@ -407,7 +414,7 @@ impl HistoryWal {
                 );
                 // An unrepaired corrupt tail would swallow anything appended
                 // after it (strict mode never truncates the file).
-                self.frozen = scan.truncated_tail;
+                self.set_frozen(scan.truncated_tail);
                 Ok(ReplaySummary {
                     frames_replayed: scan.frames_applied,
                     frames_skipped: scan.frames_skipped,
@@ -452,7 +459,7 @@ impl HistoryWal {
     ///   durability is the operation's contract. The frame remains appended
     ///   and must be covered by the caller (variant docs).
     pub fn append_record(&mut self, record: &WalRecord) -> Result<u64, AppendError> {
-        if self.frozen {
+        if self.is_frozen() {
             return Err(io::Error::other(
                 "WAL file is not in appendable v2 form (pending compaction)",
             )
@@ -480,7 +487,7 @@ impl HistoryWal {
         frame.extend_from_slice(&seq.to_le_bytes());
         frame.extend_from_slice(&payload);
         if let Err(e) = self.io.append(&frame) {
-            self.frozen = true;
+            self.set_frozen(true);
             return Err(AppendError::Io(e));
         }
 
@@ -530,7 +537,7 @@ impl HistoryWal {
         self.wal_bytes = WAL_HEADER_LEN as u64;
         self.frames_since_barrier = 0;
         self.last_appended_seq = 0;
-        self.frozen = false;
+        self.set_frozen(false);
         Ok(())
     }
 
@@ -564,6 +571,10 @@ impl HistoryWal {
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
         self.frozen
+    }
+
+    fn set_frozen(&mut self, value: bool) {
+        self.frozen = value;
     }
 
     /// Path to the checkpoint file.
@@ -608,7 +619,7 @@ impl HistoryWal {
     /// the engine's clear when its truncation fails: appends must not land
     /// after bytes replay cannot read.
     pub fn freeze(&mut self) {
-        self.frozen = true;
+        self.set_frozen(true);
     }
 }
 

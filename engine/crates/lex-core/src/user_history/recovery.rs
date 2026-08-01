@@ -84,6 +84,31 @@ pub struct OpenReport {
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<PathBuf>,
+    /// A v1→v2 migration was needed but its commit (the v2 checkpoint
+    /// write) failed, so the v1 files are kept intact.
+    ///
+    /// This flag itself schedules nothing — a compaction is not the
+    /// migration, so using one as the retry would overwrite the v1
+    /// checkpoint on exactly the path where the commit is already failing.
+    /// When a legacy WAL was consumed the conversion does still complete
+    /// in-session, but for an unrelated reason: that path freezes the WAL,
+    /// and the compaction `appends_frozen` schedules to thaw it writes the
+    /// v2 checkpoint as a side effect. Otherwise the next launch retries.
+    /// So the timing is not a property of this flag, which is why the
+    /// shipped log line states the fact and not a schedule.
+    ///
+    /// Derived from the migration's own outcome rather than from a
+    /// side effect of it: the `Err` branch only freezes the WAL when a
+    /// legacy WAL was consumed, so `is_frozen()` misses the v1-checkpoint-
+    /// with-fresh-WAL case entirely — and that case reported a clean
+    /// startup while learning quietly failed to migrate.
+    pub migration_failed: bool,
+    /// Appends were frozen when this WAL was opened: everything learned
+    /// this session stays in memory until a compaction restores appendable
+    /// form. Derived once from `wal.is_frozen()` rather than assigned in
+    /// each branch that freezes — a branch forgetting to set its state is
+    /// precisely how a failed migration came to look clean.
+    pub appends_frozen: bool,
     /// A replayed Tombstone left deleted strings in the old checkpoint /
     /// earlier frames unscrubbed — feeds `compaction_recommended` (§5.4).
     /// Not surfaced over UniFFI; an internal startup-scrub signal.
@@ -110,6 +135,8 @@ impl OpenReport {
             CheckpointState::Loaded | CheckpointState::Missing
         ) && matches!(self.wal_state, WalState::Clean | WalState::Missing)
             && !self.migrated_from_v1
+            && !self.migration_failed
+            && !self.appends_frozen
     }
 }
 
@@ -125,6 +152,8 @@ pub fn open_recovering(
         frames_replayed: 0,
         frames_skipped: 0,
         quarantined_paths: Vec::new(),
+        migration_failed: false,
+        appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
     };
@@ -276,6 +305,13 @@ pub fn open_recovering(
         // replay) and they are correctly skipped from now on.
         match history.save(checkpoint_path) {
             Ok(()) => {
+                // This checkpoint was written from `history` itself, so it
+                // contains everything memory contains: nothing can be left on
+                // disk that memory lacks, and the residue the post-replay
+                // `evict()` raised is settled. (The non-migrating startup
+                // path writes no checkpoint, so its residue correctly stands
+                // until the first compaction.)
+                history.reset_durable_residue();
                 // Commit point passed: from here any crash leaves a v2
                 // checkpoint, and a leftover v1 WAL is discarded on the next
                 // startup (idempotent).
@@ -305,7 +341,17 @@ pub fn open_recovering(
                 }
             }
         }
+        // Derived from the outcome, not from the freeze above: that freeze
+        // is conditional on a legacy WAL, so a v1 checkpoint next to a fresh
+        // v2 WAL fails the commit without freezing anything.
+        report.migration_failed = !report.migrated_from_v1;
     }
+
+    // Whatever branch froze the WAL — or left it frozen — this session's
+    // appends are memory-only until a compaction heals the file. Derived
+    // once, here, so a future freeze site cannot report a clean startup by
+    // omission.
+    report.appends_frozen = wal.is_frozen();
 
     // Anomaly (§8 missing x non-empty): a checkpoint should only be absent
     // when the WAL is too. Recoverable via replay, but checkpoint early.
@@ -333,13 +379,21 @@ pub fn open_recovering(
     // the Tombstone replays (deletion correct) but nothing is skipped, so
     // without this signal no scrub would run until an unrelated compaction,
     // leaving the input on disk indefinitely.
+    // A failed migration deliberately schedules nothing on its own. A
+    // compaction is not the migration — it writes a v2 checkpoint over the
+    // v1 file with none of the commit's steps (no `.v1.bak`, no `Migrated`
+    // state) — so using one as the retry would destroy the v1 bytes on
+    // exactly the path where the commit is already failing. The next launch
+    // re-attempts properly. The legacy-WAL variant still heals, via
+    // `appends_frozen` below: there the WAL is frozen, which is a real
+    // degradation the compaction genuinely fixes.
     report.compaction_recommended = report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
         || report.replayed_deletion
         || wal.needs_compact()
-        || wal.is_frozen();
+        || report.appends_frozen;
 
     // --- 5. quarantine rotation + v1-backup GC ---
     persist::rotate_quarantined(checkpoint_path, QUARANTINE_KEEP);
@@ -419,8 +473,11 @@ fn quarantine(path: &Path, quarantined: &mut Vec<PathBuf>) -> bool {
 }
 
 /// Copy the v1 checkpoint bytes aside before migration overwrites the path.
-/// Best-effort: the backup is a manual rescue hatch for downgrades and
-/// migration bugs, not a correctness dependency.
+///
+/// Best-effort by design (LXUD v2 decision #13): the backup is a manual
+/// rescue hatch for downgrades and migration bugs, **not** a correctness
+/// dependency, and migration proceeds whether or not it lands. Making it a
+/// precondition was tried and reverted — see the AGENTS.md settled note.
 fn backup_v1_checkpoint(checkpoint_path: &Path) {
     let dest = v1_backup_path(checkpoint_path);
     if let Err(e) = fs::copy(checkpoint_path, &dest) {
