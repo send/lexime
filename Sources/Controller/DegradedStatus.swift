@@ -14,8 +14,9 @@ import Foundation
 ///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch
-/// followed by a disk that fails hours later. Nesting the runtime rows under
-/// an `isDegraded` check would display nothing in exactly that case.
+/// followed by a disk that fails hours later. So `menu()` gates on "are there
+/// rows", never on whether the engine is degraded; gating on the latter would
+/// display nothing in exactly the case this exists for.
 enum DegradedStatus {
 
     /// Titles for the disabled status rows, init failures first.
@@ -73,9 +74,14 @@ enum DegradedStatus {
                 "⚠️ 削除した学習内容を保存できませんでした（削除が取り消される可能性があります）",
                 comment: "Degraded status: a requested deletion may not have reached disk")
         case .learningMemoryOnly:
+            // "新しい" is load-bearing: what is at risk is only what was
+            // learned since the last checkpoint. A freeze inherited at open
+            // can co-occur with `.historyDataLoss`'s 「学習は継続中」, and an
+            // unqualified "learning is not being saved" next to that reads as
+            // a contradiction — and overstates the loss besides.
             return NSLocalizedString(
-                "⚠️ 学習内容を保存できていません（再起動すると失われます）",
-                comment: "Degraded status: learning is memory-only until a compaction heals the WAL")
+                "⚠️ 新しい学習内容を保存できていません（再起動すると失われます）",
+                comment: "Degraded status: learning since the last checkpoint is memory-only")
         }
     }
 }

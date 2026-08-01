@@ -405,8 +405,11 @@ impl LexUserHistory {
     /// - under the wal mutex, so it cannot land inside `clear_impl`'s
     ///   read-then-cover window. A raise slipping in there would outlive a
     ///   wipe that made it vacuously true, leaving a privacy warning on a
-    ///   history that is provably empty.
-    fn raise_unpersisted_deletion(&self) {
+    ///   history that is provably empty. The guard is taken as an unused
+    ///   parameter so that half is checked rather than merely documented —
+    ///   the same reason `snapshot_to_cover` owns the pairing instead of
+    ///   trusting two statements to stay in order.
+    fn raise_unpersisted_deletion(&self, _wal: &MutexGuard<'_, HistoryWal>) {
         // One raise = +1 to the high half; the low half (covered) is
         // untouched, so a cover racing this cannot lose it.
         self.deletion_ledger.fetch_add(RAISE_STEP, Ordering::SeqCst);
@@ -423,6 +426,13 @@ impl LexUserHistory {
     /// is still blocked on the write lock (its generation lands after this
     /// load, so it stays outstanding, which is the safe direction).
     ///
+    /// A third interleaving exists and is deliberately allowed: `apply_batch`
+    /// has released `inner` but the raise two statements later has not run,
+    /// so the snapshot excludes the deletion yet the cover carries the older
+    /// generation. That is a transient false positive — the same
+    /// `apply_records` call then runs a gated compaction that covers it — and
+    /// it errs toward reporting, which is the direction this design accepts.
+    ///
     /// Reading the generation after the clone would clear deletions the
     /// snapshot may not contain — a silent false negative, the one direction
     /// the design forbids. That used to rest on statement order inside
@@ -434,10 +444,10 @@ impl LexUserHistory {
     }
 
     /// The generation to cover for a wipe. A bare load is sound here because
-    /// `clear_impl` holds the wal mutex across both this read and the cover,
-    /// and every raise happens under that mutex — so unlike the compaction
-    /// path there is no window to close.
-    fn deletion_gen_under_wal_lock(&self) -> u64 {
+    /// the caller holds the wal mutex across both this read and the cover
+    /// (hence the guard witness), and every raise happens under that mutex —
+    /// so unlike the compaction path there is no window to close.
+    fn deletion_gen_under_wal_lock(&self, _wal: &MutexGuard<'_, HistoryWal>) -> u64 {
         raised_of(self.deletion_ledger.load(Ordering::SeqCst))
     }
 
@@ -650,7 +660,7 @@ impl LexUserHistory {
                 // see `raise_unpersisted_deletion` for why both matter. The
                 // gated compaction that tries to cover this runs below, once
                 // the mutex is released (it needs it itself).
-                self.raise_unpersisted_deletion();
+                self.raise_unpersisted_deletion(&wal);
             }
         }
 
@@ -695,7 +705,7 @@ impl LexUserHistory {
         // The wal mutex (held since above) is what closes this window: every
         // raise happens under it, so none can land between this read and the
         // cover below.
-        let covered_gen = self.deletion_gen_under_wal_lock();
+        let covered_gen = self.deletion_gen_under_wal_lock(&wal);
 
         // Commit point. On Err nothing has changed — including
         // scrub_pending, so a pre-clear Tombstone's scrub request stays
@@ -1033,6 +1043,18 @@ mod tests {
 
     fn open_hist(cp: &Path) -> Arc<LexUserHistory> {
         LexUserHistory::open(cp.display().to_string()).unwrap()
+    }
+
+    /// Raise through the real precondition: tests must hold the wal mutex
+    /// too, or the witness parameter would be documenting nothing.
+    fn raise_under_wal(hist: &LexUserHistory) {
+        let wal = lock_recover(&hist.wal);
+        hist.raise_unpersisted_deletion(&wal);
+    }
+
+    fn gen_under_wal(hist: &LexUserHistory) -> u64 {
+        let wal = lock_recover(&hist.wal);
+        hist.deletion_gen_under_wal_lock(&wal)
     }
 
     fn committed(reading: &str, surface: &str) -> LearningRecord {
@@ -1858,7 +1880,7 @@ mod tests {
         let hist = open_hist(&cp);
 
         let (generation, _snapshot) = hist.snapshot_to_cover();
-        hist.raise_unpersisted_deletion(); // lands after the pair was taken
+        raise_under_wal(&hist); // lands after the pair was taken
         hist.cover_unpersisted_deletions(generation);
 
         assert!(
@@ -1886,10 +1908,10 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
 
-        hist.raise_unpersisted_deletion();
-        let observed = hist.deletion_gen_under_wal_lock();
+        raise_under_wal(&hist);
+        let observed = gen_under_wal(&hist);
         // A second deletion fails while the first cover is being computed.
-        hist.raise_unpersisted_deletion();
+        raise_under_wal(&hist);
         hist.cover_unpersisted_deletions(observed);
         assert!(
             hist.has_unpersisted_deletion(),
@@ -1897,7 +1919,7 @@ mod tests {
         );
 
         // A stale cover must not un-settle newer work.
-        hist.cover_unpersisted_deletions(hist.deletion_gen_under_wal_lock());
+        hist.cover_unpersisted_deletions(gen_under_wal(&hist));
         assert!(!hist.has_unpersisted_deletion());
         hist.cover_unpersisted_deletions(observed);
         assert!(

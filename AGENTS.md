@@ -129,29 +129,44 @@ what a generic reviewer misses:
   `EngineInitFailure`** on lifetime, not on snapshot-ness (`recordFailure`
   appends after load, so init failures are not a snapshot): init failures
   latch, runtime issues are re-derived on every menu open. Retraction is
-  **passive**, not spontaneous — a row clears on the first commit after the
-  disk recovers, because that is what runs a compaction. The `Io` half retries
-  every commit (the freeze fails each append); the `SyncFailed` half is not
-  frozen and waits for the 1000-frame / 1 MiB threshold. There is no periodic
-  compaction and no quit-time flush, so a user who stops typing keeps the row. The rows sit outside the
-  `isDegraded` gate because the main #295 scenario is a clean launch followed
-  by a later failure. Findings proposing to collapse the list, add a commit
+  **passive**, and its latency differs per half: the `Io` half clears on the
+  first commit after the disk recovers (the freeze fails that append, which
+  posts a compaction), while the `SyncFailed` half is not frozen and waits for
+  the 1000-frame / 1 MiB threshold. There is no periodic compaction and no
+  quit-time flush, so a user who stops typing keeps the row. The runtime rows
+  are also emitted whether or not any init failure exists — `menu()` gates on
+  "are there rows", not on the engine being degraded — because the main #295
+  scenario is a clean launch followed by a later failure. Findings proposing to collapse the list, add a commit
   ledger, treat `SyncFailed` as benign, gate the cover on truncation, or merge
   the issues into `initFailures` re-litigate these — do not raise them.
-  Deliberately **out of scope**, each because the deletion itself is durable
-  and startup heals the residue — the channel reports *lost* deletions, not
-  deferred physical scrubs: (i) a persistent `spawn_compact` thread-spawn
-  failure leaves `scrub_pending` unconsumed; (ii) a tombstone that appends and
-  flushes cleanly but whose scrub compaction's `save()` fails raises nothing,
-  so the deleted strings sit in the old checkpoint and past Committed frames
-  for the session (#311); (iii) the ledger is process-local, so the report is
-  gone on the restart where an `Io`-half deletion actually resurrects (#312).
-  (iii) is the real gap in closing #295 and wants an on-disk marker, which is
-  new persisted state and therefore its own PR. Separately, #313 records a
+  Deliberately **out of scope**, for two different reasons — do not merge them.
+  (i) a persistent `spawn_compact` thread-spawn failure leaves `scrub_pending`
+  unconsumed, and (ii) a tombstone that appends and flushes cleanly but whose
+  scrub compaction's `save()` fails raises nothing (#311), so deleted strings
+  sit in the old checkpoint and past Committed frames for the session. Both are
+  deferred *physical scrubs*: the deletion itself is durable and startup heals
+  it. (iii) is **not** like them — the ledger is process-local, so on the `Io`
+  half, where no frame reached the WAL and no checkpoint landed, the deletion is
+  not durable, startup does not heal it, and the report is gone on the very
+  restart where the entry resurrects (#312). **#295 is therefore only
+  half-closed**, with #312 as the remainder; it wants an on-disk marker, which
+  is new persisted state and so its own PR. Do not cite this entry to suppress
+  that. Separately, #313 records a
   pre-existing privacy race: `apply_records` appends to the commit log outside
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the
   issues rather than proposing a fix here.
+- **The WAL hands out its freeze flag; it does not adopt one (settled)**:
+  `HistoryWal::frozen_flag()` returns a read-only `FreezeFlag` over the `Arc`
+  the WAL already owns. The PR2 plan specified the reverse — the owner mints
+  the flag and lends it in — because a handed-out handle binds to one WAL
+  instance. That reason does not differentiate: if the WAL behind the mutex
+  were ever replaced, a lent flag goes exactly as stale as a handed-out one.
+  Handing out also removes a seeding step (a freeze inherited from recovery is
+  already in the flag) and makes it impossible to leave a second holder reading
+  a detached flag. The handle is a newtype, not the `Arc`, so
+  `set_frozen(&mut self)` keeps its write monopoly. Findings proposing the
+  lend-in shape re-litigate this — do not raise them.
 - **The deletion ledger stays on `LexUserHistory`, not in `UserHistory`
   (settled)**: it looks like a duplicate of `DurableResidue` — same raise
   event, same cover moment, and the residue gets its ordering by construction
@@ -159,9 +174,11 @@ what a generic reviewer misses:
   read-before-clone. Reviewers reliably propose merging them. Two things block
   it. (1) **The read must take no lock.** The consumer is a UI poll;
   `DurableResidue` lives behind the `inner` RwLock, which the key thread holds
-  for writing inside the wal critical section on every commit, so a merged
-  ledger would put the menu behind exactly the stall `appends_frozen` is
-  shaped to avoid. (2) **lex-core cannot see the `SyncFailed` raise.**
+  for writing inside the wal critical section on every commit and a compaction
+  holds for `cover_durable_residue`, so a merged ledger would put a main-thread
+  menu poll behind history I/O. (Not the identical stall `FreezeFlag` avoids —
+  that one is the wal mutex, held across a Tombstone's F_FULLFSYNC — but the
+  same class.) Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
   `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
   tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
   design, since the residue deliberately excludes `SyncFailed` (its frame is

@@ -14,7 +14,7 @@
 "⚠️ ユーザ辞書が破損していました（登録語を失いましたが登録は継続中）" = "⚠️ User dictionary was corrupt (registered words lost; registration still works)";
 "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）" = "⚠️ Some learning history could not be recovered (learning continues)";
 "⚠️ 削除した学習内容を保存できませんでした（削除が取り消される可能性があります）" = "⚠️ A deleted entry could not be saved (the deletion may be undone)";
-"⚠️ 学習内容を保存できていません（再起動すると失われます）" = "⚠️ Learning is not being saved (it will be lost on restart)";
+"⚠️ 新しい学習内容を保存できていません（再起動すると失われます）" = "⚠️ Recent learning is not being saved (it will be lost on restart)";
 
 /* Settings Window */
 "Lexime 設定" = "Lexime Settings";

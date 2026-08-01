@@ -2,8 +2,8 @@ import Foundation
 
 func testDegradedStatus() {
     // S1. The main #295 scenario is a clean launch followed by a disk that
-    // fails hours later: no init failure, one runtime issue. The rows used to
-    // be built inside an `isDegraded` check, which shows nothing here.
+    // fails hours later: no init failure, one runtime issue. Gating the rows
+    // on "is the engine degraded" — as menu() once did — shows nothing here.
     let runtimeOnly = DegradedStatus.rows(
         initFailures: [],
         runtimeIssues: [.deletionNotPersisted])
