@@ -304,10 +304,10 @@ pub struct HistoryWal {
     /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
     /// branch has run, instead of asking each branch to record it.
     ///
-    /// Shared rather than plain `bool` so an owner outside the mutex can
+    /// Shared rather than plain `bool` so a holder outside the mutex can
     /// observe freeze transitions without taking it (see
-    /// [`Self::adopt_frozen_flag`]). It stays the single source of truth —
-    /// a mirrored `bool` beside it would be a second one, free to drift.
+    /// [`Self::frozen_flag`]). It stays the single source of truth — a
+    /// mirrored `bool` beside it would be a second one, free to drift.
     frozen: Arc<AtomicBool>,
 }
 
@@ -580,18 +580,17 @@ impl HistoryWal {
         self.frozen.load(Ordering::SeqCst)
     }
 
-    /// Publish freeze transitions into a caller-owned flag, so an owner
-    /// holding this WAL behind a mutex can report "learning is memory-only"
-    /// without taking it — the key-processing thread holds that mutex for
-    /// every append, and a UI poll must not queue behind one.
+    /// A handle to the freeze state, readable without this WAL's mutex — the
+    /// key-processing thread holds that mutex across every append, and a UI
+    /// poll for "learning is memory-only" must not queue behind one.
     ///
-    /// The flag is seeded with the current state before being adopted: a WAL
-    /// that `open_recovering` already froze (failed tail repair, failed
-    /// migration commit) has no later transition to publish, and would
-    /// otherwise read as healthy until the first append failed.
-    pub fn adopt_frozen_flag(&mut self, flag: Arc<AtomicBool>) {
-        flag.store(self.is_frozen(), Ordering::SeqCst);
-        self.frozen = flag;
+    /// Handing out the flag this WAL already owns, rather than adopting one
+    /// the caller minted, is what makes the handle unconditionally current:
+    /// a freeze inherited from recovery (failed tail repair, failed migration
+    /// commit) is already in it, so there is no seeding step to forget, and
+    /// no second holder can be left reading a detached flag.
+    pub fn frozen_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.frozen)
     }
 
     fn set_frozen(&mut self, value: bool) {

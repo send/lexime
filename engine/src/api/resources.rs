@@ -150,7 +150,7 @@ pub struct LexUserHistory {
     /// second ledger would be a duplicate book, free to disagree.
     unpersisted_deletion_gen: AtomicU64,
     unpersisted_deletion_covered: AtomicU64,
-    /// Mirror of `HistoryWal::is_frozen()`, readable without the wal mutex
+    /// The WAL's own freeze flag, readable without the wal mutex
     /// (#288). The key-processing thread holds that mutex for every append;
     /// a UI poll for the menu must not queue behind one.
     appends_frozen: Arc<AtomicBool>,
@@ -298,13 +298,12 @@ impl LexUserHistory {
         // startup, so learning never silently stops. Err = environmental
         // read failure only (EACCES etc.). Swift consumes the report via
         // `open_report()`; the logs here cover headless/CLI contexts.
-        let (history, mut wal, report) = crate::user_history::recovery::open_recovering(cp)?;
-        // Own the freeze flag and lend it to the WAL (#288). Adopting seeds
-        // it from the WAL's current state, so a freeze recovery already
-        // applied — a failed tail repair or migration commit — is reported
-        // from the first menu open, without waiting for an append to fail.
-        let appends_frozen = Arc::new(AtomicBool::new(false));
-        wal.adopt_frozen_flag(Arc::clone(&appends_frozen));
+        let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        // Take a handle to the WAL's freeze state (#288) before it goes
+        // behind the mutex. A freeze recovery already applied — a failed tail
+        // repair or migration commit — is in the flag from the start, so it
+        // reports from the first menu open rather than from the first append.
+        let appends_frozen = wal.frozen_flag();
         if report.data_loss_suspected() {
             warn!("user history recovered with suspected data loss: {report:?}");
         } else if !report.is_clean() {
@@ -998,9 +997,8 @@ mod tests {
         cp: &Path,
         io: Box<dyn crate::user_history::wal::WalIo>,
     ) -> Arc<LexUserHistory> {
-        let mut wal = HistoryWal::with_io(cp, io);
-        let appends_frozen = Arc::new(AtomicBool::new(false));
-        wal.adopt_frozen_flag(Arc::clone(&appends_frozen));
+        let wal = HistoryWal::with_io(cp, io);
+        let appends_frozen = wal.frozen_flag();
         Arc::new(LexUserHistory {
             inner: Arc::new(RwLock::new(UserHistory::new())),
             wal: Mutex::new(wal),
@@ -1026,10 +1024,6 @@ mod tests {
             unpersisted_deletion_covered: AtomicU64::new(0),
             appends_frozen,
         })
-    }
-
-    fn issues(hist: &LexUserHistory) -> Vec<LexHistoryDurabilityIssue> {
-        hist.durability_issues()
     }
 
     #[test]
@@ -1482,7 +1476,7 @@ mod tests {
         // memory-only, and it is reportable while it lasts — not only after
         // the fact via the next startup's OpenReport.
         assert_eq!(
-            issues(&hist),
+            hist.durability_issues(),
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
         );
 
@@ -1497,7 +1491,10 @@ mod tests {
         assert!(io.truncates.load(std::sync::atomic::Ordering::SeqCst) >= 1);
         // F11: the issue is clearable, not a latch — which is exactly why it
         // is polled rather than folded into Swift's `initFailures`.
-        assert!(issues(&hist).is_empty(), "the heal must clear the report");
+        assert!(
+            hist.durability_issues().is_empty(),
+            "the heal must clear the report"
+        );
 
         // Nothing was lost: reopen from disk sees the entry (via checkpoint).
         drop(hist);
@@ -1569,7 +1566,9 @@ mod tests {
         // checkpoint covered it before returning — so nothing is reported.
         // The WAL is still frozen, which is its own (accurate) issue.
         assert!(
-            !issues(&hist).contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            !hist
+                .durability_issues()
+                .contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
             "a deletion the fallback persisted must not be reported as lost"
         );
 
@@ -1670,7 +1669,7 @@ mod tests {
             "SyncFailed does not freeze: the frame itself is valid"
         );
         assert_eq!(
-            issues(&hist),
+            hist.durability_issues(),
             vec![LexHistoryDurabilityIssue::DeletionNotPersisted],
             "the deletion is unpersisted, and only that"
         );
@@ -1692,7 +1691,7 @@ mod tests {
         hist.apply_records(&[deletion("きょう", "今日")]);
 
         assert_eq!(
-            issues(&hist),
+            hist.durability_issues(),
             vec![
                 // The deletion first: it is what the user explicitly asked
                 // for, and unlike a frozen WAL nothing heals it on restart.
@@ -1709,11 +1708,11 @@ mod tests {
         // learns to ignore it.
         let dir = tempfile::tempdir().unwrap();
         let (hist, cp) = hist_with_unpersisted_deletion(dir.path());
-        assert!(!issues(&hist).is_empty());
+        assert!(!hist.durability_issues().is_empty());
 
         unblock_checkpoint(&cp);
         assert!(matches!(hist.run_compact(), CompactOutcome::Done));
-        assert!(issues(&hist).is_empty());
+        assert!(hist.durability_issues().is_empty());
 
         // And the deletion really is on disk now, not merely unreported.
         drop(hist);
@@ -1728,12 +1727,12 @@ mod tests {
         // persist" warning on a history that provably holds nothing.
         let dir = tempfile::tempdir().unwrap();
         let (hist, cp) = hist_with_unpersisted_deletion(dir.path());
-        assert!(!issues(&hist).is_empty());
+        assert!(!hist.durability_issues().is_empty());
 
         unblock_checkpoint(&cp);
         hist.clear_impl().unwrap();
         assert!(
-            issues(&hist).is_empty(),
+            hist.durability_issues().is_empty(),
             "a full wipe persists every deletion"
         );
     }
@@ -1751,7 +1750,8 @@ mod tests {
             "blocked checkpoint fails the clear"
         );
         assert!(
-            issues(&hist).contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            hist.durability_issues()
+                .contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
             "a clear that did not commit persists nothing"
         );
     }
@@ -1804,7 +1804,7 @@ mod tests {
             .unwrap();
         assert!(matches!(hist.run_compact(), CompactOutcome::FollowUp));
         assert!(
-            issues(&hist).is_empty(),
+            hist.durability_issues().is_empty(),
             "FollowUp still wrote a durable checkpoint"
         );
 
@@ -1817,7 +1817,7 @@ mod tests {
         hist2.raise_unpersisted_deletion();
         assert!(matches!(hist2.run_compact(), CompactOutcome::Done));
         assert!(
-            issues(&hist2).is_empty(),
+            hist2.durability_issues().is_empty(),
             "the checkpoint is durable regardless"
         );
     }
@@ -1838,7 +1838,7 @@ mod tests {
         assert!(hist.clear_impl().is_err());
         assert!(lock_recover(&hist.wal).is_frozen());
         assert_eq!(
-            issues(&hist),
+            hist.durability_issues(),
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
         );
     }
@@ -1870,7 +1870,7 @@ mod tests {
         let hist = open_hist(&cp);
         assert!(hist.open_report().appends_frozen, "fixture must freeze");
         assert_eq!(
-            issues(&hist),
+            hist.durability_issues(),
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly],
             "a freeze inherited from recovery is live from the first poll"
         );
@@ -1891,7 +1891,7 @@ mod tests {
         hist.apply_records(&[deletion("きょう", "今日")]); // real deletion
         hist.clear_impl().unwrap();
 
-        assert!(issues(&hist).is_empty());
+        assert!(hist.durability_issues().is_empty());
     }
 
     #[test]
@@ -1904,22 +1904,29 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
 
+        // The holder keeps the mutex until the poll has returned, rather than
+        // for a fixed sleep: the test then costs one poll instead of a
+        // hard-coded wait, and cannot pass by the holder releasing early.
         let held = Arc::new(AtomicBool::new(false));
+        let polled = Arc::new(AtomicBool::new(false));
         let holder = {
             let hist = Arc::clone(&hist);
             let held = Arc::clone(&held);
+            let polled = Arc::clone(&polled);
             std::thread::spawn(move || {
                 let _wal = lock_recover(&hist.wal);
                 held.store(true, Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                wait_until(|| polled.load(Ordering::SeqCst), "the poll to return");
             })
         };
         wait_until(|| held.load(Ordering::SeqCst), "the wal mutex to be held");
 
         let started = std::time::Instant::now();
-        let _ = issues(&hist);
+        let _ = hist.durability_issues();
+        let elapsed = started.elapsed();
+        polled.store(true, Ordering::SeqCst);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(200),
+            elapsed < std::time::Duration::from_millis(200),
             "the poll queued behind the wal mutex"
         );
         holder.join().unwrap();
@@ -2078,7 +2085,10 @@ mod tests {
                 // must have stayed silent through all the raise/cover
                 // interleavings above — a ledger that drifted under
                 // concurrency would surface as a phantom warning.
-                assert!(issues(&hist).is_empty(), "no failures, no issues");
+                assert!(
+                    hist.durability_issues().is_empty(),
+                    "no failures, no issues"
+                );
                 drop(gate);
                 break;
             }

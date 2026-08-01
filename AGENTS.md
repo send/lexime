@@ -137,6 +137,25 @@ what a generic reviewer misses:
   failure leaves `scrub_pending` unconsumed, so deleted strings can linger in
   the old checkpoint. The deletion itself is durable, startup
   `replayed_deletion` scrubs, and there is no action for the user to take.
+- **The deletion ledger stays on `LexUserHistory`, not in `UserHistory`
+  (settled)**: it looks like a duplicate of `DurableResidue` — same raise
+  event, same cover moment, and the residue gets its ordering by construction
+  (the snapshot clone carries the epochs) where the ledger needs an explicit
+  read-before-clone. Reviewers reliably propose merging them. Two things block
+  it. (1) **The read must take no lock.** The consumer is a UI poll;
+  `DurableResidue` lives behind the `inner` RwLock, which the key thread holds
+  for writing inside the wal critical section on every commit, so a merged
+  ledger would put the menu behind exactly the stall `appends_frozen` is
+  shaped to avoid. (2) **lex-core cannot see the `SyncFailed` raise.**
+  `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
+  tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
+  design, since the residue deliberately excludes `SyncFailed` (its frame is
+  replayable). Merging would mean widening that witness to a three-state
+  durability value across a settled PR1 surface to serve a reporting concern.
+  The two ledgers answer different questions: the residue asks "may the
+  durable set still hold this key" (gating the no-op skip), the ledger asks
+  "did this deletion reach disk at all" (reporting). Findings proposing to
+  move or merge them re-litigate this — do not raise them.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately

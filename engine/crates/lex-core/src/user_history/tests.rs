@@ -890,25 +890,23 @@ fn test_residue_is_not_part_of_the_checkpoint_body() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_adopted_frozen_flag_is_seeded_and_published() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+fn test_frozen_flag_tracks_the_wal_in_both_directions() {
+    use std::sync::atomic::Ordering;
 
     let dir = tempfile::tempdir().unwrap();
     let cp = dir.path().join("history.lxud");
     let mut wal = HistoryWal::new(&cp);
 
-    // Seeding, not just publishing: recovery can hand back a WAL that is
-    // already frozen (failed tail repair, failed migration commit), and that
-    // freeze has no later transition to observe. An adopt that only wired up
-    // future writes would report a healthy history until the first append
-    // failed.
+    // Taken while already frozen — the state recovery hands back after a
+    // failed tail repair or migration commit, where the freeze has no later
+    // transition left to observe. The handle *is* the flag, so it reads true
+    // immediately rather than depending on a seeding step to have run.
     wal.freeze();
-    let flag = Arc::new(AtomicBool::new(false));
-    wal.adopt_frozen_flag(Arc::clone(&flag));
-    assert!(flag.load(Ordering::SeqCst), "adopt must seed from the WAL");
+    let flag = wal.frozen_flag();
+    assert!(flag.load(Ordering::SeqCst));
 
-    // And subsequent transitions reach the same flag, in both directions.
+    // A thaw has to be observable too, or the report latches: the point of
+    // polling is that a compaction restoring appendable form retracts it.
     wal.truncate_wal().unwrap();
     assert!(!flag.load(Ordering::SeqCst));
     assert!(!wal.is_frozen());

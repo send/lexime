@@ -35,10 +35,6 @@ final class EngineContainer {
     /// Initialization failures recorded for user visibility (menu / alert).
     private(set) var initFailures: [EngineInitFailure]
 
-    /// True when any component failed to initialize and the IME is running
-    /// in a degraded state (including the fatal engine-nil case).
-    var isDegraded: Bool { !initFailures.isEmpty }
-
     /// Detail message of the fatal dictionary failure, if the engine is unavailable.
     var fatalFailureDetail: String? {
         guard engine == nil else { return nil }
