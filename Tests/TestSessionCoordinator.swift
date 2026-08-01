@@ -532,6 +532,39 @@ func testSessionCoordinator() {
         assertTrue(ran, "completion ran inline")
     }
 
+    // PR315 Codex R9: the deferred completion carries the caller's half of the
+    // teardown, so it must survive until it runs — the controller captures
+    // itself strongly for that reason (a weak capture goes nil exactly when
+    // IMKit releases the controller during focus loss). ARC lifetime is not
+    // reachable from here; what is pinned is the coordinator's side of the
+    // contract: a second re-entry within one delivery replaces the first, so
+    // the teardown happens once rather than twice.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var completions = 0
+        var reentries = 0
+
+        client.onInsertText = { [weak coordinator] in
+            reentries += 1
+            guard reentries <= 2 else { return }
+            coordinator?.deactivate(client: nil) { completions += 1 }
+        }
+        // Two inserts in one delivery would re-enter twice; drive it via the
+        // commit plus the settle's own commit.
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(completions, 1,
+                    "the teardown's caller half runs once, not once per re-entry")
+    }
+
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
     // harmless (commit_current_state early-returns with no events), so this
     // gate is an optimization, not a host-correctness guard — pinned here so a

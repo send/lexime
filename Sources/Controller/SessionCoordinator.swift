@@ -199,6 +199,12 @@ final class SessionCoordinator {
         // `insertText`). Let that response finish describing its transition,
         // then tear down — see `isApplyingEvents`.
         if isApplyingEvents {
+            // A second re-entry within one delivery replaces the first rather
+            // than queueing: both describe the same teardown, and running it
+            // twice would call `super.deactivateServer` twice. The completion
+            // held here is retained until it runs — the caller's half depends on
+            // it — and cleared before invocation so the retain cycle it forms
+            // with the controller is bounded by the delivery.
             deferredTeardown = (client, completion)
             return true
         }

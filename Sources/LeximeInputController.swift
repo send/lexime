@@ -305,8 +305,15 @@ class LeximeInputController: IMKInputController {
         // callback re-entered us from inside `insertText`), deactivating the
         // host here would strand the rest of the response: its `.setMarkedText`
         // would land on an already torn-down client.
-        coordinator.deactivate(client: sender as? IMKTextInput) { [weak self] in
-            self?.finishDeactivateServer(sender)
+        // Captured **strongly** on purpose. This runs after this override has
+        // returned, and the focus loss that triggered it is exactly when IMKit
+        // may release the controller — a weak capture would go nil and silently
+        // skip the superclass teardown this deferral exists to order. The cycle
+        // it creates is bounded: the coordinator clears `deferredTeardown`
+        // before invoking it, and the delivery it waits on is a synchronous
+        // main-thread loop that always unwinds.
+        coordinator.deactivate(client: sender as? IMKTextInput) {
+            self.finishDeactivateServer(sender)
         }
     }
 
