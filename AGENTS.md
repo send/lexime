@@ -146,9 +146,11 @@ what a generic reviewer misses:
   quit-time flush, so a user who stops typing keeps the row. The runtime rows
   are also emitted whether or not any init failure exists — `menu()` gates on
   "are there rows", not on the engine being degraded — because the main #295
-  scenario is a clean launch followed by a later failure. Findings proposing to collapse the list, add a commit
-  ledger, treat `SyncFailed` as benign, gate the cover on truncation, or merge
-  the issues into `initFailures` re-litigate these — do not raise them.
+  scenario is a clean launch followed by a later failure. Findings proposing to
+  collapse the list, treat `SyncFailed` as benign, gate the cover on
+  truncation, or merge the issues into `initFailures` re-litigate these — do
+  not raise them. The "no commit-side ledger" clause that used to sit in this
+  list is **withdrawn**; see (b).
   Deliberately **out of scope**, for two different reasons — do not merge them.
   (i) a persistent `spawn_compact` thread-spawn failure leaves `scrub_pending`
   unconsumed, and (ii) a tombstone that appends and flushes cleanly but whose
@@ -166,17 +168,14 @@ what a generic reviewer misses:
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the
   issues rather than proposing a fix here.
-- **The WAL hands out its freeze flag; it does not adopt one (settled)**:
-  `HistoryWal::frozen_flag()` returns a read-only `FreezeFlag` over the `Arc`
-  the WAL already owns. The PR2 plan specified the reverse — the owner mints
-  the flag and lends it in — because a handed-out handle binds to one WAL
-  instance. That reason does not differentiate: if the WAL behind the mutex
-  were ever replaced, a lent flag goes exactly as stale as a handed-out one.
-  Handing out also removes a seeding step (a freeze inherited from recovery is
-  already in the flag) and makes it impossible to leave a second holder reading
-  a detached flag. The handle is a newtype, not the `Arc`, so
-  `set_frozen(&mut self)` keeps its write monopoly. Findings proposing the
-  lend-in shape re-litigate this — do not raise them.
+- **The WAL's freeze flag is private to lex-core (settled)**: `HistoryWal`
+  keeps `frozen` as a plain `bool`, read outside the WAL only by
+  `OpenReport::appends_frozen` at open. An earlier revision of #317 shared it
+  as an `Arc<AtomicBool>` behind a read-only `FreezeFlag` so the status menu
+  could poll it lock-free; that whole apparatus was removed when the row
+  stopped being derived from the freeze (see (b)). There is no runtime
+  cross-thread observer of the freeze left, so findings proposing to share,
+  lend, or hand out the flag are proposing a reader that does not exist.
 - **The deletion ledger stays on `LexUserHistory`, not in `UserHistory`
   (settled)**: it looks like a duplicate of `DurableResidue` — same raise
   event, same cover moment, and the residue gets its ordering by construction
@@ -186,9 +185,8 @@ what a generic reviewer misses:
   `DurableResidue` lives behind the `inner` RwLock, which the key thread holds
   for writing inside the wal critical section on every commit and a compaction
   holds for `cover_durable_residue`, so a merged ledger would put a main-thread
-  menu poll behind history I/O. (Not the identical stall `FreezeFlag` avoids —
-  that one is the wal mutex, held across a Tombstone's F_FULLFSYNC — but the
-  same class.) Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
+  menu poll behind history I/O, where the ledger's single atomic load blocks
+  on nothing. Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
   `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
   tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
   design, since the residue deliberately excludes `SyncFailed` (its frame is

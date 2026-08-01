@@ -289,21 +289,24 @@ pub struct HistoryWal {
     /// `truncate_covered`.
     last_appended_seq: u64,
     frames_since_barrier: usize,
-    /// Set when appends must be refused: the on-disk file is known not to be
-    /// in appendable v2 form (legacy format pending a failed migration,
-    /// unrepaired tail, ...), or a record could not be encoded for it.
+    /// Set when the on-disk file is known not to be in appendable v2 form
+    /// (legacy format pending a failed migration, unrepaired tail, ...).
     /// Appending v2 frames after foreign bytes would make them unreadable,
     /// so appends fail fast instead; a successful truncate (e.g. by the next
     /// compaction, whose checkpoint contains the full state) re-establishes
-    /// v2 form and lifts the freeze — which is also the heal for the encode
-    /// guards, since the checkpoint covers what the frame could not.
+    /// v2 form and lifts the freeze.
+    ///
+    /// This is a property of the *file*, and only that. It is deliberately
+    /// not a proxy for "this session's learning is memory-only": the engine
+    /// tracks that itself, after deriving it from here proved wrong (a
+    /// compaction whose snapshot predates a refused commit can clear the
+    /// freeze while that commit is still nowhere on disk).
     ///
     /// Assigned only through `set_frozen`, which keeps the write path
     /// greppable — but that is readability, not enforcement. What keeps a
     /// freeze from going unreported is that `open_recovering` derives
     /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
     /// branch has run, instead of asking each branch to record it.
-    ///
     frozen: bool,
 }
 
@@ -468,30 +471,17 @@ impl HistoryWal {
             )
             .into());
         }
-        // Both encode guards freeze before returning, so `Err(Io)` implies
-        // frozen by construction. The engine reports "learning is memory-only"
-        // from the freeze alone and keeps no commit-side ledger, which is
-        // sound exactly because every `Io` exit lands here or below; an
-        // unfrozen `Io` would apply the record to memory and report nothing.
-        // Both are unreachable today (this serializer cannot fail, and
-        // segments cannot reach 4 GiB) — the point is that the invariant does
-        // not depend on that staying true.
-        let payload = match bincode::serialize(record) {
-            Ok(p) => p,
-            Err(e) => {
-                self.set_frozen(true);
-                return Err(AppendError::Io(io::Error::other(e)));
-            }
-        };
-        let payload_len = match u32::try_from(payload.len()) {
-            Ok(n) => n,
-            Err(_) => {
-                self.set_frozen(true);
-                return Err(AppendError::Io(io::Error::other(
-                    "WAL entry too large (>4 GiB)",
-                )));
-            }
-        };
+        // These two guards deliberately do NOT freeze. An earlier revision
+        // froze here to keep "`Err(Io)` implies frozen" true, because the
+        // engine derived "learning is memory-only" from the freeze. That
+        // derivation is gone — the engine now tracks the fact directly, from
+        // the absent seq — so freezing a file that is perfectly appendable
+        // would refuse every later append to serve a reader that no longer
+        // exists. Both are unreachable anyway (this serializer cannot fail,
+        // and segments cannot reach 4 GiB).
+        let payload = bincode::serialize(record).map_err(io::Error::other)?;
+        let payload_len = u32::try_from(payload.len())
+            .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
         let seq = self.next_seq;
         self.next_seq += 1;
 
