@@ -124,12 +124,15 @@ what a generic reviewer misses:
   is not acceptance, so it keeps what the host was showing and records no
   history, where a voluntary commit would resolve to the selected candidate and
   learn from it (Codex raised both halves as P1 on #315). "What the host was
-  showing" is **recorded, not inferred**: `InputSession::last_marked` holds the
-  marked text emitted at the response choke point. Re-deriving it from
-  selection state was tried and reverted — such a rule must be re-synchronised
-  at every site that re-renders (Backspace after navigating, ForwardDelete,
-  auto-commit) and goes stale at the first one missed. Findings proposing a
-  selection-derived flag re-litigate this. It settles rather
+  showing" is **passed in by the frontend**, not held by the engine:
+  `settle_unconfirmed(displayed:)` takes `SessionCoordinator.currentDisplay`.
+  Two engine-side alternatives were tried and reverted — inferring it from
+  selection state (goes stale the moment a re-render puts the reading back) and
+  recording it when the response is emitted (runs ahead of a delivery that the
+  UI thread can still drop, so the settle commits text never shown). The engine
+  emits marked text but cannot observe whether it reached the screen, so any
+  copy it keeps is a shadow of unobservable state. Findings proposing to move
+  this back into the session re-litigate it. It settles rather
   than discards because IMKit does not reliably send `commitComposition` first
   (measured, #298) and discarding would throw away text the user typed on every
   app switch; (b) settling is **unconditional

@@ -55,23 +55,6 @@ pub struct InputSession {
     /// detect those.
     epoch: u64,
 
-    /// The marked text the host is currently showing.
-    ///
-    /// `marked: None` in a response means "unchanged", so this accumulates:
-    /// it is updated only when a response actually carries one. Recorded at
-    /// the same choke point that checks the response contract, because that
-    /// set — `handle_key` / `commit` / `settle_unconfirmed` /
-    /// `receive_candidates` — is exactly where a response reaches the host.
-    ///
-    /// This is *the* answer to "what is on screen", and no consumer should
-    /// re-derive it. A composing response emits the reading while a selection
-    /// response emits the surface, so any flag tracking which of those applies
-    /// has to be re-synchronised at every site that re-renders — and goes
-    /// stale the moment one is missed (a Backspace after navigating renders
-    /// the reading again; ForwardDelete and auto-commit emit a surface).
-    /// Recording what was emitted has no such sites.
-    last_marked: String,
-
     /// Incremental Viterbi-input cache, independent of the UI `Composition`.
     pub(crate) lattice_cache: LatticeCache,
 
@@ -104,7 +87,6 @@ impl InputSession {
             history_records: Vec::new(),
             abc_passthrough: false,
             snippet_store: None,
-            last_marked: String::new(),
         }
     }
 
@@ -157,28 +139,6 @@ impl InputSession {
 
     pub fn set_abc_passthrough(&mut self, enabled: bool) {
         self.abc_passthrough = enabled;
-    }
-
-    /// Record what this response leaves on the host's screen, then check the
-    /// response contract.
-    ///
-    /// This is the single writer of `last_marked`, and every response that can
-    /// reach the host passes through it — which is what makes that field
-    /// authoritative rather than inferred.
-    ///
-    /// The two rules are the ones `proptest_fsm::HostMarked` models, kept
-    /// deliberately identical to it: a commit ends the host's marked session
-    /// (`insertText` does that on its own), and a marked event re-opens it. The
-    /// order matters — a response carrying both (auto-commit: stable prefix
-    /// inserted, remainder left marked) must end with the remainder showing.
-    fn note_response(&mut self, resp: &KeyResponse) {
-        if resp.commit.is_some() {
-            self.last_marked.clear();
-        }
-        if let Some(ref m) = resp.marked {
-            self.last_marked = m.text.clone();
-        }
-        self.debug_assert_response_contract(resp);
     }
 
     /// Check the contracts every response leaving this session must satisfy, at
@@ -266,7 +226,7 @@ impl InputSession {
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
         let resp = self.end_composition(Self::commit_current_state);
-        self.note_response(&resp);
+        self.debug_assert_response_contract(&resp);
         resp
     }
 
@@ -277,11 +237,23 @@ impl InputSession {
     ///
     /// The session must not stay composing once the host's marked text is gone
     /// — that is #293's leak shape — but an involuntary end is not a commit:
-    /// this keeps what was on screen and records no history. See
+    /// it keeps what was on screen and records no history. See
     /// `commit_displayed` for why each half matters.
-    pub fn settle_unconfirmed(&mut self) -> KeyResponse {
-        let resp = self.end_composition(Self::commit_displayed);
-        self.note_response(&resp);
+    ///
+    /// `displayed` is what the host is actually showing, and the caller supplies
+    /// it because **only the caller can know**. The engine emits marked text;
+    /// whether it reached the screen is settled past the FFI boundary, on
+    /// another thread — `receive_candidates` runs on the worker and its response
+    /// is queued to the UI thread, where it can still be dropped. A copy kept
+    /// inside the session would be a shadow of state the session cannot
+    /// observe, which is how this went wrong twice: first inferred from
+    /// selection state, then recorded at emission rather than at delivery. The
+    /// frontend's `currentDisplay` is written next to the `setMarkedText` call
+    /// itself, so it is authoritative. The engine keeps the session semantics —
+    /// settle without learning, reach Idle — and takes the display as input.
+    pub fn settle_unconfirmed(&mut self, displayed: &str) -> KeyResponse {
+        let resp = self.end_composition(|s| s.commit_displayed(displayed));
+        self.debug_assert_response_contract(&resp);
         resp
     }
 
@@ -290,7 +262,7 @@ impl InputSession {
     /// Both invalidate in-flight async candidate work, and both cancel a
     /// snippet browse rather than terminating it — there is nothing confirmed
     /// to keep. Only the composing case differs, which is `terminal`.
-    fn end_composition(&mut self, terminal: fn(&mut Self) -> KeyResponse) -> KeyResponse {
+    fn end_composition(&mut self, terminal: impl FnOnce(&mut Self) -> KeyResponse) -> KeyResponse {
         self.bump_epoch();
         if matches!(self.state, SessionState::Snippet(_)) {
             self.reset_state();

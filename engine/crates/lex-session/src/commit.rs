@@ -60,11 +60,11 @@ impl InputSession {
     /// Differs from `commit_current_state` in exactly the two ways an
     /// involuntary end differs from a voluntary one:
     ///
-    /// - **Commits what the host was showing** — `last_marked`, recorded by
-    ///   `note_response` when the response was emitted. A voluntary commit
-    ///   resolves to the selected surface because the user asked to convert.
-    ///   Here nobody asked, so putting `surfaces[0]` into the document for
-    ///   merely switching apps would insert a conversion never seen.
+    /// - **Commits what the host was showing** — `displayed`, supplied by the
+    ///   caller, which is the only party that can observe it. A voluntary
+    ///   commit resolves to the selected surface because the user asked to
+    ///   convert. Here nobody asked, so putting `surfaces[0]` into the document
+    ///   for merely switching apps would insert a conversion never seen.
     /// - **Records no history.** An app switch is not acceptance. Treating it as
     ///   one trains top-1 on a non-signal and, over time, degrades the 1発目精度
     ///   that CLAUDE.md makes the metric — while quietly writing to what it
@@ -72,23 +72,17 @@ impl InputSession {
     ///
     /// Both are the same principle: an involuntary end must not manufacture
     /// intent the user never expressed.
-    pub(super) fn commit_displayed(&mut self) -> KeyResponse {
+    pub(super) fn commit_displayed(&mut self, displayed: &str) -> KeyResponse {
         if !matches!(self.state, SessionState::Composing(_)) {
             return KeyResponse::consumed();
         }
 
-        // Commit exactly the marked text the host is showing — recorded by
-        // `note_response`, not re-derived here. Deriving it is what R2 broke:
-        // any rule reconstructing "reading or surface?" from selection state
-        // has to be re-applied at every site that re-renders (Backspace after
-        // navigating, ForwardDelete, auto-commit), and goes stale at the first
-        // one missed. Reading it also means **no `flush()`**: forcing pending
-        // romaji would convert a trailing `n` to `ん` and commit text that was
-        // never on screen.
-        // Read, don't take: `note_response` clears `last_marked` on the way
-        // out because this response carries a commit — the same rule
-        // `HostMarked` applies. Hand-clearing here would be a second copy of it.
-        let shown = self.last_marked.clone();
+        // Commit exactly what the caller says is on screen. Not re-derived
+        // from selection state (that goes stale the moment a Backspace
+        // re-renders the reading), and deliberately **no `flush()`** — forcing
+        // pending romaji would turn a displayed `n` into `ん` and commit text
+        // that was never shown.
+        let shown = displayed;
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();
         if shown.is_empty() {
@@ -96,7 +90,7 @@ impl InputSession {
                 text: String::new(),
             });
         } else {
-            resp.commit = Some(shown);
+            resp.commit = Some(shown.to_string());
         }
 
         self.reset_state();

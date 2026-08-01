@@ -32,6 +32,18 @@ final class SessionCoordinator {
     /// applied is a re-ordered delivery and must be dropped.
     private(set) var highestAppliedEpoch: UInt64 = 0
 
+    /// Bumped by every lifecycle teardown. `applyEvents` samples it and stops
+    /// if it moves mid-loop.
+    ///
+    /// The epoch watermark only rejects *separately queued* responses; it
+    /// cannot stop a delivery that is already running. A client callback —
+    /// `insertText` on an auto-commit response — can re-enter
+    /// `deactivateServer` synchronously, which settles the engine and clears
+    /// the display while the outer loop still has `.setMarkedText` /
+    /// `.showCandidates` events left to apply. Those would then re-open marked
+    /// text and re-show the panel against an Idle session, after focus left.
+    private var lifecycleGeneration: UInt64 = 0
+
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
          onSwitchToAbc: @escaping () -> Void) {
@@ -152,9 +164,15 @@ final class SessionCoordinator {
     /// would drop a conversion the user never saw into their document — the
     /// composing response shows the *reading* until they navigate) and it
     /// records that conversion as accepted history, training top-1 on a
-    /// non-signal. `settleUnconfirmed` keeps what the host was showing and learns
-    /// nothing. For a `Snippet` browse — which `isComposing()` also covers — it
-    /// cancels, exactly as `commit()` does: there is nothing confirmed to keep.
+    /// non-signal. `settleUnconfirmed` learns nothing and commits exactly what
+    /// we pass it — `currentDisplay`, which is written right next to the
+    /// `setMarkedText` call, so it is what the client was actually told to show.
+    /// The engine deliberately does not keep its own copy: it emits marked text
+    /// but cannot see whether a response reached the screen (an async one is
+    /// queued to this thread and can be dropped here), so a copy on that side
+    /// would be a shadow of state it cannot observe. For a `Snippet` browse —
+    /// which `isComposing()` also covers — it cancels, exactly as `commit()`
+    /// does: there is nothing confirmed to keep.
     ///
     /// One pre-existing hazard survives: an auto-commit already accepted by the
     /// engine but not yet delivered can be dropped here (#314).
@@ -162,6 +180,9 @@ final class SessionCoordinator {
     /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
     func deactivate(client: IMKTextInput?) {
+        // Abandon any `applyEvents` loop already running: from here its
+        // remaining events describe a composition that is about to be settled.
+        lifecycleGeneration &+= 1
         // Invalidate first. `applyEvents` below calls into the client and the
         // panel, and a deferred show queued by the last keystroke is guarded by
         // `CandidateManager.generation`, not by the epoch watermark — bumping it
@@ -173,7 +194,7 @@ final class SessionCoordinator {
             // text was put on, so settling there replaces that marked text in
             // place. `client` is whatever IMKit hands `deactivateServer`, and is
             // the fallback for `lastClient` being weak and already gone.
-            deliver(session.settleUnconfirmed(), to: lastClient ?? client)
+            deliver(session.settleUnconfirmed(displayed: currentDisplay), to: lastClient ?? client)
         }
         clearDisplay()
         lastClient = nil
@@ -199,7 +220,13 @@ final class SessionCoordinator {
 
     private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
         assert(Thread.isMainThread)
+        let generation = lifecycleGeneration
         for event in resp.events {
+            // A client callback below can re-enter `deactivate(client:)`. Once
+            // it has, the rest of this response describes a composition that no
+            // longer exists — applying it would restore marked text or the
+            // candidate panel after focus already left.
+            guard generation == lifecycleGeneration else { return }
             switch event {
             case .commit(let text):
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))

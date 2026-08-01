@@ -394,6 +394,61 @@ func testSessionCoordinator() {
                    "the text the host was showing reaches the client it was typed into")
     }
 
+    // PR315 Codex R3: the engine keeps no copy of what the host is showing —
+    // it emits marked text but cannot see whether the response reached the
+    // screen. So the coordinator must hand it `currentDisplay`, the value
+    // written next to the setMarkedText call, and not let the engine guess.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "にほんご", "precondition")
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.settleUnconfirmedDisplayed.count, 1, "settled once")
+        assertEqual(session.settleUnconfirmedDisplayed[0], "にほんご",
+                    "the engine is told exactly what we put on screen")
+    }
+
+    // PR315 Codex R3: a client callback can re-enter deactivateServer while an
+    // earlier applyEvents loop is still running. The epoch watermark only
+    // rejects separately queued responses, so without a lifecycle generation
+    // the outer loop resumes and re-opens marked text against an Idle session.
+    do {
+        let session = FakeLexSession()
+        // An auto-commit shape: insertText first, then more events after it.
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+                .showCandidates(surfaces: ["は", "歯"], selected: 0),
+            ])
+        ]
+        let panel = FakePanel()
+        let (coordinator, _) = makeCoordinator(session: session, panel: panel)
+        let client = FakeIMKClient()
+        // Re-enter deactivate from inside the client's insertText, the way a
+        // host that changes focus synchronously would.
+        client.onInsertText = { [weak coordinator] in
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil)
+        }
+
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled")
+        assertTrue(client.markedCalls.isEmpty,
+                   "events after the reentrant teardown must not re-open marked text")
+        assertTrue(coordinator.currentDisplay == nil,
+                   "and must not leave a display behind an Idle session")
+    }
+
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
     // harmless (commit_current_state early-returns with no events), so this
     // gate is an optimization, not a host-correctness guard — pinned here so a

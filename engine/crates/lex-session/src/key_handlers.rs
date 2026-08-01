@@ -49,7 +49,7 @@ impl InputSession {
     /// Process a key event. Returns a KeyResponse describing what the caller should do.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyResponse {
         let resp = self.handle_key_inner(event);
-        self.note_response(&resp);
+        self.debug_assert_response_contract(&resp);
         resp
     }
 

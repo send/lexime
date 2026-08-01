@@ -255,6 +255,7 @@ fn execute_action(
     session: &mut InputSession,
     action: &Action,
     dict: &dyn Dictionary,
+    displayed: &str,
 ) -> Option<crate::KeyResponse> {
     match action {
         Action::TypeRomaji(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
@@ -293,7 +294,7 @@ fn execute_action(
             None
         }
         Action::CommitComposition => Some(session.commit()),
-        Action::SettleUnconfirmed => Some(session.settle_unconfirmed()),
+        Action::SettleUnconfirmed => Some(session.settle_unconfirmed(displayed)),
     }
 }
 
@@ -308,6 +309,7 @@ fn assert_invariants(
     prev: PrevState,
     host: &HostMarked,
     store_empty: bool,
+    was_showing: &str,
 ) {
     // 1. Idle → composed_string is empty, and the host has been taken out of
     //    composition too (a live marked string with no session behind it would
@@ -535,25 +537,34 @@ fn assert_invariants(
         }
     }
 
-    // 10. `InputSession::last_marked` equals what this model says is on screen.
+    // 10. An involuntary settle commits exactly what the host was showing.
     //
-    //     `HostMarked` is the pre-existing model of "what the host is showing",
-    //     accumulated per response. `note_response` now maintains the same fact
-    //     inside the engine so `settle_unconfirmed` can commit it. Two
-    //     representations of one fact is exactly the drift `CandidateState::
-    //     user_selected` died of (PR315 Codex R2), so they are pinned equal
-    //     here rather than left to agree by inspection: the model applies the
-    //     commit-then-marked rule, and any divergence in the engine's copy —
-    //     a producer that skips the choke point, or a rule applied in one and
-    //     not the other — fails this across every generated action sequence.
+    //     `HostMarked` is the model of what is on screen, and the driver feeds
+    //     it straight back in as `settle_unconfirmed`'s argument — the same
+    //     thing `SessionCoordinator` passes from `currentDisplay`. So this
+    //     pins the whole contract across every generated sequence: whatever
+    //     the host had is what lands, and nothing else is invented.
     //
-    //     `None` and `""` both mean "the host shows nothing".
-    assert_eq!(
-        session.last_marked,
-        host.0.as_deref().unwrap_or(""),
-        "engine's recorded display diverged from the host model after {:?}",
-        action,
-    );
+    //     Deriving this inside the engine failed twice (PR315 Codex R2/R3):
+    //     inferred from selection state it went stale on a re-render, and
+    //     recorded at emission it ran ahead of a delivery that can be dropped.
+    //     Taking it as input is what makes it unconditionally true.
+    //     Composing only: a snippet browse *cancels* (§状態遷移) — there is
+    //     nothing confirmed to keep — so it discards what was on screen by
+    //     design, exactly as `commit` does for the same state.
+    if matches!(action, Action::SettleUnconfirmed) && prev == PrevState::Composing {
+        assert_eq!(
+            resp.commit.as_deref().unwrap_or(""),
+            was_showing,
+            "settle must commit exactly what the host was showing, after {:?}",
+            action,
+        );
+        assert!(
+            !session.is_composing(),
+            "settle must reach Idle, after {:?}",
+            action,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -585,9 +596,18 @@ fn run_sequence(actions: &[Action], defer_candidates: bool) {
         if let Action::SetSnippetStore { empty } = action {
             store_empty = *empty;
         }
-        if let Some(resp) = execute_action(&mut session, action, &*dict) {
+        let displayed = host.0.clone().unwrap_or_default();
+        if let Some(resp) = execute_action(&mut session, action, &*dict, &displayed) {
             host.apply(&resp);
-            assert_invariants(&session, &resp, action, prev, &host, store_empty);
+            assert_invariants(
+                &session,
+                &resp,
+                action,
+                prev,
+                &host,
+                store_empty,
+                &displayed,
+            );
         }
     }
 }

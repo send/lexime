@@ -696,7 +696,7 @@ fn settle_unconfirmed_commits_the_reading_when_the_user_never_navigated() {
     let shown = type_string_returning_marked(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
 
-    let resp = session.settle_unconfirmed();
+    let resp = session.settle_unconfirmed(&shown);
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -718,7 +718,7 @@ fn settle_unconfirmed_commits_the_surface_once_the_user_has_navigated() {
         .expect("navigation re-renders the marked text")
         .text;
 
-    let resp = session.settle_unconfirmed();
+    let resp = session.settle_unconfirmed(&shown);
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -743,7 +743,7 @@ fn settle_unconfirmed_follows_the_display_back_to_the_reading() {
         .expect("backspace re-renders the marked text")
         .text;
 
-    let resp = session.settle_unconfirmed();
+    let resp = session.settle_unconfirmed(&shown);
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -765,7 +765,7 @@ fn settle_unconfirmed_preserves_pending_romaji_exactly() {
         "precondition: pending romaji is on screen, got {shown:?}",
     );
 
-    let resp = session.settle_unconfirmed();
+    let resp = session.settle_unconfirmed(&shown);
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -780,8 +780,8 @@ fn settle_unconfirmed_records_no_history() {
     let history = UserHistory::new();
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
-    type_string(&mut session, "kyou");
-    session.settle_unconfirmed();
+    let shown = type_string_returning_marked(&mut session, "kyou");
+    session.settle_unconfirmed(&shown);
 
     assert!(
         session.take_history_records().is_empty(),
@@ -796,8 +796,12 @@ fn settle_unconfirmed_records_no_history_even_after_navigating() {
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
-    session.handle_key(KeyEvent::Space);
-    session.settle_unconfirmed();
+    let shown = session
+        .handle_key(KeyEvent::Space)
+        .marked
+        .map(|m| m.text)
+        .unwrap_or_default();
+    session.settle_unconfirmed(&shown);
 
     assert!(
         session.take_history_records().is_empty(),
@@ -825,7 +829,7 @@ fn settle_unconfirmed_on_idle_is_a_no_op() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.settle_unconfirmed();
+    let resp = session.settle_unconfirmed("");
 
     assert!(
         resp.commit.is_none(),
