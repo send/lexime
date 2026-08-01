@@ -156,7 +156,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 |---|---|
 | `handle_key(event)` | キー入力処理（`LexKeyEvent`）→ `LexKeyResponse` |
 | `commit()` | 現在の入力を確定（選択候補に解決 + 学習記録）→ `LexKeyResponse` |
-| `settle_focus_loss()` | フォーカス喪失時の非自発的 settle。**表示していたものを確定し、学習しない** → `LexKeyResponse`（§不変条件） |
+| `settle_unconfirmed()` | 非自発的な composition の終了（フォーカス喪失等）。**表示していたものを確定し、学習しない** → `LexKeyResponse`（§不変条件） |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
@@ -244,8 +244,8 @@ proptest の invariant 3 / 3b で固定している。
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
 - **フォーカス喪失時の settle**（#298。以前は「未モデル」として保留していたが、実測の結果**到達可能**だった）: `deactivateServer` はホストが marked セッションを畳むことを意味するので、session を composing のまま残してはならない。IMKit は先に `commitComposition` を送るとは限らない（2026-08-01 実測: 未確定のままフォーカスを移す操作で `deactivateServer` が composing のまま届き、その大半で `commitComposition` は最後まで来なかった。指標は `activateServer` 時点で composing が残っていた回数で、同等の操作列で修正前 4 回 → 修正後 0 回）。したがって `SessionCoordinator.deactivate(client:)` が**表示を消すのと同じ呼び出しの中で** session を確定させる — 分かれていたから乖離した。
   - **settle は無条件、delivery は best-effort**。テキストを挿入する先（`lastClient`、無ければ IMKit が渡す sender）が無くても、session を composing のまま残す理由にはならない。`session.commit()` は挿入先の有無に関係なく状態を Idle にする
-  - **settle は `commit()` ではなく `settle_focus_loss()`**。フォーカス喪失は受容ではないので、自発的 commit の 2 つの副作用を持ち込んではならない: ①選択候補への解決 — 入力中のマークドテキストは navigate するまで**読み**なので、`commit()` で確定するとアプリを切り替えただけでユーザーが見ていない変換が文書に入る ②学習の記録 — 非自発的な操作を受容として扱うと top-1 が非シグナルで訓練され、1発目精度が劣化する。`settle_focus_loss()` は**表示していたものをそのまま確定**し、履歴を書かない
-  - **「表示していたもの」は推論せず記録する**。`InputSession::last_marked` が、response が host に届く 4 つの choke point（`handle_key` / `commit` / `settle_focus_loss` / `receive_candidates` = `note_response`）で emit された marked text をそのまま保持する。`marked: None` は「据え置き」の意味なので累積的に更新される。settle はこれを**そのまま**確定する — prefix の再結合も `flush()` も行わない（pending の `n` を `ん` に変えると画面に無かった文字を入れることになる）
+  - **settle は `commit()` ではなく `settle_unconfirmed()`**。フォーカス喪失は受容ではないので、自発的 commit の 2 つの副作用を持ち込んではならない: ①選択候補への解決 — 入力中のマークドテキストは navigate するまで**読み**なので、`commit()` で確定するとアプリを切り替えただけでユーザーが見ていない変換が文書に入る ②学習の記録 — 非自発的な操作を受容として扱うと top-1 が非シグナルで訓練され、1発目精度が劣化する。`settle_unconfirmed()` は**表示していたものをそのまま確定**し、履歴を書かない
+  - **「表示していたもの」は推論せず記録する**。`InputSession::last_marked` が、response が host に届く 4 つの choke point（`handle_key` / `commit` / `settle_unconfirmed` / `receive_candidates` = `note_response`）で emit された marked text を保持する。規則は proptest の `HostMarked` と**同一**（commit が marked セッションを終わらせ、marked event が開き直す）で、両者が一致することを proptest invariant 10 が全生成列で固定する。`marked: None` は「据え置き」の意味なので累積的に更新される。settle はこれを**そのまま**確定する — prefix の再結合も `flush()` も行わない（pending の `n` を `ん` に変えると画面に無かった文字を入れることになる）
   - 選択状態から「読みかサーフェスか」を再導出する方式は採らない。composing の response は `display_kana()`、候補選択の response は `display()` を出すので、再導出する規則は**再描画するすべての site で同期し直す必要**があり、1 つ漏れた時点で陳腐化する（navigate 後の Backspace は読みに戻り、ForwardDelete と auto-commit はサーフェスを出す）。記録方式にはその site が存在しない
   - `Snippet` ブラウズは `commit()` と同じくキャンセル（確定テキスト無し）。確定されたものが無いので保持する対象が無い
   - `resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに、表示の out-of-band クリアを単一の `clearDisplay()` に集約して debug assert を置く
@@ -254,7 +254,7 @@ proptest の invariant 3 / 3b で固定している。
   - ネイティブホスト（TextEdit 等）: こちらの `insertText` が効くので、画面で かな を見ていたユーザーの文書に**選んでいないサーフェス**が入る
   - Chromium / Electron 系: blur で**自前の composition を確定する**ため、残るのは表示していた読みで、こちらの `insertText` は視覚的に効かない
 
-  2026-08-01 実測（本 settle 適用後、`deactivateServer` 経路で計測）: こちらは 8/8 で選択サーフェスを commit していたが、Slack の文書に残ったのは読みだった。`insertText` が視覚的に効かない以上、settle の追加でこれらのホストの見え方は変わっていない（settle 以前は commit 自体を発行していなかった）。なお `settle_focus_loss()` が表示していた読みを確定するようになったことで、**この経路に限れば両系統のホストの結果は一致する**
+  2026-08-01 実測（本 settle 適用後、`deactivateServer` 経路で計測）: こちらは 8/8 で選択サーフェスを commit していたが、Slack の文書に残ったのは読みだった。`insertText` が視覚的に効かない以上、settle の追加でこれらのホストの見え方は変わっていない（settle 以前は commit 自体を発行していなかった）。なお `settle_unconfirmed()` が表示していた読みを確定するようになったことで、**この経路に限れば両系統のホストの結果は一致する**
 
 **キーリマップ（settings.toml `[keymap]`）**
 

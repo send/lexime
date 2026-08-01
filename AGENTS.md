@@ -120,7 +120,7 @@ what a generic reviewer misses:
 - **Focus loss settles the session, by committing (settled)**: on
   `deactivateServer` the session is settled in the same call that clears the
   display (`SessionCoordinator.deactivate(client:)`). Two parts are settled:
-  (a) it settles through **`settle_focus_loss()`, not `commit()`** — focus loss
+  (a) it settles through **`settle_unconfirmed()`, not `commit()`** — focus loss
   is not acceptance, so it keeps what the host was showing and records no
   history, where a voluntary commit would resolve to the selected candidate and
   learn from it (Codex raised both halves as P1 on #315). "What the host was

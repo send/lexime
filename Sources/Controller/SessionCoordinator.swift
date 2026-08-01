@@ -146,13 +146,13 @@ final class SessionCoordinator {
     /// depends on having a client, but leaving the session composing does not
     /// become acceptable just because there is nowhere to put the text.
     ///
-    /// It settles through `settleFocusLoss()`, **not** `commit()`. Focus loss
+    /// It settles through `settleUnconfirmed()`, **not** `commit()`. Focus loss
     /// is not acceptance, and the engine's voluntary commit does two things
     /// this must not: it resolves to the selected candidate (so an app switch
     /// would drop a conversion the user never saw into their document — the
     /// composing response shows the *reading* until they navigate) and it
     /// records that conversion as accepted history, training top-1 on a
-    /// non-signal. `settleFocusLoss` keeps what the host was showing and learns
+    /// non-signal. `settleUnconfirmed` keeps what the host was showing and learns
     /// nothing. For a `Snippet` browse — which `isComposing()` also covers — it
     /// cancels, exactly as `commit()` does: there is nothing confirmed to keep.
     ///
@@ -173,7 +173,7 @@ final class SessionCoordinator {
             // text was put on, so settling there replaces that marked text in
             // place. `client` is whatever IMKit hands `deactivateServer`, and is
             // the fallback for `lastClient` being weak and already gone.
-            deliver(session.settleFocusLoss(), to: lastClient ?? client)
+            deliver(session.settleUnconfirmed(), to: lastClient ?? client)
         }
         clearDisplay()
         lastClient = nil

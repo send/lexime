@@ -678,7 +678,7 @@ fn type_string_returning_marked(session: &mut InputSession, input: &str) -> Stri
     shown
 }
 
-// --- settle_focus_loss (#298 / #309 / #310) ---
+// --- settle_unconfirmed (#298 / #309 / #310) ---
 //
 // The involuntary counterpart to `commit`. IMKit delivers `deactivateServer`
 // mid-composition without reliably sending `commitComposition` first, so the
@@ -687,7 +687,7 @@ fn type_string_returning_marked(session: &mut InputSession, input: &str) -> Stri
 // train top-1 on it.
 
 #[test]
-fn settle_focus_loss_commits_the_reading_when_the_user_never_navigated() {
+fn settle_unconfirmed_commits_the_reading_when_the_user_never_navigated() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
@@ -696,7 +696,7 @@ fn settle_focus_loss_commits_the_reading_when_the_user_never_navigated() {
     let shown = type_string_returning_marked(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
 
-    let resp = session.settle_focus_loss();
+    let resp = session.settle_unconfirmed();
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -707,7 +707,7 @@ fn settle_focus_loss_commits_the_reading_when_the_user_never_navigated() {
 }
 
 #[test]
-fn settle_focus_loss_commits_the_surface_once_the_user_has_navigated() {
+fn settle_unconfirmed_commits_the_surface_once_the_user_has_navigated() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
@@ -718,7 +718,7 @@ fn settle_focus_loss_commits_the_surface_once_the_user_has_navigated() {
         .expect("navigation re-renders the marked text")
         .text;
 
-    let resp = session.settle_focus_loss();
+    let resp = session.settle_unconfirmed();
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -728,7 +728,7 @@ fn settle_focus_loss_commits_the_surface_once_the_user_has_navigated() {
 }
 
 #[test]
-fn settle_focus_loss_follows_the_display_back_to_the_reading() {
+fn settle_unconfirmed_follows_the_display_back_to_the_reading() {
     // PR315 Codex R2: navigating and then editing re-renders the reading. A
     // rule that inferred "surface" from a flag set at navigation went stale
     // here and committed a candidate the host was no longer showing.
@@ -743,7 +743,7 @@ fn settle_focus_loss_follows_the_display_back_to_the_reading() {
         .expect("backspace re-renders the marked text")
         .text;
 
-    let resp = session.settle_focus_loss();
+    let resp = session.settle_unconfirmed();
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -753,7 +753,7 @@ fn settle_focus_loss_follows_the_display_back_to_the_reading() {
 }
 
 #[test]
-fn settle_focus_loss_preserves_pending_romaji_exactly() {
+fn settle_unconfirmed_preserves_pending_romaji_exactly() {
     // PR315 Codex R2: a trailing `n` is displayed as `n`. Flushing before
     // settling converted it to `ん` and committed text never shown.
     let dict = make_test_dict();
@@ -765,7 +765,7 @@ fn settle_focus_loss_preserves_pending_romaji_exactly() {
         "precondition: pending romaji is on screen, got {shown:?}",
     );
 
-    let resp = session.settle_focus_loss();
+    let resp = session.settle_unconfirmed();
 
     assert_eq!(
         resp.commit.as_deref(),
@@ -775,13 +775,13 @@ fn settle_focus_loss_preserves_pending_romaji_exactly() {
 }
 
 #[test]
-fn settle_focus_loss_records_no_history() {
+fn settle_unconfirmed_records_no_history() {
     let dict = make_test_dict();
     let history = UserHistory::new();
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
-    session.settle_focus_loss();
+    session.settle_unconfirmed();
 
     assert!(
         session.take_history_records().is_empty(),
@@ -790,14 +790,14 @@ fn settle_focus_loss_records_no_history() {
 }
 
 #[test]
-fn settle_focus_loss_records_no_history_even_after_navigating() {
+fn settle_unconfirmed_records_no_history_even_after_navigating() {
     let dict = make_test_dict();
     let history = UserHistory::new();
     let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     type_string(&mut session, "kyou");
     session.handle_key(KeyEvent::Space);
-    session.settle_focus_loss();
+    session.settle_unconfirmed();
 
     assert!(
         session.take_history_records().is_empty(),
@@ -821,11 +821,11 @@ fn commit_still_learns_and_resolves_the_surface() {
 }
 
 #[test]
-fn settle_focus_loss_on_idle_is_a_no_op() {
+fn settle_unconfirmed_on_idle_is_a_no_op() {
     let dict = make_test_dict();
     let mut session = InputSession::new(dict.clone(), None, None);
 
-    let resp = session.settle_focus_loss();
+    let resp = session.settle_unconfirmed();
 
     assert!(
         resp.commit.is_none(),

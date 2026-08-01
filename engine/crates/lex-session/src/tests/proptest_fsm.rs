@@ -46,6 +46,10 @@ enum Action {
     /// IMKit `commitComposition` — the session's other public entry point.
     /// Reached on focus loss and after Escape, so it can land in any state.
     CommitComposition,
+    /// The involuntary end: the host tears its marked session down without the
+    /// user confirming anything (IMKit `deactivateServer`). Like
+    /// `CommitComposition` it can land in any state.
+    SettleUnconfirmed,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,7 @@ fn arb_action_with_snippets() -> impl Strategy<Value = Action> {
         1 => Just(Action::SnippetTrigger),
         1 => any::<bool>().prop_map(|empty| Action::SetSnippetStore { empty }),
         1 => Just(Action::CommitComposition),
+        1 => Just(Action::SettleUnconfirmed),
     ]
 }
 
@@ -288,6 +293,7 @@ fn execute_action(
             None
         }
         Action::CommitComposition => Some(session.commit()),
+        Action::SettleUnconfirmed => Some(session.settle_unconfirmed()),
     }
 }
 
@@ -528,6 +534,26 @@ fn assert_invariants(
             }
         }
     }
+
+    // 10. `InputSession::last_marked` equals what this model says is on screen.
+    //
+    //     `HostMarked` is the pre-existing model of "what the host is showing",
+    //     accumulated per response. `note_response` now maintains the same fact
+    //     inside the engine so `settle_unconfirmed` can commit it. Two
+    //     representations of one fact is exactly the drift `CandidateState::
+    //     user_selected` died of (PR315 Codex R2), so they are pinned equal
+    //     here rather than left to agree by inspection: the model applies the
+    //     commit-then-marked rule, and any divergence in the engine's copy —
+    //     a producer that skips the choke point, or a rule applied in one and
+    //     not the other — fails this across every generated action sequence.
+    //
+    //     `None` and `""` both mean "the host shows nothing".
+    assert_eq!(
+        session.last_marked,
+        host.0.as_deref().unwrap_or(""),
+        "engine's recorded display diverged from the host model after {:?}",
+        action,
+    );
 }
 
 // ---------------------------------------------------------------------------

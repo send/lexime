@@ -72,7 +72,7 @@ impl InputSession {
     ///
     /// Both are the same principle: an involuntary end must not manufacture
     /// intent the user never expressed.
-    pub(super) fn settle_unconfirmed(&mut self) -> KeyResponse {
+    pub(super) fn commit_displayed(&mut self) -> KeyResponse {
         if !matches!(self.state, SessionState::Composing(_)) {
             return KeyResponse::consumed();
         }
@@ -85,7 +85,10 @@ impl InputSession {
         // one missed. Reading it also means **no `flush()`**: forcing pending
         // romaji would convert a trailing `n` to `ん` and commit text that was
         // never on screen.
-        let shown = std::mem::take(&mut self.last_marked);
+        // Read, don't take: `note_response` clears `last_marked` on the way
+        // out because this response carries a commit — the same rule
+        // `HostMarked` applies. Hand-clearing here would be a second copy of it.
+        let shown = self.last_marked.clone();
 
         let mut resp = KeyResponse::consumed().with_hide_candidates();
         if shown.is_empty() {

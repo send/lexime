@@ -156,13 +156,13 @@ impl LexSession {
     /// `commit()`: that resolves to the selected candidate and learns from it,
     /// so a focus change would insert a conversion the user never saw and
     /// train top-1 on it.
-    fn settle_focus_loss(&self) -> LexKeyResponse {
+    fn settle_unconfirmed(&self) -> LexKeyResponse {
         if let Some(worker) = self.worker.lock().unwrap().as_ref() {
             worker.invalidate_candidates();
         }
 
         let mut session = self.session.lock().unwrap();
-        let resp = session.settle_focus_loss();
+        let resp = session.settle_unconfirmed();
         let epoch = session.epoch();
         // Drained for the same reason `commit` drains: an earlier voluntary
         // commit in this session may have left records pending. This settle
