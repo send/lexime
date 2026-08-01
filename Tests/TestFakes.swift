@@ -152,6 +152,11 @@ final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {
 
     func commit() -> LexKeyResponse {
         commitCalls += 1
+        // The real session leaves the composing state on commit
+        // (`commit_current_state` → `reset_state`). Model that here: a fake
+        // that reports "still composing" after a commit lets a caller pass
+        // tests against a state the engine can never be in.
+        isComposingValue = false
         if commitResponses.isEmpty {
             return LexKeyResponse(consumed: false, events: [])
         }

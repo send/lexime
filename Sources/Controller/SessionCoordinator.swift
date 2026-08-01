@@ -84,55 +84,58 @@ final class SessionCoordinator {
 
     // MARK: - Lifecycle
 
-    /// Focus is arriving. The display must start empty, but the session must
-    /// *not* be settled here: committing at this point would insert the previous
-    /// client's pending text into the client that just gained focus — the wrong
-    /// document. `deactivate(client:)` is the one place allowed to settle, and
-    /// this assert is the regression detector for it having failed to
-    /// (mirroring the Rust side's `debug_assert_response_contract`: the assert
-    /// catches the drift, the structure prevents it).
-    func resetDisplay() {
+    /// The one place the display is cleared *out of band* — driven by an IMKit
+    /// lifecycle event rather than by a session response. Both such clears come
+    /// through here so the invariant is checked in the call that performs the
+    /// clear, the way the Rust side checks inside each response producer rather
+    /// than at the next event.
+    ///
+    /// Deliberately not a `didSet` on `currentDisplay`: `applyEvents`
+    /// legitimately nils the display on a `.commit` while the session keeps
+    /// composing, with a later `.setMarkedText` in the same response restoring
+    /// it (SPEC.md § 不変条件 ②). A per-write check would false-fire — the same
+    /// reason Rust checks per *response*, not per event.
+    ///
+    /// The assert can also fire when `deactivate(client:)` had no reachable
+    /// client to settle through. That is a real violation, not a false
+    /// positive: the session keeps composing with the display gone. It is
+    /// surfaced rather than hidden.
+    private func clearDisplay() {
         assert(!session.isComposing(),
-               "session still composing on activateServer — deactivate(client:) failed to settle it (#298)")
+               "display cleared while the session is still composing (#298)")
         currentDisplay = nil
     }
 
+    /// Focus is arriving. The display starts empty, but the session must *not*
+    /// be settled here: committing now would insert the previous client's
+    /// pending text into the client that just gained focus — the wrong document.
+    /// `deactivate(client:)` is the only place allowed to settle.
+    func resetDisplay() {
+        clearDisplay()
+    }
+
     /// Focus is leaving this client. The host tears down its marked-text session
-    /// along with it, so ours must not stay composing: a session that keeps
-    /// composing while the host shows no marked text leaks the next confirming
-    /// key to the host — the #293 bug, from the Swift side
-    /// (SPEC.md § 不変条件（marked text と session の同期）).
+    /// with it, so ours must not stay composing — that is #293's leak shape
+    /// reached from the Swift side.
     ///
-    /// IMKit does **not** reliably send `commitComposition` first. Measured
-    /// 2026-08-01 (#298) by instrumenting the lifecycle boundaries and changing
-    /// focus mid-composition: `deactivateServer` repeatedly arrived with the
-    /// session composing and a live display, and most of those focus changes
-    /// produced no `commitComposition` at all — the composition was abandoned
-    /// while the display was cleared, leaving the session composing into the
-    /// *next* activation (observed directly, and zero after this change).
+    /// IMKit does **not** reliably send `commitComposition` first (measured
+    /// 2026-08-01 by instrumenting the lifecycle boundaries and changing focus
+    /// mid-composition), so settling is this call's job, and it happens in the
+    /// same call that clears the display — splitting the two is what let them
+    /// diverge. It commits rather than discards, matching the settlement
+    /// `commitComposition` already performs.
     ///
-    /// Settling is therefore this call's job, and it happens in the *same call*
-    /// that clears the display, so the session and the display cannot diverge.
-    /// Committing (rather than discarding) matches what `commitComposition`
-    /// does and keeps text the user actually typed.
-    ///
-    /// One host difference this deliberately does **not** address: Chromium /
-    /// Electron finalizes its *own* composition on blur, so the reading it was
-    /// displaying is what lands there and this `insertText` has no visible
-    /// effect. That predates this change — no commit was issued at all before
-    /// it, so the visible outcome on those hosts is unchanged. The underlying
-    /// mismatch (marked text shows the reading, a commit resolves to the
-    /// selected surface) is tracked separately.
+    /// Rule, evidence, and the one host difference this does *not* address:
+    /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
     func deactivate(client: IMKTextInput?) {
-        // Settle through whichever client we can still reach: the one IMKit is
-        // handing us, else the one the composition was typed into.
+        // Settle through whichever client is still reachable: the one IMKit is
+        // handing us, else the one the composition was typed into (`lastClient`
+        // is weak, so it can be gone by now).
         if session.isComposing(), let target = client ?? lastClient {
-            let resp = session.commit()
-            highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
-            applyEvents(resp, client: target)
+            commit(client: target)
         }
         candidateManager.deactivate()
-        currentDisplay = nil
+        clearDisplay()
         lastClient = nil
     }
 
