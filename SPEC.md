@@ -245,7 +245,8 @@ proptest の invariant 3 / 3b で固定している。
   - **settle は無条件、delivery は best-effort**。テキストを挿入する先（`lastClient`、無ければ IMKit が渡す sender）が無くても、session を composing のまま残す理由にはならない。`session.commit()` は挿入先の有無に関係なく状態を Idle にする
   - `Composing` に対する settle は確定であり、`commitComposition` と同形で打った文字も残る。ただし `is_composing()` は **`Snippet` も含む**（§状態遷移）。snippet ブラウズに対する `commit()` は確定ではなく**キャンセル**（marked を空にして idle 復帰、確定テキスト無し）なので、入力中のフィルタは破棄される。「打った文字を失わない」は composing の場合の性質であって、述語全体の性質ではない
   - **確定は学習も書く**（`commit_current_state` → `record_history`）。フォーカス喪失は非自発的な操作なので、ユーザーが Enter で受容していない変換が履歴に入る。妥当性は #310 で追跡
-  - `resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに、表示の out-of-band クリアを単一の `clearDisplay()` に集約して debug assert を置く（Rust 側 `debug_assert_response_contract` と同じく、構造が防ぎ assert は回帰検出器）
+  - `resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに、表示の out-of-band クリアを単一の `clearDisplay()` に集約して debug assert を置く
+  - **未モデルのまま残る半分**（`activateServer` 側）: 上の settle は `deactivateServer` が届く前提に立つ。IMKit がそれを飛ばす場合があることは `LeximeInputController.activateServer` のコメントが記録している（クライアントのクラッシュ等）。その経路では session が composing のまま `resetDisplay()` に到達し、表示だけが消える — #293 と同じ形。`clearDisplay()` の assert は**出荷ビルド（`-O`）では消える**ので、この経路には構造も検出も無い。session を破棄する FFI が無い（`LexSession` は `commit` のみ）ため、現状は既知ギャップとして記録するに留める。Rust 側 `debug_assert_response_contract` が「構造が防ぎ assert は回帰検出器」なのは response 経路の話で、この out-of-band 経路には当てはまらない
 - **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§候補操作: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:
   - ネイティブホスト（TextEdit 等）: こちらの `insertText` が効くので、画面で かな を見ていたユーザーの文書に**選んでいないサーフェス**が入る
   - Chromium / Electron 系: blur で**自前の composition を確定する**ため、残るのは表示していた読みで、こちらの `insertText` は視覚的に効かない

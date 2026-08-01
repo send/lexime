@@ -279,6 +279,23 @@ class LeximeInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        // The settle below performs the commit `commitComposition` would have,
+        // so the ESC flag has to be consumed with it. Its contract is "the next
+        // commit is the ESC-caused one"; once we commit, every later reading is
+        // a lie, and a stale `true` fires `revertWhenAbcAppears` — which has no
+        // provenance check — yanking a deliberate ABC switch back to Japanese.
+        //
+        // Consumed but the revert is NOT armed. `revertToLeximeIfEscapeRaced`
+        // is a global TIS action and focus has already left this client: its
+        // watch would overlap macOS restoring the *newly focused* app's input
+        // source and could drag the user into Lexime Japanese in an app where
+        // they never chose it. The genuine-ESC-race residual is still covered,
+        // at lower fidelity, by InputSourceMonitor; a spurious flip *into*
+        // Japanese has no net at all. That asymmetry is what decides it.
+        // Distinguishing "deactivate caused by the ESC input-source flip" from
+        // "deactivate caused by focus moving away" would need a signal IMKit
+        // does not provide.
+        _ = modeController.takePendingEscapeCommit()
         coordinator?.deactivate(client: sender as? IMKTextInput)
         super.deactivateServer(sender)
     }

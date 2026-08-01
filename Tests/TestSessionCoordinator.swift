@@ -283,7 +283,9 @@ func testSessionCoordinator() {
         }
     }
 
-    // deactivate: invalidates candidates, hides panel, clears display
+    // deactivate: invalidates candidates, hides panel, clears display.
+    // Nothing is composing here, so this covers the no-settle branch only —
+    // the settling branch is covered by the block below.
     do {
         let session = FakeLexSession()
         session.handleKeyResponses = [
@@ -298,6 +300,41 @@ func testSessionCoordinator() {
                    "deactivate invalidates generation")
         assertTrue(panel.hideCount >= 1, "deactivate hides panel")
         assertTrue(coordinator.currentDisplay == nil, "deactivate clears display")
+    }
+
+    // #298: the same teardown, but on the settling branch — the one the
+    // no-settle block above cannot reach. The generation must be bumped
+    // *before* the settle applies its events: a deferred panel show queued by
+    // the last keystroke is guarded by `generation`, not by the epoch
+    // watermark, so if the settle ran first that block could still re-show the
+    // shared panel for a composition being committed right now.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .setMarkedText(text: "にほんご"),
+                .showCandidates(surfaces: ["日本語", "二本語"], selected: 0),
+            ])
+        ]
+        session.commitResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        ]
+        let panel = FakePanel()
+        let client = FakeIMKClient()
+        let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        session.isComposingValue = true
+        let genBefore = manager.generation
+
+        coordinator.deactivate(client: client)
+
+        assertTrue(manager.generation == genBefore &+ 1,
+                   "the settling branch invalidates the generation too")
+        assertTrue(panel.hideCount >= 1, "the settling branch hides the panel")
+        assertEqual(session.commitCalls, 1, "and still settles the session")
+        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
+                   "and still delivers the committed text")
+        assertTrue(coordinator.currentDisplay == nil, "and still clears the display")
     }
 
     // #298: deactivate settles a live composition instead of orphaning it.
@@ -330,9 +367,11 @@ func testSessionCoordinator() {
                    "deactivate still clears the display")
     }
 
-    // #298: IMKit can hand deactivateServer a sender that is not an
-    // IMKTextInput. The composition still has to be settled, so fall back to
-    // the client it was typed into rather than orphaning the session.
+    // #298: `deactivateServer(_ sender: Any!)` is untyped, so the cast to
+    // IMKTextInput is defensive — this is not an observed IMKit behaviour, and
+    // `handle(_:client:)` failing the same cast would mean the IME cannot type
+    // at all. `lastClient` going nil (it is weak) is the reachable case. Either
+    // way the composition must still be settled rather than orphaned.
     do {
         let session = FakeLexSession()
         session.handleKeyResponses = [
@@ -353,9 +392,11 @@ func testSessionCoordinator() {
                    "the committed text reaches the client it was typed into")
     }
 
-    // #298: nothing composing → nothing to settle. deactivate must not
-    // manufacture a commit, which would insert an empty string and end the
-    // host's marked-text session for no reason.
+    // #298: nothing composing → nothing to settle. An Idle `commit()` is
+    // harmless (commit_current_state early-returns with no events), so this
+    // gate is an optimization, not a host-correctness guard — pinned here so a
+    // future change that needs to settle unconditionally is not argued down by
+    // a justification that does not hold.
     do {
         let session = FakeLexSession()
         let client = FakeIMKClient()
@@ -381,10 +422,12 @@ func testSessionCoordinator() {
 
         coordinator.deactivate(client: nil)
 
+        // Note: asserting !session.isComposingValue here would be tautological
+        // — FakeLexSession.commit() sets it. What actually pins the invariant is
+        // clearDisplay()'s assert, which is live in this (-Onone) build and
+        // would trap if the display were cleared over a composing session.
         assertEqual(session.commitCalls, 1,
                     "settles the session even with no client to deliver to")
-        assertTrue(!session.isComposingValue,
-                   "session must not be left composing after the display is cleared")
         assertTrue(coordinator.currentDisplay == nil, "display cleared")
     }
 
@@ -404,7 +447,6 @@ func testSessionCoordinator() {
         coordinator.deactivate(client: client)
 
         assertEqual(session.commitCalls, 1, "snippet browse is settled too")
-        assertTrue(!session.isComposingValue, "session reaches Idle")
         assertTrue(client.insertCalls.isEmpty, "a cancelled browse inserts nothing")
         assertTrue(coordinator.currentDisplay == nil, "display cleared")
     }

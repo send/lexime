@@ -130,10 +130,16 @@ what a generic reviewer misses:
   A `didSet` on `currentDisplay` was considered and rejected — `applyEvents`
   legitimately nils the display on `.commit` while the session keeps composing,
   so a per-write check false-fires, the same reason the Rust side checks per
-  *response*. Findings re-proposing any of these re-litigate them. Still open
-  in this area: committing also writes a history entry for a conversion the
-  user never confirmed (#310), and the marked-text-shows-the-reading vs
-  commit-resolves-to-the-surface mismatch (#309).
+  *response*. Findings re-proposing exactly these re-litigate them.
+  **Everything else in this area is open**, and specifically these are known
+  and unfixed, not settled: the `activateServer` side is still unmodelled — if
+  IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
+  composing, and the assert that would catch it is compiled out at `-O` (SPEC
+  records it); committing also writes a history entry for a conversion the user
+  never confirmed (#310); and marked text shows the reading while a commit
+  resolves to the selected surface (#309). Note the narrow scope of (a): it
+  settles *whether to commit or discard*, not whether the `resetDisplay()` gap
+  is acceptable.
 - **Unusable config entries are dropped, not rejected (settled)**: an empty
   side in `[keymap]` and a snippet body that expands to nothing are ignored,
   and the file still loads. Rejecting was tried and reversed: `init_custom` is

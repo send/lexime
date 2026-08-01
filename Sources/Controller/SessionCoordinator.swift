@@ -113,10 +113,15 @@ final class SessionCoordinator {
     /// it (SPEC.md § 不変条件 ②). A per-write check would false-fire — the same
     /// reason Rust checks per *response*, not per event.
     ///
-    /// The assert can also fire when `deactivate(client:)` had no reachable
-    /// client to settle through. That is a real violation, not a false
-    /// positive: the session keeps composing with the display gone. It is
-    /// surfaced rather than hidden.
+    /// What it can actually catch: `deactivate(client:)` cannot trip it —
+    /// settling there is unconditional and `commit()` resets state on both its
+    /// branches, so the session is Idle regardless of whether the text could be
+    /// delivered. The live path is `resetDisplay()`, which by design does not
+    /// settle: if IMKit skipped the previous `deactivateServer` (see
+    /// `LeximeInputController.activateServer`), the session arrives here still
+    /// composing. Note the assert is compiled out at `-O`, so on that path the
+    /// shipped build has neither structure nor detection — recorded as a known
+    /// gap in SPEC.md rather than claimed as covered.
     private func clearDisplay() {
         assert(!session.isComposing(),
                "display cleared while the session is still composing (#298)")
@@ -151,18 +156,26 @@ final class SessionCoordinator {
     /// about the composing case only.
     ///
     /// Committing here also records a history entry for a conversion the user
-    /// never confirmed with Enter — see SPEC.md and #310.
+    /// never confirmed with Enter — see SPEC.md and #310. And an auto-commit
+    /// already accepted by the engine but not yet delivered can be dropped by
+    /// this settle (#314, pre-existing).
     ///
     /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
     func deactivate(client: IMKTextInput?) {
+        // Invalidate first. `applyEvents` below calls into the client and the
+        // panel, and a deferred show queued by the last keystroke is guarded by
+        // `CandidateManager.generation`, not by the epoch watermark — bumping it
+        // here is what stops that block re-showing the shared panel for a
+        // composition we are about to commit.
+        candidateManager.deactivate()
         if session.isComposing() {
             // Prefer `lastClient`: it is by construction the client the marked
-            // text was put on. `client` is whatever IMKit hands `deactivateServer`
-            // and is the fallback for `lastClient` being weak and already gone.
+            // text was put on, so committing there replaces that marked text in
+            // place. `client` is whatever IMKit hands `deactivateServer`, and is
+            // the fallback for `lastClient` being weak and already gone.
             settle(deliveringTo: lastClient ?? client)
         }
-        candidateManager.deactivate()
         clearDisplay()
         lastClient = nil
     }
