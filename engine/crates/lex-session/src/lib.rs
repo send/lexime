@@ -243,6 +243,31 @@ impl InputSession {
         self.commit_current_state()
     }
 
+    /// Settle a session the user did not choose to end, because the host is
+    /// tearing down its marked-text session (IMKit `deactivateServer`).
+    ///
+    /// The session must not stay composing once the host's marked text is gone
+    /// — that is #293's leak shape — but an involuntary end is not a commit:
+    /// this keeps what was on screen and records no history. See
+    /// `settle_unconfirmed` for why each half matters. Snippet browse cancels,
+    /// exactly as `commit` does: there is nothing confirmed to keep.
+    pub fn settle_focus_loss(&mut self) -> KeyResponse {
+        let resp = self.settle_focus_loss_inner();
+        self.debug_assert_response_contract(&resp);
+        resp
+    }
+
+    fn settle_focus_loss_inner(&mut self) -> KeyResponse {
+        self.bump_epoch();
+        if matches!(self.state, SessionState::Snippet(_)) {
+            self.reset_state();
+            return KeyResponse::consumed()
+                .with_marked(String::new())
+                .with_hide_candidates();
+        }
+        self.settle_unconfirmed()
+    }
+
     /// Take recorded history entries, clearing the internal buffer.
     /// The caller should feed these to `UserHistory::record()`.
     pub fn take_history_records(&mut self) -> Vec<LearningRecord> {

@@ -120,9 +120,13 @@ what a generic reviewer misses:
 - **Focus loss settles the session, by committing (settled)**: on
   `deactivateServer` the session is settled in the same call that clears the
   display (`SessionCoordinator.deactivate(client:)`). Two parts are settled:
-  (a) it **commits rather than discards** — IMKit does not reliably send
-  `commitComposition` first (measured, #298), and discarding would throw away
-  text the user typed on every app switch; (b) settling is **unconditional
+  (a) it settles through **`settle_focus_loss()`, not `commit()`** — focus loss
+  is not acceptance, so it keeps what the host was showing and records no
+  history, where a voluntary commit would resolve to the selected candidate and
+  learn from it (Codex raised both halves as P1 on #315). It settles rather
+  than discards because IMKit does not reliably send `commitComposition` first
+  (measured, #298) and discarding would throw away text the user typed on every
+  app switch; (b) settling is **unconditional
   while delivery is best-effort** — with no reachable client there is nowhere
   to insert the text, but that is not a reason to leave the session composing.
   `resetDisplay()` deliberately does *not* settle: committing on arrival would
@@ -135,9 +139,10 @@ what a generic reviewer misses:
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
   composing, and the assert that would catch it is compiled out at `-O` (SPEC
-  records it); committing also writes a history entry for a conversion the user
-  never confirmed (#310); and marked text shows the reading while a commit
-  resolves to the selected surface (#309). Note the narrow scope of (a): it
+  records it); and the general display/commit divergence — marked text
+  shows the reading while a **voluntary** commit resolves to the selected
+  surface, which affects Enter too and contradicts SPEC § 候補操作 — is #309,
+  still open and needing accuracy measurement. Note the narrow scope of (a): it
   settles *whether to commit or discard*, not whether the `resetDisplay()` gap
   is acceptable.
 - **Unusable config entries are dropped, not rejected (settled)**: an empty

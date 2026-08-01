@@ -77,18 +77,16 @@ final class SessionCoordinator {
 
     func commit(client: IMKTextInput) {
         lastClient = client
-        settle(deliveringTo: client)
+        deliver(session.commit(), to: client)
     }
 
-    /// Settle the session and deliver what it produced.
+    /// Apply a settlement response: raise the epoch watermark, then deliver.
     ///
-    /// The two halves are not equally optional. **Settling is mandatory** — a
-    /// session left composing after its display is gone is the #293 leak shape.
-    /// **Delivery is best-effort**: with no reachable client there is nowhere to
-    /// put the text, but that is no reason to leave the session composing, and
-    /// `session.commit()` settles it regardless.
-    private func settle(deliveringTo client: IMKTextInput?) {
-        let resp = session.commit()
+    /// Delivery is best-effort — with no reachable client there is nowhere to
+    /// put the text. Settling is not: the caller has already asked the engine
+    /// to leave the composing state, because a session left composing after its
+    /// display is gone is the #293 leak shape.
+    private func deliver(_ resp: LexKeyResponse, to client: IMKTextInput?) {
         // Raise the watermark *before* applying. `applyEvents` calls into the
         // client and the panel; if either ever pumped the run loop, a re-entrant
         // `applyAsyncResponse` would find `lastClient` still set and be stopped
@@ -148,17 +146,18 @@ final class SessionCoordinator {
     /// depends on having a client, but leaving the session composing does not
     /// become acceptable just because there is nowhere to put the text.
     ///
-    /// For a `Composing` session that settlement is a commit, matching what
-    /// `commitComposition` performs and keeping the typed text. For a `Snippet`
-    /// session — which `isComposing()` also covers — `commit()` cancels the
-    /// browse instead, discarding the typed filter; the session still reaches
-    /// Idle, which is the invariant, but "nothing typed is lost" is a claim
-    /// about the composing case only.
+    /// It settles through `settleFocusLoss()`, **not** `commit()`. Focus loss
+    /// is not acceptance, and the engine's voluntary commit does two things
+    /// this must not: it resolves to the selected candidate (so an app switch
+    /// would drop a conversion the user never saw into their document — the
+    /// composing response shows the *reading* until they navigate) and it
+    /// records that conversion as accepted history, training top-1 on a
+    /// non-signal. `settleFocusLoss` keeps what the host was showing and learns
+    /// nothing. For a `Snippet` browse — which `isComposing()` also covers — it
+    /// cancels, exactly as `commit()` does: there is nothing confirmed to keep.
     ///
-    /// Committing here also records a history entry for a conversion the user
-    /// never confirmed with Enter — see SPEC.md and #310. And an auto-commit
-    /// already accepted by the engine but not yet delivered can be dropped by
-    /// this settle (#314, pre-existing).
+    /// One pre-existing hazard survives: an auto-commit already accepted by the
+    /// engine but not yet delivered can be dropped here (#314).
     ///
     /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
@@ -167,14 +166,14 @@ final class SessionCoordinator {
         // panel, and a deferred show queued by the last keystroke is guarded by
         // `CandidateManager.generation`, not by the epoch watermark — bumping it
         // here is what stops that block re-showing the shared panel for a
-        // composition we are about to commit.
+        // composition we are about to settle.
         candidateManager.deactivate()
         if session.isComposing() {
             // Prefer `lastClient`: it is by construction the client the marked
-            // text was put on, so committing there replaces that marked text in
+            // text was put on, so settling there replaces that marked text in
             // place. `client` is whatever IMKit hands `deactivateServer`, and is
             // the fallback for `lastClient` being weak and already gone.
-            settle(deliveringTo: lastClient ?? client)
+            deliver(session.settleFocusLoss(), to: lastClient ?? client)
         }
         clearDisplay()
         lastClient = nil

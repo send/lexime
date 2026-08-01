@@ -148,6 +148,31 @@ impl LexSession {
         convert_to_events(resp, epoch)
     }
 
+    /// Settle a session the host is tearing down because focus left, rather
+    /// than because the user confirmed anything (IMKit `deactivateServer`).
+    ///
+    /// Keeps what the host was showing and records **no** history — an app
+    /// switch is not acceptance. The Swift side must not simulate this with
+    /// `commit()`: that resolves to the selected candidate and learns from it,
+    /// so a focus change would insert a conversion the user never saw and
+    /// train top-1 on it.
+    fn settle_focus_loss(&self) -> LexKeyResponse {
+        if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+            worker.invalidate_candidates();
+        }
+
+        let mut session = self.session.lock().unwrap();
+        let resp = session.settle_focus_loss();
+        let epoch = session.epoch();
+        // Drained for the same reason `commit` drains: an earlier voluntary
+        // commit in this session may have left records pending. This settle
+        // contributes none of its own.
+        let records = session.take_history_records();
+        drop(session);
+        self.record_history(&records);
+        convert_to_events(resp, epoch)
+    }
+
     fn is_composing(&self) -> bool {
         self.session.lock().unwrap().is_composing()
     }

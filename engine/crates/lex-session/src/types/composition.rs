@@ -184,6 +184,16 @@ pub(crate) struct CandidateState {
     /// navigation falls back to synchronous generation when this is set
     /// instead of cycling the interim list forever.
     pub(crate) provisional: bool,
+    /// True once the user has moved the selection themselves (Space / ↑ / ↓).
+    ///
+    /// This is what the host is *showing*: the composing response emits
+    /// `display_kana()` (the reading) while a selection response emits
+    /// `display()` (the surface), so the two diverge exactly when candidates
+    /// exist but the user has not navigated. A voluntary commit resolves to
+    /// the selected surface regardless — the user asked to convert. An
+    /// *involuntary* settle must not, or an app switch silently replaces what
+    /// was on screen with a conversion the user never chose (#298 / #309).
+    pub(crate) user_selected: bool,
 }
 
 impl CandidateState {
@@ -193,6 +203,7 @@ impl CandidateState {
             paths: Vec::new(),
             selected: 0,
             provisional: false,
+            user_selected: false,
         }
     }
 
@@ -201,6 +212,7 @@ impl CandidateState {
         self.paths.clear();
         self.selected = 0;
         self.provisional = false;
+        self.user_selected = false;
     }
 
     pub(crate) fn is_empty(&self) -> bool {

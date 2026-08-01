@@ -316,8 +316,8 @@ func testSessionCoordinator() {
                 .showCandidates(surfaces: ["日本語", "二本語"], selected: 0),
             ])
         ]
-        session.commitResponses = [
-            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        session.settleFocusLossResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
         ]
         let panel = FakePanel()
         let client = FakeIMKClient()
@@ -331,9 +331,9 @@ func testSessionCoordinator() {
         assertTrue(manager.generation == genBefore &+ 1,
                    "the settling branch invalidates the generation too")
         assertTrue(panel.hideCount >= 1, "the settling branch hides the panel")
-        assertEqual(session.commitCalls, 1, "and still settles the session")
-        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
-                   "and still delivers the committed text")
+        assertEqual(session.settleFocusLossCalls, 1, "and still settles the session")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "and still delivers what the host was showing")
         assertTrue(coordinator.currentDisplay == nil, "and still clears the display")
     }
 
@@ -347,8 +347,8 @@ func testSessionCoordinator() {
         session.handleKeyResponses = [
             LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
         ]
-        session.commitResponses = [
-            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        session.settleFocusLossResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
         ]
         let client = FakeIMKClient()
         let (coordinator, _) = makeCoordinator(session: session)
@@ -359,10 +359,12 @@ func testSessionCoordinator() {
 
         coordinator.deactivate(client: client)
 
-        assertEqual(session.commitCalls, 1,
-                    "deactivate commits the pending composition")
-        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
-                   "the committed text reaches the client that had focus")
+        assertEqual(session.settleFocusLossCalls, 1,
+                    "deactivate settles through the focus-loss path")
+        assertEqual(session.commitCalls, 0,
+                    "and never through the learning commit path")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "the text the host was showing reaches the client that had focus")
         assertTrue(coordinator.currentDisplay == nil,
                    "deactivate still clears the display")
     }
@@ -377,8 +379,8 @@ func testSessionCoordinator() {
         session.handleKeyResponses = [
             LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
         ]
-        session.commitResponses = [
-            LexKeyResponse(consumed: true, events: [.commit(text: "日本語")])
+        session.settleFocusLossResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
         ]
         let client = FakeIMKClient()
         let (coordinator, _) = makeCoordinator(session: session)
@@ -387,9 +389,9 @@ func testSessionCoordinator() {
 
         coordinator.deactivate(client: nil)
 
-        assertEqual(session.commitCalls, 1, "settles through lastClient")
-        assertTrue(client.insertCalls.contains { $0.text == "日本語" },
-                   "the committed text reaches the client it was typed into")
+        assertEqual(session.settleFocusLossCalls, 1, "settles through lastClient")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "the text the host was showing reaches the client it was typed into")
     }
 
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
@@ -405,7 +407,7 @@ func testSessionCoordinator() {
 
         coordinator.deactivate(client: client)
 
-        assertEqual(session.commitCalls, 0, "no commit when not composing")
+        assertEqual(session.settleFocusLossCalls, 0, "no settle when not composing")
         assertTrue(client.insertCalls.isEmpty, "no text inserted when not composing")
     }
 
@@ -426,7 +428,7 @@ func testSessionCoordinator() {
         // — FakeLexSession.commit() sets it. What actually pins the invariant is
         // clearDisplay()'s assert, which is live in this (-Onone) build and
         // would trap if the display were cleared over a composing session.
-        assertEqual(session.commitCalls, 1,
+        assertEqual(session.settleFocusLossCalls, 1,
                     "settles the session even with no client to deliver to")
         assertTrue(coordinator.currentDisplay == nil, "display cleared")
     }
@@ -437,7 +439,7 @@ func testSessionCoordinator() {
     // for the composing case only.
     do {
         let session = FakeLexSession()
-        session.commitResponses = [
+        session.settleFocusLossResponses = [
             LexKeyResponse(consumed: true, events: [.setMarkedText(text: ""), .hideCandidates])
         ]
         let client = FakeIMKClient()
@@ -446,7 +448,7 @@ func testSessionCoordinator() {
 
         coordinator.deactivate(client: client)
 
-        assertEqual(session.commitCalls, 1, "snippet browse is settled too")
+        assertEqual(session.settleFocusLossCalls, 1, "snippet browse is settled too")
         assertTrue(client.insertCalls.isEmpty, "a cancelled browse inserts nothing")
         assertTrue(coordinator.currentDisplay == nil, "display cleared")
     }

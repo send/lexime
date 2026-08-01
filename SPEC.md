@@ -155,7 +155,8 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | メソッド | 説明 |
 |---|---|
 | `handle_key(event)` | キー入力処理（`LexKeyEvent`）→ `LexKeyResponse` |
-| `commit()` | 現在の入力を確定 → `LexKeyResponse` |
+| `commit()` | 現在の入力を確定（選択候補に解決 + 学習記録）→ `LexKeyResponse` |
+| `settle_focus_loss()` | フォーカス喪失時の非自発的 settle。**表示していたものを確定し、学習しない** → `LexKeyResponse`（§不変条件） |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
@@ -243,15 +244,16 @@ proptest の invariant 3 / 3b で固定している。
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
 - **フォーカス喪失時の settle**（#298。以前は「未モデル」として保留していたが、実測の結果**到達可能**だった）: `deactivateServer` はホストが marked セッションを畳むことを意味するので、session を composing のまま残してはならない。IMKit は先に `commitComposition` を送るとは限らない（2026-08-01 実測: 未確定のままフォーカスを移す操作で `deactivateServer` が composing のまま届き、その大半で `commitComposition` は最後まで来なかった。指標は `activateServer` 時点で composing が残っていた回数で、同等の操作列で修正前 4 回 → 修正後 0 回）。したがって `SessionCoordinator.deactivate(client:)` が**表示を消すのと同じ呼び出しの中で** session を確定させる — 分かれていたから乖離した。
   - **settle は無条件、delivery は best-effort**。テキストを挿入する先（`lastClient`、無ければ IMKit が渡す sender）が無くても、session を composing のまま残す理由にはならない。`session.commit()` は挿入先の有無に関係なく状態を Idle にする
-  - `Composing` に対する settle は確定であり、`commitComposition` と同形で打った文字も残る。ただし `is_composing()` は **`Snippet` も含む**（§状態遷移）。snippet ブラウズに対する `commit()` は確定ではなく**キャンセル**（marked を空にして idle 復帰、確定テキスト無し）なので、入力中のフィルタは破棄される。「打った文字を失わない」は composing の場合の性質であって、述語全体の性質ではない
-  - **確定は学習も書く**（`commit_current_state` → `record_history`）。フォーカス喪失は非自発的な操作なので、ユーザーが Enter で受容していない変換が履歴に入る。妥当性は #310 で追跡
+  - **settle は `commit()` ではなく `settle_focus_loss()`**。フォーカス喪失は受容ではないので、自発的 commit の 2 つの副作用を持ち込んではならない: ①選択候補への解決 — 入力中のマークドテキストは navigate するまで**読み**なので、`commit()` で確定するとアプリを切り替えただけでユーザーが見ていない変換が文書に入る ②学習の記録 — 非自発的な操作を受容として扱うと top-1 が非シグナルで訓練され、1発目精度が劣化する。`settle_focus_loss()` は**表示していたものをそのまま確定**し、履歴を書かない
+  - 「表示していたもの」は `CandidateState::user_selected` が正準判定。composing の response は `display_kana()`（読み）を、候補選択の response は `display()`（サーフェス）を出すので、両者が食い違うのは「候補はあるが navigate していない」ときだけ。このフラグはその状態を型で表す
+  - `Snippet` ブラウズは `commit()` と同じくキャンセル（確定テキスト無し）。確定されたものが無いので保持する対象が無い
   - `resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに、表示の out-of-band クリアを単一の `clearDisplay()` に集約して debug assert を置く
   - **未モデルのまま残る半分**（`activateServer` 側）: 上の settle は `deactivateServer` が届く前提に立つ。IMKit がそれを飛ばす場合があることは `LeximeInputController.activateServer` のコメントが記録している（クライアントのクラッシュ等）。その経路では session が composing のまま `resetDisplay()` に到達し、表示だけが消える — #293 と同じ形。`clearDisplay()` の assert は**出荷ビルド（`-O`）では消える**ので、この経路には構造も検出も無い。session を破棄する FFI が無い（`LexSession` は `commit` のみ）ため、現状は既知ギャップとして記録するに留める。Rust 側 `debug_assert_response_contract` が「構造が防ぎ assert は回帰検出器」なのは response 経路の話で、この out-of-band 経路には当てはまらない
 - **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§候補操作: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:
   - ネイティブホスト（TextEdit 等）: こちらの `insertText` が効くので、画面で かな を見ていたユーザーの文書に**選んでいないサーフェス**が入る
   - Chromium / Electron 系: blur で**自前の composition を確定する**ため、残るのは表示していた読みで、こちらの `insertText` は視覚的に効かない
 
-  2026-08-01 実測（本 settle 適用後、`deactivateServer` 経路で計測）: こちらは 8/8 で選択サーフェスを commit していたが、Slack の文書に残ったのは読みだった。`insertText` が視覚的に効かない以上、settle の追加でこれらのホストの見え方は変わっていない（settle 以前は commit 自体を発行していなかった）
+  2026-08-01 実測（本 settle 適用後、`deactivateServer` 経路で計測）: こちらは 8/8 で選択サーフェスを commit していたが、Slack の文書に残ったのは読みだった。`insertText` が視覚的に効かない以上、settle の追加でこれらのホストの見え方は変わっていない（settle 以前は commit 自体を発行していなかった）。なお `settle_focus_loss()` が表示していた読みを確定するようになったことで、**この経路に限れば両系統のホストの結果は一致する**
 
 **キーリマップ（settings.toml `[keymap]`）**
 

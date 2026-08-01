@@ -134,6 +134,8 @@ final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {
 
     var handleKeyCalls: [LexKeyEvent] = []
     var commitCalls: Int = 0
+    var settleFocusLossCalls: Int = 0
+    var settleFocusLossResponses: [LexKeyResponse] = []
     var shutdownCalls: Int = 0
     var isComposingValue: Bool = false
 
@@ -161,6 +163,18 @@ final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {
             return LexKeyResponse(consumed: false, events: [])
         }
         return commitResponses.removeFirst()
+    }
+
+    /// Mirrors the real `settle_focus_loss`: reaches Idle like `commit`, but is
+    /// a distinct entry point so tests can prove the coordinator does not settle
+    /// focus loss through the learning/candidate-resolving commit path.
+    func settleFocusLoss() -> LexKeyResponse {
+        settleFocusLossCalls += 1
+        isComposingValue = false
+        if settleFocusLossResponses.isEmpty {
+            return LexKeyResponse(consumed: false, events: [])
+        }
+        return settleFocusLossResponses.removeFirst()
     }
 
     func isComposing() -> Bool { isComposingValue }

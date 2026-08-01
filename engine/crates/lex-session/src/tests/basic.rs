@@ -659,3 +659,115 @@ fn test_forward_delete_no_history_no_record() {
     let records = session.take_history_records();
     assert!(records.is_empty());
 }
+
+// --- settle_focus_loss (#298 / #309 / #310) ---
+//
+// The involuntary counterpart to `commit`. IMKit delivers `deactivateServer`
+// mid-composition without reliably sending `commitComposition` first, so the
+// session has to settle — but an app switch is not acceptance, and settling
+// through `commit()` would both insert a conversion the user never saw and
+// train top-1 on it.
+
+#[test]
+fn settle_focus_loss_commits_the_reading_when_the_user_never_navigated() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    // Candidates exist, but the composing response showed `display_kana()` —
+    // the host is displaying the reading, not any surface.
+    assert!(!session.comp().candidates.is_empty());
+    assert!(!session.comp().candidates.user_selected);
+    let shown = session.comp().display_kana();
+
+    let resp = session.settle_focus_loss();
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "settle must commit what the host was showing, not a candidate surface",
+    );
+    assert!(!session.is_composing(), "settle reaches Idle");
+}
+
+#[test]
+fn settle_focus_loss_commits_the_surface_once_the_user_has_navigated() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    session.handle_key(KeyEvent::Space);
+    // Navigation switched the host to `display()` — the surface is on screen,
+    // so that is what an involuntary settle must keep.
+    assert!(session.comp().candidates.user_selected);
+    let shown = session.comp().display();
+
+    let resp = session.settle_focus_loss();
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "after navigating, the surface is what the host shows",
+    );
+    assert!(!session.is_composing());
+}
+
+#[test]
+fn settle_focus_loss_records_no_history() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    session.settle_focus_loss();
+
+    assert!(
+        session.take_history_records().is_empty(),
+        "an app switch is not acceptance — it must not feed top-1",
+    );
+}
+
+#[test]
+fn settle_focus_loss_records_no_history_even_after_navigating() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    session.handle_key(KeyEvent::Space);
+    session.settle_focus_loss();
+
+    assert!(
+        session.take_history_records().is_empty(),
+        "navigating is not confirming either — only an explicit commit learns",
+    );
+}
+
+#[test]
+fn commit_still_learns_and_resolves_the_surface() {
+    // The voluntary path is deliberately unchanged: Enter converts and learns.
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    let surface = session.comp().candidates.surfaces[0].clone();
+    let resp = session.commit();
+
+    assert_eq!(resp.commit.as_deref(), Some(surface.as_str()));
+    assert!(!session.take_history_records().is_empty());
+}
+
+#[test]
+fn settle_focus_loss_on_idle_is_a_no_op() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let resp = session.settle_focus_loss();
+
+    assert!(
+        resp.commit.is_none(),
+        "nothing composing → nothing to commit"
+    );
+    assert!(!session.is_composing());
+}
