@@ -119,7 +119,7 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | `LexSession` | Object | 入力セッション。handle_key / commit / poll |
 | `LexDictionary` | Object | 辞書リソース（open / open_with_user_dict） |
 | `LexConnection` | Object | 接続行列 |
-| `LexUserHistory` | Object | 学習履歴（WAL 付き、`clear()` で全消去） |
+| `LexUserHistory` | Object | 学習履歴（WAL 付き、`clear()` で全消去、`open_report()` / `durability_issues()` で復旧・耐久性の状態を報告） |
 | `LexUserDictionary` | Object | ユーザー辞書 |
 | `LexKeyResponse` | Record | キー入力レスポンス（consumed + events） |
 | `LexEvent` | Enum | イベント（下記参照） |
@@ -449,6 +449,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 - **書き込み**: 確定時に WAL append（Committed は 50 frame ごとに write barrier = `fcntl(F_BARRIERFSYNC)`）、閾値到達で background compaction（checkpoint を tmp + `sync_all` + rename + 親 dir fsync（best-effort・log-only）で書き出し + 条件付き WAL truncate）。compaction の排他は `compact_gate` (Mutex)、削除・障害後の即時要求は `scrub_pending` で直列化。削除は `Tombstone` frame（削除の WAL 表現、書き込み時に毎回 `F_FULLFSYNC`）を append し、直後に非同期スクラブ compaction をスケジュールして物理消去する。全消去（`clear`）は空 checkpoint（`applied_seq` = 現 WAL 最大 seq）を先行書き込みしてコミットポイントとし、以後どのクラッシュ点でも空履歴に収束する（旧 WAL frame は全て skip される）
 - **場所**: `~/Library/Application Support/Lexime/user_history.lxud`
 - **起動時（エンジン経路）**: `recovery::open_recovering` — checkpoint ロード → WAL replay（evict なし + 事後 1 回）→ in-memory 復元。破損は `.corrupt-<epoch>` へ隔離（直近 3 個保持）して空で継続、WAL 末尾破損は last-good オフセットで物理修復。どのファイル状態でも起動は成功し学習は継続する（`OpenReport` に結果を記録。Err は EACCES 等の環境障害のみ）。`OpenReport` は v1→v2 migration の commit 失敗（`migration_failed`。v1 ファイルは温存する。再試行のタイミングは経路による — legacy WAL を消費していた場合は WAL が frozen になるため `appends_frozen` 由来の起動時 compaction が副作用として v2 checkpoint を書き変換を完了させ、そうでなければ次回起動が再試行する。**compaction は migration ではない**（`.v1.bak` 退避も `Migrated` 状態設定も行わない）ため、失敗した migration の再試行に compaction を使うことはしない — commit が失敗している経路でそれを走らせると v1 ファイルを潰す。`.v1.bak` は design 決定 #13 どおり best-effort のままで、正しさの前提条件ではない）と append 凍結（`appends_frozen`。このセッションの学習は compaction が heal するまでメモリのみ）も持つ。`migration_failed` は `checkpoint_state` / `wal_state` が健全値のまま真になりうるので独立フィールドが要る。`appends_frozen` は逆に `RepairFailed` / `Quarantined` と同時に立つ場合もあり（凍結の 5 経路のうち健全値のままなのは legacy WAL つき migration 失敗のみ）、どちらの向きにも畳めない — どちらも `checkpoint_state` / `wal_state` は健全な値のままなので、それらだけでは正常起動と区別できない
+- **実行中の耐久性報告**: `durability_issues()` が「いま成立している」耐久性の問題を severity 順のリストで返す（`OpenReport` の実行中版）。①`DeletionNotPersisted` — 削除の WAL 耐久化（append の `Io` / `SyncFailed`）と §5.4 の同期 checkpoint fallback が両方失敗し、削除がメモリにしか無い状態。起動時の heal が無い唯一のケース（旧 checkpoint がエントリを持ったまま勝つ）。世代カウンタ 1 組（raise / covered）で管理し、raise は wal ロック下・メモリ適用の後、被覆は「durable set がその削除を含まなくなる」2 点＝ compaction の `save` 成功と `clear` の空 checkpoint 成功。compaction は snapshot **前**に世代を読むため、snapshot 後に立った raise を誤って被覆しない。②`LearningMemoryOnly` — WAL が frozen で、このセッションの学習がメモリのみ。確定側に別の台帳を持たないのは、`append_record` の `Err(Io)` が frozen guard か freeze を伴う append 失敗しか出さないため「確定が memory-only」⟺「WAL frozen」だから。壊れたディスクでは両方立つのが定常なので単一 enum には畳まない。読み取りは atomics のみで wal ロックを取らない（キー処理スレッドが append 中ずっと保持しているため）。Swift は `EngineControlService` 経由でポールし、`DegradedStatus` がステータスメニューの行に落とす（`menu()` は開くたびに再導出するので、ディスクが回復すれば行は消える。latch する `EngineInitFailure` とは寿命が違うため統合しない。runtime 行は `isDegraded` の中に入れない — 起動 clean・実行中に故障が主シナリオ）
 - **オフラインツール経路**: `UserHistory::open` / `open_with_wal` は無副作用・厳格エラーのまま（監査ツールが稼働中 IME のファイルを rename しない）
 
 ### 退避

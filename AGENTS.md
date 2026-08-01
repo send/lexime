@@ -108,6 +108,35 @@ what a generic reviewer misses:
   `appends_frozen` schedules to thaw it writes the v2 checkpoint as a side
   effect. The retry timing is therefore not a property of `migration_failed`,
   which is why the shipped log line states the fact and not a schedule.)
+- **The runtime durability channel (settled)**: `durability_issues()` reports
+  what holds *now*, and five sub-decisions are settled. (a) It is a **list**,
+  not one enum or a bool: on a failing volume an unpersisted deletion (#295)
+  and memory-only learning (#288) hold simultaneously — the steady state, not
+  a corner — so collapsing hides one behind the other. (b) There is **no
+  commit-side ledger**. `append_record` returns `Io` only from its frozen
+  guard or from an append that freezes, so "a commit is memory-only" is
+  exactly "the WAL is frozen"; a second ledger would be a duplicate book free
+  to disagree. (c) The deletion raise **does not branch on the error variant**
+  — `SyncFailed` and `Io` both raise. §8 ※1's silent power-loss window is the
+  *Committed* window; the Tombstone window is zero by §6, so a failed flush is
+  a real breach. (d) The cover is tied to a **durable checkpoint save**, not
+  to the WAL truncation that follows: truncation is the physical scrub of
+  superseded frames, and gating on it leaves a permanent warning whenever
+  frames land mid-run (`FollowUp`) or the truncate fails on an otherwise
+  durable write. `clear`'s empty checkpoint is the second cover point —
+  without it a full wipe leaves a standing privacy warning on a history that
+  provably holds nothing. (e) Swift keeps it **separate from
+  `EngineInitFailure`** on lifetime, not on snapshot-ness (`recordFailure`
+  appends after load, so init failures are not a snapshot): init failures
+  latch, runtime issues clear when the disk recovers. The rows sit outside the
+  `isDegraded` gate because the main #295 scenario is a clean launch followed
+  by a later failure. Findings proposing to collapse the list, add a commit
+  ledger, treat `SyncFailed` as benign, gate the cover on truncation, or merge
+  the issues into `initFailures` re-litigate these — do not raise them.
+  Deliberately **out of scope**: a persistent `spawn_compact` thread-spawn
+  failure leaves `scrub_pending` unconsumed, so deleted strings can linger in
+  the old checkpoint. The deletion itself is durable, startup
+  `replayed_deletion` scrubs, and there is no action for the user to take.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately
