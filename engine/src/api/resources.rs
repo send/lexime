@@ -398,9 +398,10 @@ impl LexUserHistory {
     /// Called under the wal mutex, after the in-memory apply. Both placements
     /// are load-bearing:
     /// - after the apply, so a compactor that observes this raise is
-    ///   guaranteed to snapshot a history that already excludes the entry
-    ///   (the apply released `inner` before the store, and the compactor
-    ///   acquires it after the load);
+    ///   guaranteed to snapshot a history that already excludes the entry.
+    ///   [`Self::snapshot_to_cover`] holds `inner` for reading while it takes
+    ///   both, and the apply needs `inner` for writing, so the two cannot
+    ///   interleave the wrong way round;
     /// - under the wal mutex, so it cannot land inside `clear_impl`'s
     ///   read-then-cover window. A raise slipping in there would outlive a
     ///   wipe that made it vacuously true, leaving a privacy warning on a
