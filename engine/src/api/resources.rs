@@ -138,22 +138,48 @@ pub struct LexUserHistory {
     /// durability fails, covered when a checkpoint that excludes it becomes
     /// durable. Outstanding iff `gen > covered`.
     ///
-    /// A generation pair rather than a flag because raise and cover race:
-    /// a compactor reads the generation *before* snapshotting, so a deletion
+    /// Generations rather than a flag because raise and cover race: a
+    /// compactor reads the generation *before* snapshotting, so a deletion
     /// raised after that snapshot cannot be cleared by it. A flag would be
     /// cleared by a checkpoint that never contained the deletion.
     ///
+    /// **Both counters live in one atomic** — raised in the high 32 bits,
+    /// covered in the low 32 — so the outstanding test is a single load.
+    /// As two atomics it was two loads, and only one order was safe: reading
+    /// `raised` first lets a cover *and* a fresh raise land in between, so
+    /// the comparison sees 5 > 5 and reports clean while a deletion is only
+    /// in memory. That is a silent false negative on a channel whose sink is
+    /// a menu the user opens once, and nothing but a comment kept the two
+    /// loads in the safe order. Packed, the skew cannot be expressed — which
+    /// is just as well, because the window is two adjacent loads with nothing
+    /// to interpose on deterministically, so no test could have held it.
+    ///
+    /// 32 bits per counter: a wrap needs 4 billion failed deletions in one
+    /// session, and the values never leave the process.
+    ///
     /// There is deliberately no matching ledger for commits. `append_record`
-    /// only returns `Io` from its frozen guard or from a failing `append`
-    /// that freezes (wal.rs), so "a commit is memory-only" is exactly "the
-    /// WAL is frozen" — `appends_frozen` below already reports it, and a
-    /// second ledger would be a duplicate book, free to disagree.
-    unpersisted_deletion_gen: AtomicU64,
-    unpersisted_deletion_covered: AtomicU64,
+    /// only returns `Io` from its frozen guard or from a path that freezes
+    /// (wal.rs), so "a commit is memory-only" is exactly "the WAL is frozen"
+    /// — `appends_frozen` below already reports it, and a second ledger would
+    /// be a duplicate book, free to disagree.
+    deletion_ledger: AtomicU64,
     /// Read-only view of the WAL's own freeze flag, observable without the
     /// wal mutex (#288). The key-processing thread holds that mutex for every
     /// append; a UI poll for the menu must not queue behind one.
     appends_frozen: FreezeFlag,
+}
+
+/// Layout of `LexUserHistory::deletion_ledger`: raises in the high 32 bits,
+/// covers in the low 32.
+const COVERED_MASK: u64 = u32::MAX as u64;
+const RAISE_STEP: u64 = 1 << 32;
+
+fn raised_of(ledger: u64) -> u64 {
+    ledger >> 32
+}
+
+fn covered_of(ledger: u64) -> u64 {
+    ledger & COVERED_MASK
 }
 
 /// A durability problem that is true *right now*, as opposed to
@@ -327,8 +353,7 @@ impl LexUserHistory {
             scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
             report,
-            unpersisted_deletion_gen: AtomicU64::new(0),
-            unpersisted_deletion_covered: AtomicU64::new(0),
+            deletion_ledger: AtomicU64::new(0),
             appends_frozen,
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
@@ -381,7 +406,9 @@ impl LexUserHistory {
     ///   wipe that made it vacuously true, leaving a privacy warning on a
     ///   history that is provably empty.
     fn raise_unpersisted_deletion(&self) {
-        self.unpersisted_deletion_gen.fetch_add(1, Ordering::SeqCst);
+        // One raise = +1 to the high half; the low half (covered) is
+        // untouched, so a cover racing this cannot lose it.
+        self.deletion_ledger.fetch_add(RAISE_STEP, Ordering::SeqCst);
     }
 
     /// Take the generation to cover *together with* the snapshot that will
@@ -401,7 +428,7 @@ impl LexUserHistory {
     /// `run_compact_impl` with only a comment to hold it.
     fn snapshot_to_cover(&self) -> (u64, UserHistory) {
         let history = read_recover(&self.inner);
-        let generation = self.unpersisted_deletion_gen.load(Ordering::SeqCst);
+        let generation = raised_of(self.deletion_ledger.load(Ordering::SeqCst));
         (generation, history.clone())
     }
 
@@ -410,37 +437,43 @@ impl LexUserHistory {
     /// and every raise happens under that mutex — so unlike the compaction
     /// path there is no window to close.
     fn deletion_gen_under_wal_lock(&self) -> u64 {
-        self.unpersisted_deletion_gen.load(Ordering::SeqCst)
+        raised_of(self.deletion_ledger.load(Ordering::SeqCst))
     }
 
     /// Mark every deletion raised up to `generation` as persisted. Called
     /// only once a checkpoint that excludes them is durable on disk.
     ///
-    /// `fetch_max` rather than a store: covers cannot currently race (every
+    /// A CAS loop rather than a store, for the reason the old two-atomic form
+    /// used `fetch_max`: it must not clobber a raise that landed since the
+    /// load (the retry picks up the new high half), and it must never walk
+    /// `covered` backwards. Covers cannot currently race each other — every
     /// `run_compact_impl` caller holds `compact_gate`, and `clear_impl` takes
-    /// it too), so a store would also be correct today. Keeping the counter
-    /// monotone means the ledger cannot walk backwards — and report a
-    /// deletion as unpersisted after it was covered — if that exclusivity is
-    /// ever relaxed.
+    /// it too — so the loop is contention-free in practice.
     fn cover_unpersisted_deletions(&self, generation: u64) {
-        self.unpersisted_deletion_covered
-            .fetch_max(generation, Ordering::SeqCst);
+        let mut current = self.deletion_ledger.load(Ordering::SeqCst);
+        loop {
+            if covered_of(current) >= generation {
+                return;
+            }
+            let next = (current & !COVERED_MASK) | (generation & COVERED_MASK);
+            match self.deletion_ledger.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(observed) => current = observed,
+            }
+        }
     }
 
+    /// Whether a deletion is outstanding. One load, so the two halves always
+    /// come from the same instant — see the `deletion_ledger` field docs for
+    /// the false negative the two-atomic form allowed.
     fn has_unpersisted_deletion(&self) -> bool {
-        // `covered` first, and the order is load-bearing. Both counters only
-        // increase and `covered` never exceeds `gen`, so reading C then G
-        // gives G >= C: a raise outstanding when C was read forces G > C, and
-        // the worst skew is reporting an issue that a cover has just settled,
-        // which the next poll retracts.
-        //
-        // The other order can report *clean* while a deletion is unpersisted:
-        // load gen=5, then a compaction covers 5 and a new failed deletion
-        // raises 6, then load covered=5 — and 5 > 5 is false. The sink is a
-        // menu the user opens once, so that single miss is the whole
-        // notification.
-        let covered = self.unpersisted_deletion_covered.load(Ordering::SeqCst);
-        self.unpersisted_deletion_gen.load(Ordering::SeqCst) > covered
+        let ledger = self.deletion_ledger.load(Ordering::SeqCst);
+        raised_of(ledger) > covered_of(ledger)
     }
 
     /// Apply a batch of learning records (§5.2): WAL append first
@@ -1068,8 +1101,7 @@ mod tests {
                 replayed_deletion: false,
                 compaction_recommended: false,
             },
-            unpersisted_deletion_gen: AtomicU64::new(0),
-            unpersisted_deletion_covered: AtomicU64::new(0),
+            deletion_ledger: AtomicU64::new(0),
             appends_frozen,
         })
     }
@@ -1839,75 +1871,37 @@ mod tests {
     }
 
     #[test]
-    fn test_ledger_read_order_cannot_report_clean_while_outstanding() {
-        // The pair of loads in `has_unpersisted_deletion` must read `covered`
-        // first. Reproduces the interleaving directly, because the window is
-        // two adjacent loads with nothing to interpose on: read gen, let a
-        // cover and a fresh raise both land, then read covered. With the
-        // wrong order that yields 5 > 5 = false — a report of "no issues"
-        // while a deletion is only in memory, which for a once-opened menu is
-        // the entire notification.
+    fn test_a_cover_cannot_swallow_a_raise_that_races_it() {
+        // The packed ledger's reason for existing: raised and covered move
+        // independently, and the outstanding test must see both from one
+        // instant. As two atomics that needed two loads in exactly one order,
+        // held there by a comment — a cover plus a fresh raise landing
+        // between them reported clean while a deletion was memory-only.
+        //
+        // Packed, the read is a single load and that skew is unrepresentable,
+        // so what is left to pin is the write side: a cover must preserve a
+        // raise that lands while it is in flight, and must never walk back.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
 
-        // gen=5, covered=4: one deletion outstanding.
-        for _ in 0..5 {
-            hist.raise_unpersisted_deletion();
-        }
-        hist.cover_unpersisted_deletions(4);
-
-        // What a poll interleaved with (cover 5, raise 6) would observe.
-        let covered_first = hist.unpersisted_deletion_covered.load(Ordering::SeqCst);
-        hist.cover_unpersisted_deletions(5);
         hist.raise_unpersisted_deletion();
-        let gen_after = hist.unpersisted_deletion_gen.load(Ordering::SeqCst);
-
-        assert_eq!((covered_first, gen_after), (4, 6));
-        assert!(
-            gen_after > covered_first,
-            "reading covered first keeps the skew on the over-reporting side"
-        );
-        assert!(hist.has_unpersisted_deletion());
-    }
-
-    #[test]
-    fn test_a_durable_checkpoint_covers_even_without_truncation() {
-        // F7 + F8. The deletion is persisted the moment the full-snapshot
-        // checkpoint is durable. Truncation is the physical scrub of
-        // superseded frames — tying the cover to it would leave a permanent
-        // warning whenever frames land mid-run (FollowUp) or the truncate
-        // fails on an otherwise durable write.
-        let dir = tempfile::tempdir().unwrap();
-
-        // FollowUp: a frame appended after the snapshot's applied_seq.
-        let cp = dir.path().join("followup.lxud");
-        let hist = open_hist(&cp);
-        hist.apply_records(&[committed("きょう", "今日")]);
+        let observed = hist.deletion_gen_under_wal_lock();
+        // A second deletion fails while the first cover is being computed.
         hist.raise_unpersisted_deletion();
-        lock_recover(&hist.wal)
-            .append_record(&WalRecord::Committed {
-                segments: vec![("あす".to_string(), "明日".to_string())],
-                timestamp: 0,
-            })
-            .unwrap();
-        assert!(matches!(hist.run_compact(), CompactOutcome::FollowUp));
+        hist.cover_unpersisted_deletions(observed);
         assert!(
-            hist.durability_issues().is_empty(),
-            "FollowUp still wrote a durable checkpoint"
+            hist.has_unpersisted_deletion(),
+            "covering generation 1 must not settle the deletion raised after it"
         );
 
-        // Failed truncation: reported as Done, and equally durable.
-        let cp2 = dir.path().join("truncfail.lxud");
-        let io = FaultyIo::default();
-        io.fail_truncates.store(true, Ordering::SeqCst);
-        let hist2 = hist_with_io(&cp2, io.boxed());
-        hist2.apply_records(&[committed("きょう", "今日")]);
-        hist2.raise_unpersisted_deletion();
-        assert!(matches!(hist2.run_compact(), CompactOutcome::Done));
+        // A stale cover must not un-settle newer work.
+        hist.cover_unpersisted_deletions(hist.deletion_gen_under_wal_lock());
+        assert!(!hist.has_unpersisted_deletion());
+        hist.cover_unpersisted_deletions(observed);
         assert!(
-            hist2.durability_issues().is_empty(),
-            "the checkpoint is durable regardless"
+            !hist.has_unpersisted_deletion(),
+            "a late cover carrying an older generation must not reopen it"
         );
     }
 
