@@ -9,17 +9,24 @@ func testDegradedStatus() {
         runtimeIssues: [.deletionNotPersisted])
     assertEqual(runtimeOnly.count, 1, "a runtime issue shows without any init failure")
     assertTrue(
-        runtimeOnly[0].contains("削除"),
+        runtimeOnly.first?.contains("削除") ?? false,
         "the row must name the deletion, not just 'degraded'")
 
     // S2. Both sources, both rendered, init failures first.
     let both = DegradedStatus.rows(
         initFailures: [.historyDataLoss(detail: "x")],
         runtimeIssues: [.deletionNotPersisted, .learningMemoryOnly])
-    assertEqual(both.count, 3)
-    assertEqual(both[0], DegradedStatus.title(for: EngineInitFailure.historyDataLoss(detail: "x")))
-    assertEqual(both[1], DegradedStatus.title(for: LexHistoryDurabilityIssue.deletionNotPersisted))
-    assertEqual(both[2], DegradedStatus.title(for: LexHistoryDurabilityIssue.learningMemoryOnly))
+    // Compared as a whole rather than by index: a wrong count would otherwise
+    // trap on subscript and take the whole runner down with it, hiding every
+    // later test behind a crash instead of a named failure.
+    assertEqual(
+        both,
+        [
+            DegradedStatus.title(for: EngineInitFailure.historyDataLoss(detail: "x")),
+            DegradedStatus.title(for: LexHistoryDurabilityIssue.deletionNotPersisted),
+            DegradedStatus.title(for: LexHistoryDurabilityIssue.learningMemoryOnly),
+        ],
+        "init failures first, then every runtime issue")
 
     // Nothing to report renders nothing — the menu adds no separator either.
     assertTrue(
