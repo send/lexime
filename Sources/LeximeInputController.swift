@@ -309,7 +309,7 @@ class LeximeInputController: IMKInputController {
         // returned, and the focus loss that triggered it is exactly when IMKit
         // may release the controller — a weak capture would go nil and silently
         // skip the superclass teardown this deferral exists to order. The cycle
-        // it creates is bounded: the coordinator clears `deferredTeardown`
+        // it creates is bounded: the coordinator clears `pendingTeardown`
         // before invoking it, and the delivery it waits on is a synchronous
         // main-thread loop that always unwinds.
         coordinator.deactivate(client: sender as? IMKTextInput) {

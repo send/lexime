@@ -49,7 +49,8 @@ final class SessionCoordinator {
     /// abandoning the rest of the response, which was the earlier shape: it
     /// left the remainder neither inserted nor re-marked.
     private var isApplyingEvents = false
-    private var deferredTeardown: (client: IMKTextInput?, completion: (() -> Void)?)?
+    private var isTearingDown = false
+    private var pendingTeardown: (client: IMKTextInput?, completion: (() -> Void)?)?
 
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
@@ -195,22 +196,38 @@ final class SessionCoordinator {
     /// Returns whether it was deferred, for callers that want to know.
     @discardableResult
     func deactivate(client: IMKTextInput?, completion: (() -> Void)? = nil) -> Bool {
-        // Re-entered from inside a delivery (a client callback under
-        // `insertText`). Let that response finish describing its transition,
-        // then tear down — see `isApplyingEvents`.
-        if isApplyingEvents {
-            // A second re-entry within one delivery replaces the first rather
-            // than queueing: both describe the same teardown, and running it
-            // twice would call `super.deactivateServer` twice. The completion
-            // held here is retained until it runs — the caller's half depends on
-            // it — and cleared before invocation so the retain cycle it forms
-            // with the controller is bounded by the delivery.
-            deferredTeardown = (client, completion)
+        // One focus loss performs one teardown. Re-entry coalesces into the
+        // teardown already scheduled or running, rather than stacking another:
+        // a client callback can re-enter from inside `insertText`, and the
+        // settle this teardown performs *itself* emits an `insertText`, so the
+        // re-entry can arrive either while a response is being delivered or
+        // while the teardown is running. Both windows fold into the same
+        // `pendingTeardown` slot.
+        if isApplyingEvents || isTearingDown {
+            pendingTeardown = (client, completion)
             return true
+        }
+        runTeardown(client: client, completion: completion)
+        return false
+    }
+
+    /// Perform the teardown and the caller's half, swallowing any re-entry that
+    /// happens during it.
+    ///
+    /// The settle inside `performDeactivate` inserts text, which is a client
+    /// call and therefore another re-entry point. Anything it schedules belongs
+    /// to *this* focus loss — the session is already Idle by then, so a second
+    /// pass would be a no-op, while its completion would run
+    /// `super.deactivateServer` a second time. So the slot is cleared on the way
+    /// out rather than flushed.
+    private func runTeardown(client: IMKTextInput?, completion: (() -> Void)?) {
+        isTearingDown = true
+        defer {
+            isTearingDown = false
+            pendingTeardown = nil
         }
         performDeactivate(client: client)
         completion?()
-        return false
     }
 
     private func performDeactivate(client: IMKTextInput?) {
@@ -258,10 +275,9 @@ final class SessionCoordinator {
         isApplyingEvents = true
         defer {
             isApplyingEvents = wasApplying
-            if !isApplyingEvents, let pending = deferredTeardown {
-                deferredTeardown = nil
-                performDeactivate(client: pending.client)
-                pending.completion?()
+            if !isApplyingEvents, !isTearingDown, let pending = pendingTeardown {
+                pendingTeardown = nil
+                runTeardown(client: pending.client, completion: pending.completion)
             }
         }
         for event in resp.events {
