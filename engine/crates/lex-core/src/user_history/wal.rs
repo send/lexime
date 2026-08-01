@@ -30,8 +30,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use bincode::Options as _;
 use serde::{Deserialize, Serialize};
@@ -116,25 +114,6 @@ pub enum CheckpointOrigin {
 pub struct ReplaySummary {
     pub frames_replayed: u64,
     pub frames_skipped: u64,
-}
-
-/// Observe-only view of a [`HistoryWal`]'s freeze state, from outside its
-/// mutex (see [`HistoryWal::frozen_flag`]).
-///
-/// A newtype rather than the `Arc<AtomicBool>` itself, because handing out
-/// the atomic would hand out the write. `set_frozen` is private and takes
-/// `&mut self` precisely so freeze transitions only happen under the wal
-/// mutex; a holder that could `store(false)` from outside would let
-/// `append_record`'s guard pass on a file whose tail is unreadable, and every
-/// frame appended after it would be permanently invisible to replay.
-#[derive(Clone)]
-pub struct FreezeFlag(Arc<AtomicBool>);
-
-impl FreezeFlag {
-    /// Whether appends are currently rejected.
-    pub fn is_frozen(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
 }
 
 /// Abstraction over the WAL file's write path. Exists as a testing seam:
@@ -325,11 +304,7 @@ pub struct HistoryWal {
     /// `OpenReport::appends_frozen` from `is_frozen()` once, after every
     /// branch has run, instead of asking each branch to record it.
     ///
-    /// Shared rather than plain `bool` so a holder outside the mutex can
-    /// observe freeze transitions without taking it (see
-    /// [`Self::frozen_flag`]). It stays the single source of truth — a
-    /// mirrored `bool` beside it would be a second one, free to drift.
-    frozen: Arc<AtomicBool>,
+    frozen: bool,
 }
 
 impl HistoryWal {
@@ -348,7 +323,7 @@ impl HistoryWal {
             next_seq: 1,
             last_appended_seq: 0,
             frames_since_barrier: 0,
-            frozen: Arc::new(AtomicBool::new(false)),
+            frozen: false,
         }
     }
 
@@ -619,25 +594,11 @@ impl HistoryWal {
 
     /// Whether appends are currently rejected (see `frozen` field docs).
     pub fn is_frozen(&self) -> bool {
-        self.frozen.load(Ordering::SeqCst)
-    }
-
-    /// A read-only handle to the freeze state, observable without this WAL's
-    /// mutex — the key-processing thread holds that mutex across every
-    /// append, and a UI poll for "learning is memory-only" must not queue
-    /// behind one.
-    ///
-    /// Handing out the flag this WAL already owns, rather than adopting one
-    /// the caller minted, is what makes the handle unconditionally current:
-    /// a freeze inherited from recovery (failed tail repair, failed migration
-    /// commit) is already in it, so there is no seeding step to forget, and
-    /// no second holder can be left reading a detached flag.
-    pub fn frozen_flag(&self) -> FreezeFlag {
-        FreezeFlag(Arc::clone(&self.frozen))
+        self.frozen
     }
 
     fn set_frozen(&mut self, value: bool) {
-        self.frozen.store(value, Ordering::SeqCst);
+        self.frozen = value;
     }
 
     /// Path to the checkpoint file.

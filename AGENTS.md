@@ -112,11 +112,21 @@ what a generic reviewer misses:
   what holds *now*, and five sub-decisions are settled. (a) It is a **list**,
   not one enum or a bool: on a failing volume an unpersisted deletion (#295)
   and memory-only learning (#288) hold simultaneously — the steady state, not
-  a corner — so collapsing hides one behind the other. (b) There is **no
-  commit-side ledger**. `append_record` returns `Io` only from its frozen
-  guard or from an append that freezes, so "a commit is memory-only" is
-  exactly "the WAL is frozen"; a second ledger would be a duplicate book free
-  to disagree. (c) The deletion raise **does not branch on the error variant**
+  a corner — so collapsing hides one behind the other. (b) Both rows are **tracked facts, not
+  derived ones**. `LearningMemoryOnly` used to be read off
+  `HistoryWal::is_frozen()`, justified by "a commit is memory-only ⟺ the WAL
+  is frozen". That equivalence is **false**, and the decision it justified is
+  reversed: a commit refused by the frozen guard never reaches seq
+  assignment, so `last_appended_seq` does not move, and an in-flight
+  compaction whose snapshot predates it then satisfies `truncate_covered` and
+  clears the freeze — leaving the commit in neither the checkpoint nor the WAL
+  while the report reads clean (Codex R2 on #317, pinned by
+  `test_a_stale_compaction_must_not_unfreeze_over_memory_only_commits`). One
+  breach had already been patched (the encode guards) before the equivalence
+  itself was questioned. The ledger now carries `raised_memory_only` beside
+  `raised_deletion`, and the freeze went back to being what its name says — a
+  property of the file, read only by `OpenReport`. Findings proposing to
+  re-derive either row from `is_frozen()` re-litigate this. (c) The deletion raise **does not branch on the error variant**
   — `SyncFailed` and `Io` both raise. §8 ※1's silent power-loss window is the
   *Committed* window; the Tombstone window is zero by §6, so a failed flush is
   a real breach. (d) The cover is tied to a **durable checkpoint save**, not
@@ -130,9 +140,9 @@ what a generic reviewer misses:
   appends after load, so init failures are not a snapshot): init failures
   latch, runtime issues are re-derived on every menu open. Retraction is
   **passive**, and its latency differs per half: the `Io` half clears on the
-  first commit after the disk recovers (the freeze fails that append, which
-  posts a compaction), while the `SyncFailed` half is not frozen and waits for
-  the 1000-frame / 1 MiB threshold. There is no periodic compaction and no
+  first commit after the disk recovers (that append still fails against the
+  frozen WAL, which posts a compaction), while the `SyncFailed` half never
+  froze anything and waits for the 1000-frame / 1 MiB threshold. There is no periodic compaction and no
   quit-time flush, so a user who stops typing keeps the row. The runtime rows
   are also emitted whether or not any init failure exists — `menu()` gates on
   "are there rows", not on the engine being degraded — because the main #295

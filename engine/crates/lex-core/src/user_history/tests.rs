@@ -882,33 +882,3 @@ fn test_residue_is_not_part_of_the_checkpoint_body() {
     let with = bincode::serialize(&h.to_data()).unwrap();
     assert_eq!(without, with, "residue must not change the checkpoint body");
 }
-
-// ---------------------------------------------------------------------------
-// Shared freeze flag (#288): the engine reports "learning is memory-only"
-// from outside the wal mutex, so freeze transitions have to be observable
-// without it.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_frozen_flag_tracks_the_wal_in_both_directions() {
-    let dir = tempfile::tempdir().unwrap();
-    let cp = dir.path().join("history.lxud");
-    let mut wal = HistoryWal::new(&cp);
-
-    // Taken while already frozen — the state recovery hands back after a
-    // failed tail repair or migration commit, where the freeze has no later
-    // transition left to observe. The handle *is* the flag, so it reads true
-    // immediately rather than depending on a seeding step to have run.
-    wal.freeze();
-    let flag = wal.frozen_flag();
-    assert!(flag.is_frozen());
-
-    // A thaw has to be observable too, or the report latches: the point of
-    // polling is that a compaction restoring appendable form retracts it.
-    wal.truncate_wal().unwrap();
-    assert!(!flag.is_frozen());
-    assert!(!wal.is_frozen());
-    wal.freeze();
-    assert!(flag.is_frozen());
-    assert!(wal.is_frozen());
-}

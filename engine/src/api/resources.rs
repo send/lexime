@@ -9,7 +9,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use crate::session::LearningRecord;
 use crate::user_history::recovery::{CheckpointState, OpenReport, WalState};
-use crate::user_history::wal::{AppendError, FreezeFlag, HistoryWal, WalRecord};
+use crate::user_history::wal::{AppendError, HistoryWal, WalRecord};
 use crate::user_history::UserHistory;
 
 use super::{LexError, LexUserDictionary};
@@ -134,52 +134,54 @@ pub struct LexUserHistory {
     /// `open_report()` for the degraded-state menu (data loss) and NSLog
     /// (benign events).
     report: OpenReport,
-    /// Runtime durability ledger for #295: raised whenever a deletion's WAL
-    /// durability fails, covered when a checkpoint that excludes it becomes
-    /// durable. Outstanding iff `gen > covered`.
+    /// Runtime durability ledger (#295 / #288): what memory holds that no
+    /// durable checkpoint covers.
     ///
-    /// Generations rather than a flag because raise and cover race: a
-    /// compactor reads the generation *before* snapshotting, so a deletion
-    /// raised after that snapshot cannot be cleared by it. A flag would be
-    /// cleared by a checkpoint that never contained the deletion.
+    /// Three generations packed into one atomic — `raised_memory_only`,
+    /// `raised_deletion`, `covered` — so the whole report comes from a single
+    /// load. Two of them are separate facts, not one: an `Io` append leaves
+    /// the effect in memory alone, while a `SyncFailed` tombstone *is* on
+    /// disk yet still breached the flush the deletion contract promises.
     ///
-    /// **Both counters live in one atomic** — raised in the high 32 bits,
-    /// covered in the low 32 — so the outstanding test is a single load.
-    /// As two atomics it was two loads, and only one order was safe: reading
-    /// `raised` first lets a cover *and* a fresh raise land in between, so
-    /// the comparison sees 5 > 5 and reports clean while a deletion is only
-    /// in memory. That is a silent false negative on a channel whose sink is
-    /// a menu the user opens once, and nothing but a comment kept the two
-    /// loads in the safe order. Packed, the skew cannot be expressed — which
-    /// is just as well, because the window is two adjacent loads with nothing
-    /// to interpose on deterministically, so no test could have held it.
+    /// This replaced deriving "learning is memory-only" from
+    /// `HistoryWal::is_frozen()`. That derivation rested on "a commit is
+    /// memory-only ⟺ the WAL is frozen", which is false on a reachable path:
+    /// a commit refused by the frozen guard never reaches seq assignment, so
+    /// `last_appended_seq` does not move, and an in-flight compaction whose
+    /// snapshot predates that commit then satisfies `truncate_covered` and
+    /// clears the freeze — leaving the commit in neither the checkpoint nor
+    /// the WAL while the report reads clean (Codex R2). Tracking the fact
+    /// directly removes the proxy rather than defending the equivalence
+    /// again; the freeze stays what its name says, a property of the file.
     ///
-    /// 32 bits per counter: a wrap needs 4 billion failed deletions in one
+    /// 21 bits per generation: a wrap needs ~2M failed appends inside one
     /// session, and the values never leave the process.
-    ///
-    /// There is deliberately no matching ledger for commits. `append_record`
-    /// only returns `Io` from its frozen guard or from a path that freezes
-    /// (wal.rs), so "a commit is memory-only" is exactly "the WAL is frozen"
-    /// — `appends_frozen` below already reports it, and a second ledger would
-    /// be a duplicate book, free to disagree.
     deletion_ledger: AtomicU64,
-    /// Read-only view of the WAL's own freeze flag, observable without the
-    /// wal mutex (#288). The key-processing thread holds that mutex for every
-    /// append; a UI poll for the menu must not queue behind one.
-    appends_frozen: FreezeFlag,
 }
 
-/// Layout of `LexUserHistory::deletion_ledger`: raises in the high 32 bits,
-/// covers in the low 32.
-const COVERED_MASK: u64 = u32::MAX as u64;
-const RAISE_STEP: u64 = 1 << 32;
-
-fn raised_of(ledger: u64) -> u64 {
-    ledger >> 32
-}
+/// Layout of `LexUserHistory::deletion_ledger`, low bits first:
+/// `covered | raised_deletion | raised_memory_only`, 21 bits each.
+const GEN_BITS: u32 = 21;
+const GEN_MASK: u64 = (1 << GEN_BITS) - 1;
 
 fn covered_of(ledger: u64) -> u64 {
-    ledger & COVERED_MASK
+    ledger & GEN_MASK
+}
+
+fn raised_deletion_of(ledger: u64) -> u64 {
+    (ledger >> GEN_BITS) & GEN_MASK
+}
+
+fn raised_memory_only_of(ledger: u64) -> u64 {
+    (ledger >> (2 * GEN_BITS)) & GEN_MASK
+}
+
+fn highest_raised(ledger: u64) -> u64 {
+    raised_memory_only_of(ledger).max(raised_deletion_of(ledger))
+}
+
+fn pack_ledger(memory_only: u64, deletion: u64, covered: u64) -> u64 {
+    (memory_only << (2 * GEN_BITS)) | (deletion << GEN_BITS) | covered
 }
 
 /// A durability problem that is true *right now*, as opposed to
@@ -332,11 +334,6 @@ impl LexUserHistory {
         // read failure only (EACCES etc.). Swift consumes the report via
         // `open_report()`; the logs here cover headless/CLI contexts.
         let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
-        // Take a handle to the WAL's freeze state (#288) before it goes
-        // behind the mutex. A freeze recovery already applied — a failed tail
-        // repair or migration commit — is in the flag from the start, so it
-        // reports from the first menu open rather than from the first append.
-        let appends_frozen = wal.frozen_flag();
         if report.data_loss_suspected() {
             warn!("user history recovered with suspected data loss: {report:?}");
         } else if !report.is_clean() {
@@ -354,7 +351,6 @@ impl LexUserHistory {
             commit_log: Mutex::new(commit_log),
             report,
             deletion_ledger: AtomicU64::new(0),
-            appends_frozen,
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -376,38 +372,24 @@ impl LexUserHistory {
     /// Durability problems that hold right now, most severe first.
     ///
     /// Polled by the UI (the status menu re-reads on every open), so it must
-    /// not block: every answer comes from atomics, never from the wal mutex
-    /// the key-processing thread holds across appends.
+    /// not block: one atomic load, never the wal mutex the key-processing
+    /// thread holds across appends.
     ///
-    /// The two facts have separate writers *and* a fixed order between them:
-    /// an `Io` append freezes inside `append_record` (lex-core) and only then
-    /// does `apply_records` raise the ledger. Reading them as two independent
-    /// loads therefore admits a torn pair — load the ledger before the raise,
-    /// the flag after the freeze, and the result reports a state that never
-    /// simultaneously held, dropping the *more severe* row while keeping the
-    /// lesser one. Packing the ledger's own counters (see `deletion_ledger`)
-    /// fixed the same defect one level down; this is the composition.
-    ///
-    /// So the flag is read between two ledger loads and the answer is only
-    /// accepted when the ledger did not move: the pair is then both values as
-    /// of the instant the flag was read. Retries need a raise to land inside
-    /// three atomic loads, and every raise is preceded by a failed disk write.
+    /// One load is also what makes the pair consistent. Read as two
+    /// independent atomics — which a separate freeze flag forced — a raise
+    /// landing between them yields a pair that never simultaneously held,
+    /// dropping the more severe row while keeping the lesser one (Codex R1).
     fn durability_issues(&self) -> Vec<LexHistoryDurabilityIssue> {
-        let (ledger, frozen) = loop {
-            let before = self.deletion_ledger.load(Ordering::SeqCst);
-            let frozen = self.appends_frozen.is_frozen();
-            if self.deletion_ledger.load(Ordering::SeqCst) == before {
-                break (before, frozen);
-            }
-        };
+        let ledger = self.deletion_ledger.load(Ordering::SeqCst);
+        let covered = covered_of(ledger);
 
         let mut issues = Vec::new();
         // First: a deletion that did not persist has no startup heal, and it
         // is the one the user explicitly asked for.
-        if raised_of(ledger) > covered_of(ledger) {
+        if raised_deletion_of(ledger) > covered {
             issues.push(LexHistoryDurabilityIssue::DeletionNotPersisted);
         }
-        if frozen {
+        if raised_memory_only_of(ledger) > covered {
             issues.push(LexHistoryDurabilityIssue::LearningMemoryOnly);
         }
         issues
@@ -415,7 +397,13 @@ impl LexUserHistory {
 }
 
 impl LexUserHistory {
-    /// Record that a deletion is not on disk anywhere (#295).
+    /// Record what this batch failed to make durable (#295 / #288).
+    ///
+    /// `memory_only` — at least one effect was applied with no WAL frame, so
+    /// only memory holds it. `deletion_breach` — a deletion's durability
+    /// failed, which includes `SyncFailed`, where the frame *is* on disk but
+    /// the flush the Tombstone contract promises did not happen. They are
+    /// tracked apart because neither implies the other.
     ///
     /// Called under the wal mutex, after the in-memory apply. Both placements
     /// are load-bearing:
@@ -428,70 +416,30 @@ impl LexUserHistory {
     ///   read-then-cover window. A raise slipping in there would outlive a
     ///   wipe that made it vacuously true, leaving a privacy warning on a
     ///   history that is provably empty. The guard is taken as an unused
-    ///   parameter so that half is checked rather than merely documented —
-    ///   the same reason `snapshot_to_cover` owns the pairing instead of
-    ///   trusting two statements to stay in order.
-    fn raise_unpersisted_deletion(&self, _wal: &MutexGuard<'_, HistoryWal>) {
-        // One raise = +1 to the high half; the low half (covered) is
-        // untouched, so a cover racing this cannot lose it.
-        self.deletion_ledger.fetch_add(RAISE_STEP, Ordering::SeqCst);
-    }
-
-    /// Take the generation to cover *together with* the snapshot that will
-    /// cover it, under one `inner` read guard.
-    ///
-    /// The guard is what makes the pairing sound — not the two statements
-    /// happening to sit in the right order. Every raise is preceded by
-    /// `apply_batch`, which needs `inner` for writing, so while this guard is
-    /// held no raise can slip its effect past the clone: a concurrent raise
-    /// either finished before the guard (its deletion is in the snapshot) or
-    /// is still blocked on the write lock (its generation lands after this
-    /// load, so it stays outstanding, which is the safe direction).
-    ///
-    /// A third interleaving exists and is deliberately allowed: `apply_batch`
-    /// has released `inner` but the raise two statements later has not run,
-    /// so the snapshot excludes the deletion yet the cover carries the older
-    /// generation. That is a transient false positive — the same
-    /// `apply_records` call then runs a gated compaction that covers it — and
-    /// it errs toward reporting, which is the direction this design accepts.
-    ///
-    /// Reading the generation after the clone would clear deletions the
-    /// snapshot may not contain — a silent false negative, the one direction
-    /// the design forbids. That used to rest on statement order inside
-    /// `run_compact_impl` with only a comment to hold it.
-    fn snapshot_to_cover(&self) -> (u64, UserHistory) {
-        let history = read_recover(&self.inner);
-        let generation = raised_of(self.deletion_ledger.load(Ordering::SeqCst));
-        (generation, history.clone())
-    }
-
-    /// The generation to cover for a wipe. A bare load is sound here because
-    /// the caller holds the wal mutex across both this read and the cover
-    /// (hence the guard witness), and every raise happens under that mutex —
-    /// so unlike the compaction path there is no window to close.
-    fn deletion_gen_under_wal_lock(&self, _wal: &MutexGuard<'_, HistoryWal>) -> u64 {
-        raised_of(self.deletion_ledger.load(Ordering::SeqCst))
-    }
-
-    /// Mark every deletion raised up to `generation` as persisted. Called
-    /// only once a checkpoint that excludes them is durable on disk.
-    ///
-    /// A CAS loop rather than a store, for the reason the old two-atomic form
-    /// used `fetch_max`: it must not clobber a raise that landed since the
-    /// load (the retry picks up the new high half), and it must never walk
-    /// `covered` backwards. Covers cannot currently race each other — every
-    /// `run_compact_impl` caller holds `compact_gate`, and `clear_impl` takes
-    /// it too — so the loop is contention-free in practice.
-    fn cover_unpersisted_deletions(&self, generation: u64) {
+    ///   parameter so that half is checked rather than merely documented.
+    fn raise_unpersisted(
+        &self,
+        _wal: &MutexGuard<'_, HistoryWal>,
+        memory_only: bool,
+        deletion_breach: bool,
+    ) {
+        if !memory_only && !deletion_breach {
+            return;
+        }
         let mut current = self.deletion_ledger.load(Ordering::SeqCst);
         loop {
-            if covered_of(current) >= generation {
-                return;
-            }
-            let next = (current & !COVERED_MASK) | (generation & COVERED_MASK);
+            let mem = raised_memory_only_of(current);
+            let del = raised_deletion_of(current);
+            // One shared sequence, so a single `covered` settles both.
+            let next = mem.max(del).max(covered_of(current)) + 1;
+            let updated = pack_ledger(
+                if memory_only { next } else { mem },
+                if deletion_breach { next } else { del },
+                covered_of(current),
+            );
             match self.deletion_ledger.compare_exchange_weak(
                 current,
-                next,
+                updated,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -501,15 +449,71 @@ impl LexUserHistory {
         }
     }
 
-    /// Whether a deletion is outstanding. One load, so the two halves always
-    /// come from the same instant — see the `deletion_ledger` field docs for
-    /// the false negative the two-atomic form allowed. Production reads this
-    /// through `durability_issues`, which needs the raw ledger value to pair
-    /// it consistently with the freeze flag.
+    /// Take the generation to cover *together with* the snapshot that will
+    /// cover it, under one `inner` read guard.
+    ///
+    /// The guard is what makes the pairing sound — not the two statements
+    /// happening to sit in the right order. Every raise is preceded by
+    /// `apply_batch`, which needs `inner` for writing, so while this guard is
+    /// held no raise can slip its effect past the clone: a concurrent raise
+    /// either finished before the guard (its effect is in the snapshot) or is
+    /// still blocked on the write lock (its generation lands after this load,
+    /// so it stays outstanding, which is the safe direction).
+    ///
+    /// A third interleaving exists and is deliberately allowed: `apply_batch`
+    /// has released `inner` but the raise two statements later has not run,
+    /// so the snapshot excludes the effect yet the cover carries the older
+    /// generation. That is a transient false positive — the same
+    /// `apply_records` call then posts a compaction that covers it — and it
+    /// errs toward reporting, which is the direction this design accepts.
+    fn snapshot_to_cover(&self) -> (u64, UserHistory) {
+        let history = read_recover(&self.inner);
+        let generation = highest_raised(self.deletion_ledger.load(Ordering::SeqCst));
+        (generation, history.clone())
+    }
+
+    /// The generation to cover for a wipe. A bare load is sound here because
+    /// the caller holds the wal mutex across both this read and the cover
+    /// (hence the guard witness), and every raise happens under that mutex —
+    /// so unlike the compaction path there is no window to close.
+    fn deletion_gen_under_wal_lock(&self, _wal: &MutexGuard<'_, HistoryWal>) -> u64 {
+        highest_raised(self.deletion_ledger.load(Ordering::SeqCst))
+    }
+
+    /// Mark everything raised up to `generation` as persisted. Called only
+    /// once a checkpoint that covers it is durable on disk — a checkpoint is
+    /// a full snapshot, so one `covered` settles both kinds.
+    ///
+    /// A CAS loop rather than a store: it must not clobber a raise that
+    /// landed since the load (the retry picks up the new generations), and it
+    /// must never walk `covered` backwards.
+    fn cover_unpersisted_deletions(&self, generation: u64) {
+        let mut current = self.deletion_ledger.load(Ordering::SeqCst);
+        loop {
+            if covered_of(current) >= generation {
+                return;
+            }
+            let updated = pack_ledger(
+                raised_memory_only_of(current),
+                raised_deletion_of(current),
+                generation & GEN_MASK,
+            );
+            match self.deletion_ledger.compare_exchange_weak(
+                current,
+                updated,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     #[cfg(test)]
     fn has_unpersisted_deletion(&self) -> bool {
         let ledger = self.deletion_ledger.load(Ordering::SeqCst);
-        raised_of(ledger) > covered_of(ledger)
+        raised_deletion_of(ledger) > covered_of(ledger)
     }
 
     /// Apply a batch of learning records (§5.2): WAL append first
@@ -680,13 +684,13 @@ impl LexUserHistory {
                 // the checkpoint with nothing to neutralise it.
                 write_recover(&self.inner).apply_batch(&sequenced);
             }
-            if durability_failed {
-                // Still holding the wal mutex, and after the apply above —
-                // see `raise_unpersisted_deletion` for why both matter. The
-                // gated compaction that tries to cover this runs below, once
-                // the mutex is released (it needs it itself).
-                self.raise_unpersisted_deletion(&wal);
-            }
+            // Still holding the wal mutex, and after the apply above — see
+            // `raise_unpersisted` for why both matter. A `None` seq means the
+            // frame never landed, so only memory holds that effect; this is
+            // what makes "learning is memory-only" a tracked fact instead of
+            // something inferred from the WAL's freeze state.
+            let memory_only = sequenced.iter().any(|(_, seq)| seq.is_none());
+            self.raise_unpersisted(&wal, memory_only, durability_failed);
         }
 
         for line in &log_lines {
@@ -1074,7 +1078,7 @@ mod tests {
     /// too, or the witness parameter would be documenting nothing.
     fn raise_under_wal(hist: &LexUserHistory) {
         let wal = lock_recover(&hist.wal);
-        hist.raise_unpersisted_deletion(&wal);
+        hist.raise_unpersisted(&wal, true, true);
     }
 
     fn gen_under_wal(hist: &LexUserHistory) -> u64 {
@@ -1127,7 +1131,6 @@ mod tests {
         io: Box<dyn crate::user_history::wal::WalIo>,
     ) -> Arc<LexUserHistory> {
         let wal = HistoryWal::with_io(cp, io);
-        let appends_frozen = wal.frozen_flag();
         Arc::new(LexUserHistory {
             inner: Arc::new(RwLock::new(UserHistory::new())),
             wal: Mutex::new(wal),
@@ -1150,7 +1153,6 @@ mod tests {
                 compaction_recommended: false,
             },
             deletion_ledger: AtomicU64::new(0),
-            appends_frozen,
         })
     }
 
@@ -1931,6 +1933,58 @@ mod tests {
     }
 
     #[test]
+    fn test_a_stale_compaction_must_not_unfreeze_over_memory_only_commits() {
+        // Codex R2 (P1). A commit that hits the frozen guard never reaches
+        // `append_record`'s seq assignment, so `last_appended_seq` does not
+        // move — and `truncate_covered` unfreezes on
+        // `last_appended_seq <= applied_seq`. An in-flight compaction whose
+        // snapshot predates that commit therefore clears the freeze while the
+        // commit is in neither the checkpoint nor the WAL.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+
+        // Hold the gate so the compactions apply_records posts cannot run and
+        // cover things behind the assertions; this stands in for the single
+        // in-flight compaction the scenario describes.
+        let gate = hist.lock_gate();
+
+        // A first failure freezes the WAL, its effect memory-only.
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(lock_recover(&hist.wal).is_frozen());
+
+        // The heal compaction snapshots here...
+        let (_gen, snapshot) = hist.snapshot_to_cover();
+
+        // ...and while its I/O is in flight, another commit hits the frozen
+        // guard and lands in memory only.
+        hist.apply_records(&[committed("あす", "明日")]);
+
+        // The in-flight compaction completes against its older snapshot.
+        snapshot.save(&cp).unwrap();
+        let truncated = lock_recover(&hist.wal)
+            .truncate_covered(snapshot.applied_seq())
+            .unwrap();
+        assert!(
+            truncated,
+            "the covered-only guard does not see the memory-only commit"
+        );
+
+        assert!(
+            !lock_recover(&hist.wal).is_frozen(),
+            "the stale compaction cleared the freeze"
+        );
+        assert!(
+            hist.durability_issues()
+                .contains(&LexHistoryDurabilityIssue::LearningMemoryOnly),
+            "あす is in neither the checkpoint nor the WAL, so learning IS memory-only"
+        );
+        drop(gate);
+    }
+
+    #[test]
     fn test_later_successful_compaction_clears_the_deletion_issue() {
         // F4. The report tracks the current state, so a disk that recovers
         // must retract it — otherwise the warning is permanent and the user
@@ -2127,11 +2181,15 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_truncate_failure_reports_memory_only() {
-        // F13. clear freezes the WAL when it cannot truncate it, which makes
-        // every later commit memory-only. The Err tells the caller the wipe
-        // was partial; the issue tells the user learning has stopped
-        // persisting — two different facts with two different lifetimes.
+    fn test_clear_truncate_failure_defers_the_row_until_learning_is_at_risk() {
+        // F13. clear freezes the WAL when it cannot truncate it. That does
+        // NOT by itself mean learning is memory-only — the wipe emptied both
+        // memory and the checkpoint, so at that instant nothing is at risk;
+        // what the freeze means is that the *next* commit will fail. The row
+        // now tracks the fact rather than the freeze, so it appears then.
+        //
+        // The incomplete wipe is a different fact with a different sink: the
+        // Err that clear_impl returns.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let io = FaultyIo::default();
@@ -2139,28 +2197,42 @@ mod tests {
 
         hist.apply_records(&[committed("きょう", "今日")]);
         io.fail_truncates.store(true, Ordering::SeqCst);
-        assert!(hist.clear_impl().is_err());
+        assert!(hist.clear_impl().is_err(), "the partial wipe is surfaced");
         assert!(lock_recover(&hist.wal).is_frozen());
+        assert!(
+            hist.durability_issues().is_empty(),
+            "an empty history has nothing memory-only, however frozen the WAL"
+        );
+
+        // The first commit after the freeze is the one that is memory-only.
+        // Hold the gate so the heal compaction cannot cover it before the
+        // assertion runs.
+        let gate = hist.lock_gate();
+        hist.apply_records(&[committed("あす", "明日")]);
         assert_eq!(
             hist.durability_issues(),
-            vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
+            vec![LexHistoryDurabilityIssue::LearningMemoryOnly],
+            "the commit the freeze refused is memory-only, and is reported"
         );
+        drop(gate);
     }
 
     #[test]
-    fn test_frozen_at_open_is_reported_without_any_append() {
+    fn test_a_freeze_inherited_at_open_reports_once_a_commit_is_at_risk() {
         // F12. Recovery can hand back an already-frozen WAL (here: a failed
-        // WAL repair). That freeze has no transition left to publish, so the
-        // flag has to be seeded when it is adopted — otherwise the history
-        // reads as healthy until the first append fails, which for a user who
-        // is not typing may be never.
+        // WAL repair). Nothing has been learned yet, so nothing is
+        // memory-only — reporting 「新しい学習内容を保存できていません」 there
+        // would be false. The startup compaction may well heal the freeze
+        // before the user types at all.
+        //
+        // What must be reported is the first commit the freeze refuses, and
+        // it is. `OpenReport::appends_frozen` separately records the freeze
+        // itself for the startup log, which is the fact it names.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
-        // 0-7 bytes: the crash-during-truncation residue recovery re-creates.
         let wal_path = cp.with_extension("lxud.wal");
         std::fs::write(&wal_path, b"\0\0\0").unwrap();
-        // Read-only, so the re-creation fails and recovery freezes appends.
         std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o444)).unwrap();
         if std::fs::OpenOptions::new()
             .write(true)
@@ -2173,11 +2245,19 @@ mod tests {
 
         let hist = open_hist(&cp);
         assert!(hist.open_report().appends_frozen, "fixture must freeze");
+        assert!(
+            hist.durability_issues().is_empty(),
+            "a freeze with nothing learned yet puts no learning at risk"
+        );
+
+        let gate = hist.lock_gate();
+        hist.apply_records(&[committed("きょう", "今日")]);
         assert_eq!(
             hist.durability_issues(),
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly],
-            "a freeze inherited from recovery is live from the first poll"
+            "the first commit the freeze refuses is memory-only, and is reported"
         );
+        drop(gate);
         std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
