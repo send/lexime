@@ -229,8 +229,15 @@ final class SessionCoordinator {
             guard generation == lifecycleGeneration else { return }
             switch event {
             case .commit(let text):
-                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                // Update our record of the display *before* calling the client,
+                // the way `.setMarkedText` below already does. `insertText` ends
+                // the host's marked session and can re-enter
+                // `deactivate(client:)` synchronously; a settle running in that
+                // window reads `currentDisplay`, and if it still held the
+                // pre-commit composition it would re-commit the text this very
+                // call is inserting — duplicating it after the prefix.
                 currentDisplay = nil
+                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
                 candidateManager.flagReposition()
             case .setMarkedText(let text):
                 currentDisplay = text.isEmpty ? nil : text

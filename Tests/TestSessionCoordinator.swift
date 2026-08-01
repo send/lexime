@@ -449,6 +449,39 @@ func testSessionCoordinator() {
                    "and must not leave a display behind an Idle session")
     }
 
+    // PR315 Codex R4: `insertText` can re-enter deactivateServer. The settle
+    // then reads `currentDisplay`, so that value must already reflect the
+    // commit being applied — otherwise it re-commits the text this very call is
+    // inserting, duplicating it after the prefix.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        // Put the full pre-commit composition on screen first.
+        session.handleKeyResponses.insert(
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "きょうは")]), at: 0)
+        _ = coordinator.handleKey(.text(text: "a", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "きょうは", "precondition: composition on screen")
+
+        client.onInsertText = { [weak coordinator] in
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil)
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled")
+        assertTrue(session.settleUnconfirmedDisplayed[0] == nil,
+                   "the settle must not see the pre-commit composition")
+        assertTrue(!client.insertCalls.contains { $0.text == "きょうは" },
+                   "and must not re-insert what the commit is replacing")
+    }
+
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
     // harmless (commit_current_state early-returns with no events), so this
     // gate is an optimization, not a host-correctness guard — pinned here so a
