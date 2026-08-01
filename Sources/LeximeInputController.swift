@@ -180,52 +180,22 @@ class LeximeInputController: IMKInputController {
         }
     }
 
-    private func degradedStatusTitle(for failure: EngineInitFailure) -> String {
-        switch failure {
-        case .dictionary:
-            return NSLocalizedString(
-                "⚠️ 辞書の読み込みに失敗（変換不可）",
-                comment: "Degraded status: system dictionary failed")
-        case .userDictionary:
-            return NSLocalizedString(
-                "⚠️ ユーザ辞書の読み込みに失敗",
-                comment: "Degraded status: user dictionary failed")
-        case .userDictionaryDataLoss:
-            return NSLocalizedString(
-                "⚠️ ユーザ辞書が破損していました（登録語を失いましたが登録は継続中）",
-                comment: "Degraded status: user dictionary quarantined, words lost, registration continues")
-        case .compositeDictionary:
-            return NSLocalizedString(
-                "⚠️ ユーザ辞書が変換に反映されていません",
-                comment: "Degraded status: composite dictionary failed")
-        case .history:
-            return NSLocalizedString(
-                "⚠️ 学習履歴の読み込みに失敗",
-                comment: "Degraded status: user history failed")
-        case .historyDataLoss:
-            return NSLocalizedString(
-                "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）",
-                comment: "Degraded status: user history partially lost, learning continues")
-        case .customSettings:
-            return NSLocalizedString(
-                "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）",
-                comment: "Degraded status: custom settings failed")
-        }
-    }
-
     // MARK: - Menu
 
     override func menu() -> NSMenu! {
         let menu = NSMenu()
 
-        let container = AppContext.shared.engineContainer
-        if container.isDegraded {
-            for failure in container.initFailures {
+        // Re-derived on every open, so a runtime issue that has since healed
+        // stops being shown. See DegradedStatus for why the polled issues are
+        // not merged into the container's latched initFailures.
+        let rows = DegradedStatus.rows(
+            initFailures: AppContext.shared.engineContainer.initFailures,
+            runtimeIssues: AppContext.shared.makeEngineControlService()
+                .historyDurabilityIssues())
+        if !rows.isEmpty {
+            for row in rows {
                 // No action/target: IMKit renders these as disabled status rows.
-                let item = NSMenuItem(
-                    title: degradedStatusTitle(for: failure),
-                    action: nil,
-                    keyEquivalent: "")
+                let item = NSMenuItem(title: row, action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 menu.addItem(item)
             }
