@@ -63,9 +63,15 @@ enum DegradedStatus {
     static func title(for issue: LexHistoryDurabilityIssue) -> String {
         switch issue {
         case .deletionNotPersisted:
+            // Deliberately does not name restart as the risk. The issue covers
+            // two halves: a tombstone whose frame never reached the WAL (where
+            // restart does lose the deletion) and one whose frame is on disk
+            // but whose flush failed (where restart is what *applies* it, via
+            // replay). Naming restart would steer the second case exactly
+            // wrong — toward avoiding the one action that helps.
             return NSLocalizedString(
-                "⚠️ 削除した学習内容を保存できませんでした（再起動で戻る可能性があります）",
-                comment: "Degraded status: a requested deletion is not on disk and may resurrect")
+                "⚠️ 削除した学習内容を保存できませんでした（削除が取り消される可能性があります）",
+                comment: "Degraded status: a requested deletion may not have reached disk")
         case .learningMemoryOnly:
             return NSLocalizedString(
                 "⚠️ 学習内容を保存できていません（再起動すると失われます）",

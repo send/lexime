@@ -254,7 +254,14 @@ depends = ["uniffi-gen"]
 # into one binary. If you add a new test file under Tests/, add it here too.
 # Source files required by tests are also listed explicitly (SnippetTOML for
 # TestSnippetTOML; CandidateManager/SessionCoordinator/ModeController/InputSource
-# for the controller tests).
+# for the controller tests). Keep this list minimal: EngineInitFailure was
+# split out of EngineContainer.swift precisely so rendering it does not drag
+# the whole engine-loading path (and its UniFFI closure) into every test build
+# — measured at ~0.4s per run. EngineControlService/LeximeInputController are
+# deliberately absent: they need EngineContainer, they are already type-checked
+# by `mise run build` (which CI runs), and the part of them worth asserting —
+# that menu() feeds the polled issues into DegradedStatus.rows — needs IMKit
+# and cannot be covered here either way.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -268,7 +275,7 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/Controller/SessionCoordinator.swift \
   Sources/Controller/ModeController.swift \
   Sources/Controller/DegradedStatus.swift \
-  Sources/EngineContainer.swift \
+  Sources/EngineInitFailure.swift \
   Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift Tests/TestSnippetTOML.swift \
   Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestAbcRevertPolicy.swift Tests/TestInputSourceReverter.swift Tests/TestSessionCoordinator.swift Tests/TestDegradedStatus.swift \
   -o build/test-runner && build/test-runner

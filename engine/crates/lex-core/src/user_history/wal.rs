@@ -118,6 +118,25 @@ pub struct ReplaySummary {
     pub frames_skipped: u64,
 }
 
+/// Observe-only view of a [`HistoryWal`]'s freeze state, from outside its
+/// mutex (see [`HistoryWal::frozen_flag`]).
+///
+/// A newtype rather than the `Arc<AtomicBool>` itself, because handing out
+/// the atomic would hand out the write. `set_frozen` is private and takes
+/// `&mut self` precisely so freeze transitions only happen under the wal
+/// mutex; a holder that could `store(false)` from outside would let
+/// `append_record`'s guard pass on a file whose tail is unreadable, and every
+/// frame appended after it would be permanently invisible to replay.
+#[derive(Clone)]
+pub struct FreezeFlag(Arc<AtomicBool>);
+
+impl FreezeFlag {
+    /// Whether appends are currently rejected.
+    pub fn is_frozen(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// Abstraction over the WAL file's write path. Exists as a testing seam:
 /// fault-injection tests substitute a recording/failing implementation to
 /// verify syscall ordering (T6) without a real disk.
@@ -291,12 +310,14 @@ pub struct HistoryWal {
     /// `truncate_covered`.
     last_appended_seq: u64,
     frames_since_barrier: usize,
-    /// Set when the on-disk file is known not to be in appendable v2 form
-    /// (legacy format pending a failed migration, unrepaired tail, ...).
+    /// Set when appends must be refused: the on-disk file is known not to be
+    /// in appendable v2 form (legacy format pending a failed migration,
+    /// unrepaired tail, ...), or a record could not be encoded for it.
     /// Appending v2 frames after foreign bytes would make them unreadable,
     /// so appends fail fast instead; a successful truncate (e.g. by the next
     /// compaction, whose checkpoint contains the full state) re-establishes
-    /// v2 form and lifts the freeze.
+    /// v2 form and lifts the freeze — which is also the heal for the encode
+    /// guards, since the checkpoint covers what the frame could not.
     ///
     /// Assigned only through `set_frozen`, which keeps the write path
     /// greppable — but that is readability, not enforcement. What keeps a
@@ -472,9 +493,30 @@ impl HistoryWal {
             )
             .into());
         }
-        let payload = bincode::serialize(record).map_err(io::Error::other)?;
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
+        // Both encode guards freeze before returning, so `Err(Io)` implies
+        // frozen by construction. The engine reports "learning is memory-only"
+        // from the freeze alone and keeps no commit-side ledger, which is
+        // sound exactly because every `Io` exit lands here or below; an
+        // unfrozen `Io` would apply the record to memory and report nothing.
+        // Both are unreachable today (this serializer cannot fail, and
+        // segments cannot reach 4 GiB) — the point is that the invariant does
+        // not depend on that staying true.
+        let payload = match bincode::serialize(record) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_frozen(true);
+                return Err(AppendError::Io(io::Error::other(e)));
+            }
+        };
+        let payload_len = match u32::try_from(payload.len()) {
+            Ok(n) => n,
+            Err(_) => {
+                self.set_frozen(true);
+                return Err(AppendError::Io(io::Error::other(
+                    "WAL entry too large (>4 GiB)",
+                )));
+            }
+        };
         let seq = self.next_seq;
         self.next_seq += 1;
 
@@ -580,17 +622,18 @@ impl HistoryWal {
         self.frozen.load(Ordering::SeqCst)
     }
 
-    /// A handle to the freeze state, readable without this WAL's mutex — the
-    /// key-processing thread holds that mutex across every append, and a UI
-    /// poll for "learning is memory-only" must not queue behind one.
+    /// A read-only handle to the freeze state, observable without this WAL's
+    /// mutex — the key-processing thread holds that mutex across every
+    /// append, and a UI poll for "learning is memory-only" must not queue
+    /// behind one.
     ///
     /// Handing out the flag this WAL already owns, rather than adopting one
     /// the caller minted, is what makes the handle unconditionally current:
     /// a freeze inherited from recovery (failed tail repair, failed migration
     /// commit) is already in it, so there is no seeding step to forget, and
     /// no second holder can be left reading a detached flag.
-    pub fn frozen_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.frozen)
+    pub fn frozen_flag(&self) -> FreezeFlag {
+        FreezeFlag(Arc::clone(&self.frozen))
     }
 
     fn set_frozen(&mut self, value: bool) {

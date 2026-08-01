@@ -891,8 +891,6 @@ fn test_residue_is_not_part_of_the_checkpoint_body() {
 
 #[test]
 fn test_frozen_flag_tracks_the_wal_in_both_directions() {
-    use std::sync::atomic::Ordering;
-
     let dir = tempfile::tempdir().unwrap();
     let cp = dir.path().join("history.lxud");
     let mut wal = HistoryWal::new(&cp);
@@ -903,14 +901,14 @@ fn test_frozen_flag_tracks_the_wal_in_both_directions() {
     // immediately rather than depending on a seeding step to have run.
     wal.freeze();
     let flag = wal.frozen_flag();
-    assert!(flag.load(Ordering::SeqCst));
+    assert!(flag.is_frozen());
 
     // A thaw has to be observable too, or the report latches: the point of
     // polling is that a compaction restoring appendable form retracts it.
     wal.truncate_wal().unwrap();
-    assert!(!flag.load(Ordering::SeqCst));
+    assert!(!flag.is_frozen());
     assert!(!wal.is_frozen());
     wal.freeze();
-    assert!(flag.load(Ordering::SeqCst));
+    assert!(flag.is_frozen());
     assert!(wal.is_frozen());
 }

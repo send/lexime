@@ -9,7 +9,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use crate::session::LearningRecord;
 use crate::user_history::recovery::{CheckpointState, OpenReport, WalState};
-use crate::user_history::wal::{AppendError, HistoryWal, WalRecord};
+use crate::user_history::wal::{AppendError, FreezeFlag, HistoryWal, WalRecord};
 use crate::user_history::UserHistory;
 
 use super::{LexError, LexUserDictionary};
@@ -150,10 +150,10 @@ pub struct LexUserHistory {
     /// second ledger would be a duplicate book, free to disagree.
     unpersisted_deletion_gen: AtomicU64,
     unpersisted_deletion_covered: AtomicU64,
-    /// The WAL's own freeze flag, readable without the wal mutex
-    /// (#288). The key-processing thread holds that mutex for every append;
-    /// a UI poll for the menu must not queue behind one.
-    appends_frozen: Arc<AtomicBool>,
+    /// Read-only view of the WAL's own freeze flag, observable without the
+    /// wal mutex (#288). The key-processing thread holds that mutex for every
+    /// append; a UI poll for the menu must not queue behind one.
+    appends_frozen: FreezeFlag,
 }
 
 /// A durability problem that is true *right now*, as opposed to
@@ -165,9 +165,16 @@ pub struct LexUserHistory {
 /// behind the unpersisted deletion (#295), or the reverse.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LexHistoryDurabilityIssue {
-    /// A deletion the user asked for reached neither the WAL nor a
-    /// checkpoint. Unlike the others this has no startup heal: the old
-    /// checkpoint still holds the entry and simply wins on the next start.
+    /// A deletion the user asked for could not be made durable: its WAL
+    /// append or flush failed *and* the synchronous checkpoint fallback
+    /// (§5.4) failed too.
+    ///
+    /// Two halves with different remedies, which is why the user-facing
+    /// wording names neither. When the frame never reached the WAL the
+    /// deletion is memory-only and has no startup heal — the old checkpoint
+    /// still holds the entry and wins on the next start. When the frame is on
+    /// disk but its flush failed, replay re-applies the deletion, so only
+    /// power loss (not a restart) undoes it.
     DeletionNotPersisted,
     /// Appends are frozen, so this session's learning lives only in memory
     /// until a compaction restores appendable form. A restart recovers what
@@ -353,7 +360,7 @@ impl LexUserHistory {
         if self.has_unpersisted_deletion() {
             issues.push(LexHistoryDurabilityIssue::DeletionNotPersisted);
         }
-        if self.appends_frozen.load(Ordering::SeqCst) {
+        if self.appends_frozen.is_frozen() {
             issues.push(LexHistoryDurabilityIssue::LearningMemoryOnly);
         }
         issues
@@ -377,26 +384,63 @@ impl LexUserHistory {
         self.unpersisted_deletion_gen.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Read the generation to cover *before* taking the snapshot whose
-    /// durability will cover it. Reading it afterwards would clear deletions
-    /// raised in between, which that snapshot may not contain.
-    fn deletion_gen_to_cover(&self) -> u64 {
+    /// Take the generation to cover *together with* the snapshot that will
+    /// cover it, under one `inner` read guard.
+    ///
+    /// The guard is what makes the pairing sound — not the two statements
+    /// happening to sit in the right order. Every raise is preceded by
+    /// `apply_batch`, which needs `inner` for writing, so while this guard is
+    /// held no raise can slip its effect past the clone: a concurrent raise
+    /// either finished before the guard (its deletion is in the snapshot) or
+    /// is still blocked on the write lock (its generation lands after this
+    /// load, so it stays outstanding, which is the safe direction).
+    ///
+    /// Reading the generation after the clone would clear deletions the
+    /// snapshot may not contain — a silent false negative, the one direction
+    /// the design forbids. That used to rest on statement order inside
+    /// `run_compact_impl` with only a comment to hold it.
+    fn snapshot_to_cover(&self) -> (u64, UserHistory) {
+        let history = read_recover(&self.inner);
+        let generation = self.unpersisted_deletion_gen.load(Ordering::SeqCst);
+        (generation, history.clone())
+    }
+
+    /// The generation to cover for a wipe. A bare load is sound here because
+    /// `clear_impl` holds the wal mutex across both this read and the cover,
+    /// and every raise happens under that mutex — so unlike the compaction
+    /// path there is no window to close.
+    fn deletion_gen_under_wal_lock(&self) -> u64 {
         self.unpersisted_deletion_gen.load(Ordering::SeqCst)
     }
 
     /// Mark every deletion raised up to `generation` as persisted. Called
     /// only once a checkpoint that excludes them is durable on disk.
     ///
-    /// `fetch_max`, not a store: compactions can overlap, and a slower one
-    /// carrying an older generation must not un-cover a newer one's work.
+    /// `fetch_max` rather than a store: covers cannot currently race (every
+    /// `run_compact_impl` caller holds `compact_gate`, and `clear_impl` takes
+    /// it too), so a store would also be correct today. Keeping the counter
+    /// monotone means the ledger cannot walk backwards — and report a
+    /// deletion as unpersisted after it was covered — if that exclusivity is
+    /// ever relaxed.
     fn cover_unpersisted_deletions(&self, generation: u64) {
         self.unpersisted_deletion_covered
             .fetch_max(generation, Ordering::SeqCst);
     }
 
     fn has_unpersisted_deletion(&self) -> bool {
-        self.unpersisted_deletion_gen.load(Ordering::SeqCst)
-            > self.unpersisted_deletion_covered.load(Ordering::SeqCst)
+        // `covered` first, and the order is load-bearing. Both counters only
+        // increase and `covered` never exceeds `gen`, so reading C then G
+        // gives G >= C: a raise outstanding when C was read forces G > C, and
+        // the worst skew is reporting an issue that a cover has just settled,
+        // which the next poll retracts.
+        //
+        // The other order can report *clean* while a deletion is unpersisted:
+        // load gen=5, then a compaction covers 5 and a new failed deletion
+        // raises 6, then load covered=5 — and 5 > 5 is false. The sink is a
+        // menu the user opens once, so that single miss is the whole
+        // notification.
+        let covered = self.unpersisted_deletion_covered.load(Ordering::SeqCst);
+        self.unpersisted_deletion_gen.load(Ordering::SeqCst) > covered
     }
 
     /// Apply a batch of learning records (§5.2): WAL append first
@@ -519,15 +563,23 @@ impl LexUserHistory {
                         warn!(
                             "tombstone durability sync failed (synchronous checkpoint fallback): {source}"
                         );
-                        // SyncFailed only arises from a Tombstone append, and a
-                        // real (non-no-op) Tombstone already set `scrub` above.
-                        debug_assert!(scrub, "SyncFailed implies a scrubbing Tombstone");
                         // The frame is on disk (process-crash safe via replay)
                         // but its F_FULLFSYNC failed, reopening the power-loss
                         // window the Tombstone contract closes. Persist the
                         // deletion synchronously below rather than resurrect it
                         // if the async scrub is preempted.
-                        durability_failed = true;
+                        //
+                        // Gated on the record kind for the same reason the Io
+                        // arm is, not left to the cross-crate invariant that
+                        // only Tombstones can produce SyncFailed: that lives in
+                        // another file, and a debug_assert vouching for it is
+                        // gone in the shipped build. Were a Committed barrier
+                        // failure ever routed here, an ungated raise would tell
+                        // the user a *deletion* did not persist — a privacy
+                        // claim about an operation they never requested.
+                        if matches!(record, WalRecord::Tombstone { .. }) {
+                            durability_failed = true;
+                        }
                         sequenced.push((record, Some(seq)));
                     }
                     // Frame not on disk: memory still applies — a confirmed
@@ -606,11 +658,10 @@ impl LexUserHistory {
         // history), so conversion reads stay unblocked during the I/O.
         let mut wal = lock_recover(&self.wal);
 
-        // Read before the write, mirroring the compaction path. The wal mutex
-        // (held since above) is what makes this window tight rather than
-        // merely narrow: every raise happens under it, so none can land
-        // between this read and the cover below.
-        let covered_gen = self.deletion_gen_to_cover();
+        // The wal mutex (held since above) is what closes this window: every
+        // raise happens under it, so none can land between this read and the
+        // cover below.
+        let covered_gen = self.deletion_gen_under_wal_lock();
 
         // Commit point. On Err nothing has changed — including
         // scrub_pending, so a pre-clear Tombstone's scrub request stays
@@ -820,12 +871,9 @@ impl LexUserHistory {
     /// whether the checkpoint became durable and whether a follow-up is
     /// warranted (see [`CompactOutcome`]).
     fn run_compact_impl(&self) -> CompactOutcome {
-        // Read before snapshotting (#295): this checkpoint can only vouch for
-        // deletions already applied when it was cloned.
-        let covered_gen = self.deletion_gen_to_cover();
-
-        // 1. Clone history under read lock (brief)
-        let snapshot = read_recover(&self.inner).clone();
+        // 1. Clone history under read lock (brief), taking the generation
+        // this checkpoint can vouch for under the same guard (#295).
+        let (covered_gen, snapshot) = self.snapshot_to_cover();
         let cp_path = lock_recover(&self.wal).checkpoint_path().to_path_buf();
 
         // 2. Write checkpoint (no locks held, slow I/O)
@@ -1758,28 +1806,69 @@ mod tests {
 
     #[test]
     fn test_a_deletion_raised_after_the_snapshot_stays_reported() {
-        // F6. The compaction reads the generation to cover *before* cloning,
-        // so a deletion raised in between is not cleared by a checkpoint that
-        // may not contain it. Exercised through the ledger directly: the
-        // window is between two statements inside `run_compact_impl` with no
-        // seam to interpose on, and inventing one would add a mechanism the
-        // design does not need. The raise and cover call sites themselves are
-        // pinned by F2-F5.
+        // F6. A deletion raised after a compaction took its snapshot must not
+        // be cleared by that compaction's checkpoint.
+        //
+        // What makes this hold is structural rather than tested:
+        // `snapshot_to_cover` reads the generation and clones under one
+        // `inner` read guard, and every raise is preceded by an `apply_batch`
+        // that needs `inner` for writing — so the pair is atomic with respect
+        // to the apply. An earlier revision put the read and the clone in
+        // separate statements inside `run_compact_impl`, where only a comment
+        // kept them in order; this test could not have caught that, which is
+        // why the ordering was moved into the guard instead.
+        //
+        // Exercised through the real pairing function, so at least the value
+        // being covered is the one a compaction would use.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
 
-        let observed = hist.deletion_gen_to_cover(); // compactor, pre-snapshot
-        hist.raise_unpersisted_deletion(); // deletion lands after the clone
-        hist.cover_unpersisted_deletions(observed); // compactor's checkpoint
+        let (generation, _snapshot) = hist.snapshot_to_cover();
+        hist.raise_unpersisted_deletion(); // lands after the pair was taken
+        hist.cover_unpersisted_deletions(generation);
 
         assert!(
             hist.has_unpersisted_deletion(),
             "a checkpoint cannot vouch for a deletion taken after its snapshot"
         );
-        // The next compaction, which reads a fresh generation, does clear it.
-        hist.cover_unpersisted_deletions(hist.deletion_gen_to_cover());
+        // The next compaction, pairing a fresh generation, does clear it.
+        let (generation, _snapshot) = hist.snapshot_to_cover();
+        hist.cover_unpersisted_deletions(generation);
         assert!(!hist.has_unpersisted_deletion());
+    }
+
+    #[test]
+    fn test_ledger_read_order_cannot_report_clean_while_outstanding() {
+        // The pair of loads in `has_unpersisted_deletion` must read `covered`
+        // first. Reproduces the interleaving directly, because the window is
+        // two adjacent loads with nothing to interpose on: read gen, let a
+        // cover and a fresh raise both land, then read covered. With the
+        // wrong order that yields 5 > 5 = false — a report of "no issues"
+        // while a deletion is only in memory, which for a once-opened menu is
+        // the entire notification.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+
+        // gen=5, covered=4: one deletion outstanding.
+        for _ in 0..5 {
+            hist.raise_unpersisted_deletion();
+        }
+        hist.cover_unpersisted_deletions(4);
+
+        // What a poll interleaved with (cover 5, raise 6) would observe.
+        let covered_first = hist.unpersisted_deletion_covered.load(Ordering::SeqCst);
+        hist.cover_unpersisted_deletions(5);
+        hist.raise_unpersisted_deletion();
+        let gen_after = hist.unpersisted_deletion_gen.load(Ordering::SeqCst);
+
+        assert_eq!((covered_first, gen_after), (4, 6));
+        assert!(
+            gen_after > covered_first,
+            "reading covered first keeps the skew on the over-reporting side"
+        );
+        assert!(hist.has_unpersisted_deletion());
     }
 
     #[test]
@@ -1819,6 +1908,78 @@ mod tests {
         assert!(
             hist2.durability_issues().is_empty(),
             "the checkpoint is durable regardless"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_raises_converge_once_the_disk_heals() {
+        // Real interleaving of raises against compactions, which the healthy
+        // smoke test cannot produce (it never fails, so the ledger stays at
+        // 0/0). Writers keep deleting while their tombstone flushes fail, so
+        // raises land concurrently with the compactions those same calls
+        // trigger.
+        //
+        // The property asserted is convergence in the safe direction: once
+        // the disk recovers and one more compaction lands, every raise must
+        // be covered. A ledger that lost a cover would stay lit forever; one
+        // that over-covered would have shown clean before the heal, which the
+        // mid-run assertion catches.
+        //
+        // The checkpoint has to fail too, not just the flush: on a writable
+        // directory the §5.4 synchronous fallback persists each deletion
+        // before `apply_records` returns and covers it immediately, so the
+        // ledger legitimately never stays lit. That is the double failure
+        // #295 is about.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        let hist = hist_with_io(&cp, io.boxed());
+
+        const WRITERS: usize = 4;
+        let mut handles = Vec::new();
+        for w in 0..WRITERS {
+            let hist = Arc::clone(&hist);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    let reading = format!("よみ{w}-{i}");
+                    let surface = format!("面{w}-{i}");
+                    hist.apply_records(&[committed(&reading, &surface)]);
+                    // Deletes a pair this thread just learned, so the
+                    // tombstone is never a no-op and its flush always fails.
+                    hist.apply_records(&[deletion(&reading, &surface)]);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Every one of those deletions had its flush fail, so the channel
+        // must be reporting — never silently clean.
+        assert!(
+            hist.durability_issues()
+                .contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            "failed flushes must not read as clean"
+        );
+
+        // The disk heals; one covering compaction settles every raise.
+        io.fail_full_sync.store(false, Ordering::SeqCst);
+        unblock_checkpoint(&cp);
+        assert!(matches!(hist.run_compact(), CompactOutcome::Done));
+        assert!(
+            hist.durability_issues().is_empty(),
+            "a covering checkpoint must settle every concurrently-raised deletion"
+        );
+
+        // And a tombstone whose flush now succeeds neither raises nor leaves
+        // the ledger behind — the "the fault was transient" path, which a
+        // level-triggered fault switch would otherwise never reach.
+        hist.apply_records(&[committed("あす", "明日")]);
+        hist.apply_records(&[deletion("あす", "明日")]);
+        wait_until(
+            || hist.durability_issues().is_empty(),
+            "a healthy deletion to leave no issue",
         );
     }
 
@@ -1904,32 +2065,40 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
 
-        // The holder keeps the mutex until the poll has returned, rather than
-        // for a fixed sleep: the test then costs one poll instead of a
-        // hard-coded wait, and cannot pass by the holder releasing early.
-        let held = Arc::new(AtomicBool::new(false));
-        let polled = Arc::new(AtomicBool::new(false));
-        let holder = {
-            let hist = Arc::clone(&hist);
-            let held = Arc::clone(&held);
-            let polled = Arc::clone(&polled);
-            std::thread::spawn(move || {
-                let _wal = lock_recover(&hist.wal);
-                held.store(true, Ordering::SeqCst);
-                wait_until(|| polled.load(Ordering::SeqCst), "the poll to return");
-            })
+        // Asserts *completion while the mutex is held*, not elapsed time.
+        // Timing the poll itself would flake: this binary runs its tests in
+        // parallel, so the measuring thread can be descheduled past any
+        // threshold with nothing regressed. Here a false red needs the poller
+        // thread to get no CPU at all for two seconds.
+        let done = Arc::new(AtomicBool::new(false));
+        let completed = {
+            // Held for this whole block, so the poller cannot finish before
+            // the mutex is taken and pass the test vacuously.
+            let _wal = lock_recover(&hist.wal);
+            let poller = {
+                let hist = Arc::clone(&hist);
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || {
+                    let issues = hist.durability_issues();
+                    done.store(true, Ordering::SeqCst);
+                    issues
+                })
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !done.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let completed = done.load(Ordering::SeqCst);
+            // Guard drops here, so a regressed poll unblocks and the join
+            // below returns instead of hanging the suite.
+            drop(_wal);
+            poller.join().unwrap();
+            completed
         };
-        wait_until(|| held.load(Ordering::SeqCst), "the wal mutex to be held");
-
-        let started = std::time::Instant::now();
-        let _ = hist.durability_issues();
-        let elapsed = started.elapsed();
-        polled.store(true, Ordering::SeqCst);
         assert!(
-            elapsed < std::time::Duration::from_millis(200),
-            "the poll queued behind the wal mutex"
+            completed,
+            "the poll did not return while the wal mutex was held"
         );
-        holder.join().unwrap();
     }
 
     // -----------------------------------------------------------------------
@@ -2081,10 +2250,12 @@ mod tests {
                     collect(&mem),
                     "checkpoint + WAL replay must equal the in-memory state"
                 );
-                // Nothing failed on this tempdir, so the durability channel
-                // must have stayed silent through all the raise/cover
-                // interleavings above — a ledger that drifted under
-                // concurrency would surface as a phantom warning.
+                // Nothing failed on this tempdir, so no raise ever happened
+                // and the channel must be silent. This says nothing about the
+                // raise/cover interleavings — with no faults injected the
+                // ledger sits at 0/0 throughout, so the assertion would hold
+                // with the cover stubbed out. Concurrent raises are covered by
+                // `test_concurrent_raises_converge_once_the_disk_heals`.
                 assert!(
                     hist.durability_issues().is_empty(),
                     "no failures, no issues"

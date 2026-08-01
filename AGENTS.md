@@ -128,15 +128,30 @@ what a generic reviewer misses:
   provably holds nothing. (e) Swift keeps it **separate from
   `EngineInitFailure`** on lifetime, not on snapshot-ness (`recordFailure`
   appends after load, so init failures are not a snapshot): init failures
-  latch, runtime issues clear when the disk recovers. The rows sit outside the
+  latch, runtime issues are re-derived on every menu open. Retraction is
+  **passive**, not spontaneous — a row clears on the first commit after the
+  disk recovers, because that is what runs a compaction. The `Io` half retries
+  every commit (the freeze fails each append); the `SyncFailed` half is not
+  frozen and waits for the 1000-frame / 1 MiB threshold. There is no periodic
+  compaction and no quit-time flush, so a user who stops typing keeps the row. The rows sit outside the
   `isDegraded` gate because the main #295 scenario is a clean launch followed
   by a later failure. Findings proposing to collapse the list, add a commit
   ledger, treat `SyncFailed` as benign, gate the cover on truncation, or merge
   the issues into `initFailures` re-litigate these — do not raise them.
-  Deliberately **out of scope**: a persistent `spawn_compact` thread-spawn
-  failure leaves `scrub_pending` unconsumed, so deleted strings can linger in
-  the old checkpoint. The deletion itself is durable, startup
-  `replayed_deletion` scrubs, and there is no action for the user to take.
+  Deliberately **out of scope**, each because the deletion itself is durable
+  and startup heals the residue — the channel reports *lost* deletions, not
+  deferred physical scrubs: (i) a persistent `spawn_compact` thread-spawn
+  failure leaves `scrub_pending` unconsumed; (ii) a tombstone that appends and
+  flushes cleanly but whose scrub compaction's `save()` fails raises nothing,
+  so the deleted strings sit in the old checkpoint and past Committed frames
+  for the session (#311); (iii) the ledger is process-local, so the report is
+  gone on the restart where an `Io`-half deletion actually resurrects (#312).
+  (iii) is the real gap in closing #295 and wants an on-disk marker, which is
+  new persisted state and therefore its own PR. Separately, #313 records a
+  pre-existing privacy race: `apply_records` appends to the commit log outside
+  the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
+  `clear` unlinked it. Findings re-raising any of these should point at the
+  issues rather than proposing a fix here.
 - **The deletion ledger stays on `LexUserHistory`, not in `UserHistory`
   (settled)**: it looks like a duplicate of `DurableResidue` — same raise
   event, same cover moment, and the residue gets its ordering by construction

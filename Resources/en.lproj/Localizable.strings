@@ -11,6 +11,10 @@
 "⚠️ ユーザ辞書が変換に反映されていません" = "⚠️ User dictionary is not reflected in conversion";
 "⚠️ 学習履歴の読み込みに失敗" = "⚠️ Learning history failed to load";
 "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）" = "⚠️ Settings file failed to load (using defaults)";
+"⚠️ ユーザ辞書が破損していました（登録語を失いましたが登録は継続中）" = "⚠️ User dictionary was corrupt (registered words lost; registration still works)";
+"⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）" = "⚠️ Some learning history could not be recovered (learning continues)";
+"⚠️ 削除した学習内容を保存できませんでした（削除が取り消される可能性があります）" = "⚠️ A deleted entry could not be saved (the deletion may be undone)";
+"⚠️ 学習内容を保存できていません（再起動すると失われます）" = "⚠️ Learning is not being saved (it will be lost on restart)";
 
 /* Settings Window */
 "Lexime 設定" = "Lexime Settings";
