@@ -416,10 +416,12 @@ func testSessionCoordinator() {
                     "the engine is told exactly what we put on screen")
     }
 
-    // PR315 Codex R3: a client callback can re-enter deactivateServer while an
-    // earlier applyEvents loop is still running. The epoch watermark only
-    // rejects separately queued responses, so without a lifecycle generation
-    // the outer loop resumes and re-opens marked text against an Idle session.
+    // PR315 Codex R3/R6: a client callback can re-enter deactivateServer from
+    // inside `insertText`, i.e. between an auto-commit's `.commit` and its
+    // `.setMarkedText`. The epoch watermark cannot help — it only rejects
+    // separately *queued* responses. Teardown is deferred to the end of the
+    // delivery so the response describes one complete transition; settling
+    // mid-way acted on a state that never existed.
     do {
         let session = FakeLexSession()
         // An auto-commit shape: insertText first, then more events after it.
@@ -442,17 +444,18 @@ func testSessionCoordinator() {
 
         _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
 
-        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled")
-        assertTrue(client.markedCalls.isEmpty,
-                   "events after the reentrant teardown must not re-open marked text")
+        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled, once")
+        assertTrue(client.markedCalls.contains { $0.text == "は" },
+                   "the response finishes describing its transition before teardown runs")
         assertTrue(coordinator.currentDisplay == nil,
-                   "and must not leave a display behind an Idle session")
+                   "and no display is left behind an Idle session")
     }
 
-    // PR315 Codex R4: `insertText` can re-enter deactivateServer. The settle
-    // then reads `currentDisplay`, so that value must already reflect the
-    // commit being applied — otherwise it re-commits the text this very call is
-    // inserting, duplicating it after the prefix.
+    // PR315 Codex R4/R6: the settle's input is `currentDisplay`, so a reentrant
+    // teardown must see neither the *stale* pre-commit composition (R4 —
+    // duplicates the text being inserted) nor *nothing* (R6 — loses the
+    // remainder). Deferring teardown to the end of the delivery gives it
+    // exactly the remainder the completed response left marked.
     do {
         let session = FakeLexSession()
         session.handleKeyResponses = [
@@ -476,10 +479,10 @@ func testSessionCoordinator() {
         _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
 
         assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled")
-        assertTrue(session.settleUnconfirmedDisplayed[0] == nil,
-                   "the settle must not see the pre-commit composition")
+        assertEqual(session.settleUnconfirmedDisplayed[0], "は",
+                    "the settle sees the remainder the completed response left marked")
         assertTrue(!client.insertCalls.contains { $0.text == "きょうは" },
-                   "and must not re-insert what the commit is replacing")
+                   "never the stale pre-commit composition (that would duplicate)")
     }
 
     // #298: nothing composing → nothing to settle. An Idle `commit()` is

@@ -247,12 +247,11 @@ proptest の invariant 3 / 3b で固定している。
   - **settle は `commit()` ではなく `settle_unconfirmed()`**。フォーカス喪失は受容ではないので、自発的 commit の 2 つの副作用を持ち込んではならない: ①選択候補への解決 — 入力中のマークドテキストは navigate するまで**読み**なので、`commit()` で確定するとアプリを切り替えただけでユーザーが見ていない変換が文書に入る ②学習の記録 — 非自発的な操作を受容として扱うと top-1 が非シグナルで訓練され、1発目精度が劣化する。`settle_unconfirmed()` は**表示していたものをそのまま確定**し、履歴を書かない
   - **「表示していたもの」は engine が持たない。呼び出し側が渡す**。engine は marked text を *emit* するが、それが画面に届いたかは FFI 境界の向こう・別スレッドで決まる（`receive_candidates` は worker で走り、その response は UI スレッドにキューされてそこで落ち得る）。engine 内にコピーを置くと**観測できない状態の影**になる。実際 2 回失敗した: ①選択状態から推論 → 再描画で陳腐化 ②emit 時点で記録 → 配送前に先走る。`SessionCoordinator.currentDisplay` は `setMarkedText` 呼び出しと同じ場所で書かれるので、これが正解。engine は session の意味論（学習せず確定、Idle 復帰）だけを持ち、表示は入力として受け取る
   - settle は渡された文字列を**そのまま**確定する — prefix の再結合も `flush()` も行わない（pending の `n` を `ん` に変えると画面に無かった文字を入れることになる）。proptest invariant 10 が `HostMarked` モデルの値をそのまま渡して「表示していたものと確定されたものが一致する」ことを全生成列で固定する
-  - **再入するホストへの防御**: client コールバック（`insertText`）が同期的に `deactivateServer` を再入し得る。防御は 2 段:
-    - epoch watermark は*別途キューされた* response しか弾けないので、実行中の `applyEvents` ループは止まらない。`SessionCoordinator.lifecycleGeneration` を teardown ごとに進め、`applyEvents` が世代の変化を見たら残りのイベントを捨てる（そうしないと `.setMarkedText` / `.showCandidates` が Idle な session に対して適用される）
-    - `applyEvents` は**client を呼ぶ前に `currentDisplay` を更新する**。settle の入力はこの値なので、`insertText` の中で再入された settle が確定前の composition を見ると、いま挿入している文字列を二重に確定してしまう。`.setMarkedText` は元からこの順で、`.commit` を揃えた（残る取りこぼしは #314 の系: 再入時点で未配送の remainder は失われる — 二重挿入よりは良い）
-  - `Snippet` ブラウズは `commit()` と同じくキャンセル（確定テキスト無し）。確定されたものが無いので保持する対象が無い
-  - `resetDisplay()` 側では確定しない: そこで確定すると**次にフォーカスを得た別クライアント**に前の文書のテキストを差し込むことになる。代わりに、表示の out-of-band クリアを単一の `clearDisplay()` に集約して debug assert を置く
-  - **未モデルのまま残る半分**（`activateServer` 側）: 上の settle は `deactivateServer` が届く前提に立つ。IMKit がそれを飛ばす場合があることは `LeximeInputController.activateServer` のコメントが記録している（クライアントのクラッシュ等）。その経路では session が composing のまま `resetDisplay()` に到達し、表示だけが消える — #293 と同じ形。`clearDisplay()` の assert は**出荷ビルド（`-O`）では消える**ので、この経路には構造も検出も無い。session を破棄する FFI が無い（`LexSession` は `commit` のみ）ため、現状は既知ギャップとして記録するに留める。Rust 側 `debug_assert_response_contract` が「構造が防ぎ assert は回帰検出器」なのは response 経路の話で、この out-of-band 経路には当てはまらない
+  - **再入するホストへの防御**: client コールバック（`insertText`）が同期的に `deactivateServer` を再入し得る。epoch watermark は*別途キューされた* response しか弾けないので、実行中の delivery には効かない。
+    - **response は 1 つの host 遷移の不可分な記述**である。auto-commit の `.commit` + `.setMarkedText` は「marked を A から B へ移す」1 手であり、両方揃って初めて host は一貫した状態になる。その途中（`insertText` の中）で settle すると、engine には remainder があり host には prefix だけが渡った、**存在しなかった状態**に対して確定することになる
+    - したがって **teardown は delivery の完了まで遅延する**（`SessionCoordinator.isApplyingEvents` / `deferredDeactivateClient`）。途中で気づいて残りを捨てる方式は、remainder が挿入も再 marked もされずに消える
+    - あわせて `applyEvents` は **client を呼ぶ前に `currentDisplay` を更新する**（`.setMarkedText` は元からこの順、`.commit` を揃えた）。settle の入力はこの値なので、確定前の composition を見せると挿入中の文字列を二重に確定してしまう
+
 - **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§候補操作: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:
   - ネイティブホスト（TextEdit 等）: こちらの `insertText` が効くので、画面で かな を見ていたユーザーの文書に**選んでいないサーフェス**が入る
   - Chromium / Electron 系: blur で**自前の composition を確定する**ため、残るのは表示していた読みで、こちらの `insertText` は視覚的に効かない

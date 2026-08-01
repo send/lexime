@@ -32,17 +32,24 @@ final class SessionCoordinator {
     /// applied is a re-ordered delivery and must be dropped.
     private(set) var highestAppliedEpoch: UInt64 = 0
 
-    /// Bumped by every lifecycle teardown. `applyEvents` samples it and stops
-    /// if it moves mid-loop.
+    /// Whether an `applyEvents` loop is currently running, and a teardown that
+    /// arrived while it was.
     ///
-    /// The epoch watermark only rejects *separately queued* responses; it
-    /// cannot stop a delivery that is already running. A client callback —
-    /// `insertText` on an auto-commit response — can re-enter
-    /// `deactivateServer` synchronously, which settles the engine and clears
-    /// the display while the outer loop still has `.setMarkedText` /
-    /// `.showCandidates` events left to apply. Those would then re-open marked
-    /// text and re-show the panel against an Idle session, after focus left.
-    private var lifecycleGeneration: UInt64 = 0
+    /// A response is one atomic description of a host transition — an
+    /// auto-commit's `.commit` + `.setMarkedText` pair moves the host from one
+    /// marked string to the next, and only both together leave it consistent.
+    /// A client callback can re-enter `deactivateServer` from inside
+    /// `insertText`, i.e. *between* those two events. Settling there acts on a
+    /// half-applied transition: the engine still holds the remainder, the host
+    /// has been given the prefix, and neither the display nor the session
+    /// describes a state that ever existed.
+    ///
+    /// So the teardown is deferred to the end of the delivery instead of being
+    /// interleaved with it. That is stronger than detecting the interleave and
+    /// abandoning the rest of the response, which was the earlier shape: it
+    /// left the remainder neither inserted nor re-marked.
+    private var isApplyingEvents = false
+    private var deferredDeactivateClient: IMKTextInput??
 
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
@@ -180,9 +187,13 @@ final class SessionCoordinator {
     /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
     func deactivate(client: IMKTextInput?) {
-        // Abandon any `applyEvents` loop already running: from here its
-        // remaining events describe a composition that is about to be settled.
-        lifecycleGeneration &+= 1
+        // Re-entered from inside a delivery (a client callback under
+        // `insertText`). Let that response finish describing its transition,
+        // then tear down — see `isApplyingEvents`.
+        if isApplyingEvents {
+            deferredDeactivateClient = .some(client)
+            return
+        }
         // Invalidate first. `applyEvents` below calls into the client and the
         // panel, and a deferred show queued by the last keystroke is guarded by
         // `CandidateManager.generation`, not by the epoch watermark — bumping it
@@ -220,13 +231,19 @@ final class SessionCoordinator {
 
     private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
         assert(Thread.isMainThread)
-        let generation = lifecycleGeneration
+        // Deliver the whole response before any teardown runs. Nested calls
+        // (the settle inside a deferred `deactivate`) re-enter here, so this is
+        // saved and restored rather than simply cleared.
+        let wasApplying = isApplyingEvents
+        isApplyingEvents = true
+        defer {
+            isApplyingEvents = wasApplying
+            if !isApplyingEvents, case .some(let client) = deferredDeactivateClient {
+                deferredDeactivateClient = nil
+                deactivate(client: client)
+            }
+        }
         for event in resp.events {
-            // A client callback below can re-enter `deactivate(client:)`. Once
-            // it has, the rest of this response describes a composition that no
-            // longer exists — applying it would restore marked text or the
-            // candidate panel after focus already left.
-            guard generation == lifecycleGeneration else { return }
             switch event {
             case .commit(let text):
                 // Update our record of the display *before* calling the client,
