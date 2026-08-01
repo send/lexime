@@ -376,16 +376,38 @@ impl LexUserHistory {
     /// Durability problems that hold right now, most severe first.
     ///
     /// Polled by the UI (the status menu re-reads on every open), so it must
-    /// not block: both answers come from atomics, never from the wal mutex
+    /// not block: every answer comes from atomics, never from the wal mutex
     /// the key-processing thread holds across appends.
+    ///
+    /// The two facts have separate writers *and* a fixed order between them:
+    /// an `Io` append freezes inside `append_record` (lex-core) and only then
+    /// does `apply_records` raise the ledger. Reading them as two independent
+    /// loads therefore admits a torn pair — load the ledger before the raise,
+    /// the flag after the freeze, and the result reports a state that never
+    /// simultaneously held, dropping the *more severe* row while keeping the
+    /// lesser one. Packing the ledger's own counters (see `deletion_ledger`)
+    /// fixed the same defect one level down; this is the composition.
+    ///
+    /// So the flag is read between two ledger loads and the answer is only
+    /// accepted when the ledger did not move: the pair is then both values as
+    /// of the instant the flag was read. Retries need a raise to land inside
+    /// three atomic loads, and every raise is preceded by a failed disk write.
     fn durability_issues(&self) -> Vec<LexHistoryDurabilityIssue> {
+        let (ledger, frozen) = loop {
+            let before = self.deletion_ledger.load(Ordering::SeqCst);
+            let frozen = self.appends_frozen.is_frozen();
+            if self.deletion_ledger.load(Ordering::SeqCst) == before {
+                break (before, frozen);
+            }
+        };
+
         let mut issues = Vec::new();
         // First: a deletion that did not persist has no startup heal, and it
         // is the one the user explicitly asked for.
-        if self.has_unpersisted_deletion() {
+        if raised_of(ledger) > covered_of(ledger) {
             issues.push(LexHistoryDurabilityIssue::DeletionNotPersisted);
         }
-        if self.appends_frozen.is_frozen() {
+        if frozen {
             issues.push(LexHistoryDurabilityIssue::LearningMemoryOnly);
         }
         issues
@@ -481,7 +503,10 @@ impl LexUserHistory {
 
     /// Whether a deletion is outstanding. One load, so the two halves always
     /// come from the same instant — see the `deletion_ledger` field docs for
-    /// the false negative the two-atomic form allowed.
+    /// the false negative the two-atomic form allowed. Production reads this
+    /// through `durability_issues`, which needs the raw ledger value to pair
+    /// it consistently with the freeze flag.
+    #[cfg(test)]
     fn has_unpersisted_deletion(&self) -> bool {
         let ledger = self.deletion_ledger.load(Ordering::SeqCst);
         raised_of(ledger) > covered_of(ledger)
@@ -1801,6 +1826,99 @@ mod tests {
                 LexHistoryDurabilityIssue::DeletionNotPersisted,
                 LexHistoryDurabilityIssue::LearningMemoryOnly,
             ]
+        );
+    }
+
+    #[test]
+    fn test_an_io_tombstone_reports_both_rows_together() {
+        // Codex R1. An `Io` append freezes before apply_records raises the
+        // ledger, so the two facts are written in a fixed order by different
+        // writers. Reading them as independent loads let a poll take the
+        // ledger before the raise and the flag after the freeze and report
+        // only LearningMemoryOnly — dropping the row that has no startup heal
+        // while keeping the one that does.
+        //
+        // The end state is deterministic and asserted here: once the call
+        // returns, both hold and both must be reported. The torn *window*
+        // itself has no deterministic test — it is three atomic loads wide —
+        // which is why `durability_issues` closes it by construction rather
+        // than by a comment about read order.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+
+        assert_eq!(
+            hist.durability_issues(),
+            vec![
+                LexHistoryDurabilityIssue::DeletionNotPersisted,
+                LexHistoryDurabilityIssue::LearningMemoryOnly,
+            ],
+            "an Io tombstone freezes AND raises; a poll must never show one without the other"
+        );
+    }
+
+    #[test]
+    fn test_polling_under_concurrent_raises_never_drops_the_deletion_row() {
+        // The same defect under real interleaving. The detector has to avoid
+        // the very race it is testing: comparing the poll's result against a
+        // predicate read *after* the poll returned would flag a raise that
+        // landed in between, which is legitimate.
+        //
+        // So the test first drives one failing deletion to completion and
+        // only then arms the assertion. Past that point both conditions hold
+        // permanently — the checkpoint is blocked so nothing can cover, and
+        // appends stay failing so nothing can thaw — and any poll returning
+        // anything other than both rows has torn the pair.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = blocked_checkpoint(dir.path());
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        hist.apply_records(&[committed("きょう", "今日")]);
+
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        let expected = vec![
+            LexHistoryDurabilityIssue::DeletionNotPersisted,
+            LexHistoryDurabilityIssue::LearningMemoryOnly,
+        ];
+        assert_eq!(hist.durability_issues(), expected, "armed state");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let torn = Arc::new(AtomicBool::new(false));
+        let pollers: Vec<_> = (0..3)
+            .map(|_| {
+                let hist = Arc::clone(&hist);
+                let stop = Arc::clone(&stop);
+                let torn = Arc::clone(&torn);
+                let expected = expected.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::SeqCst) {
+                        if hist.durability_issues() != expected {
+                            torn.store(true, Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        // Keep raising: the residue holds the key, so each deletion still
+        // writes a tombstone, fails to append, and bumps the generation.
+        for _ in 0..500 {
+            hist.apply_records(&[deletion("きょう", "今日")]);
+        }
+        stop.store(true, Ordering::SeqCst);
+        for p in pollers {
+            p.join().unwrap();
+        }
+
+        assert!(
+            !torn.load(Ordering::SeqCst),
+            "a poll dropped a row while both conditions permanently held"
         );
     }
 
