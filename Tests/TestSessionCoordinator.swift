@@ -367,4 +367,45 @@ func testSessionCoordinator() {
         assertEqual(session.commitCalls, 0, "no commit when not composing")
         assertTrue(client.insertCalls.isEmpty, "no text inserted when not composing")
     }
+
+    // #298: no reachable client at all — IMKit hands a non-IMKTextInput sender
+    // *and* the weak lastClient has gone. Settling is still mandatory: leaving
+    // the session composing while the display is cleared is the leak shape, and
+    // "there was nowhere to put the text" does not make it acceptable. Delivery
+    // is what degrades here, not settlement.
+    do {
+        let session = FakeLexSession()
+        let (coordinator, _) = makeCoordinator(session: session)
+        // No handleKey → lastClient was never set, so both sources are nil.
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: nil)
+
+        assertEqual(session.commitCalls, 1,
+                    "settles the session even with no client to deliver to")
+        assertTrue(!session.isComposingValue,
+                   "session must not be left composing after the display is cleared")
+        assertTrue(coordinator.currentDisplay == nil, "display cleared")
+    }
+
+    // #298: `isComposing()` also covers snippet browse, where the engine's
+    // commit cancels rather than commits (no .commit event). The invariant is
+    // that the session reaches Idle — not that text is preserved, which holds
+    // for the composing case only.
+    do {
+        let session = FakeLexSession()
+        session.commitResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: ""), .hideCandidates])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.commitCalls, 1, "snippet browse is settled too")
+        assertTrue(!session.isComposingValue, "session reaches Idle")
+        assertTrue(client.insertCalls.isEmpty, "a cancelled browse inserts nothing")
+        assertTrue(coordinator.currentDisplay == nil, "display cleared")
+    }
 }

@@ -116,8 +116,24 @@ what a generic reviewer misses:
   session proptest models the host's marked text cumulatively, because `commit`
   ends the marked session too, so a per-response check cannot see that shape;
   findings proposing to replace the cumulative model with a per-response check
-  re-litigate it — do not raise them. Everything else is open, including the
-  unmodelled `currentDisplay` writers SPEC names.
+  re-litigate it — do not raise them.
+- **Focus loss settles the session, by committing (settled)**: on
+  `deactivateServer` the session is settled in the same call that clears the
+  display (`SessionCoordinator.deactivate(client:)`). Two parts are settled:
+  (a) it **commits rather than discards** — IMKit does not reliably send
+  `commitComposition` first (measured, #298), and discarding would throw away
+  text the user typed on every app switch; (b) settling is **unconditional
+  while delivery is best-effort** — with no reachable client there is nowhere
+  to insert the text, but that is not a reason to leave the session composing.
+  `resetDisplay()` deliberately does *not* settle: committing on arrival would
+  insert the previous document's text into the client that just gained focus.
+  A `didSet` on `currentDisplay` was considered and rejected — `applyEvents`
+  legitimately nils the display on `.commit` while the session keeps composing,
+  so a per-write check false-fires, the same reason the Rust side checks per
+  *response*. Findings re-proposing any of these re-litigate them. Still open
+  in this area: committing also writes a history entry for a conversion the
+  user never confirmed (#310), and the marked-text-shows-the-reading vs
+  commit-resolves-to-the-surface mismatch (#309).
 - **Unusable config entries are dropped, not rejected (settled)**: an empty
   side in `[keymap]` and a snippet body that expands to nothing are ignored,
   and the file still loads. Rejecting was tried and reversed: `init_custom` is

@@ -77,9 +77,22 @@ final class SessionCoordinator {
 
     func commit(client: IMKTextInput) {
         lastClient = client
+        settle(deliveringTo: client)
+    }
+
+    /// Settle the session and deliver what it produced.
+    ///
+    /// The two halves are not equally optional. **Settling is mandatory** — a
+    /// session left composing after its display is gone is the #293 leak shape.
+    /// **Delivery is best-effort**: with no reachable client there is nowhere to
+    /// put the text, but that is no reason to leave the session composing, and
+    /// `session.commit()` settles it regardless.
+    private func settle(deliveringTo client: IMKTextInput?) {
         let resp = session.commit()
         highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
-        applyEvents(resp, client: client)
+        if let client {
+            applyEvents(resp, client: client)
+        }
     }
 
     // MARK: - Lifecycle
@@ -122,17 +135,28 @@ final class SessionCoordinator {
     /// 2026-08-01 by instrumenting the lifecycle boundaries and changing focus
     /// mid-composition), so settling is this call's job, and it happens in the
     /// same call that clears the display — splitting the two is what let them
-    /// diverge. It commits rather than discards, matching the settlement
-    /// `commitComposition` already performs.
+    /// diverge. Settling is unconditional: whether the text can be *delivered*
+    /// depends on having a client, but leaving the session composing does not
+    /// become acceptable just because there is nowhere to put the text.
     ///
-    /// Rule, evidence, and the one host difference this does *not* address:
+    /// For a `Composing` session that settlement is a commit, matching what
+    /// `commitComposition` performs and keeping the typed text. For a `Snippet`
+    /// session — which `isComposing()` also covers — `commit()` cancels the
+    /// browse instead, discarding the typed filter; the session still reaches
+    /// Idle, which is the invariant, but "nothing typed is lost" is a claim
+    /// about the composing case only.
+    ///
+    /// Committing here also records a history entry for a conversion the user
+    /// never confirmed with Enter — see SPEC.md and #310.
+    ///
+    /// Rule, evidence, and the host difference this does *not* address:
     /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
     func deactivate(client: IMKTextInput?) {
-        // Settle through whichever client is still reachable: the one IMKit is
-        // handing us, else the one the composition was typed into (`lastClient`
-        // is weak, so it can be gone by now).
-        if session.isComposing(), let target = client ?? lastClient {
-            commit(client: target)
+        if session.isComposing() {
+            // Prefer `lastClient`: it is by construction the client the marked
+            // text was put on. `client` is whatever IMKit hands `deactivateServer`
+            // and is the fallback for `lastClient` being weak and already gone.
+            settle(deliveringTo: lastClient ?? client)
         }
         candidateManager.deactivate()
         clearDisplay()
