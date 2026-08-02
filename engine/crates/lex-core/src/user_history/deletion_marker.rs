@@ -196,11 +196,12 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 ///
 /// Callers hold the wal mutex, which is what serializes the read against a
 /// concurrent write — and that mutex is held by the key-processing thread, so
-/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS)
-/// through the earlier tmp+rename form: **p50 10.1ms / p95 14.8ms**, against
-/// **12.3ms p50** for the synchronous fallback checkpoint (5k entries) the same
-/// call runs immediately afterwards; the in-place form drops one of the two
-/// flushes. It only ever runs when a tombstone failed to reach the disk.
+/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS):
+/// **p50 4.0ms / p95 5.0ms**, against **12.3ms p50** for the synchronous
+/// fallback checkpoint (5k entries) the same call runs immediately afterwards.
+/// The tmp+rename form this replaced measured 10.1ms p50 — dropping the second
+/// flush, the rename and the directory fsync is most of the difference. It only
+/// ever runs when a tombstone failed to reach the disk.
 ///
 /// A barrier flush instead of `sync_all` would cost ~0.3ms and would still
 /// cover the scenario #312 is named for (a process restart keeps the page
