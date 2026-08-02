@@ -1337,6 +1337,16 @@ mod tests {
         cp: &Path,
         io: Box<dyn crate::user_history::wal::WalIo>,
     ) -> Arc<LexUserHistory> {
+        hist_with_io_reporting(cp, io, false)
+    }
+
+    /// As `hist_with_io`, but with a startup report that carries an inherited
+    /// lost-deletion claim — the state an acknowledgement acts on.
+    fn hist_with_io_reporting(
+        cp: &Path,
+        io: Box<dyn crate::user_history::wal::WalIo>,
+        deletion_lost: bool,
+    ) -> Arc<LexUserHistory> {
         let wal = HistoryWal::with_io(cp, io);
         Arc::new(LexUserHistory {
             inner: Arc::new(RwLock::new(UserHistory::new())),
@@ -1358,7 +1368,7 @@ mod tests {
                 quarantined_paths: Vec::new(),
                 replayed_deletion: false,
                 compaction_recommended: false,
-                deletion_lost: false,
+                deletion_lost,
                 deletion_pending_checkpoint: false,
             },
             durability_ledger: AtomicU64::new(0),
@@ -2054,6 +2064,37 @@ mod tests {
             }
             other => panic!("expected an unflushed witness, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_ack_leaves_a_marker_this_session_raised() {
+        // `report.deletion_lost` is frozen at open, so acknowledging on it
+        // alone deletes whatever marker is on disk *now* — including one a
+        // raise wrote minutes later, whose breach is still outstanding. That
+        // session's own report would then be the thing that goes missing.
+        //
+        // Reachable as soon as the ack moves to where the row is rendered,
+        // which is exactly where it had to move so probe launches stop
+        // consuming reports.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io_reporting(&cp, io.boxed(), true);
+        block_checkpoint_write(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
+        assert!(hist.has_unpersisted_deletion());
+
+        hist.ack_open_report();
+
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "an outstanding breach of this session's own must survive the ack"
+        );
     }
 
     #[test]
