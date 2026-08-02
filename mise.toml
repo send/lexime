@@ -211,7 +211,7 @@ SWIFTC_FLAGS="-O -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap"
 LINK_FLAGS="-Lbuild -llex_engine"
 # MACOS_MIN comes from mise's [env]; `compile-swift` gates against the same
 # value. Source set likewise — see scripts/swift-sources.sh for why it is shared.
-SWIFT_SOURCES=$(bash scripts/swift-sources.sh)
+SWIFT_SOURCES=$(bash scripts/swift-sources.sh Sources)
 
 mkdir -p "$MACOS" "$RES"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
@@ -264,14 +264,14 @@ run = "bash scripts/icon.sh"
 [tasks.test-swift]
 description = "Run Swift unit tests (UniFFI round-trip)"
 depends = ["uniffi-gen"]
-# Tests/ is globbed, and every `func test*` is asserted to be dispatched from
-# `TestRunner.main()`. Those are two halves of one hazard: a test file missing
-# from a list, or a test function missing from the dispatch, does not fail —
-# it silently never runs while CI stays green and the author believes it is
-# covered. Globbing removes the first by construction; the second cannot be
-# (the runner dispatches by hand, with no test framework to discover them), so
-# it is checked instead. Nothing forced Tests/ to be enumerated in the first
-# place — there is one `@main` (TestRunner) and no UI to link.
+# Tests/ is derived, not listed — both which files compile and which tests
+# run. Those were two halves of one hazard: a test file missing from a list,
+# or a test function missing from the runner's dispatch, does not fail, it
+# silently never runs while CI stays green and the author believes it is
+# covered. Both lists are now generated from what is on disk
+# (scripts/swift-sources.sh, scripts/test-dispatch.sh). Nothing forced Tests/
+# to be enumerated in the first place — there is one `@main` (TestRunner) and
+# no UI to link.
 #
 # Sources/ is enumerated, and that part is deliberate rather than legacy:
 # given this single-module swiftc build, `Sources/main.swift` is top-level code
@@ -294,21 +294,10 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p build
-TEST_SOURCES=$(find Tests -name '*.swift' -type f | sort)
-if [ -z "$TEST_SOURCES" ]; then
-  echo "test-swift: no test files under Tests/ — refusing to pass vacuously" >&2
-  exit 1
-fi
-# Compiling a test is not running it. Anything defined and never dispatched is
-# a test that passes by not existing.
-UNCALLED=$(comm -23 \
-  <(grep -ho '^func test[A-Za-z0-9_]*' $TEST_SOURCES | sed 's/^func //' | sort -u) \
-  <(grep -ho 'test[A-Za-z0-9_]*()' Tests/TestRunner.swift | sed 's/()$//' | sort -u))
-if [ -n "$UNCALLED" ]; then
-  echo "test-swift: defined but never dispatched from TestRunner.main():" >&2
-  echo "$UNCALLED" | sed 's/^/  /' >&2
-  exit 1
-fi
+TEST_SOURCES=$(bash scripts/swift-sources.sh Tests)
+# Compiling a test is not running it. The dispatch is generated from the
+# declarations rather than written by hand, so there is no list to forget.
+bash scripts/test-dispatch.sh build/TestDispatch.swift
 swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -Lbuild -llex_engine \
   generated/lex_engine.swift \
@@ -322,6 +311,7 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/EngineContainer.swift \
   Sources/Services/EngineControlService.swift \
   $TEST_SOURCES \
+  build/TestDispatch.swift \
   -o build/test-runner && build/test-runner
 """
 
@@ -370,8 +360,11 @@ if [ "$PLIST_MIN" != "$MACOS_MIN" ]; then
   echo "compile-swift: MACOS_MIN=$MACOS_MIN but Info.plist says $PLIST_MIN" >&2
   exit 1
 fi
-SWIFT_SOURCES=$(bash scripts/swift-sources.sh)
+SWIFT_SOURCES=$(bash scripts/swift-sources.sh Sources)
 for ARCH in arm64 x86_64; do
+  # Named, because a failure on one arch and not the other is otherwise
+  # indistinguishable from a plain compile error to anyone on the other one.
+  echo "compile-swift: $ARCH-apple-macosx$MACOS_MIN"
   swiftc -c -wmo -target $ARCH-apple-macosx$MACOS_MIN \
     -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
     generated/lex_engine.swift $SWIFT_SOURCES -o /dev/null

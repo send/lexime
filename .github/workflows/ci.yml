@@ -61,11 +61,12 @@ jobs:
               - 'Sources/**'
               - 'Tests/**'
               - 'Info.plist'
-              # Defines which files `compile-swift` gates and `build`
-              # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — `core` names only the two
-              # supply-chain scripts.
+              # The two derivations this job's result depends on: which files
+              # get compiled, and which tests get dispatched. An edit to either
+              # changes what the job checks, and neither is covered by another
+              # filter — `core` names only the two supply-chain scripts.
               - 'scripts/swift-sources.sh'
+              - 'scripts/test-dispatch.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
 
