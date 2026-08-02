@@ -636,13 +636,6 @@ impl HistoryWal {
         // `seq_floor` too: a rebase must never hand out a number an
         // outstanding witness already names (see `set_seq_floor`).
         //
-        // Checked, because the floor comes from a *file*. A restored marker
-        // encoding `Unflushed { seq: u64::MAX }` round-trips through `decode`
-        // perfectly well, and `+ 1` on it panics in debug — across the UniFFI
-        // constructor — and wraps to zero in release, so the next tombstone
-        // would be written with seq 0 and rejected as non-monotonic, letting
-        // the deletion resurrect. Exhaustion instead freezes: no number is
-        // safe to issue, which is precisely what `frozen` means.
         // Saturating, not `+ 1`: the floor comes from a *file*, and a restored
         // marker encoding `Unflushed { seq: u64::MAX }` round-trips through
         // `decode` perfectly well, so `+ 1` would panic in debug — across the
@@ -650,10 +643,11 @@ impl HistoryWal {
         // tombstone seq 0 for replay to reject as non-monotonic.
         //
         // Saturating is safe *because* the refusal lives at the assignment
-        // point: `next_seq == u64::MAX` means one number is left, and once it
-        // is spent `append_record` fails rather than wrapping. Representing
+        // point: `next_seq == u64::MAX` is the exhausted state, and
+        // `append_record` refuses it rather than wrapping. Representing
         // exhaustion as a freeze instead was wrong in kind — a compaction
-        // clears a freeze by rewriting the file, which creates no numbers.
+        // clears a freeze by rewriting the file, and rewriting a file creates
+        // no numbers, so the heal put the wrap straight back.
         let base = max_seq.max(applied_seq).max(self.seq_floor);
         self.next_seq = base.saturating_add(1);
         // Existing frames may include an unbarriered tail from before the
