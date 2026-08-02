@@ -9,8 +9,11 @@ func testDegradedStatus() {
         runtimeIssues: [.deletionNotPersisted])
     assertEqual(runtimeOnly.count, 1, "a runtime issue shows without any init failure")
     assertTrue(
-        runtimeOnly.first?.contains("削除") ?? false,
+        runtimeOnly.first?.title.contains("削除") ?? false,
         "the row must name the deletion, not just 'degraded'")
+    assertTrue(
+        !(runtimeOnly.first?.acknowledgeable ?? true),
+        "a polled row has no durable record to acknowledge")
 
     // S2. Both sources, both rendered, init failures first.
     let both = DegradedStatus.rows(
@@ -20,7 +23,7 @@ func testDegradedStatus() {
     // trap on subscript and take the whole runner down with it, hiding every
     // later test behind a crash instead of a named failure.
     assertEqual(
-        both,
+        both.map { $0.title },
         [
             DegradedStatus.title(for: EngineInitFailure.historyDataLoss(detail: "x")),
             DegradedStatus.title(for: LexHistoryDurabilityIssue.deletionNotPersisted),
@@ -85,6 +88,21 @@ func testDegradedStatus() {
             deletionLost: false, dataLossSuspected: false, detail: "d", deletionDetail: "x"
         ).isEmpty,
         "a clean start reports nothing")
+
+    // S4b (#312). Exactly one row is clickable, and it is the one backed by a
+    // file. IMKit builds this menu on its own without displaying it — measured
+    // on-device, the record was consumed four seconds after an untouched
+    // relaunch — so a click is the only evidence delivery actually happened.
+    let acknowledgeable = acrossRestart.filter { $0.acknowledgeable }
+    assertEqual(acknowledgeable.count, 1, "only the lost-deletion row is acknowledgeable")
+    assertEqual(
+        acknowledgeable.first?.title,
+        DegradedStatus.title(for: EngineInitFailure.historyDeletionLost(detail: "x")),
+        "and it is that row, not another")
+    assertTrue(
+        DegradedStatus.rows(initFailures: [.historyDataLoss(detail: "x")], runtimeIssues: [])
+            .allSatisfy { !$0.acknowledgeable },
+        "a quarantine latches but has no durable record a click could retire")
 
     // S5 (#312). A full wipe retracts the latched row: the engine has already
     // unlinked the marker, and the row asks the user to delete an entry that no

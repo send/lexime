@@ -26,13 +26,35 @@ import Foundation
 /// display nothing in exactly the case this exists for.
 enum DegradedStatus {
 
-    /// Titles for the disabled status rows, init failures first.
-    /// Empty when there is nothing to report.
+    /// One status row.
+    struct Row: Equatable {
+        let title: String
+        /// Whether clicking the row acknowledges a durable record behind it.
+        ///
+        /// True for exactly one row. Every other row is derived — it either
+        /// re-derives from live state on each menu open, or latches in memory
+        /// and dies with the process — so there is nothing for a click to
+        /// settle. The lost-deletion row is backed by a file that outlives the
+        /// process, and only a person can say they have seen it: IMKit calls
+        /// `menu()` on its own, without displaying anything, so "the menu was
+        /// built" is not evidence of delivery. Verified on-device — the record
+        /// was consumed four seconds after a relaunch nobody touched.
+        let acknowledgeable: Bool
+    }
+
+    /// Status rows, init failures first. Empty when there is nothing to report.
     static func rows(
         initFailures: [EngineInitFailure],
         runtimeIssues: [LexHistoryDurabilityIssue]
-    ) -> [String] {
-        initFailures.map(title(for:)) + runtimeIssues.map(title(for:))
+    ) -> [Row] {
+        initFailures.map { failure in
+            Row(title: title(for: failure), acknowledgeable: isAcknowledgeable(failure))
+        } + runtimeIssues.map { Row(title: title(for: $0), acknowledgeable: false) }
+    }
+
+    static func isAcknowledgeable(_ failure: EngineInitFailure) -> Bool {
+        if case .historyDeletionLost = failure { return true }
+        return false
     }
 
     static func title(for failure: EngineInitFailure) -> String {

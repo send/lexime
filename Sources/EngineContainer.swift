@@ -58,6 +58,13 @@ final class EngineContainer {
     /// the menu keeps telling the user to go delete something, against a
     /// history provably holding nothing, until they restart.
     func historyWasCleared() {
+        retractDeletionLostRow()
+    }
+
+    /// Drop the lost-deletion row, whether because a wipe made it false or
+    /// because the user acknowledged it. The only latched row with a
+    /// retraction, and both of its retractions are user actions.
+    func retractDeletionLostRow() {
         initFailures.removeAll {
             if case .historyDeletionLost = $0 { return true }
             return false

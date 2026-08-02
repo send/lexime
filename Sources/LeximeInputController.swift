@@ -192,15 +192,19 @@ class LeximeInputController: IMKInputController {
         let rows = DegradedStatus.rows(
             initFailures: AppContext.shared.engineContainer.initFailures,
             runtimeIssues: control.historyDurabilityIssues())
-        // Delivery, not startup, is what retires the #312 record: this is the
-        // moment the user can actually see it. Launches that never open a menu
-        // leave the marker for the next one.
-        control.acknowledgeHistoryReport()
         if !rows.isEmpty {
             for row in rows {
-                // No action/target: IMKit renders these as disabled status rows.
-                let item = NSMenuItem(title: row, action: nil, keyEquivalent: "")
-                item.isEnabled = false
+                // Status rows are disabled — except the one whose durable
+                // record a click retires. Building the menu is not delivery:
+                // IMKit calls this method on its own, so acknowledging here
+                // would consume the #312 report on a launch that displayed
+                // nothing (measured: four seconds after an untouched relaunch).
+                let item = NSMenuItem(
+                    title: row.title,
+                    action: row.acknowledgeable ? #selector(acknowledgeDeletionReport) : nil,
+                    keyEquivalent: "")
+                item.target = row.acknowledgeable ? self : nil
+                item.isEnabled = row.acknowledgeable
                 menu.addItem(item)
             }
             menu.addItem(.separator())
@@ -214,6 +218,13 @@ class LeximeInputController: IMKInputController {
         settingsItem.target = self
         menu.addItem(settingsItem)
         return menu
+    }
+
+    /// The user clicked the lost-deletion row, which is the only evidence
+    /// this process can have that the report reached a person.
+    @objc private func acknowledgeDeletionReport() {
+        AppContext.shared.makeEngineControlService().acknowledgeHistoryReport()
+        AppContext.shared.engineContainer.retractDeletionLostRow()
     }
 
     @objc private func showSettings() {
