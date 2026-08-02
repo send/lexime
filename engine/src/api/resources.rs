@@ -466,6 +466,10 @@ impl LexUserHistory {
         // thread.
         let inherited_owed = report.deletion_lost;
         let marker_on_disk = report.marker_on_disk;
+        let pending_claim = report
+            .deletion_pending_checkpoint
+            .then_some(marker_on_disk)
+            .flatten();
         let ledger = if report.deletion_pending_checkpoint {
             pack_ledger(0, 1, 0)
         } else {
@@ -480,7 +484,20 @@ impl LexUserHistory {
             report,
             durability_ledger: AtomicU64::new(ledger),
             claims: Mutex::new(MarkerClaims {
-                session: None,
+                // The replayed witness, when there is one.
+                // `deletion_pending_checkpoint` raises the *ledger* for a
+                // deletion that replay applied but no checkpoint covers;
+                // leaving `session` empty made the projection compute a
+                // desired state of `None` and — once every commit reconciles —
+                // unlink that witness before any checkpoint had persisted the
+                // deletion, so a power loss would restore the entry with
+                // nothing left to report it. The ledger and the claims have to
+                // agree about what is outstanding.
+                //
+                // Confirmed by construction: an unreadable marker resolves to
+                // `Lost`, which is always outstanding and never reaches the
+                // branch that sets this flag, so this is a decoded `Unflushed`.
+                session: pending_claim,
                 // Observed, not assumed. When recovery promoted the claim
                 // successfully this equals what the projection wants, so the
                 // first compaction skips the write entirely; when it did not,
@@ -1563,7 +1580,7 @@ mod tests {
     }
 
     fn marker(cp: &Path) -> Option<DeletionBreach> {
-        deletion_marker::read(cp)
+        deletion_marker::read(cp).map(|o| o.breach)
     }
 
     fn committed(reading: &str, surface: &str) -> LearningRecord {
@@ -2643,6 +2660,44 @@ mod tests {
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
         );
         assert_eq!(marker(&cp), None, "learning is not a deletion");
+    }
+
+    #[test]
+    fn test_a_replayed_witness_is_not_unlinked_before_a_checkpoint_covers_it() {
+        // The ledger and the claims have to agree about what is outstanding.
+        // `deletion_pending_checkpoint` raises the ledger for a deletion replay
+        // applied but no checkpoint covers; with `session` left empty the
+        // projection computed a desired state of `None`, and once every commit
+        // reconciles, the first ordinary commit unlinked the witness before
+        // anything had persisted the deletion — a power loss would then restore
+        // the entry with no record left to report it.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let seq = {
+            let mut wal = HistoryWal::new(&cp);
+            wal.append_record(&WalRecord::Tombstone {
+                segments: vec![("きょう".to_string(), "今日".to_string())],
+                timestamp: crate::user_history::now_epoch(),
+            })
+            .unwrap()
+        };
+        deletion_marker::merge_write(&cp, DeletionBreach::Unflushed { seq }).unwrap();
+
+        let hist = open_hist(&cp);
+        assert!(
+            hist.has_unpersisted_deletion(),
+            "the replayed witness is a live durability problem"
+        );
+        // Blocked so the commit below cannot quietly become the covering
+        // checkpoint and settle it for the right reason.
+        block_checkpoint_write(&cp);
+        hist.apply_records(&[committed("あした", "明日")]);
+
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Unflushed { seq }),
+            "only a covering checkpoint may retire it, not an unrelated commit"
+        );
     }
 
     #[test]

@@ -288,6 +288,10 @@ pub struct HistoryWal {
     /// Highest seq physically appended to (or found in) the file. Guards
     /// `truncate_covered`.
     last_appended_seq: u64,
+    /// Lower bound the next assigned seq must clear. Zero unless recovery
+    /// found an outstanding `Unflushed{seq}` deletion claim — see
+    /// [`HistoryWal::set_seq_floor`].
+    seq_floor: u64,
     frames_since_barrier: usize,
     /// Set when the on-disk file is known not to be in appendable v2 form
     /// (legacy format pending a failed migration, unrepaired tail, ...).
@@ -324,6 +328,7 @@ impl HistoryWal {
             entry_count: 0,
             wal_bytes: WAL_HEADER_LEN as u64,
             next_seq: 1,
+            seq_floor: 0,
             last_appended_seq: 0,
             frames_since_barrier: 0,
             frozen: false,
@@ -611,7 +616,9 @@ impl HistoryWal {
         self.entry_count = valid_frames;
         self.wal_bytes = file_bytes.max(WAL_HEADER_LEN as u64);
         self.last_appended_seq = max_seq;
-        self.next_seq = max_seq.max(applied_seq) + 1;
+        // `seq_floor` too: a rebase must never hand out a number an
+        // outstanding witness already names (see `set_seq_floor`).
+        self.next_seq = max_seq.max(applied_seq).max(self.seq_floor) + 1;
         // Existing frames may include an unbarriered tail from before the
         // restart (their power-loss durability is unknown even though they
         // were readable). Seed the counter so the first new append issues a
@@ -626,6 +633,32 @@ impl HistoryWal {
 
     pub(super) fn adopt_empty(&mut self, applied_seq: u64) {
         self.adopt_scan(0, WAL_HEADER_LEN as u64, 0, applied_seq);
+    }
+
+    /// The number the next append would take. Test seam for the floor.
+    #[cfg(test)]
+    pub(super) fn next_seq_for_tests(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// Refuse to re-issue sequence numbers at or below `floor`.
+    ///
+    /// An `Unflushed{seq}` deletion marker is a claim about one specific
+    /// frame, and the startup test for it is `seq > applied_seq`. That test is
+    /// sound only while numbering is monotone — but a quarantined or
+    /// reinitialized WAL restarts at the checkpoint's `applied_seq + 1`, which
+    /// is *precisely* the range an outstanding witness lives in. Unrelated
+    /// later frames then climb past the witness and satisfy it, and the next
+    /// startup reads a deletion that never took as one that did.
+    ///
+    /// Promotion to `Lost` at startup was the previous answer, and it is a
+    /// runtime compensation for a precondition this crate breaks itself: three
+    /// review rounds went into retrying that promotion when it failed. A floor
+    /// removes the need — numbering that never reuses a claimed range cannot
+    /// falsely satisfy anything, so promotion goes back to being an
+    /// optimization. Epoch discipline, which is what the seq is.
+    pub(super) fn set_seq_floor(&mut self, floor: u64) {
+        self.seq_floor = self.seq_floor.max(floor);
     }
 
     /// Mark the on-disk file as not being in appendable v2 form (see the

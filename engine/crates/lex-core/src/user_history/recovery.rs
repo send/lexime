@@ -264,6 +264,18 @@ pub fn open_recovering(
     // …and whether it holds anything, before replay can change the answer.
     let checkpoint_empty = history.is_empty();
     let mut wal = HistoryWal::new(checkpoint_path);
+    // Read once, here, because the WAL adoption below needs it: an outstanding
+    // `Unflushed{seq}` claim names a frame, and a quarantined or reinitialized
+    // WAL would otherwise restart numbering inside the very range that claim
+    // covers, letting an unrelated frame satisfy it. The floor makes that
+    // impossible rather than compensating for it afterwards. §3b reuses this
+    // value — nothing between here and there writes the file.
+    let marker = deletion_marker::read(checkpoint_path);
+    if let Some(observed) = &marker {
+        if let deletion_marker::DeletionBreach::Unflushed { seq } = observed.breach {
+            wal.set_seq_floor(seq);
+        }
+    }
     let mut legacy_wal_consumed = false;
     match fs::read(&wal_path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -464,7 +476,8 @@ pub fn open_recovering(
     // what makes the retry prompt, through the channel other recovery results
     // already use rather than a mechanism of its own.
     let mut marker_retraction_stuck = false;
-    if let Some(breach) = deletion_marker::read(checkpoint_path) {
+    if let Some(observed) = marker {
+        let breach = observed.breach;
         if breach == deletion_marker::DeletionBreach::Lost && durable_empty && history.is_empty() {
             // `Lost` says an entry survived the deletion. Refuting that takes
             // **both** halves, and each alone was wrong once:
@@ -484,7 +497,7 @@ pub fn open_recovering(
             info!("an unpersisted-deletion marker outlived the entries it referred to");
             marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
             if marker_retraction_stuck {
-                report.marker_on_disk = Some(breach);
+                report.marker_on_disk = observed.confirmed.then_some(breach);
             }
         } else if !breach.outstanding(durable_applied_seq) {
             // A durable checkpoint contains the deletion's effect, so it is
@@ -495,7 +508,7 @@ pub fn open_recovering(
             info!("an unpersisted-deletion marker is covered by a durable checkpoint");
             marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
             if marker_retraction_stuck {
-                report.marker_on_disk = Some(breach);
+                report.marker_on_disk = observed.confirmed.then_some(breach);
             }
         } else if breach.outstanding(history.applied_seq()) {
             // The frame is provably not in the state we just loaded, so the
@@ -515,17 +528,25 @@ pub fn open_recovering(
             // observed value out means the runtime's first projection sees
             // disk != desired and re-asserts, rather than believing a write
             // that never landed.
-            report.marker_on_disk = Some(if breach == deletion_marker::DeletionBreach::Lost {
-                breach
-            } else {
-                match deletion_marker::merge_write(
-                    checkpoint_path,
-                    deletion_marker::DeletionBreach::Lost,
-                ) {
-                    Ok(()) => deletion_marker::DeletionBreach::Lost,
-                    Err(e) => {
-                        warn!("failed to promote the unpersisted-deletion claim: {e}");
-                        breach
+            // `confirmed` gates the whole thing: a marker that could not be
+            // read comes back as `Lost` by the fail-safe rule, and recording
+            // that fallback as an observation would have the runtime believe
+            // the disk holds `Lost` when it may hold a live `Unflushed`
+            // witness. `flushed` would then match, every reconcile would skip,
+            // and the witness would sit there until something satisfied it.
+            report.marker_on_disk = observed.confirmed.then(|| {
+                if breach == deletion_marker::DeletionBreach::Lost {
+                    breach
+                } else {
+                    match deletion_marker::merge_write(
+                        checkpoint_path,
+                        deletion_marker::DeletionBreach::Lost,
+                    ) {
+                        Ok(()) => deletion_marker::DeletionBreach::Lost,
+                        Err(e) => {
+                            warn!("failed to promote the unpersisted-deletion claim: {e}");
+                            breach
+                        }
                     }
                 }
             });
@@ -542,6 +563,9 @@ pub fn open_recovering(
             info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
             report.deletion_pending_checkpoint = true;
             report.marker_on_disk = Some(breach);
+            // Reachable only with a decoded `Unflushed` — an unreadable marker
+            // resolves to `Lost`, which is always outstanding and never lands
+            // here — so this observation is confirmed by construction.
         }
     }
 

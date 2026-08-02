@@ -182,7 +182,24 @@ pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
 /// taken from disk must not size an allocation (see `persist`'s bincode
 /// readers). A longer file is malformed anyway — `decode` needs the first
 /// [`LEN`] bytes, and a file that has more of them is not this format.
-pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
+/// What the marker path holds, and whether the bytes behind it were actually
+/// read.
+///
+/// The two are different questions and conflating them cost a review round.
+/// `breach` answers *what is claimed*, under the fail-safe rule that anything
+/// unreadable claims `Lost`. `confirmed` answers *do we know that from the
+/// file*, and only a successful read and decode sets it. A caller recording
+/// what the disk holds — `OpenReport::marker_on_disk`, which seeds the
+/// runtime's `flushed` — must use the second: believing a synthesized `Lost`
+/// makes every later reconcile skip, leaving a live `Unflushed` witness on
+/// disk that nothing will ever promote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MarkerObservation {
+    pub breach: DeletionBreach,
+    pub confirmed: bool,
+}
+
+pub fn read(checkpoint_path: &Path) -> Option<MarkerObservation> {
     let path = marker_path(checkpoint_path);
     // The marker *and* any orphan tmp beside it. A crash between the tmp's
     // flush and the rename leaves the stronger claim in the sibling, and
@@ -194,14 +211,22 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
     claims
         .into_iter()
         .flatten()
-        .map(|bytes| DeletionBreach::decode(&bytes))
-        .reduce(DeletionBreach::merge)
+        .map(|(bytes, readable)| MarkerObservation {
+            breach: DeletionBreach::decode(&bytes),
+            confirmed: readable,
+        })
+        .reduce(|a, b| MarkerObservation {
+            breach: a.breach.merge(b.breach),
+            // Both halves, since either one being a guess makes the pair a
+            // guess about what the path as a whole holds.
+            confirmed: a.confirmed && b.confirmed,
+        })
 }
 
 /// One file's bytes, under the fail-safe rule: `None` means — and only means —
 /// there is no file, and anything unreadable comes back as a buffer that
 /// [`DeletionBreach::decode`] resolves to `Lost`.
-fn read_at(path: &Path) -> Option<Vec<u8>> {
+fn read_at(path: &Path) -> Option<(Vec<u8>, bool)> {
     // Through one descriptor, not a `symlink_metadata` check followed by an
     // open: those are two pathname resolutions, and a restore or a sync tool
     // replacing the checked regular file with a FIFO in between leaves the
@@ -214,17 +239,17 @@ fn read_at(path: &Path) -> Option<Vec<u8>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            return Some(Vec::new());
+            return Some((Vec::new(), false));
         }
     };
     // LEN + 1, so a longer file is *seen* to be longer rather than read as a
     // well-formed prefix — the round-trip in `decode` then rejects it.
     let mut buf = Vec::with_capacity(LEN + 1);
     match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64 + 1), &mut buf) {
-        Ok(_) => Some(buf),
+        Ok(_) => Some((buf, true)),
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            Some(Vec::new())
+            Some((Vec::new(), false))
         }
     }
 }
@@ -277,7 +302,10 @@ fn read_at(path: &Path) -> Option<Vec<u8>> {
 /// cache), but it would reopen a power-loss window in the *report* about a
 /// deletion whose own power-loss window §6 sets to zero.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
-    let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
+    // The claim only — whether the existing bytes were readable does not
+    // change what has to be written, and merging is one-directional so an
+    // unreadable existing marker (conservatively `Lost`) can only strengthen.
+    let merged = read(checkpoint_path).map_or(breach, |existing| existing.breach.merge(breach));
     write_atomic(&marker_path(checkpoint_path), &merged.encode())
 }
 

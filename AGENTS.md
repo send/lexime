@@ -199,6 +199,18 @@ what a generic reviewer misses:
   uniquely-named tmp would break the marker-plus-orphan pair below, and
   anything able to write in that directory can overwrite the destination
   outright with no window to hit;
+  an outstanding `Unflushed{seq}` raises a **seq floor** on the WAL, so a
+  quarantine or reinitialization cannot restart numbering inside the range that
+  claim names — the witness test `seq > applied_seq` is sound only while
+  numbering is monotone, and `adopt_empty` restarting at the checkpoint's
+  `applied_seq + 1` was breaking that precondition itself; promotion to `Lost`
+  was the runtime compensation for it and is now an optimization, which is what
+  retires three rounds of retry-the-promotion findings;
+  a marker's *claim* and the *observation* of it are separate — anything
+  unreadable claims `Lost` by the fail-safe rule but confirms nothing, so only
+  a `confirmed` read reaches `marker_on_disk`, and `deletion_pending_checkpoint`
+  seeds the `session` claim as well as the ledger so the two cannot disagree
+  about what is outstanding;
   **every commit reconciles the marker** — in `apply_records`, under the wal
   mutex, before the appends — and that, not any per-event retry, is what makes
   the disk agree with the projection; a record reconciled only at chosen events
