@@ -296,6 +296,12 @@ pub struct HistoryWal {
     /// compaction, whose checkpoint contains the full state) re-establishes
     /// v2 form and lifts the freeze.
     ///
+    /// This is a property of the *file*, and only that. It is deliberately
+    /// not a proxy for "this session's learning is memory-only": the engine
+    /// tracks that itself, after deriving it from here proved wrong (a
+    /// compaction whose snapshot predates a refused commit can clear the
+    /// freeze while that commit is still nowhere on disk).
+    ///
     /// Assigned only through `set_frozen`, which keeps the write path
     /// greppable — but that is readability, not enforcement. What keeps a
     /// freeze from going unreported is that `open_recovering` derives
@@ -465,6 +471,14 @@ impl HistoryWal {
             )
             .into());
         }
+        // These two guards deliberately do NOT freeze. An earlier revision
+        // froze here to keep "`Err(Io)` implies frozen" true, because the
+        // engine derived "learning is memory-only" from the freeze. That
+        // derivation is gone — the engine now tracks the fact directly, from
+        // the absent seq — so freezing a file that is perfectly appendable
+        // would refuse every later append to serve a reader that no longer
+        // exists. Both are unreachable anyway (this serializer cannot fail,
+        // and segments cannot reach 4 GiB).
         let payload = bincode::serialize(record).map_err(io::Error::other)?;
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;

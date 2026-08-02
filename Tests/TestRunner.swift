@@ -39,6 +39,8 @@ struct TestMain {
         testAbcRevertPolicy()
         testInputSourceReverter()
         testSessionCoordinator()
+        testDegradedStatus()
+        testHistoryDurabilityFFI()
 
         print("\nResults: \(testsPassed) passed, \(testsFailed) failed")
         exit(testsFailed > 0 ? 1 : 0)

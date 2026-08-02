@@ -254,7 +254,16 @@ depends = ["uniffi-gen"]
 # into one binary. If you add a new test file under Tests/, add it here too.
 # Source files required by tests are also listed explicitly (SnippetTOML for
 # TestSnippetTOML; CandidateManager/SessionCoordinator/ModeController/InputSource
-# for the controller tests).
+# for the controller tests). This list is the ONLY place CI compiles Swift:
+# the `swift` job runs `mise run test-swift` and nothing else, and no workflow
+# runs `mise run build` — so a file absent from here is never type-checked in
+# CI at all (14 of 22 files under Sources/ currently are: see #316). Add the
+# sources a change touches. EngineContainer costs ~0.15s of build time
+# (measured, 6 alternating runs); EngineInitFailure is split out so files that
+# only need to *render* a failure do not pull the engine-loading path with it.
+# LeximeInputController stays out because it needs IMKit; the part of it worth
+# asserting — that menu() feeds the polled issues into DegradedStatus.rows —
+# is therefore unpinned, which the PR verifies by hand on the real IME.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -267,8 +276,12 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/CandidateManager.swift \
   Sources/Controller/SessionCoordinator.swift \
   Sources/Controller/ModeController.swift \
+  Sources/Controller/DegradedStatus.swift \
+  Sources/EngineInitFailure.swift \
+  Sources/EngineContainer.swift \
+  Sources/Services/EngineControlService.swift \
   Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift Tests/TestSnippetTOML.swift \
-  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestAbcRevertPolicy.swift Tests/TestInputSourceReverter.swift Tests/TestSessionCoordinator.swift \
+  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestAbcRevertPolicy.swift Tests/TestInputSourceReverter.swift Tests/TestSessionCoordinator.swift Tests/TestDegradedStatus.swift \
   -o build/test-runner && build/test-runner
 """
 

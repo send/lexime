@@ -108,6 +108,94 @@ what a generic reviewer misses:
   `appends_frozen` schedules to thaw it writes the v2 checkpoint as a side
   effect. The retry timing is therefore not a property of `migration_failed`,
   which is why the shipped log line states the fact and not a schedule.)
+- **The runtime durability channel (settled)**: `durability_issues()` reports
+  what holds *now*, and five sub-decisions are settled. (a) It is a **list**,
+  not one enum or a bool: on a failing volume an unpersisted deletion (#295)
+  and memory-only learning (#288) hold simultaneously — the steady state, not
+  a corner — so collapsing hides one behind the other. (b) Both rows are **tracked facts, not
+  derived ones**. `LearningMemoryOnly` used to be read off
+  `HistoryWal::is_frozen()`, justified by "a commit is memory-only ⟺ the WAL
+  is frozen". That equivalence is **false**, and the decision it justified is
+  reversed: a commit refused by the frozen guard never reaches seq
+  assignment, so `last_appended_seq` does not move, and an in-flight
+  compaction whose snapshot predates it then satisfies `truncate_covered` and
+  clears the freeze — leaving the commit in neither the checkpoint nor the WAL
+  while the report reads clean (Codex R2 on #317, pinned by
+  `test_a_stale_compaction_must_not_unfreeze_over_memory_only_commits`). One
+  breach had already been patched (the encode guards) before the equivalence
+  itself was questioned. The ledger now carries `raised_memory_only` beside
+  `raised_deletion`, and the freeze went back to being what its name says — a
+  property of the file, read only by `OpenReport`. Findings proposing to
+  re-derive either row from `is_frozen()` re-litigate this. (c) The deletion raise **does not branch on the error variant**
+  — `SyncFailed` and `Io` both raise. §8 ※1's silent power-loss window is the
+  *Committed* window; the Tombstone window is zero by §6, so a failed flush is
+  a real breach. (d) The cover is tied to a **durable checkpoint save**, not
+  to the WAL truncation that follows: truncation is the physical scrub of
+  superseded frames, and gating on it leaves a permanent warning whenever
+  frames land mid-run (`FollowUp`) or the truncate fails on an otherwise
+  durable write. `clear`'s empty checkpoint is the second cover point —
+  without it a full wipe leaves a standing privacy warning on a history that
+  provably holds nothing. (e) Swift keeps it **separate from
+  `EngineInitFailure`** on lifetime, not on snapshot-ness (`recordFailure`
+  appends after load, so init failures are not a snapshot): init failures
+  latch, runtime issues are re-derived on every menu open. Retraction is
+  **passive**, and its latency differs per half: the `Io` half clears on the
+  first commit after the disk recovers (that append still fails against the
+  frozen WAL, which posts a compaction), while the `SyncFailed` half never
+  froze anything and waits for the 1000-frame / 1 MiB threshold. There is no periodic compaction and no
+  quit-time flush, so a user who stops typing keeps the row. The runtime rows
+  are also emitted whether or not any init failure exists — `menu()` gates on
+  "are there rows", not on the engine being degraded — because the main #295
+  scenario is a clean launch followed by a later failure. Findings proposing to
+  collapse the list, treat `SyncFailed` as benign, gate the cover on
+  truncation, or merge the issues into `initFailures` re-litigate these — do
+  not raise them. The "no commit-side ledger" clause that used to sit in this
+  list is **withdrawn**; see (b).
+  Deliberately **out of scope**, for two different reasons — do not merge them.
+  (i) a persistent `spawn_compact` thread-spawn failure leaves `scrub_pending`
+  unconsumed, and (ii) a tombstone that appends and flushes cleanly but whose
+  scrub compaction's `save()` fails raises nothing (#311), so deleted strings
+  sit in the old checkpoint and past Committed frames for the session. Both are
+  deferred *physical scrubs*: the deletion itself is durable and startup heals
+  it. (iii) is **not** like them — the ledger is process-local, so on the `Io`
+  half, where no frame reached the WAL and no checkpoint landed, the deletion is
+  not durable, startup does not heal it, and the report is gone on the very
+  restart where the entry resurrects (#312). **#295 is therefore only
+  half-closed**, with #312 as the remainder; it wants an on-disk marker, which
+  is new persisted state and so its own PR. Do not cite this entry to suppress
+  that. Separately, #313 records a
+  pre-existing privacy race: `apply_records` appends to the commit log outside
+  the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
+  `clear` unlinked it. Findings re-raising any of these should point at the
+  issues rather than proposing a fix here.
+- **The WAL's freeze flag is private to lex-core (settled)**: `HistoryWal`
+  keeps `frozen` as a plain `bool`, read outside the WAL only by
+  `OpenReport::appends_frozen` at open. An earlier revision of #317 shared it
+  as an `Arc<AtomicBool>` behind a read-only `FreezeFlag` so the status menu
+  could poll it lock-free; that whole apparatus was removed when the row
+  stopped being derived from the freeze (see (b)). There is no runtime
+  cross-thread observer of the freeze left, so findings proposing to share,
+  lend, or hand out the flag are proposing a reader that does not exist.
+- **The deletion ledger stays on `LexUserHistory`, not in `UserHistory`
+  (settled)**: it looks like a duplicate of `DurableResidue` — same raise
+  event, same cover moment, and the residue gets its ordering by construction
+  (the snapshot clone carries the epochs) where the ledger needs an explicit
+  read-before-clone. Reviewers reliably propose merging them. Two things block
+  it. (1) **The read must take no lock.** The consumer is a UI poll;
+  `DurableResidue` lives behind the `inner` RwLock, which the key thread holds
+  for writing inside the wal critical section on every commit and a compaction
+  holds for `cover_durable_residue`, so a merged ledger would put a main-thread
+  menu poll behind history I/O, where the ledger's single atomic load blocks
+  on nothing. Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
+  `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
+  tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
+  design, since the residue deliberately excludes `SyncFailed` (its frame is
+  replayable). Merging would mean widening that witness to a three-state
+  durability value across a settled PR1 surface to serve a reporting concern.
+  The two ledgers answer different questions: the residue asks "may the
+  durable set still hold this key" (gating the no-op skip), the ledger asks
+  "did this deletion reach disk at all" (reporting). Findings proposing to
+  move or merge them re-litigate this — do not raise them.
 - **Non-empty inline text while composing (settled)**: a session that stays
   composing while the host's marked text goes away leaks the confirming key to
   the web page (PR #293). The rule, its enforcement, and what is deliberately

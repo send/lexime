@@ -1,31 +1,5 @@
 import Foundation
 
-/// A non-recoverable or degraded condition detected during engine startup.
-/// Recorded for visibility only — fallback behavior is unchanged.
-enum EngineInitFailure {
-    /// System dictionary failed to load. Fatal: the engine cannot start.
-    case dictionary(detail: String)
-    /// User dictionary file could not be opened (entries unavailable).
-    /// Environmental read failures only (e.g. permissions) — corruption no
-    /// longer throws (it quarantines; see `.userDictionaryDataLoss`).
-    case userDictionary(detail: String)
-    /// User dictionary recovery quarantined a corrupt file: registration keeps
-    /// working (empty dictionary), but the previously registered words were
-    /// lost (bytes preserved in `.corrupt-*` when the rename succeeded).
-    case userDictionaryDataLoss(detail: String)
-    /// Composite (system + user) dictionary creation failed;
-    /// user dictionary entries are not reflected in conversion.
-    case compositeDictionary(detail: String)
-    /// User history could not be opened (learning disabled). Environmental
-    /// read failures only (e.g. permissions) — corruption no longer throws.
-    case history(detail: String)
-    /// User history recovery quarantined corrupt data: learning is running,
-    /// but some past learning was lost (bytes preserved in `.corrupt-*`).
-    case historyDataLoss(detail: String)
-    /// Custom settings.toml exists but failed to parse (defaults in effect).
-    case customSettings(detail: String)
-}
-
 final class EngineContainer {
     let engine: LexEngine?
     let dictionary: LexDictionary?
@@ -34,10 +8,6 @@ final class EngineContainer {
 
     /// Initialization failures recorded for user visibility (menu / alert).
     private(set) var initFailures: [EngineInitFailure]
-
-    /// True when any component failed to initialize and the IME is running
-    /// in a degraded state (including the fatal engine-nil case).
-    var isDegraded: Bool { !initFailures.isEmpty }
 
     /// Detail message of the fatal dictionary failure, if the engine is unavailable.
     var fatalFailureDetail: String? {
