@@ -4,12 +4,11 @@
 #   scripts/swift-sources.sh Sources   → the app's compile set
 #   scripts/swift-sources.sh Tests     → the test binary's compile set
 #
-# Four consumers: `build` compiles the Sources set into Lexime.app, `compile-swift`
-# gates it in CI, `test-swift` compiles the Tests set, and `test-dispatch.sh`
-# reads the Tests set to generate the runner's dispatch. They have to agree. A
-# file one of them sees and another does not is #316 reopening, and it reopens
-# *silently* — which is why this is one script rather than the same `find`
-# written four times.
+# Three consumers: `build` compiles the Sources set into Lexime.app,
+# `compile-swift` gates it in CI, and `test-swift` compiles the Tests set. They
+# have to agree. A file one of them sees and another does not is #316
+# reopening, and it reopens *silently* — which is why this is one script rather
+# than the same `find` written three times.
 #
 # Sorted so a compile failure reproduces in the same order every run;
 # find(1) order is filesystem-dependent.

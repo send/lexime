@@ -275,14 +275,15 @@ run = "bash scripts/icon.sh"
 [tasks.test-swift]
 description = "Run Swift unit tests (UniFFI round-trip)"
 depends = ["uniffi-gen"]
-# Tests/ is derived, not listed — both which files compile and which tests
-# run. Those were two halves of one hazard: a test file missing from a list,
-# or a test function missing from the runner's dispatch, does not fail, it
-# silently never runs while CI stays green and the author believes it is
-# covered. Both lists are now generated from what is on disk
-# (scripts/swift-sources.sh, scripts/test-dispatch.sh). Nothing forced Tests/
-# to be enumerated in the first place — there is one `@main` (TestRunner) and
-# no UI to link.
+# Tests/ is globbed rather than listed, so which files *compile* is derived
+# from what is on disk. Which tests *run* is not: `TestRunner.main()` still
+# dispatches by hand, so a test function that is never called compiles, links,
+# and silently does not run while CI stays green. Deriving that too was tried
+# in this PR and reverted — see #324. It needs the Swift compiler's own parse
+# (or a test framework); a shell scanner over source cannot separate code from
+# comments from string literals, and the version that shipped here could drop
+# a test that runs today. Nothing forced Tests/ to be enumerated for
+# compilation, though — one `@main` (TestRunner), no UI to link — so it is not.
 #
 # Sources/ is enumerated, and that part is deliberate rather than legacy:
 # given this single-module swiftc build, `Sources/main.swift` is top-level code
@@ -307,9 +308,6 @@ run = """
 set -euo pipefail
 mkdir -p build
 TEST_SOURCES=$(bash scripts/swift-sources.sh Tests)
-# Compiling a test is not running it. The dispatch is generated from the
-# declarations rather than written by hand, so there is no list to forget.
-bash scripts/test-dispatch.sh build/TestDispatch.swift
 swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -Lbuild -llex_engine \
   generated/lex_engine.swift \
@@ -323,7 +321,6 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/EngineContainer.swift \
   Sources/Services/EngineControlService.swift \
   $TEST_SOURCES \
-  build/TestDispatch.swift \
   -o build/test-runner && build/test-runner
 """
 
