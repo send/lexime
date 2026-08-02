@@ -87,8 +87,8 @@ mise run install
 # Rust エンジンの lint + テスト
 mise run test
 
-# Swift テスト
-mise run test-swift
+# Swift コンパイルチェック + テスト
+mise run compile-swift && mise run test-swift
 
 # ビルド・インストール・リロード
 mise run build && mise run install && mise run reload

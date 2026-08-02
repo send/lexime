@@ -635,6 +635,7 @@ macOS で動作する最小限の IME を構築。
 | `dict-clean` | コンパイル済み辞書の削除（次回ビルドで再コンパイル） |
 | `conn` | 接続行列のコンパイル |
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
+| `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy --all-targets` |
 | `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
@@ -673,7 +674,7 @@ macOS で動作する最小限の IME を構築。
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
 | `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定） |
 | `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
-| `swift` | macos-latest | engine または Swift 変更時 | `mise run test-swift` |
+| `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
