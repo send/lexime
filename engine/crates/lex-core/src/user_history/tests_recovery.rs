@@ -1726,11 +1726,14 @@ fn t10_malformed_markers_all_report() {
         }),
         // The one shape that would resolve toward *suppression*: a
         // well-formed 16-byte prefix followed by anything else. Reading
-        // exactly LEN would decode it as a valid witness, and a witness can
-        // be satisfied — so the "malformed always reports" rule, and the
-        // absent CRC that rests on it, would both be false.
+        // exactly LEN would decode it as a valid witness, and this witness is
+        // one the fixture's replay satisfies — so the "malformed always
+        // reports" rule, and the absent CRC that rests on it, would both be
+        // false. Seq 1 is load-bearing here: a witness beyond `applied_seq`
+        // reports either way and would prove nothing.
         ("valid prefix, extra bytes", {
             let mut b = good.clone();
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
             b.extend_from_slice(b"trailing");
             b
         }),
