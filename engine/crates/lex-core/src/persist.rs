@@ -74,7 +74,7 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// appends `.tmp` to the full file name ([`suffixed`]); `with_extension` would
 /// strip the store's extension and leave a stray sibling `<stem>.tmp`.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = suffixed(path, ".tmp");
+    let tmp = tmp_path(path);
     ensure_parent_dir(path)?;
     let mut f = File::create(&tmp)?;
     f.write_all(bytes)?;
@@ -85,6 +85,18 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
     }
     Ok(())
+}
+
+/// The temporary path [`write_atomic`] writes through.
+///
+/// Called by `write_atomic` itself, so every other site that needs to name,
+/// sweep, or block that file derives it from the same definition rather than
+/// re-spelling the convention. Four sites had grown their own copy, and the
+/// one that mattered was a fault injector: a test that plants an obstacle at a
+/// separately-spelled path stops obstructing anything the moment the writer
+/// moves, and passes vacuously instead of failing.
+pub(crate) fn tmp_path(path: &Path) -> PathBuf {
+    suffixed(path, ".tmp")
 }
 
 /// Best-effort fsync of the parent directory so the rename itself is durable.

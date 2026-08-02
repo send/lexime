@@ -703,15 +703,20 @@ impl UserHistory {
     }
 }
 
-/// The temporary path a durable checkpoint write goes through.
+/// Test support: the temporary path a durable checkpoint write goes through.
 ///
-/// Exported for fault injection: a test in a dependent crate can put a
-/// directory here to make the checkpoint write — and only the checkpoint
-/// write — fail, leaving the rest of the family (notably the
-/// unpersisted-deletion marker) writable and the existing checkpoint
-/// readable. Deriving it here rather than re-spelling the convention in the
-/// test keeps the injection from silently becoming a no-op if the naming
-/// changes.
+/// Exported so a fault-injection test in a dependent crate can put a directory
+/// here and fail the checkpoint write — and only that write — leaving the rest
+/// of the family (notably the unpersisted-deletion marker) writable and the
+/// existing checkpoint readable, which is what a restart-crossing test needs.
+///
+/// It forwards to the definition `write_atomic` itself calls. Re-spelling the
+/// convention here would have made the obstacle independent of the path the
+/// writer actually uses, so a change inside `write_atomic` would leave the
+/// injector planting a directory nobody visits and the tests passing
+/// vacuously. No production caller; `persist` is crate-private, so this is the
+/// seam. A proper injectable writer for checkpoints — the shape `WalIo` gives
+/// the WAL — would retire both this and the older parent-as-a-file trick.
 pub fn checkpoint_tmp_path(checkpoint_path: &std::path::Path) -> std::path::PathBuf {
-    crate::persist::suffixed(checkpoint_path, ".tmp")
+    crate::persist::tmp_path(checkpoint_path)
 }

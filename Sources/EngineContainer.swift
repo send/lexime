@@ -118,15 +118,13 @@ final class EngineContainer {
             // return first. (migrationFailed cannot co-occur with
             // migratedFromV1, being its negation; it is appended uniformly
             // rather than special-cased.)
+            let stateDetail = "checkpoint: \(report.checkpointState), wal: \(report.walState)"
             var degraded = ""
             if report.migrationFailed {
                 degraded += " migration=failed(v1 kept)"
             }
             if report.appendsFrozen {
                 degraded += " appends=frozen(memory-only until compaction)"
-            }
-            if report.deletionLost {
-                degraded += " deletion=lost(prior session, entry may be back)"
             }
             // Appended outside the branch chain below, not inside it: the
             // chain is mutually exclusive, and a lost deletion co-occurs
@@ -137,14 +135,13 @@ final class EngineContainer {
             // learning was lost", this one means the opposite, data that
             // survived a deletion the user asked for (#312).
             if report.deletionLost {
-                let detail =
-                    "checkpoint: \(report.checkpointState), wal: \(report.walState)\(degraded)"
+                degraded += " deletion=lost(prior session, entry may be back)"
+                let detail = stateDetail + degraded
                 NSLog("Lexime: A deletion from a previous session was not persisted (%@)", detail)
                 failures.append(.historyDeletionLost(detail: detail))
             }
             if report.dataLossSuspected {
-                var detail =
-                    "checkpoint: \(report.checkpointState), wal: \(report.walState)"
+                var detail = stateDetail
                 if !report.quarantinedPaths.isEmpty {
                     detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
                 }

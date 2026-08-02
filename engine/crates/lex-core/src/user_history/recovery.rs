@@ -487,10 +487,18 @@ pub fn v1_backup_path(checkpoint_path: &Path) -> PathBuf {
 /// Remove recovery artifacts (`.v1.bak`, `.corrupt-*`, stray `.tmp`) for
 /// this history family. `clear()` calls this: a privacy wipe must not leave
 /// rescued bytes behind.
+///
+/// Deliberately **not** the sweep for the unpersisted-deletion marker, even
+/// though that is a family member too: this returns on its first non-NotFound
+/// error and only reaches the `.corrupt-*` files afterwards, so letting a
+/// stubborn 16-byte sidecar that holds no user text stand in front of files
+/// that hold plenty would be the wrong trade. `clear_impl` removes the marker
+/// itself. (The same fail-fast shape means a stubborn `.v1.bak` can already
+/// block the quarantine sweep — pre-existing, tracked separately.)
 pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     for path in [
         v1_backup_path(checkpoint_path),
-        persist::suffixed(checkpoint_path, ".tmp"),
+        persist::tmp_path(checkpoint_path),
         // The v1 writer used `with_extension("tmp")` (`user_history.tmp`):
         // a pre-upgrade crash before rename can leave a full serialized
         // history copy under that name.

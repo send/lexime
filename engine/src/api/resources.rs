@@ -165,6 +165,12 @@ pub struct LexUserHistory {
 const GEN_BITS: u32 = 21;
 const GEN_MASK: u64 = (1 << GEN_BITS) - 1;
 
+/// Fold one record's breach into the batch's claim, so the merge rule that
+/// makes `Lost` absorbing is stated once rather than at each arm that raises.
+fn note_breach(slot: &mut Option<DeletionBreach>, breach: DeletionBreach) {
+    *slot = Some(slot.map_or(breach, |prev| prev.merge(breach)));
+}
+
 fn covered_of(ledger: u64) -> u64 {
     ledger & GEN_MASK
 }
@@ -407,6 +413,11 @@ impl LexUserHistory {
     /// failing disk may take the process down in between. A caller that never
     /// acknowledges (a headless tool) simply gets the report again next time,
     /// which is the safe direction.
+    ///
+    /// Acknowledges the report as a whole, not one field of it: today
+    /// `deletion_lost` is the only fact with durable state behind it, so that
+    /// is all there is to retract, and a later deliver-once fact joins here
+    /// rather than growing a second ack.
     ///
     /// Idempotent; safe to call when nothing was reported.
     fn ack_open_report(&self) {
@@ -757,10 +768,7 @@ impl LexUserHistory {
                         // the user a *deletion* did not persist — a privacy
                         // claim about an operation they never requested.
                         if matches!(record, WalRecord::Tombstone { .. }) {
-                            durability_failed = Some(match durability_failed {
-                                Some(prev) => prev.merge(DeletionBreach::Unflushed { seq }),
-                                None => DeletionBreach::Unflushed { seq },
-                            });
+                            note_breach(&mut durability_failed, DeletionBreach::Unflushed { seq });
                         }
                         sequenced.push((record, Some(seq)));
                     }
@@ -780,10 +788,7 @@ impl LexUserHistory {
                         // via the async heal a re-learnable Committed loss can
                         // wait for.
                         if matches!(record, WalRecord::Tombstone { .. }) {
-                            durability_failed = Some(match durability_failed {
-                                Some(prev) => prev.merge(DeletionBreach::Lost),
-                                None => DeletionBreach::Lost,
-                            });
+                            note_breach(&mut durability_failed, DeletionBreach::Lost);
                         }
                         sequenced.push((record, None));
                     }

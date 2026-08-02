@@ -128,7 +128,7 @@ impl DeletionBreach {
 /// file name so quarantine rotation and the clear sweep keep matching it.
 /// It does **not** contain `.corrupt-`, so [`persist::quarantined_files`]
 /// never picks it up (pinned by a test).
-pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
+pub(crate) fn marker_path(checkpoint_path: &Path) -> PathBuf {
     persist::suffixed(checkpoint_path, ".deletion-pending")
 }
 
@@ -174,10 +174,7 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// want anyway — but it would fork [`write_atomic`] into a second, weaker
 /// durable-write path to save milliseconds on a disk that is already failing.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
-    let merged = match read(checkpoint_path) {
-        Some(existing) => existing.merge(breach),
-        None => breach,
-    };
+    let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
     write_atomic(&marker_path(checkpoint_path), &merged.encode())
 }
 
@@ -189,7 +186,7 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
 /// disk this runs against is the one that just failed.
 pub fn remove(checkpoint_path: &Path) {
     let path = marker_path(checkpoint_path);
-    for p in [persist::suffixed(&path, ".tmp"), path] {
+    for p in [persist::tmp_path(&path), path] {
         match fs::remove_file(&p) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
