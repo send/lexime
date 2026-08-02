@@ -168,6 +168,13 @@ pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
 /// readers). A longer file is malformed anyway — `decode` needs the first
 /// [`LEN`] bytes, and a file that has more of them is not this format.
 pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
+    read_raw(checkpoint_path).map(|bytes| DeletionBreach::decode(&bytes))
+}
+
+/// The marker's bytes, under the same rules as [`read`]: `None` means — and
+/// only means — there is no file, and anything unreadable comes back as a
+/// buffer that [`DeletionBreach::decode`] resolves to `Lost`.
+fn read_raw(checkpoint_path: &Path) -> Option<Vec<u8>> {
     let path = marker_path(checkpoint_path);
     // Ask what is there before opening it. A FIFO left at this path by a
     // restore or a sync tool would make a read-only `File::open` block until
@@ -179,14 +186,14 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            return Some(DeletionBreach::Lost);
+            return Some(Vec::new());
         }
         Ok(meta) if !meta.file_type().is_file() => {
             warn!(
                 "unpersisted-deletion marker at {} is not a regular file; reporting conservatively",
                 path.display()
             );
-            return Some(DeletionBreach::Lost);
+            return Some(Vec::new());
         }
         Ok(_) => {}
     }
@@ -195,17 +202,17 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            return Some(DeletionBreach::Lost);
+            return Some(Vec::new());
         }
     };
     // LEN + 1, so a longer file is *seen* to be longer rather than read as a
     // well-formed prefix — the round-trip in `decode` then rejects it.
     let mut buf = Vec::with_capacity(LEN + 1);
     match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64 + 1), &mut buf) {
-        Ok(_) => Some(DeletionBreach::decode(&buf)),
+        Ok(_) => Some(buf),
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            Some(DeletionBreach::Lost)
+            Some(Vec::new())
         }
     }
 }
@@ -254,7 +261,17 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// cache), but it would reopen a power-loss window in the *report* about a
 /// deletion whose own power-loss window §6 sets to zero.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
-    let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
+    let existing = read_raw(checkpoint_path);
+    let merged = existing
+        .as_deref()
+        .map_or(breach, |bytes| DeletionBreach::decode(bytes).merge(breach));
+    let encoded = merged.encode();
+    if existing.as_deref() == Some(&encoded[..]) {
+        // The disk already says exactly this. Skipping matters because the
+        // claim is re-asserted on every raise while it is outstanding, and
+        // each write is an F_FULLFSYNC on the key-processing thread.
+        return Ok(());
+    }
     persist::ensure_parent_dir(checkpoint_path)?;
     let path = marker_path(checkpoint_path);
 
@@ -291,7 +308,7 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
             fs::File::create(&path)?
         }
     };
-    io::Write::write_all(&mut f, &merged.encode())?;
+    io::Write::write_all(&mut f, &encoded)?;
     f.sync_all()
 }
 

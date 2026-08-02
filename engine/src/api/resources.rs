@@ -158,33 +158,47 @@ pub struct LexUserHistory {
     /// 21 bits per generation: a wrap needs ~2M failed appends inside one
     /// session, and the values never leave the process.
     durability_ledger: AtomicU64,
-    /// This session has claimed a `Lost` breach, whether or not the write of
-    /// it reached the disk.
+    /// What the unpersisted-deletion marker should say right now.
     ///
-    /// The merge that keeps `Lost` from being downgraded runs against the
-    /// file, so a failed write used to drop the claim entirely and let the
-    /// next, weaker one start from an empty read — on the failing disk where
-    /// the write fails, which is the only disk this path runs on.
+    /// The marker is documented — in SPEC and in AGENTS — as *the ledger's
+    /// on-disk projection*, and this is the value it projects. Four call sites
+    /// used to maintain the file incrementally, each with its own flags and
+    /// its own decision about when to touch it, and three consecutive review
+    /// rounds each found one of them forgetting a case: an acknowledgement
+    /// that ignored a failed unlink, a wipe that did the same, a raise that
+    /// skipped the write when the breach it carried was `None`. Incremental
+    /// maintenance is not a projection. Sites now update this value and call
+    /// [`Self::sync_marker`], which is the only thing that touches the file.
     ///
-    /// One bit is enough, which is why this is an atomic and not a second
-    /// lock. The other claim is `Unflushed { seq }`, and seqs are monotonic
-    /// within a session, so a later unflushed witness always dominates an
-    /// earlier one: re-asserting it would change nothing. Only `Lost`, which
-    /// no witness can outrank, has to survive a failed write.
-    session_lost_claim: AtomicBool,
-    /// A `deletion_lost` report from a previous session that nothing has
-    /// delivered yet.
+    /// Two claims, kept apart because they retire on different events:
+    /// - `session` — what this process has failed to persist. Retired by a
+    ///   durable checkpoint covering it.
+    /// - `inherited` — what a previous session left, as read at open. The
+    ///   ledger's `covered` has no authority over it: a checkpoint written now
+    ///   persists the *resurrected* entry rather than removing it. Retired by
+    ///   delivery (`ack_open_report`) or by a wipe.
     ///
-    /// The ledger's `covered` has no authority over it. A checkpoint written
-    /// this session persists the *resurrected* entry rather than removing it,
-    /// so covering this session's own breach settles nothing about the
-    /// inherited one — and the two share a single file. Without this, a
-    /// session that raised a breach of its own and then healed would unlink
-    /// the inherited claim on its way past, and the next launch would report
-    /// nothing while the entry sat in the checkpoint. Cleared by delivery
-    /// (`ack_open_report`) or by a wipe, the two events that really do settle
-    /// it.
-    inherited_report_unacked: AtomicBool,
+    /// Behind the wal mutex like every other marker operation, so the value
+    /// and the file cannot be updated out of order.
+    claims: Mutex<MarkerClaims>,
+}
+
+/// The two outstanding deletion claims, and what they project onto disk.
+#[derive(Clone, Copy, Default)]
+struct MarkerClaims {
+    session: Option<DeletionBreach>,
+    inherited: Option<DeletionBreach>,
+}
+
+impl MarkerClaims {
+    /// What the marker should hold — the stronger of the two, or nothing.
+    fn projected(&self) -> Option<DeletionBreach> {
+        match (self.session, self.inherited) {
+            (Some(a), Some(b)) => Some(a.merge(b)),
+            (only @ Some(_), None) | (None, only @ Some(_)) => only,
+            (None, None) => None,
+        }
+    }
 }
 
 /// Layout of `LexUserHistory::durability_ledger`, low bits first:
@@ -404,7 +418,12 @@ impl LexUserHistory {
         // it actually is — a live durability problem — so the first durable
         // checkpoint both clears the row and unlinks the marker, instead of
         // recovery retracting on evidence it does not have.
-        let report_deletion_lost = report.deletion_lost;
+        // The claim a previous session left, if the report says one is owed.
+        let inherited_claim = if report.deletion_lost {
+            deletion_marker::read(cp).or(Some(DeletionBreach::Lost))
+        } else {
+            None
+        };
         let ledger = if report.deletion_pending_checkpoint {
             pack_ledger(0, 1, 0)
         } else {
@@ -418,8 +437,12 @@ impl LexUserHistory {
             commit_log: Mutex::new(commit_log),
             report,
             durability_ledger: AtomicU64::new(ledger),
-            session_lost_claim: AtomicBool::new(false),
-            inherited_report_unacked: AtomicBool::new(report_deletion_lost),
+            claims: Mutex::new(MarkerClaims {
+                session: None,
+                // Read at open, so the projection knows what a previous
+                // session left rather than having to re-read the file.
+                inherited: inherited_claim,
+            }),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -483,8 +506,8 @@ impl LexUserHistory {
         if !self.report.deletion_lost {
             return;
         }
-        // Under the wal mutex like every other marker mutation, so an
-        // acknowledgement cannot land between a raise and its marker write.
+        // Under the wal mutex like every other marker operation, so an
+        // acknowledgement cannot land between a raise and its projection.
         let wal = match self.wal.try_lock() {
             Ok(w) => w,
             Err(std::sync::TryLockError::WouldBlock) => return,
@@ -493,34 +516,32 @@ impl LexUserHistory {
         let ledger = self.durability_ledger.load(Ordering::SeqCst);
         if raised_deletion_of(ledger) > covered_of(ledger) {
             // This session raised a breach of its own after the report was
-            // built. The marker on disk is now that breach's too, and it is
-            // still outstanding — so it stays, and so does the report.
+            // built. The marker still has to carry that, so there is nothing
+            // to deliver away yet.
             return;
         }
-        // Settle only if the record is actually gone. `remove` can fail on a
-        // path the engine does not control, and clearing the flag on a failed
-        // removal would drop the row while the marker stands — the warning
-        // returns next launch and the retry went with the row.
-        if deletion_marker::remove(wal.checkpoint_path()) {
-            self.inherited_report_unacked.store(false, Ordering::SeqCst);
+        let mut claims = lock_recover(&self.claims);
+        let without = MarkerClaims {
+            inherited: None,
+            ..*claims
+        };
+        // The only site that commits its change *after* the disk agrees.
+        // Delivery is not done until the record is gone: dropping the claim on
+        // a failed unlink would take the row away while the marker stood, and
+        // the warning would come back on the next launch with the retry.
+        if self.apply_marker(&wal, without.projected()) {
+            *claims = without;
         }
     }
 
-    /// Whether a lost-deletion report from a previous session is still owed to
-    /// the user.
+    /// Whether a lost-deletion report from a previous session is still owed.
     ///
-    /// The single authority for whether the status row belongs on screen, and
-    /// deliberately not two: an acknowledgement that could not retire the
-    /// record and a wipe that failed before its commit point both leave the
-    /// report owed, and both used to be reasoned about separately — the ack by
-    /// returning its outcome, the wipe by a comment arguing that retracting a
-    /// session early was the better of two wrongs. One predicate covers both,
-    /// because both are asking the same question.
-    ///
-    /// One atomic load, no lock: this is read from the menu path, which
-    /// `durability_issues()` above is careful never to block.
+    /// The single authority for whether the status row belongs on screen. Both
+    /// an acknowledgement the engine could not complete and a wipe that failed
+    /// before its commit point leave it owed, so one question answers for both
+    /// call sites.
     fn deletion_report_owed(&self) -> bool {
-        self.inherited_report_unacked.load(Ordering::SeqCst)
+        lock_recover(&self.claims).inherited.is_some()
     }
 
     /// Durability problems that hold right now, most severe first.
@@ -551,6 +572,37 @@ impl LexUserHistory {
 }
 
 impl LexUserHistory {
+    /// Make the marker say `desired`, and report whether the file now agrees.
+    ///
+    /// The only place the marker is written or removed. Sites decide what the
+    /// claims are; this projects them. On failure the caller's claim stays in
+    /// memory, so the next site to project re-asserts it — which is what makes
+    /// a transient write failure recover without anyone remembering to retry.
+    fn apply_marker(
+        &self,
+        wal: &MutexGuard<'_, HistoryWal>,
+        desired: Option<DeletionBreach>,
+    ) -> bool {
+        match desired {
+            Some(claim) => match deletion_marker::merge_write(wal.checkpoint_path(), claim) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("failed to record the unpersisted deletion for the next start: {e}");
+                    false
+                }
+            },
+            None => deletion_marker::remove(wal.checkpoint_path()),
+        }
+    }
+
+    /// Project the current claims onto disk. Sites that settle a claim
+    /// unconditionally — a cover, a wipe — use this; only the acknowledgement
+    /// needs to know whether the disk agreed.
+    fn project_marker(&self, wal: &MutexGuard<'_, HistoryWal>) {
+        let desired = lock_recover(&self.claims).projected();
+        self.apply_marker(wal, desired);
+    }
+
     /// Record what this batch failed to make durable (#295 / #288).
     ///
     /// `memory_only` — at least one effect was applied with no WAL frame, so
@@ -588,24 +640,23 @@ impl LexUserHistory {
         // open a crash window whose only outcome is the silent one; writing
         // first can only over-report, since a fallback that succeeds unlinks
         // the marker through the cover below.
-        if let Some(breach) = deletion_breach {
-            // Merge against what this session has already claimed, not only
-            // against the file: a write that failed left nothing on disk to
-            // merge with, and starting over from an empty read is how a
-            // standing `Lost` gets replaced by a suppressible witness.
-            let merged = if self.session_lost_claim.load(Ordering::SeqCst) {
-                breach.merge(DeletionBreach::Lost)
-            } else {
-                breach
-            };
-            if merged == DeletionBreach::Lost {
-                self.session_lost_claim.store(true, Ordering::SeqCst);
+        // Projected on every raise, not only when this one carries a breach.
+        // A write that failed leaves the claim in memory, and the next raise
+        // re-asserts it — including a memory-only one, which is the shape that
+        // used to skip the retry entirely and let a recovered disk go
+        // unrecorded.
+        {
+            let mut claims = lock_recover(&self.claims);
+            if let Some(breach) = deletion_breach {
+                claims.session = Some(match claims.session {
+                    Some(prev) => prev.merge(breach),
+                    None => breach,
+                });
             }
-            if let Err(e) = deletion_marker::merge_write(wal.checkpoint_path(), merged) {
-                // Nothing else can carry the fact across the restart. The
-                // runtime row still reports it for this session, and the claim
-                // above outlives the failure.
-                warn!("failed to record the unpersisted deletion for the next start: {e}");
+            let desired = claims.projected();
+            drop(claims);
+            if desired.is_some() {
+                self.apply_marker(wal, desired);
             }
         }
         let mut current = self.durability_ledger.load(Ordering::SeqCst);
@@ -720,15 +771,12 @@ impl LexUserHistory {
                     // checkpoint covered.
                     let raised = raised_deletion_of(current);
                     if raised > covered_of(current) && raised <= covered {
-                        self.session_lost_claim.store(false, Ordering::SeqCst);
-                        // Only this session's claim is settled. The file may
-                        // also carry an inherited report that nothing has
-                        // shown the user, and a checkpoint written here
-                        // persists the resurrected entry rather than removing
-                        // it — so it is no authority over that claim.
-                        if !self.inherited_report_unacked.load(Ordering::SeqCst) {
-                            deletion_marker::remove(wal.checkpoint_path());
-                        }
+                        // The session's own claim is settled by this durable
+                        // checkpoint. The inherited one is not — a checkpoint
+                        // written now persists the *resurrected* entry — so
+                        // the projection keeps the file if that is still owed.
+                        lock_recover(&self.claims).session = None;
+                        self.project_marker(wal);
                     }
                     return;
                 }
@@ -1009,9 +1057,8 @@ impl LexUserHistory {
         // an unremovable marker is stale, not owed — and the next startup
         // reaches the same verdict from the empty history it loads, so the two
         // cannot disagree.
-        deletion_marker::remove(wal.checkpoint_path());
-        self.session_lost_claim.store(false, Ordering::SeqCst);
-        self.inherited_report_unacked.store(false, Ordering::SeqCst);
+        *lock_recover(&self.claims) = MarkerClaims::default();
+        self.project_marker(&wal);
 
         // Physical deletions below are deferred-error: the logical clear is
         // committed, so every step runs (the memory reset especially —
@@ -1437,8 +1484,10 @@ mod tests {
                 deletion_pending_checkpoint: false,
             },
             durability_ledger: AtomicU64::new(0),
-            session_lost_claim: AtomicBool::new(false),
-            inherited_report_unacked: AtomicBool::new(deletion_lost),
+            claims: Mutex::new(MarkerClaims {
+                session: None,
+                inherited: deletion_lost.then_some(DeletionBreach::Lost),
+            }),
         })
     }
 
@@ -2198,6 +2247,40 @@ mod tests {
             marker(&cp),
             None,
             "a durable checkpoint is what retracts it — the only thing that can"
+        );
+    }
+
+    #[test]
+    fn test_a_later_memory_only_raise_re_asserts_a_failed_claim() {
+        // A `Lost` write that failed leaves the claim in memory, and the next
+        // raise re-asserts it — including a memory-only one, which carries no
+        // breach of its own. The projection is of the *claims*, not of the
+        // breach this particular raise happened to bring, so there is no site
+        // that can forget to retry.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+        hist.apply_records(&[committed("きょう", "今日")]);
+
+        // The marker write fails: a non-empty directory is the one shape the
+        // writer will not clear out of its way.
+        let marker_dir = deletion_marker::marker_path(&cp);
+        std::fs::create_dir(&marker_dir).unwrap();
+        std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        std::fs::remove_dir_all(&marker_dir).unwrap();
+        assert_eq!(marker(&cp), None, "nothing reached the disk");
+
+        // A later *commit* against the frozen WAL — no deletion, so no breach.
+        hist.apply_records(&[committed("あした", "明日")]);
+
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "the retained claim must be re-asserted on any raise, not only on another deletion"
         );
     }
 
