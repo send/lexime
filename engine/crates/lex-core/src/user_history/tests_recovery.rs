@@ -1920,6 +1920,27 @@ fn t10_removal_reports_false_when_only_the_orphan_resists() {
 }
 
 #[test]
+fn t10_a_resisting_marker_does_not_spare_the_orphan() {
+    // The other order, which is the one that distinguishes `&` from `&&`: if
+    // the canonical file refuses first, a short-circuit would never attempt
+    // the orphan and would leave a claim alive that could have been cleared.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("restored"), b"not ours").unwrap();
+    fs::write(&tmp, encoded_marker(DeletionBreach::Lost)).unwrap();
+
+    assert!(!deletion_marker::remove(&f.cp), "the marker resisted");
+    assert!(
+        !tmp.exists(),
+        "but the orphan was still attempted — a refusal must not spare the other half"
+    );
+}
+
+#[test]
 fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
     // A read-only `File::open` on a FIFO blocks until a writer appears, and
     // this runs synchronously inside the IME's startup. Left unguarded, a
