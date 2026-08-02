@@ -79,6 +79,18 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// is opened by name like any other file. [`create_regular`] closes that end,
 /// so neither half of the write can be diverted by whatever a restore or sync
 /// tool left lying at either name.
+///
+/// What this still cannot promise: `rename` promotes a *name*, not the
+/// descriptor whose bytes were flushed. A writer that replaced the tmp between
+/// the open and the rename would have its file promoted instead. POSIX offers
+/// no fd-based rename, so the window cannot be closed by construction, and the
+/// two ways to narrow it are both worse than stating it: a uniquely-named tmp
+/// breaks the LXUD rule that the logical marker is the canonical file *and*
+/// its orphan tmp (a crash must leave the stronger claim findable at a known
+/// name), and a stat-before-rename only shrinks the window while reading as
+/// though it closed it. It also buys nothing: anything that can write into
+/// this directory can overwrite the destination outright at any moment, with
+/// no window to hit.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = tmp_path(path);
     ensure_parent_dir(path)?;
@@ -129,12 +141,45 @@ pub(crate) fn tmp_path(path: &Path) -> PathBuf {
 /// namespace, and a portable fallback would answer "no protection" silently.
 #[cfg(unix)]
 fn create_regular(path: &Path) -> io::Result<File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    regular_only(&mut opts, path)
+}
+
+/// Open an existing path for reading, refusing anything that is not a regular
+/// file — the read counterpart of [`create_regular`], and the same single
+/// resolution.
+///
+/// A `symlink_metadata` check followed by an open is two resolutions of the
+/// same name, so substituting a FIFO between them leaves the blocking open
+/// intact; that is the shape this replaced. Callers distinguish `NotFound`
+/// from every other error themselves — for the deletion marker only the former
+/// is clean.
+#[cfg(unix)]
+pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    regular_only(&mut opts, path)
+}
+
+/// Open through `opts` with the final component resolved exactly once, and
+/// reject anything that is not a regular file.
+///
+/// `O_NOFOLLOW` fails a symlink in the open itself rather than acting on its
+/// target. `O_NONBLOCK` keeps a FIFO from turning the call into a wait — for
+/// writing it becomes `ENXIO` with no reader, for reading it returns at once —
+/// and has no effect on a regular file. The `fstat` then runs on the
+/// descriptor already obtained, so what it reports is what was opened rather
+/// than what the name resolves to now; that is what catches a FIFO whose other
+/// end happens to be attached, plus sockets and device nodes.
+///
+/// Unix-only on purpose. A port would have to answer these for its own
+/// namespace, and a portable fallback would answer "no protection" silently.
+#[cfg(unix)]
+fn regular_only(opts: &mut fs::OpenOptions, path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt as _;
 
-    let f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
+    let f = opts
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     if !f.metadata()?.is_file() {

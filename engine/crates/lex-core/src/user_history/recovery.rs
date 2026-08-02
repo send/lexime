@@ -413,6 +413,19 @@ pub fn open_recovering(
     } else {
         (checkpoint_applied_seq, checkpoint_empty)
     };
+    // A retraction this startup decided but could not carry out. The verdict
+    // is permanent — the entries the claim spoke of are gone, and later
+    // learning is not them — but the only place to record it is the file we
+    // just failed to unlink, so the debt has to be handed to the runtime
+    // instead. Recovery is the last marker site outside the single projection
+    // writer (`apply_marker`), and this is the hole that left: the runtime's
+    // projection does retry a stale file, but only when a compaction runs, and
+    // the next one is a thousand frames away. A restart before then reloads
+    // the marker against a history that replay has made non-empty, and reports
+    // a loss this startup already refuted. Scheduling the compaction *now* is
+    // what makes the retry prompt, through the channel other recovery results
+    // already use rather than a mechanism of its own.
+    let mut marker_retraction_stuck = false;
     if let Some(breach) = deletion_marker::read(checkpoint_path) {
         if breach == deletion_marker::DeletionBreach::Lost && durable_empty && history.is_empty() {
             // `Lost` says an entry survived the deletion. Refuting that takes
@@ -431,7 +444,7 @@ pub fn open_recovering(
             // a decoded `Lost` from a fallback one — neither is refutable
             // while the checkpoint still holds something.
             info!("an unpersisted-deletion marker outlived the entries it referred to");
-            deletion_marker::remove(checkpoint_path);
+            marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
         } else if !breach.outstanding(durable_applied_seq) {
             // A durable checkpoint contains the deletion's effect, so it is
             // persisted. Either a crash landed between a successful `save()`
@@ -439,7 +452,7 @@ pub fn open_recovering(
             // the covering checkpoint. Retracting is sound because the evidence
             // is a checkpoint on disk.
             info!("an unpersisted-deletion marker is covered by a durable checkpoint");
-            deletion_marker::remove(checkpoint_path);
+            marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
         } else if breach.outstanding(history.applied_seq()) {
             // The frame is provably not in the state we just loaded, so the
             // deletion did not take and nothing will make it take. Promote the
@@ -514,7 +527,13 @@ pub fn open_recovering(
     // re-attempts properly. The legacy-WAL variant still heals, via
     // `appends_frozen` below: there the WAL is frozen, which is a real
     // degradation the compaction genuinely fixes.
-    report.compaction_recommended = report.migrated_from_v1
+    // `marker_retraction_stuck` belongs here and `deletion_lost` deliberately
+    // does not (see its doc): a compaction under an outstanding report would
+    // checkpoint the resurrected entry and cover the ledger, telling the user
+    // everything is fine. A *retracted* claim is the opposite case — it is
+    // already false, so there is nothing a checkpoint could wrongly bless.
+    report.compaction_recommended = marker_retraction_stuck
+        || report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0

@@ -187,11 +187,18 @@ what a generic reviewer misses:
   replaces a symlink, a FIFO or an unwritable file at the path rather than
   writing through it, which also keeps a failed promotion from leaving a
   witness that re-based seq numbers could satisfy — but `rename` guards only
-  the destination, so the tmp `write_atomic` writes through is opened
-  `O_NOFOLLOW | O_NONBLOCK` and `fstat`-checked on the obtained descriptor,
+  the destination, so both the tmp `write_atomic` writes through and the
+  marker the reader opens go through one resolution
+  (`O_NOFOLLOW | O_NONBLOCK` plus an `fstat` on the obtained descriptor),
   closing by construction the symlink that would truncate a file this crate
-  does not own and the readerless FIFO that would hang the key-processing
-  thread;
+  does not own and the readerless FIFO that would hang startup or the
+  key-processing thread; a check-then-open would leave the two resolutions a
+  substitution can race, which is why the reader stopped doing that;
+  `rename` promoting a *name* rather than the flushed descriptor stays open
+  and is stated rather than papered over — POSIX has no fd-based rename, a
+  uniquely-named tmp would break the marker-plus-orphan pair below, and
+  anything able to write in that directory can overwrite the destination
+  outright with no window to hit;
   an empty loaded history and an empty durable set together settle a `Lost`
   claim — either half alone was wrong once, and requiring both also removes
   any need to tell an encoded `Lost` from the fallback a malformed marker

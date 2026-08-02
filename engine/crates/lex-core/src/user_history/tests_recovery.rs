@@ -1791,6 +1791,36 @@ fn t10_a_replayed_tombstone_does_not_settle_a_claim_the_checkpoint_outlives() {
 }
 
 #[test]
+fn t10_a_retraction_that_cannot_unlink_schedules_a_compaction() {
+    // The verdict is permanent — nothing survived the deletion — but the only
+    // durable place to record it is the file that would not unlink, so the
+    // debt has to reach the runtime some other way. Without this, the next
+    // compaction is a thousand frames off; a restart before then reloads the
+    // same marker against a history replay has made non-empty and reports a
+    // loss this startup already refuted.
+    let f = fx();
+    let empty = UserHistory::new();
+    empty.save(&f.cp).unwrap();
+    // A directory with something in it: `remove` clears an *empty* one as a
+    // placeholder but never walks a populated tree on the startup thread, so
+    // this is the reachable shape of a retraction that cannot complete.
+    let path = deletion_marker::marker_path(&f.cp);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("left-by-something-else"), b"x").unwrap();
+
+    let report = open_report_of(&f);
+    assert!(
+        !report.deletion_lost,
+        "the claim is still refuted — the unlink failing does not revive it"
+    );
+    assert!(
+        report.compaction_recommended,
+        "and the retry has to be scheduled, since the file still says otherwise"
+    );
+    assert!(path.exists(), "fixture must actually block the removal");
+}
+
+#[test]
 fn t10_malformed_markers_all_report() {
     // Fail-safe by construction: only NotFound is clean. Every malformed
     // shape resolves to the strongest claim, which is why the format carries
@@ -2017,6 +2047,15 @@ fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
     // Note the failure mode: without the guard this does not fail, it HANGS —
     // which is exactly the defect (a startup that never completes). A mutation
     // check on the guard therefore shows up as a timeout, not a red test.
+    //
+    // What this test canNOT see is *how* the guard is built. It passed equally
+    // against the earlier `symlink_metadata`-then-open form, whose two
+    // resolutions of the same name let a FIFO substituted in between reach the
+    // blocking open anyway. Nothing deterministic distinguishes the two — the
+    // window is a couple of syscalls wide — so the property is carried by
+    // construction instead: `read_at` goes through `persist::open_regular`,
+    // which resolves the name once and validates the descriptor it got, and
+    // there is no longer a path-based check for a substitution to race.
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
     assert!(open_report_of(&f).deletion_lost);
 }

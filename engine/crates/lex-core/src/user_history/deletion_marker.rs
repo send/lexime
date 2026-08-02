@@ -14,8 +14,15 @@
 //! | 0      | 4    | magic       | `LXDM`                                   |
 //! | 4      | 1    | version     | `1`                                      |
 //! | 5      | 1    | flags       | bit0 = a witness seq follows             |
-//! | 6      | 2    | reserved    | 0 on write, ignored on read              |
+//! | 6      | 2    | reserved    | **must be 0** in version 1               |
 //! | 8      | 8    | witness_seq | u64 LE, set with bit0; 0 is invalid      |
+//!
+//! "Ignored on read" would be the usual convention for a reserved field, and
+//! it is wrong here: `decode` accepts only what `encode` emits, so a non-zero
+//! reserved byte resolves to `Lost` like any other unrecognised shape. A later
+//! writer that read the field as ignorable and used it would turn every
+//! witnessed `Unflushed` into an unconditional lost-deletion warning. Spending
+//! it needs a version bump, which is what the version byte is for.
 //!
 //! **Fail-safe by construction: only `NotFound` means clean.** A read error, a
 //! bad magic, an unknown version, any length other than [`LEN`], a witness of
@@ -187,28 +194,14 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// there is no file, and anything unreadable comes back as a buffer that
 /// [`DeletionBreach::decode`] resolves to `Lost`.
 fn read_at(path: &Path) -> Option<Vec<u8>> {
-    // Ask what is there before opening it. A FIFO left at this path by a
-    // restore or a sync tool would make a read-only `File::open` block until
-    // someone opens the other end — and this runs synchronously inside
-    // `LexUserHistory::open`, on the thread the IME starts up on, so the input
-    // method would simply never become available. `symlink_metadata` rather
-    // than `metadata`: a symlink pointing at a FIFO is the same trap.
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
-            return Some(Vec::new());
-        }
-        Ok(meta) if !meta.file_type().is_file() => {
-            warn!(
-                "unpersisted-deletion marker at {} is not a regular file; reporting conservatively",
-                path.display()
-            );
-            return Some(Vec::new());
-        }
-        Ok(_) => {}
-    }
-    let mut file = match fs::File::open(path) {
+    // Through one descriptor, not a `symlink_metadata` check followed by an
+    // open: those are two pathname resolutions, and a restore or a sync tool
+    // replacing the checked regular file with a FIFO in between leaves the
+    // blocking open exactly where it was. This runs synchronously inside
+    // `LexUserHistory::open`, on the thread the IME starts up on, so that open
+    // never returning means the input method never becomes available.
+    // `open_regular` resolves the name once and validates what it got.
+    let mut file = match persist::open_regular(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
