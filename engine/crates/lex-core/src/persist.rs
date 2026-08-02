@@ -73,10 +73,16 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// is rolling back to the previous file, never corruption. The tmp name
 /// appends `.tmp` to the full file name ([`suffixed`]); `with_extension` would
 /// strip the store's extension and leave a stray sibling `<stem>.tmp`.
+///
+/// `rename` protects the *destination* — it replaces a symlink or a FIFO
+/// rather than writing through it — but that says nothing about the tmp, which
+/// is opened by name like any other file. [`create_regular`] closes that end,
+/// so neither half of the write can be diverted by whatever a restore or sync
+/// tool left lying at either name.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = tmp_path(path);
     ensure_parent_dir(path)?;
-    let mut f = File::create(&tmp)?;
+    let mut f = create_regular(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
@@ -98,6 +104,46 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// fails loudly rather than vacuously if the convention moves.)
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     suffixed(path, ".tmp")
+}
+
+/// Create-or-truncate a path, refusing anything that is not a regular file.
+///
+/// `File::create` resolves a symlink at the final component and truncates
+/// whatever it points at, and blocks indefinitely opening a FIFO that has no
+/// reader. Both are reachable without an adversary — a restore or a sync tool
+/// leaving an entry at a `.tmp` name is enough — and both are worse here than
+/// a failed write: the first destroys a file this crate does not own, the
+/// second hangs the thread that called it, which for the deletion marker is
+/// the key-processing thread.
+///
+/// Closed by construction rather than by a preceding `symlink_metadata` check,
+/// which would leave the check and the open racing over the same name:
+/// `O_NOFOLLOW` makes the symlink case fail in the open itself, `O_NONBLOCK`
+/// turns the readerless-FIFO case into `ENXIO` instead of a wait, and the
+/// `fstat` afterwards runs on the descriptor already obtained — so what it
+/// reports is what was opened, not what the name resolves to now. That last
+/// one is what catches a FIFO whose reader happens to be attached, plus
+/// sockets and device nodes.
+///
+/// Unix-only on purpose. A port would have to answer these for its own
+/// namespace, and a portable fallback would answer "no protection" silently.
+#[cfg(unix)]
+fn create_regular(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    Ok(f)
 }
 
 /// Best-effort fsync of the parent directory so the rename itself is durable.

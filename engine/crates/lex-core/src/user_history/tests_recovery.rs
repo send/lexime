@@ -1544,6 +1544,14 @@ fn remove_recovery_artifacts_wipes_backup_and_quarantine() {
 // says something about a *previous* session, not about the files just read.
 // ---------------------------------------------------------------------------
 
+/// The tmp `write_atomic` writes the marker through, derived from the same
+/// definition the writer calls — a separately-spelled name would stop
+/// obstructing anything the moment the convention moved, and the tests below
+/// would pass vacuously (`persist::tmp_path`'s own note).
+fn marker_tmp(f: &Fx) -> PathBuf {
+    crate::persist::tmp_path(&deletion_marker::marker_path(&f.cp))
+}
+
 fn write_marker(f: &Fx, breach: DeletionBreach) {
     deletion_marker::merge_write(&f.cp, breach).unwrap();
 }
@@ -2011,6 +2019,51 @@ fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
     // check on the guard therefore shows up as a timeout, not a red test.
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
     assert!(open_report_of(&f).deletion_lost);
+}
+
+#[test]
+fn t10_a_symlink_at_the_marker_tmp_is_not_written_through() {
+    // The write half of the same hazard the reader guards against. `rename`
+    // protects the marker's own path — it replaces a symlink rather than
+    // following it — but the tmp `write_atomic` writes through is opened by
+    // name, and `File::create` resolves a symlink there and truncates whatever
+    // it points at. The victim is a file this crate does not own, and the
+    // marker's writer runs on the key-processing thread.
+    let f = fx();
+    let victim = f.cp.parent().unwrap().join("someone-elses-file");
+    fs::write(&victim, b"not ours to truncate").unwrap();
+    std::os::unix::fs::symlink(&victim, marker_tmp(&f)).unwrap();
+
+    assert!(
+        deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).is_err(),
+        "a diverted write must fail rather than land somewhere else"
+    );
+    assert_eq!(
+        fs::read(&victim).unwrap(),
+        b"not ours to truncate",
+        "and the symlink's target must be untouched"
+    );
+}
+
+#[test]
+fn t10_a_fifo_at_the_marker_tmp_does_not_block_the_writer() {
+    // Same shape as the reader's FIFO guard, on the writer: opening a FIFO
+    // write-only waits for a reader, and this call sits on the key-processing
+    // thread under the wal mutex — every keystroke behind it. As with the
+    // reader's test the unguarded failure is a HANG, not a red assertion, so a
+    // mutation check on `create_regular` shows up as a timeout.
+    let f = fx();
+    let tmp = marker_tmp(&f);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&tmp)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+
+    assert!(
+        deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).is_err(),
+        "the writer must refuse the FIFO instead of waiting on a reader"
+    );
 }
 
 #[test]

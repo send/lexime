@@ -186,8 +186,16 @@ what a generic reviewer misses:
   FIFO at that path would block the IME's startup thread forever, and `rename`
   replaces a symlink, a FIFO or an unwritable file at the path rather than
   writing through it, which also keeps a failed promotion from leaving a
-  witness that re-based seq numbers could satisfy;
-  an empty loaded history settles a `Lost` claim outright — the startup
+  witness that re-based seq numbers could satisfy — but `rename` guards only
+  the destination, so the tmp `write_atomic` writes through is opened
+  `O_NOFOLLOW | O_NONBLOCK` and `fstat`-checked on the obtained descriptor,
+  closing by construction the symlink that would truncate a file this crate
+  does not own and the readerless FIFO that would hang the key-processing
+  thread;
+  an empty loaded history and an empty durable set together settle a `Lost`
+  claim — either half alone was wrong once, and requiring both also removes
+  any need to tell an encoded `Lost` from the fallback a malformed marker
+  decodes to; the startup
   counterpart of `clear` covering the ledger from its empty checkpoint, scoped
   to `Lost` because `Unflushed` is about durability rather than presence and
   replay can empty memory while the checkpoint still holds the entry; writes **merge** rather than replace,
