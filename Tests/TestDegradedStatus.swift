@@ -57,9 +57,11 @@ func testDegradedStatus() {
             .contains("前回"),
         "the latching row must place the loss in a previous session")
 
-    // It also co-occurs with a quarantine: independent facts about one startup,
-    // and EngineContainer appends it outside the mutually exclusive chain so
-    // neither can mask the other.
+    // It also co-occurs with a quarantine: independent facts about one startup.
+    // Asserting that through `rows` alone would only be testing Array.map — the
+    // claim that matters is EngineContainer's, that the lost-deletion case is
+    // appended outside its mutually exclusive branch chain. That is what
+    // `historyFailures(for:)` below exists to make testable.
     assertEqual(
         DegradedStatus.rows(
             initFailures: [.historyDeletionLost(detail: "x"), .historyDataLoss(detail: "y")],
@@ -67,6 +69,43 @@ func testDegradedStatus() {
         ).count,
         2,
         "a lost deletion and a quarantine are independent")
+
+    // S4 (#312). A lost deletion must survive alongside a quarantine, which is
+    // the branch chain's masking case: routing it through the chain would let
+    // dataLossSuspected swallow it, and no assertion over `rows` could see it.
+    let coexisting = EngineContainer.historyFailures(
+        deletionLost: true, dataLossSuspected: true, detail: "d", deletionDetail: "x")
+    assertEqual(coexisting.count, 2, "a quarantine must not mask the lost deletion")
+    assertTrue(
+        coexisting.contains {
+            if case .historyDeletionLost = $0 { return true } else { return false }
+        },
+        "the lost deletion is one of them")
+    assertEqual(
+        EngineContainer.historyFailures(
+            deletionLost: false, dataLossSuspected: true, detail: "d", deletionDetail: "x"
+        ).count,
+        1,
+        "a quarantine alone is one row")
+    assertTrue(
+        EngineContainer.historyFailures(
+            deletionLost: false, dataLossSuspected: false, detail: "d", deletionDetail: "x"
+        ).isEmpty,
+        "a clean start reports nothing")
+
+    // S5 (#312). A full wipe retracts the latched row: the engine has already
+    // unlinked the marker, and the row asks the user to delete an entry that no
+    // longer exists.
+    let container = EngineContainer(
+        engine: nil, dictionary: nil, history: nil, userDict: nil,
+        initFailures: [.historyDeletionLost(detail: "x"), .historyDataLoss(detail: "y")])
+    container.historyWasCleared()
+    assertEqual(container.initFailures.count, 1, "only the lost-deletion row is retracted")
+    assertTrue(
+        container.initFailures.contains {
+            if case .historyDataLoss = $0 { return true } else { return false }
+        },
+        "an unrelated latched failure survives a history wipe")
 }
 
 func testHistoryDurabilityFFI() {

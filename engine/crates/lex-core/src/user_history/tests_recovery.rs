@@ -1557,6 +1557,11 @@ fn open_report_of(f: &Fx) -> super::recovery::OpenReport {
     report
 }
 
+fn applied_seq_of(f: &Fx) -> u64 {
+    let (h, _, _) = open_recovering(&f.cp).unwrap();
+    h.applied_seq()
+}
+
 #[test]
 fn t10_no_marker_is_clean() {
     let f = fx();
@@ -1591,33 +1596,69 @@ fn t10_lost_marker_reports_and_survives_the_open() {
 
 #[test]
 fn t10_unflushed_witness_pins_the_boundary() {
-    // The suppression rule is `witness <= applied_seq`, and the boundary is
-    // the whole meaning: seq == applied_seq is the frame that *did* replay.
-    // A test that only probed values far from the boundary would survive
-    // turning `<=` into `<`.
+    // The suppression rule is `witness <= applied_seq`, and the boundary is the
+    // whole meaning: seq == applied_seq is the frame that *did* replay. A test
+    // that only probed values far from the boundary would survive turning `<=`
+    // into `<`.
     let f = fx();
     build_v2_state(&f, false);
-    let applied = {
-        let (h, _, _) = open_recovering(&f.cp).unwrap();
-        h.applied_seq()
-    };
+    let applied = applied_seq_of(&f);
     assert!(applied > 0, "fixture must reach a non-zero applied_seq");
 
     write_marker(&f, DeletionBreach::Unflushed { seq: applied });
     let report = open_report_of(&f);
     assert!(
         !report.deletion_lost,
-        "a frame the loaded state already includes was applied — no report"
+        "a frame the loaded state already includes was applied — nothing is owed"
     );
+    // Applied, but out of the page cache: the flush that failed never happened,
+    // so this is a live durability problem, not a settled one. Retracting here
+    // would be retract-then-persist.
+    assert!(report.deletion_pending_checkpoint);
     assert!(
-        !deletion_marker::marker_path(&f.cp).exists(),
-        "a settled marker is retracted, not left to linger"
+        deletion_marker::marker_path(&f.cp).exists(),
+        "only a durable checkpoint may retract; recovery writes none"
     );
 
-    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 1 });
+    let f2 = fx();
+    build_v2_state(&f2, false);
+    write_marker(&f2, DeletionBreach::Unflushed { seq: applied + 1 });
+    let report = open_report_of(&f2);
+    assert!(
+        report.deletion_lost,
+        "a frame beyond the loaded state never took effect — report it"
+    );
+    assert!(!report.deletion_pending_checkpoint);
+    // Promoted to unconditional: seq numbering is re-based by a WAL reset, so
+    // leaving a witness behind would let an unrelated later frame settle a
+    // report that is still owed.
+    assert_eq!(
+        deletion_marker::read(&f2.cp),
+        Some(DeletionBreach::Lost),
+        "an answered witness must stop depending on a comparison a reset can invalidate"
+    );
+}
+
+#[test]
+fn t10_a_reported_witness_cannot_be_settled_by_a_rebased_seq() {
+    // The concrete shape of the promotion above. A WAL quarantine re-bases
+    // numbering (`adopt_empty` restarts at the checkpoint's applied_seq + 1),
+    // so without the promotion a later, unrelated frame reaching the same seq
+    // would satisfy the old witness and silently drop the report.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 5 });
+
+    assert!(open_report_of(&f).deletion_lost);
+    // Numbering advances past the old witness on wholly unrelated work.
+    let mut h = UserHistory::new();
+    h.advance_applied_seq(applied + 99);
+    h.save(&f.cp).unwrap();
+
     assert!(
         open_report_of(&f).deletion_lost,
-        "a frame beyond the loaded state never took effect — report it"
+        "the report must not be settled by seqs the witness never referred to"
     );
 }
 
@@ -1664,27 +1705,54 @@ fn t10_malformed_markers_all_report() {
 
 #[test]
 fn t10_unreadable_marker_reports_without_failing_the_open() {
-    // A directory at the marker path makes both the read and the unlink fail.
-    // The read must not propagate: `open_recovering`'s only Err is an
-    // environmental failure, and Swift turns that into "learning disabled" —
-    // stopping learning outright because a 16-byte sidecar is unreadable is
-    // the worst possible default. The unlink failure must not either; what
-    // stays behind is re-reported next time, which is the safe direction.
+    // A directory at the marker path makes the read fail. It must not
+    // propagate: `open_recovering`'s only Err is an environmental failure, and
+    // Swift turns that into "learning disabled" — stopping learning outright
+    // because a 16-byte sidecar is unreadable is the worst possible default.
     let f = fx();
     build_v2_state(&f, false);
     fs::create_dir(deletion_marker::marker_path(&f.cp)).unwrap();
 
-    let report = open_report_of(&f);
-    assert!(report.deletion_lost, "unreadable resolves to reporting");
-    assert!(deletion_marker::marker_path(&f.cp).is_dir());
+    assert!(
+        open_report_of(&f).deletion_lost,
+        "unreadable resolves to reporting"
+    );
 }
 
 #[test]
-fn t10_marker_is_read_before_the_migration_commit() {
-    // Migration writes a v2 checkpoint, and it is a *durable checkpoint* —
-    // but one snapshotting a memory state that has the resurrected entry back
-    // in it. If the marker were evaluated after it (or cleared by it), the
-    // one startup that must report would report nothing.
+fn t10_a_non_file_at_the_marker_path_can_still_be_cleared() {
+    // The other half, which the test above cannot reach (an unreadable marker
+    // is always outstanding, so recovery never tries to remove it). Every
+    // retraction path in the system clears the marker by unlinking, and
+    // `remove_file` fails on a directory — so without a fallback, anything
+    // that leaves a non-file here (a sync tool, a restore) latches a report the
+    // user is told to resolve and cannot.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("stray"), b"x").unwrap();
+
+    deletion_marker::remove(&f.cp);
+    assert!(
+        !path.exists(),
+        "a non-file at the path must still be clearable"
+    );
+    assert_eq!(deletion_marker::read(&f.cp), None);
+}
+
+#[test]
+fn t10_marker_survives_a_migrating_startup() {
+    // A migrating startup writes a durable v2 checkpoint — but one snapshotting
+    // a memory state that has the resurrected entry back in it, so it must not
+    // be mistaken for coverage. The marker has to come out the other side.
+    //
+    // Named for what it can actually detect. An earlier version claimed to pin
+    // the *ordering* of the marker read against the migration commit, using a
+    // `Lost` fixture whose verdict does not depend on any state the commit
+    // touches — moving the whole block past the commit left it green. The
+    // ordering that is real, and is pinned, is "after the replay", by
+    // `t10_unflushed_witness_pins_the_boundary`.
     let f = fx();
     write_v1_state(&f);
     write_marker(&f, DeletionBreach::Lost);
@@ -1694,6 +1762,10 @@ fn t10_marker_is_read_before_the_migration_commit() {
     assert!(
         report.deletion_lost,
         "a migrating startup still owes the report"
+    );
+    assert!(
+        deletion_marker::marker_path(&f.cp).exists(),
+        "the migration checkpoint contains the resurrected entry, so it is not a retraction"
     );
 }
 
@@ -1706,10 +1778,7 @@ fn t10_witness_beyond_a_repaired_tail_still_reports() {
     // seq rather than a bool.
     let f = fx();
     build_v2_state(&f, false);
-    let full = {
-        let (h, _, _) = open_recovering(&f.cp).unwrap();
-        h.applied_seq()
-    };
+    let full = applied_seq_of(&f);
 
     let f2 = fx();
     build_v2_state(&f2, false);
@@ -1756,11 +1825,33 @@ fn t10_marker_is_not_a_quarantine_file() {
     // Rotation matches `<name>*` containing ".corrupt-". The marker shares the
     // family prefix, so a widened match would start rotating (and eventually
     // deleting) the report.
+    //
+    // Calls the production predicate, not a local re-spelling of it. The first
+    // version of this test re-implemented the `.corrupt-` filter in the test
+    // helper and therefore could not observe the real one changing at all — a
+    // mutation widening `quarantined_files` left it green.
     let f = fx();
     build_v2_state(&f, false);
     write_marker(&f, DeletionBreach::Lost);
-    assert_eq!(quarantine_count(&f), 0);
-    assert!(deletion_marker::marker_path(&f.cp).exists());
+    // Enough real quarantine files to push rotation past its keep limit, so a
+    // predicate that matched the marker would actually delete it.
+    for i in 0..5 {
+        fs::write(
+            f.cp.with_file_name(format!("user_history.lxud.corrupt-{i}")),
+            b"x",
+        )
+        .unwrap();
+    }
+
+    let listed = crate::persist::quarantined_files(&f.cp);
+    let marker = deletion_marker::marker_path(&f.cp);
+    assert!(
+        !listed.contains(&marker),
+        "the marker must not be listed as a quarantine artifact: {listed:?}"
+    );
+    crate::persist::rotate_quarantined(&f.cp, 3);
+    assert!(marker.exists(), "rotation must not reach the marker");
+    assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
 }
 
 #[test]

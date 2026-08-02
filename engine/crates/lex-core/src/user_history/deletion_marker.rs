@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use crate::persist::{self, write_atomic};
+use crate::persist;
 
 const MAGIC: &[u8; 4] = b"LXDM";
 const VERSION: u8 = 1;
@@ -127,8 +127,12 @@ impl DeletionBreach {
 /// Suffixed, not `with_extension`: the family shares the checkpoint's full
 /// file name so quarantine rotation and the clear sweep keep matching it.
 /// It does **not** contain `.corrupt-`, so [`persist::quarantined_files`]
-/// never picks it up (pinned by a test).
-pub(crate) fn marker_path(checkpoint_path: &Path) -> PathBuf {
+/// never picks it up (pinned by a test that calls the real predicate).
+///
+/// `pub` for fault injection: a test in a dependent crate needs to name the
+/// path to plant an obstacle at it. Nothing in production derives it outside
+/// this module.
+pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
     persist::suffixed(checkpoint_path, ".deletion-pending")
 }
 
@@ -136,10 +140,26 @@ pub(crate) fn marker_path(checkpoint_path: &Path) -> PathBuf {
 ///
 /// See the module docs: every other outcome, including an unreadable file, is
 /// [`DeletionBreach::Lost`].
+///
+/// Reads at most [`LEN`] bytes rather than `fs::read`, which pre-sizes its
+/// buffer from the file's length: whatever sits at this path is attacker-free
+/// but not size-checked, and this crate already holds the line that a length
+/// taken from disk must not size an allocation (see `persist`'s bincode
+/// readers). A longer file is malformed anyway — `decode` needs the first
+/// [`LEN`] bytes and nothing else.
 pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
-    match fs::read(marker_path(checkpoint_path)) {
-        Ok(bytes) => Some(DeletionBreach::decode(&bytes)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+    let path = marker_path(checkpoint_path);
+    let mut file = match fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
+            return Some(DeletionBreach::Lost);
+        }
+    };
+    let mut buf = Vec::with_capacity(LEN);
+    match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64), &mut buf) {
+        Ok(_) => Some(DeletionBreach::decode(&buf)),
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
             Some(DeletionBreach::Lost)
@@ -152,48 +172,79 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// Read-modify-write, not a plain overwrite. A full replacement is
 /// last-write-wins, and an `Unflushed` landing on top of an outstanding `Lost`
 /// would downgrade the claim to one the next startup can suppress — losing
-/// exactly the report this file exists for. The path is reachable: a
-/// `SyncFailed` append does not freeze the WAL, so a later record in the same
-/// batch can still fail with `Io`, and two of the WAL's guards return `Io`
-/// without freezing.
+/// exactly the report this file exists for.
+///
+/// The reachable route to that ordering is not the obvious one, and stating it
+/// wrongly is how the first version of this file grew a test that proved
+/// nothing. An `Io` append *freezes* the WAL, and the frozen guard turns every
+/// later append in the session into `Io` too — so `Lost` cannot be followed by
+/// an `Unflushed` while the freeze holds. What lifts it is a compaction whose
+/// `snapshot_to_cover` generation predates the `Io` raise: it early-returns
+/// from the cover (leaving the marker outstanding) yet still reaches
+/// `truncate_covered`, which thaws the file. The next tombstone can then append
+/// and fail its flush, arriving as `Unflushed` on top of a standing `Lost`.
+///
+/// **Written in place — deliberately not through [`write_atomic`].** The usual
+/// reason for tmp+rename is that a torn file is worse than an old one; here it
+/// is the opposite, because a torn marker decodes to `Lost`, the strongest
+/// claim this file can make. What tmp+rename does buy is a window: a crash
+/// between the tmp's flush and the rename leaves the stronger claim in a
+/// sibling that `read` does not consult and the next `remove` deletes, so the
+/// deletion goes unreported — the exact outcome this file exists to prevent.
+/// Writing in place has no such intermediate object, and costs one flush
+/// instead of two.
 ///
 /// Callers hold the wal mutex, which is what serializes the read against a
 /// concurrent write — and that mutex is held by the key-processing thread, so
-/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS):
-/// **p50 10.1ms / p95 14.8ms**, against **12.3ms p50** for the synchronous
-/// fallback checkpoint (5k entries) that the same call runs immediately
-/// afterwards. It roughly doubles a path already costing tens of milliseconds,
-/// and only ever runs when a tombstone failed to reach the disk.
+/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS)
+/// through the earlier tmp+rename form: **p50 10.1ms / p95 14.8ms**, against
+/// **12.3ms p50** for the synchronous fallback checkpoint (5k entries) the same
+/// call runs immediately afterwards; the in-place form drops one of the two
+/// flushes. It only ever runs when a tombstone failed to reach the disk.
 ///
-/// Two ways to make it cheaper were considered and rejected. A barrier flush
-/// instead of `sync_all` would cost ~0.3ms and would still cover the scenario
-/// #312 is named for (a process restart keeps the page cache), but it would
-/// reopen a power-loss window in the *report* about a deletion whose own
-/// power-loss window §6 sets to zero. Skipping tmp+rename is defensible from
-/// the format alone — a torn marker decodes to `Lost`, which is the outcome we
-/// want anyway — but it would fork [`write_atomic`] into a second, weaker
-/// durable-write path to save milliseconds on a disk that is already failing.
+/// A barrier flush instead of `sync_all` would cost ~0.3ms and would still
+/// cover the scenario #312 is named for (a process restart keeps the page
+/// cache), but it would reopen a power-loss window in the *report* about a
+/// deletion whose own power-loss window §6 sets to zero.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
-    write_atomic(&marker_path(checkpoint_path), &merged.encode())
+    persist::ensure_parent_dir(checkpoint_path)?;
+    let mut f = fs::File::create(marker_path(checkpoint_path))?;
+    io::Write::write_all(&mut f, &merged.encode())?;
+    f.sync_all()
 }
 
-/// Remove the marker (and any `.tmp` residue of a torn write).
+/// Remove the marker.
 ///
-/// Best-effort: the marker holds no user text, so a failure to unlink is worth
-/// a log line and nothing more. What remains is re-reported on the next start,
-/// which is the safe direction. Retrying is deliberately not attempted — the
-/// disk this runs against is the one that just failed.
+/// Best-effort: it holds no user text, so a failure to unlink is worth a log
+/// line and nothing more, and what remains is re-reported on the next start —
+/// the safe direction. Retrying is deliberately not attempted; the disk this
+/// runs against is the one that just failed.
+///
+/// Falls back to removing a *directory* at the path. That is not defensive
+/// noise: `read` resolves an unreadable path to `Lost`, so anything that leaves
+/// a non-file here — a sync tool, a restore — would otherwise report a lost
+/// deletion on every launch with no way to clear it, since every retraction
+/// path in the system clears it by unlinking. A latch the user is told to
+/// resolve but cannot is worse than the over-report it came from. Scoped to
+/// this one derived path, which the engine owns.
 pub fn remove(checkpoint_path: &Path) {
     let path = marker_path(checkpoint_path);
-    for p in [persist::tmp_path(&path), path] {
-        match fs::remove_file(&p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => warn!(
-                "failed to remove unpersisted-deletion marker {}: {e}",
-                p.display()
-            ),
-        }
+    let Err(e) = fs::remove_file(&path) else {
+        return;
+    };
+    if e.kind() == io::ErrorKind::NotFound {
+        return;
     }
+    if fs::remove_dir_all(&path).is_ok() {
+        warn!(
+            "removed a directory left at the marker path {}",
+            path.display()
+        );
+        return;
+    }
+    warn!(
+        "failed to remove unpersisted-deletion marker {}: {e}",
+        path.display()
+    );
 }

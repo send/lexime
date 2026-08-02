@@ -188,10 +188,14 @@ class LeximeInputController: IMKInputController {
         // Re-derived on every open, so a runtime issue that has since healed
         // stops being shown. See DegradedStatus for why the polled issues are
         // not merged into the container's latched initFailures.
+        let control = AppContext.shared.makeEngineControlService()
         let rows = DegradedStatus.rows(
             initFailures: AppContext.shared.engineContainer.initFailures,
-            runtimeIssues: AppContext.shared.makeEngineControlService()
-                .historyDurabilityIssues())
+            runtimeIssues: control.historyDurabilityIssues())
+        // Delivery, not startup, is what retires the #312 record: this is the
+        // moment the user can actually see it. Launches that never open a menu
+        // leave the marker for the next one.
+        control.acknowledgeHistoryReport()
         if !rows.isEmpty {
             for row in rows {
                 // No action/target: IMKit renders these as disabled status rows.

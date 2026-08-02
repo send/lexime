@@ -10,6 +10,12 @@ protocol EngineControlService {
     /// `LexSessionEvents` is the async candidate channel), and the sink is the
     /// status menu, which re-derives its rows on every open anyway.
     func historyDurabilityIssues() -> [LexHistoryDurabilityIssue]
+
+    /// Retire the on-disk record behind a startup `deletionLost` report, now
+    /// that its row has been rendered. Called from the menu rather than from
+    /// bootstrap: a launch that never shows a menu — an IMKit probe — must not
+    /// consume a report on the user's behalf. Idempotent and non-blocking.
+    func acknowledgeHistoryReport()
 }
 
 enum EngineControlServiceError: Error, LocalizedError {
@@ -35,6 +41,14 @@ final class DefaultEngineControlService: EngineControlService {
             throw EngineControlServiceError.engineUnavailable
         }
         try engine.clearHistory()
+        // The engine unlinked the marker as part of the wipe; drop the row it
+        // fed, or the menu keeps asking the user to re-delete an entry that no
+        // longer exists.
+        container.historyWasCleared()
+    }
+
+    func acknowledgeHistoryReport() {
+        container.history?.ackOpenReport()
     }
 
     func historyDurabilityIssues() -> [LexHistoryDurabilityIssue] {

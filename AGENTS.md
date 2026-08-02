@@ -173,21 +173,36 @@ what a generic reviewer misses:
   half, where no frame reached the WAL and no checkpoint landed, the deletion is
   not durable, startup does not heal it, and the report was gone on the very
   restart where the entry resurrects. **#312 closed it** (and with it #295) via
-  the `.deletion-pending` sidecar, whose settled shape is: the checkpoint
-  header's reserved bytes are unusable because the raise condition *is* a
-  failed checkpoint write (and an in-place header rewrite would recompute a
-  CRC outside tmp+rename, risking the whole history to report one deletion);
-  only `NotFound` is clean, so every malformed or unreadable marker reports and
-  no CRC is needed; writes merge rather than replace, `Io` absorbing, because a
-  `SyncFailed` append does not freeze the WAL and a later `Io` in the same
-  session would otherwise be downgraded to a suppressible witness; and the
-  retraction shares the wal guard with the ledger cover, because the window
-  between a CAS and a separate unlink cannot be pinned by a deterministic test.
+  the `.deletion-pending` sidecar. Its settled shape, all of it reached by
+  review rather than by first draft:
+  the checkpoint header's reserved bytes are unusable, because the raise
+  condition *is* a failed checkpoint write (and an in-place header rewrite
+  would recompute a CRC outside tmp+rename, risking the whole history to report
+  one deletion); only `NotFound` is clean, so every malformed or unreadable
+  marker reports and no CRC is needed; writes **merge** rather than replace,
+  `Io` absorbing, and go **in place** rather than through `write_atomic` — a
+  torn marker decodes to the strongest claim, so atomicity buys nothing while
+  the tmp/rename gap loses a stronger claim to a sibling nobody reads; a claim
+  whose write failed is held in memory so the next raise re-asserts it; startup
+  **never retracts**, because a witness satisfied by replay was only satisfied
+  out of the page cache — it hands the claim to the runtime ledger for a durable
+  checkpoint to settle — and a witness that is *not* satisfied is promoted to
+  unconditional, because a WAL quarantine re-bases seq numbering and an
+  unrelated later frame would otherwise settle it; the compaction retraction
+  shares the wal guard with the ledger cover, because the window between a CAS
+  and a separate unlink cannot be pinned by a deterministic test; `clear`
+  removes the marker **unconditionally and separately**, since a previous
+  session's marker moves no counter in this one and the cover would early-return
+  past it; and the acknowledgement happens where the **row is rendered**, not at
+  load, because `bootstrap()` runs on IMKit probe launches that never show a
+  menu and would consume the report on the user's behalf.
   One class stays open by construction and is documented rather than fixed:
   the marker lives in the checkpoint's directory, so a failure of that whole
   directory (read-only volume, EACCES, parent removed) takes the marker with
-  it. Findings proposing a header flag, a CRC, a plain overwrite, or a cover
-  outside the wal mutex re-litigate these — do not raise them. Separately, #313 records a
+  it. Findings proposing a header flag, a CRC, a plain overwrite, a tmp+rename
+  write, a cover outside the wal mutex, a retraction at startup, an ack at load,
+  or folding `clear`'s wipe into the cover re-litigate these — do not raise
+  them. Separately, #313 records a
   pre-existing privacy race: `apply_records` appends to the commit log outside
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the

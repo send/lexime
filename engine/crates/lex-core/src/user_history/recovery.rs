@@ -15,10 +15,12 @@
 //!
 //! It also runs **before the history is shared**: the `HistoryWal` it returns
 //! has not entered its mutex yet and no session can reach it. That is the
-//! standing exemption for touching the unpersisted-deletion marker here, which
-//! everywhere else in the engine happens only under the wal mutex (the mutex
-//! is what makes a raise and a cover unable to interleave). A future path that
-//! re-opens a *live* history would break the exemption, not merely bend it.
+//! standing exemption for the one write it makes to the unpersisted-deletion
+//! marker, which everywhere else in the engine happens only under the wal mutex
+//! (the mutex is what makes a raise and a cover unable to interleave). A future
+//! path that re-opens a *live* history would break the exemption, not merely
+//! bend it. This function never *removes* the marker: retraction is owed to a
+//! durable checkpoint, and recovery writes none.
 
 use std::fs;
 use std::io;
@@ -139,8 +141,16 @@ pub struct OpenReport {
     /// Deliberately does **not** feed `compaction_recommended`. A compaction
     /// here would checkpoint the resurrected entry and cover the ledger — i.e.
     /// tell the user everything is fine — which is the one thing that must not
-    /// happen. Like `migration_failed`, this is reported, not healed.
+    /// happen. Like `migration_failed`, this is reported, not healed. (The
+    /// startup compaction other conditions schedule cannot cover it either:
+    /// nothing raised the ledger this session, so the cover early-returns.)
     pub deletion_lost: bool,
+    /// A previous session's deletion *was* applied by this startup's replay,
+    /// but out of the page cache — the flush that failed never happened, so
+    /// power loss still undoes it. Not a report: a live durability problem the
+    /// engine seeds its runtime ledger from, so the first durable checkpoint
+    /// retracts it. Internal; not surfaced over UniFFI.
+    pub deletion_pending_checkpoint: bool,
 }
 
 impl OpenReport {
@@ -183,6 +193,7 @@ pub fn open_recovering(
         replayed_deletion: false,
         compaction_recommended: false,
         deletion_lost: false,
+        deletion_pending_checkpoint: false,
     };
 
     // --- 1. checkpoint ---
@@ -322,28 +333,43 @@ pub fn open_recovering(
     // --- 2b. unpersisted-deletion marker (#312) ---
     // After the replay, because the witness is settled against the state that
     // was actually loaded: `applied_seq` is now
-    // `max(checkpoint.applied_seq, last replayed seq)`, so one comparison
-    // answers "did that tombstone's frame make it into this state".
+    // `max(checkpoint.applied_seq, last replayed seq)`.
     //
-    // Before the migration commit below, and read-only either way. The
-    // marker is *not* consumed here: the fact has to reach the report's
-    // consumer first, and this function returns long before Swift reads it —
-    // dropping the only durable trace in between would lose the report on
-    // exactly the failing-disk restarts this exists for. `ack_open_report`
-    // clears it once the fact has landed in the latching channel. Nor may any
-    // checkpoint written during this startup (the migration commit, the
-    // recommended compaction) clear it: those snapshot a memory state that
-    // has the resurrected entry back in it.
+    // Neither branch unlinks. Retraction belongs to a *durable checkpoint*, and
+    // this function has not written one — the marker is the only thing that
+    // survives the process, and the launches it exists for are the ones where
+    // the disk is failing.
     if let Some(breach) = deletion_marker::read(checkpoint_path) {
         if breach.outstanding(history.applied_seq()) {
+            // The frame is provably not in the state we just loaded, so the
+            // deletion did not take and nothing will make it take. Promote the
+            // claim to unconditional: seq numbering is *re-based* whenever a
+            // WAL is quarantined or reinitialized (`adopt_empty` restarts at
+            // the checkpoint's applied_seq + 1), so an unrelated later frame
+            // could otherwise satisfy this witness and settle a report that is
+            // still owed. Having answered the question once, the answer stops
+            // depending on a comparison that a reset can invalidate.
             warn!("a deletion from a previous session was never persisted ({breach:?})");
             report.deletion_lost = true;
+            if breach != deletion_marker::DeletionBreach::Lost {
+                if let Err(e) = deletion_marker::merge_write(
+                    checkpoint_path,
+                    deletion_marker::DeletionBreach::Lost,
+                ) {
+                    warn!("failed to promote the unpersisted-deletion claim: {e}");
+                }
+            }
         } else {
-            // The frame replayed after all, so the deletion took. Retract by
-            // deleting the marker — leaving it would latch a privacy alarm
-            // about data that is provably gone.
-            info!("unflushed deletion was applied by replay; clearing the marker");
-            deletion_marker::remove(checkpoint_path);
+            // Replay applied the deletion, so nothing is owed to the user. But
+            // replay read that frame out of the page cache, which is not the
+            // flush that failed: until a checkpoint covers it, power loss still
+            // undoes the deletion. Retracting here would be retract-then-persist,
+            // the inverse of the discipline every other write on this path
+            // follows. Hand the claim to the runtime ledger instead — it is a
+            // live durability problem now, and the first durable checkpoint
+            // both reports it settled and unlinks the file.
+            info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
+            report.deletion_pending_checkpoint = true;
         }
     }
 
@@ -494,7 +520,8 @@ pub fn v1_backup_path(checkpoint_path: &Path) -> PathBuf {
 /// stubborn 16-byte sidecar that holds no user text stand in front of files
 /// that hold plenty would be the wrong trade. `clear_impl` removes the marker
 /// itself. (The same fail-fast shape means a stubborn `.v1.bak` can already
-/// block the quarantine sweep — pre-existing, tracked separately.)
+/// block the quarantine sweep, which does hold user text — a pre-existing
+/// weakness of this helper, not one the marker introduces.)
 pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     for path in [
         v1_backup_path(checkpoint_path),
