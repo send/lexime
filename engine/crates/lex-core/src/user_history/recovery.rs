@@ -223,6 +223,8 @@ pub fn open_recovering(
     // durably persisted, while one only *replay* reaches is still riding the
     // page cache.
     let checkpoint_applied_seq = history.applied_seq();
+    // …and whether it holds anything, before replay can change the answer.
+    let checkpoint_empty = history.is_empty();
     let mut wal = HistoryWal::new(checkpoint_path);
     let mut legacy_wal_consumed = false;
     match fs::read(&wal_path) {
@@ -406,25 +408,28 @@ pub fn open_recovering(
     // `durable_applied_seq` is what is on disk now: the checkpoint this startup
     // wrote if the migration committed (it was serialized from `history`, so it
     // covers everything memory holds), otherwise the one that was loaded.
-    let durable_applied_seq = if report.migrated_from_v1 {
-        history.applied_seq()
+    let (durable_applied_seq, durable_empty) = if report.migrated_from_v1 {
+        (history.applied_seq(), history.is_empty())
     } else {
-        checkpoint_applied_seq
+        (checkpoint_applied_seq, checkpoint_empty)
     };
     if let Some(breach) = deletion_marker::read(checkpoint_path) {
-        if breach == deletion_marker::DeletionBreach::Lost && history.is_empty() {
-            // `Lost` says an entry survived the deletion. Nothing was loaded,
-            // from the checkpoint or the WAL, so there is no such entry and the
-            // claim is not stale but *false* — the same reasoning `clear` uses
-            // when it covers the ledger from its empty checkpoint. Without
-            // this, a wipe that could not unlink its marker warned on the next
-            // launch about a history that provably holds nothing.
+        if breach == deletion_marker::DeletionBreach::Lost && durable_empty && history.is_empty() {
+            // `Lost` says an entry survived the deletion. Refuting that takes
+            // **both** halves, and each alone was wrong once:
             //
-            // Scoped to `Lost`, and to the state actually loaded. An
-            // `Unflushed` claim is about durability, not presence: replay can
-            // empty memory while the checkpoint still holds the entry a power
-            // loss would bring back, so emptiness settles nothing there and the
-            // branches below decide it.
+            // - the durable set alone — a checkpoint emptied by `clear` — says
+            //   nothing when replay brings entries back from the WAL;
+            // - the loaded state alone lets a replayed tombstone empty memory
+            //   while the checkpoint still holds the entry, and `decode` maps
+            //   *malformed* input to `Lost` too, so a garbled `Unflushed`
+            //   would be retracted as a refuted presence claim and a power
+            //   loss would restore the entry with nothing reported.
+            //
+            // Together they say what the claim actually needs: no entry on
+            // disk, and none replayed back. That also removes any need to tell
+            // a decoded `Lost` from a fallback one — neither is refutable
+            // while the checkpoint still holds something.
             info!("an unpersisted-deletion marker outlived the entries it referred to");
             deletion_marker::remove(checkpoint_path);
         } else if !breach.outstanding(durable_applied_seq) {

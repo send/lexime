@@ -1732,6 +1732,57 @@ fn t10_an_empty_history_settles_the_marker() {
 }
 
 #[test]
+fn t10_a_replayed_tombstone_does_not_settle_a_claim_the_checkpoint_outlives() {
+    // The refutation of `Lost` takes both halves — an empty durable set AND an
+    // empty loaded state — and this is the case that needs the first one. A
+    // tombstone replaying out of the WAL empties memory while the checkpoint
+    // still holds the entry, so a rule keyed on the loaded state alone would
+    // retract here; the entry is still on disk, and a power loss before the
+    // next checkpoint brings it back with nothing ever reported.
+    //
+    // Malformed bytes on purpose: `decode` maps every unreadable shape to
+    // `Lost` (fail-safe), so this claim may well have been a witness about
+    // durability rather than a presence claim at all. Nothing here can tell,
+    // which is precisely why emptiness must not be allowed to refute it.
+    let f = fx();
+    let mut h = UserHistory::new();
+    let mut wal = HistoryWal::new(&f.cp);
+    for pair in [A, B] {
+        let seq = wal.append(&seg(pair), T0).unwrap();
+        h.record_at(&seg(pair), T0);
+        h.advance_applied_seq(seq);
+    }
+    h.save(&f.cp).unwrap();
+    wal.truncate_wal().unwrap();
+    for pair in [A, B] {
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(pair),
+            timestamp: T0 + 1,
+        })
+        .unwrap();
+    }
+
+    fs::write(deletion_marker::marker_path(&f.cp), b"not a marker").unwrap();
+
+    let (loaded, _, report) = open_recovering(&f.cp).unwrap();
+    // The premise: memory is empty, and the checkpoint on disk is not.
+    assert_contents(&loaded, &[], &[A, B]);
+    assert!(
+        !UserHistory::open(&f.cp).unwrap().is_empty(),
+        "fixture must keep the entries in the durable checkpoint"
+    );
+    assert!(
+        report.deletion_lost,
+        "an entry the checkpoint still holds can resurrect — the claim stands"
+    );
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        Some(DeletionBreach::Lost),
+        "and the record stands with it, for the next start"
+    );
+}
+
+#[test]
 fn t10_malformed_markers_all_report() {
     // Fail-safe by construction: only NotFound is clean. Every malformed
     // shape resolves to the strongest claim, which is why the format carries

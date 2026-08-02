@@ -810,7 +810,7 @@ impl LexUserHistory {
     /// In the steady state the early return above fires and no syscall is
     /// issued at all — this runs inside the critical section the key thread
     /// waits on.
-    fn cover_unpersisted(&self, wal: &MutexGuard<'_, HistoryWal>, generation: u64) {
+    fn cover_unpersisted(&self, _wal: &MutexGuard<'_, HistoryWal>, generation: u64) {
         let mut current = self.durability_ledger.load(Ordering::SeqCst);
         loop {
             if covered_of(current) >= generation {
@@ -839,10 +839,9 @@ impl LexUserHistory {
                     if raised > covered_of(current) && raised <= covered {
                         // The session's own claim is settled by this durable
                         // checkpoint. The inherited one is not — a checkpoint
-                        // written now persists the *resurrected* entry — so
+                        // written now persists the *resurrected* entry — and
                         // the projection keeps the file if that is still owed.
                         lock_recover(&self.claims).session = None;
-                        self.project_marker(wal);
                     }
                     return;
                 }
@@ -1344,6 +1343,17 @@ impl LexUserHistory {
         // ledger update and the marker unlink cannot be split by a concurrent
         // raise; the condition being covered is unchanged.
         self.cover_unpersisted(&wal, covered_gen);
+        // Unconditionally, not only when the cover settled something. Every
+        // other projection point is driven by a claim *changing*; this one is
+        // the retry. A projection that failed earlier — an unlink refused
+        // between the save and the removal — leaves the file asserting a
+        // deletion this checkpoint has since persisted, and nothing else ever
+        // revisits it: the ledger is covered, so later covers early-return,
+        // and a healthy session raises nothing. The stale file then reports a
+        // loss that did not happen on the next launch. Free when the disk
+        // already agrees (`apply_marker` skips a value it has flushed), one
+        // ENOENT unlink otherwise.
+        self.project_marker(&wal);
 
         // The checkpoint is a full snapshot, so everything it contains is
         // now both on disk and in the state it was cloned from: the residue
@@ -1458,9 +1468,13 @@ mod tests {
         hist.raise_unpersisted(&wal, true, Some(DeletionBreach::Lost));
     }
 
+    /// Both halves, as every durable checkpoint does them: the cover settles
+    /// the ledger, the projection is what reaches the disk. Splitting them
+    /// here would let a test pass against a pairing production does not have.
     fn cover_under_wal(hist: &LexUserHistory, generation: u64) {
         let wal = lock_recover(&hist.wal);
         hist.cover_unpersisted(&wal, generation);
+        hist.project_marker(&wal);
     }
 
     fn gen_under_wal(hist: &LexUserHistory) -> u64 {
@@ -2529,6 +2543,40 @@ mod tests {
     }
 
     #[test]
+    fn test_a_checkpoint_retries_a_marker_removal_that_failed_earlier() {
+        // The residue of an unlink that was refused between a successful save
+        // and the removal that should have followed: the claim is settled, so
+        // nothing raises it again, and every later cover early-returns off the
+        // covered ledger. Without an unconditional projection here, the stale
+        // file has nothing left to revisit it, and the next launch reports a
+        // previous-session loss against a deletion this very checkpoint made
+        // durable — a warning telling the user to go delete an entry that is
+        // already gone.
+        //
+        // The fixture is that residue exactly, and it is the state that tells
+        // it apart from an inherited claim (the test above): a file on disk
+        // with no claim behind it and nothing owed.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        assert!(!hist.deletion_report_owed(), "nothing is owed to the user");
+        assert!(!hist.has_unpersisted_deletion(), "and no claim is standing");
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert!(
+            matches!(hist.run_compact(), CompactOutcome::Done),
+            "fixture needs a durable save"
+        );
+
+        assert_eq!(
+            marker(&cp),
+            None,
+            "a checkpoint must retry a removal nothing else would"
+        );
+    }
+
+    #[test]
     fn test_a_cover_for_memory_only_learning_leaves_an_inherited_marker() {
         // The ledger shares one generation sequence, so a memory-only raise
         // moves it without raising `raised_deletion`. Covering that must not
@@ -2540,7 +2588,13 @@ mod tests {
         let io = FaultyIo::default();
         io.fail_appends.store(true, Ordering::SeqCst);
         let hist = hist_with_io(&cp, io.boxed());
+        // Both halves, because recovery only ever produces them together: the
+        // file, and the in-memory record that it is owed to the user. Writing
+        // the file alone would be a state production cannot reach — the
+        // session would hold no claim at all — and the projection would then
+        // be right to unlink it.
         deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        hist.inherited_owed.store(true, Ordering::SeqCst);
 
         hist.apply_records(&[committed("きょう", "今日")]);
         let generation = gen_under_wal(&hist);
