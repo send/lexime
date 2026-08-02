@@ -361,38 +361,29 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
     // unreadable existing marker (conservatively `Lost`) can only strengthen.
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.breach.merge(breach));
     let image = merged.encode();
-    if let Err(e) = write_atomic(&marker_path(checkpoint_path), &image) {
+    if let Err(e) = persist::write_atomic_staged(&marker_path(checkpoint_path), &image) {
         // The logical marker is the canonical file **and** its orphan tmp —
-        // `read` merges them and `remove` clears both — and that rule has to
-        // hold here too. `write_atomic` flushes the tmp before renaming, so a
+        // `read` merges them and `remove` clears both — and that rule holds
+        // here too: `write_atomic` flushes the tmp before renaming, so a
         // rename that fails (a non-empty directory sitting at the canonical
-        // name, say) still leaves the exact bytes durable in the orphan, where
-        // the next `read` will find them. Reporting failure there made the
-        // claim look unlanded forever: appends froze on every commit, each
-        // compaction thawed them, and the next keystroke froze again, while
-        // the record on disk already said what was wanted.
+        // name, say) has still made the claim durable where the next `read`
+        // will find it. Reporting failure there made the claim look unlanded
+        // forever — appends froze on every commit, each compaction thawed
+        // them, and the next keystroke froze again.
         //
-        // The check is byte equality against the image just built, not a
-        // re-read of the *claim*: matching bytes are only evidence because
-        // they are the ones this call flushed. A partial tmp — the sync itself
-        // failing — does not match, so it stays an error rather than being
-        // waved through by a malformed decode that resolves to `Lost`.
-        let path = marker_path(checkpoint_path);
-        let landed = [read_at(&path), read_at(&persist::tmp_path(&path))]
-            .into_iter()
-            .flatten()
-            .any(|(bytes, readable)| readable && bytes == image);
-        if !landed {
-            return Err(e);
+        // Which stage failed is taken from the **writer**, never inferred. An
+        // earlier version compared the bytes back and accepted a match: that
+        // cannot tell a flushed image from one that only reached the page
+        // cache before `sync_all` failed, since both compare equal — and
+        // calling the second durable is exactly the window this file exists to
+        // close.
+        match e {
+            persist::AtomicWriteFailure::FlushedNotRenamed(e) => {
+                warn!("marker rename failed ({e}); the flushed orphan carries the claim");
+            }
+            persist::AtomicWriteFailure::NotDurable(e) => return Err(e),
         }
-        warn!("marker rename failed ({e}); the flushed orphan carries the claim");
     }
-    // The **merged** value, not the requested one. Writing `Unflushed` over a
-    // surviving `Lost` persists `Lost`, and a caller that recorded its request
-    // would hold a belief the disk never had — later reconciles would find it
-    // "already satisfied" and skip, leaving a stronger claim on disk than
-    // anyone thinks is there. Only the writer knows what landed, so only the
-    // writer can say.
     Ok(merged)
 }
 

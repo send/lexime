@@ -92,13 +92,42 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// this directory can overwrite the destination outright at any moment, with
 /// no window to hit.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_staged(path, bytes).map_err(|e| e.into_io())
+}
+
+/// How far [`write_atomic`] got before failing.
+///
+/// The stage is not something a caller can infer, and one tried: reading the
+/// tmp back and comparing bytes cannot tell a flushed image from one that
+/// merely reached the page cache before `sync_all` failed. Both compare equal,
+/// and treating the second as durable is precisely the power-loss window this
+/// crate exists to close. So the writer says which it was.
+pub(crate) enum AtomicWriteFailure {
+    /// The bytes never became durable — create, write or sync failed.
+    NotDurable(io::Error),
+    /// The bytes are flushed at the tmp path; only the rename failed. For a
+    /// store whose logical record includes its orphan tmp, the claim has
+    /// landed even though the name did not move.
+    FlushedNotRenamed(io::Error),
+}
+
+impl AtomicWriteFailure {
+    pub(crate) fn into_io(self) -> io::Error {
+        match self {
+            Self::NotDurable(e) | Self::FlushedNotRenamed(e) => e,
+        }
+    }
+}
+
+pub(crate) fn write_atomic_staged(path: &Path, bytes: &[u8]) -> Result<(), AtomicWriteFailure> {
+    use AtomicWriteFailure::{FlushedNotRenamed, NotDurable};
     let tmp = tmp_path(path);
-    ensure_parent_dir(path)?;
-    let mut f = create_regular(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
+    ensure_parent_dir(path).map_err(NotDurable)?;
+    let mut f = create_regular(&tmp).map_err(NotDurable)?;
+    f.write_all(bytes).map_err(NotDurable)?;
+    f.sync_all().map_err(NotDurable)?;
     drop(f);
-    fs::rename(&tmp, path)?;
+    fs::rename(&tmp, path).map_err(FlushedNotRenamed)?;
     if !sync_parent_dir(path) {
         warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
     }
@@ -326,5 +355,48 @@ pub(crate) fn rotate_quarantined(path: &Path, keep: usize) {
                 old.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_rename_is_distinguished_from_a_failed_flush() {
+        // The stage has to come from the writer. A caller that read the tmp
+        // back and compared bytes could not tell these apart: a flushed image
+        // and one that only reached the page cache before `sync_all` failed
+        // compare equal, and calling the second durable is exactly the
+        // power-loss window the atomic write exists to close.
+        let dir = tempfile::tempdir().unwrap();
+
+        // Rename blocked by a non-empty directory at the destination; create,
+        // write and sync all succeed, so the bytes are durable at the tmp.
+        let dest = dir.path().join("store.bin");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("occupant"), b"x").unwrap();
+        match write_atomic_staged(&dest, b"payload") {
+            Err(AtomicWriteFailure::FlushedNotRenamed(_)) => {}
+            other => panic!("expected a rename-stage failure, got {:?}", other.is_ok()),
+        }
+        assert_eq!(
+            fs::read(tmp_path(&dest)).unwrap(),
+            b"payload",
+            "and the flushed bytes really are where the caller is told to look"
+        );
+
+        // Nothing durable: the tmp path itself cannot be created.
+        let other = dir.path().join("other.bin");
+        fs::create_dir(tmp_path(&other)).unwrap();
+        match write_atomic_staged(&other, b"payload") {
+            Err(AtomicWriteFailure::NotDurable(_)) => {}
+            v => panic!("expected a pre-durability failure, got {:?}", v.is_ok()),
+        }
+
+        // The `sync_all` half is not reachable without fault injection in this
+        // module, which it deliberately does not have — it takes only paths
+        // and bytes. What is pinned here is that the two *reachable* stages
+        // are reported distinctly, which is what the caller branches on.
     }
 }

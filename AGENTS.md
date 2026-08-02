@@ -231,11 +231,22 @@ what a generic reviewer misses:
   neither of the first two — collapsing it into absence let a failed unlink of
   an unreadable marker look settled, and `Unknown` never satisfies a desired
   state so the retry cannot be skipped;
-  an unreadable marker whose replacement write also fails **freezes appends**,
-  the one case where a sidecar may stop learning: it may name a sequence no
-  floor could protect, so issuing more numbers risks handing that one out, and
-  `frozen` already means "appending to this file is not safe" (a `Lost` claim
-  is unsatisfiable and a decoded witness has its floor, so neither freezes);
+  an owed report whose disk does not yet say `Lost` **freezes appends** — the
+  one case where a sidecar may stop learning — whether the marker was
+  unreadable or holds a decoded `Unflushed` the promotion could not replace,
+  because either may name a sequence a later frame would answer and nothing
+  about numbering can prevent that; `frozen` already means "appending to this
+  file is not safe" (exempt: a disk that already says `Lost`, unsatisfiable by
+  any sequence, and a claim this session raised about the file it is still
+  appending to);
+  a write reports **which stage failed**, and the caller never infers it: bytes
+  read back cannot distinguish a flushed image from one that only reached the
+  page cache before `sync_all` failed, so `write_atomic_staged` says whether
+  the failure was pre-durability or the rename alone;
+  a failed write or removal sets the belief to `Unknown` rather than leaving
+  the old value — a short write can leave a truncated orphan the previous value
+  does not describe, and a stale `Absent` would satisfy a desired `None` and
+  skip the cleanup;
   sequence exhaustion is refused **where the number is issued**, never carried
   by `frozen`: a witness at the representable ceiling would otherwise make `+1`
   panic across the UniFFI constructor in debug and hand out seq 0 in release,

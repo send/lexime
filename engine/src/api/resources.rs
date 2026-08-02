@@ -679,15 +679,29 @@ impl LexUserHistory {
                     true
                 }
                 Err(e) => {
+                    // The belief is now *unknown*, not simply stale. A write
+                    // that failed may still have left a truncated orphan — a
+                    // short write on ENOSPC — and the previous value does not
+                    // describe that. Keeping it let a later `Absent` satisfy a
+                    // desired `None`, skip the removal, and leave the malformed
+                    // orphan for the next startup to decode as `Lost` and
+                    // report against a deletion the checkpoint had persisted.
                     warn!("failed to record the unpersisted deletion for the next start: {e}");
+                    lock_recover(&self.claims).flushed = MarkerState::Unknown;
                     false
                 }
             },
             None => {
                 let cleared = deletion_marker::remove(wal.checkpoint_path());
-                if cleared {
-                    lock_recover(&self.claims).flushed = MarkerState::Absent;
-                }
+                lock_recover(&self.claims).flushed = if cleared {
+                    MarkerState::Absent
+                } else {
+                    // Same rule: a removal that did not complete leaves the
+                    // path in a state this process has not observed, and only
+                    // `Unknown` says so. Holding the old value would let a
+                    // later projection decide it matched.
+                    MarkerState::Unknown
+                };
                 cleared
             }
         }
@@ -1045,9 +1059,12 @@ impl LexUserHistory {
                 //
                 // Deliberately *not* the broader "freeze whenever the marker
                 // write fails": a sidecar must not stop learning, the same rule
-                // that keeps a read failure from failing the open. A `Lost`
-                // claim is unsatisfiable by any sequence, and a decoded witness
-                // already has its floor, so neither needs this.
+                // that keeps a read failure from failing the open. What is
+                // exempt is a disk that already says `Lost` — unsatisfiable by
+                // any sequence, so nothing it could answer is at risk — and a
+                // claim this session raised about the file it is still
+                // appending to. An *inherited* witness is the dangerous one,
+                // which is why the condition names it.
                 wal.freeze();
             }
             let mut sequenced: Vec<(WalRecord, Option<u64>)> =
@@ -2553,8 +2570,11 @@ mod tests {
         std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
         io.fail_appends.store(true, Ordering::SeqCst);
         hist.apply_records(&[deletion("きょう", "今日")]);
-        // Nothing was flushed, so nothing may be remembered as flushed.
-        assert_eq!(lock_recover(&hist.claims).flushed, MarkerState::Absent);
+        // `Unknown`, not `Absent`: nothing may be remembered as flushed, and
+        // "the path is clear" is itself a claim this process cannot make after
+        // a write that failed — the same write could have left a truncated
+        // orphan behind, and only `Unknown` refuses to satisfy anything.
+        assert_eq!(lock_recover(&hist.claims).flushed, MarkerState::Unknown);
 
         std::fs::remove_dir_all(&marker_dir).unwrap();
         hist.apply_records(&[committed("あした", "明日")]);
@@ -2901,8 +2921,9 @@ mod tests {
         //
         // So this batch goes memory-only instead: reported, and healed by the
         // compaction that rewrites both files. Not the broader "freeze on any
-        // failed marker write" — a `Lost` claim cannot be satisfied by any
-        // sequence, and a decoded witness already has its floor.
+        // failed marker write" — a disk already saying `Lost` cannot be
+        // satisfied by any sequence, and a claim this session raised is about
+        // the file it is still appending to.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let hist = hist_with_io(&cp, FaultyIo::default().boxed());
