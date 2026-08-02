@@ -266,12 +266,12 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
         .as_deref()
         .map_or(breach, |bytes| DeletionBreach::decode(bytes).merge(breach));
     let encoded = merged.encode();
-    if existing.as_deref() == Some(&encoded[..]) {
-        // The disk already says exactly this. Skipping matters because the
-        // claim is re-asserted on every raise while it is outstanding, and
-        // each write is an F_FULLFSYNC on the key-processing thread.
-        return Ok(());
-    }
+    // Deliberately no "the bytes already match, skip" short-circuit here.
+    // Matching bytes prove the content reached the page cache, not that it was
+    // flushed — so a failed `sync_all` would read back as up-to-date and never
+    // be retried, reopening in silence the power-loss window this function
+    // refuses to open for a 0.3ms saving. The caller skips redundant writes
+    // instead, keyed on having *successfully flushed* the value.
     persist::ensure_parent_dir(checkpoint_path)?;
     let path = marker_path(checkpoint_path);
 
