@@ -1640,6 +1640,38 @@ fn t10_unflushed_witness_pins_the_boundary() {
 }
 
 #[test]
+fn t10_a_witness_the_checkpoint_covers_is_retracted_outright() {
+    // The residue of a crash between a successful `save()` and the unlink that
+    // follows it: the deletion IS durable, so the marker is stale. Telling the
+    // two apart takes the checkpoint's own applied_seq — the post-replay value
+    // answers "the checkpoint covered it" and "replay reached it" with the same
+    // number, and only the first is durable. Conflating them showed a live
+    // durability warning for a deletion that was already persisted.
+    let f = fx();
+    build_v2_state(&f, false);
+    let covered = {
+        let (h, _, _) = open_recovering(&f.cp).unwrap();
+        let settled = h.clone();
+        settled.save(&f.cp).unwrap();
+        settled.applied_seq()
+    };
+    assert!(covered > 0);
+    write_marker(&f, DeletionBreach::Unflushed { seq: covered });
+
+    let report = open_report_of(&f);
+    assert!(!report.deletion_lost);
+    assert!(
+        !report.deletion_pending_checkpoint,
+        "a checkpoint-covered deletion is not a live durability problem"
+    );
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        None,
+        "and its marker is stale, not owed"
+    );
+}
+
+#[test]
 fn t10_a_reported_witness_cannot_be_settled_by_a_rebased_seq() {
     // The concrete shape of the promotion above. A WAL quarantine re-bases
     // numbering (`adopt_empty` restarts at the checkpoint's applied_seq + 1),
@@ -1690,6 +1722,16 @@ fn t10_malformed_markers_all_report() {
         ("unknown version", {
             let mut b = good.clone();
             b[4] = 9;
+            b
+        }),
+        // The one shape that would resolve toward *suppression*: a
+        // well-formed 16-byte prefix followed by anything else. Reading
+        // exactly LEN would decode it as a valid witness, and a witness can
+        // be satisfied — so the "malformed always reports" rule, and the
+        // absent CRC that rests on it, would both be false.
+        ("valid prefix, extra bytes", {
+            let mut b = good.clone();
+            b.extend_from_slice(b"trailing");
             b
         }),
     ] {

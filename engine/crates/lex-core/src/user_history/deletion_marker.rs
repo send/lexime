@@ -110,7 +110,7 @@ impl DeletionBreach {
     /// Reached from `#[uniffi::constructor]`, where a slice panic would cross
     /// the FFI boundary.
     fn decode(bytes: &[u8]) -> Self {
-        if bytes.len() < LEN || &bytes[0..4] != MAGIC || bytes[4] != VERSION {
+        if bytes.len() != LEN || &bytes[0..4] != MAGIC || bytes[4] != VERSION {
             return Self::Lost;
         }
         if bytes[5] & FLAG_WITNESS == 0 {
@@ -146,7 +146,7 @@ pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
 /// but not size-checked, and this crate already holds the line that a length
 /// taken from disk must not size an allocation (see `persist`'s bincode
 /// readers). A longer file is malformed anyway — `decode` needs the first
-/// [`LEN`] bytes and nothing else.
+/// [`LEN`] bytes, and a file that has more of them is not this format.
 pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
     let path = marker_path(checkpoint_path);
     let mut file = match fs::File::open(&path) {
@@ -157,8 +157,13 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
             return Some(DeletionBreach::Lost);
         }
     };
-    let mut buf = Vec::with_capacity(LEN);
-    match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64), &mut buf) {
+    // LEN + 1, so a longer file is *seen* to be longer rather than read as a
+    // well-formed prefix. Reading exactly LEN would decode the first 16 bytes
+    // of anything as a valid witness — the one malformed shape that resolves
+    // toward suppression, which would falsify the fail-safe rule the whole
+    // format (and its absent CRC) rests on.
+    let mut buf = Vec::with_capacity(LEN + 1);
+    match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64 + 1), &mut buf) {
         Ok(_) => Some(DeletionBreach::decode(&buf)),
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
@@ -194,8 +199,11 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// Writing in place has no such intermediate object, and costs one flush
 /// instead of two.
 ///
-/// Callers hold the wal mutex, which is what serializes the read against a
-/// concurrent write — and that mutex is held by the key-processing thread, so
+/// Callers must hold the wal mutex, which is what serializes the read against
+/// a concurrent write. The one exception is recovery's promotion of an
+/// unsatisfied witness, which runs before the `HistoryWal` enters its mutex and
+/// is therefore exclusive by ownership rather than by locking. That mutex is
+/// held by the key-processing thread, so
 /// this lands on the ForwardDelete path. Measured on an M4 (release, APFS):
 /// **p50 4.0ms / p95 5.0ms**, against **12.3ms p50** for the synchronous
 /// fallback checkpoint (5k entries) the same call runs immediately afterwards.

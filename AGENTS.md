@@ -190,10 +190,13 @@ what a generic reviewer misses:
   unconditional, because a WAL quarantine re-bases seq numbering and an
   unrelated later frame would otherwise settle it; the compaction retraction
   shares the wal guard with the ledger cover, because the window between a CAS
-  and a separate unlink cannot be pinned by a deterministic test; `clear`
+  and a separate unlink cannot be pinned by a deterministic test — but it does
+  **not** retract an inherited report that nothing has delivered yet, since a
+  checkpoint written this session persists the *resurrected* entry and so
+  settles nothing about a previous session's claim; `clear`
   removes the marker **unconditionally and separately**, since a previous
   session's marker moves no counter in this one and the cover would early-return
-  past it; and the acknowledgement happens where the **row is rendered**, not at
+  past it when the ledger is untouched; and the acknowledgement happens where the **row is rendered**, not at
   load, because `bootstrap()` runs on IMKit probe launches that never show a
   menu and would consume the report on the user's behalf.
   One class stays open by construction and is documented rather than fixed:

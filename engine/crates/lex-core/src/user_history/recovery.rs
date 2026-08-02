@@ -216,6 +216,11 @@ pub fn open_recovering(
     let v1_checkpoint_present = migrate;
 
     // --- 2. WAL ---
+    // The checkpoint's own coverage, before replay moves `applied_seq`. The
+    // marker below needs the two apart: a witness the *checkpoint* covers is
+    // durably persisted, while one only *replay* reaches is still riding the
+    // page cache.
+    let checkpoint_applied_seq = history.applied_seq();
     let mut wal = HistoryWal::new(checkpoint_path);
     let mut legacy_wal_consumed = false;
     match fs::read(&wal_path) {
@@ -340,7 +345,14 @@ pub fn open_recovering(
     // survives the process, and the launches it exists for are the ones where
     // the disk is failing.
     if let Some(breach) = deletion_marker::read(checkpoint_path) {
-        if breach.outstanding(history.applied_seq()) {
+        if !breach.outstanding(checkpoint_applied_seq) {
+            // The durable checkpoint already contains the deletion's effect,
+            // so it is persisted — this is the residue of a crash between a
+            // successful `save()` and the unlink that follows it. Retracting
+            // here is sound because the evidence is the checkpoint itself.
+            info!("an unpersisted-deletion marker was already covered by the checkpoint");
+            deletion_marker::remove(checkpoint_path);
+        } else if breach.outstanding(history.applied_seq()) {
             // The frame is provably not in the state we just loaded, so the
             // deletion did not take and nothing will make it take. Promote the
             // claim to unconditional: seq numbering is *re-based* whenever a
@@ -348,7 +360,7 @@ pub fn open_recovering(
             // the checkpoint's applied_seq + 1), so an unrelated later frame
             // could otherwise satisfy this witness and settle a report that is
             // still owed. Having answered the question once, the answer stops
-            // depending on a comparison that a reset can invalidate.
+            // depending on a comparison a reset can invalidate.
             warn!("a deletion from a previous session was never persisted ({breach:?})");
             report.deletion_lost = true;
             if breach != deletion_marker::DeletionBreach::Lost {
@@ -363,11 +375,11 @@ pub fn open_recovering(
             // Replay applied the deletion, so nothing is owed to the user. But
             // replay read that frame out of the page cache, which is not the
             // flush that failed: until a checkpoint covers it, power loss still
-            // undoes the deletion. Retracting here would be retract-then-persist,
-            // the inverse of the discipline every other write on this path
-            // follows. Hand the claim to the runtime ledger instead — it is a
-            // live durability problem now, and the first durable checkpoint
-            // both reports it settled and unlinks the file.
+            // undoes the deletion. Retracting here would be
+            // retract-then-persist, the inverse of the discipline every other
+            // write on this path follows. Hand the claim to the runtime ledger
+            // instead — it is a live durability problem now, and the first
+            // durable checkpoint both settles it and unlinks the file.
             info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
             report.deletion_pending_checkpoint = true;
         }

@@ -13,8 +13,11 @@ import Foundation
 ///   would make a recovered disk keep warning forever.
 ///
 /// The dividing line is retraction, not where the fact came from:
-/// `.historyDeletionLost` is a durability failure too, but it is a *past* one
-/// with nothing left to retract it, so it latches like the rest of startup.
+/// `.historyDeletionLost` is a durability failure too, but it is a *past* one,
+/// so no amount of the disk recovering retracts it and it latches like the rest
+/// of startup. It has exactly one retraction, and it is not the disk healing:
+/// wiping the whole history makes the claim false rather than stale, so
+/// `EngineContainer.historyWasCleared()` drops that row alone.
 ///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch

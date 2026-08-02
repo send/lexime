@@ -58,17 +58,10 @@ func testDegradedStatus() {
         "the latching row must place the loss in a previous session")
 
     // It also co-occurs with a quarantine: independent facts about one startup.
-    // Asserting that through `rows` alone would only be testing Array.map — the
-    // claim that matters is EngineContainer's, that the lost-deletion case is
-    // appended outside its mutually exclusive branch chain. That is what
-    // `historyFailures(for:)` below exists to make testable.
-    assertEqual(
-        DegradedStatus.rows(
-            initFailures: [.historyDeletionLost(detail: "x"), .historyDataLoss(detail: "y")],
-            runtimeIssues: []
-        ).count,
-        2,
-        "a lost deletion and a quarantine are independent")
+    // `rows` cannot establish that — it maps whatever list it is handed, so
+    // asserting over it would only be testing Array.map. The claim that matters
+    // is EngineContainer's, that the lost-deletion case is appended outside its
+    // mutually exclusive branch chain, which is what S4 below tests directly.
 
     // S4 (#312). A lost deletion must survive alongside a quarantine, which is
     // the branch chain's masking case: routing it through the chain would let

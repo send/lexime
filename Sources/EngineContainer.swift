@@ -182,14 +182,17 @@ final class EngineContainer {
             // and not folded into .historyDataLoss: that one means "past
             // learning was lost", this one means the opposite, data that
             // survived a deletion the user asked for (#312).
+            var deletionDetail = ""
             if report.deletionLost {
                 degraded += " deletion=lost(prior session, entry may be back)"
+                deletionDetail = stateDetail() + degraded
                 NSLog(
                     "Lexime: A deletion from a previous session was not persisted (%@)",
-                    stateDetail() + degraded)
+                    deletionDetail)
             }
-            var quarantineDetail = stateDetail()
+            var quarantineDetail = ""
             if report.dataLossSuspected {
+                quarantineDetail = stateDetail()
                 if !report.quarantinedPaths.isEmpty {
                     quarantineDetail +=
                         ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
@@ -213,7 +216,7 @@ final class EngineContainer {
                     deletionLost: report.deletionLost,
                     dataLossSuspected: report.dataLossSuspected,
                     detail: quarantineDetail,
-                    deletionDetail: stateDetail() + degraded))
+                    deletionDetail: deletionDetail))
             // No ack here. `bootstrap()` runs on every process launch,
             // including the short-lived IMKit probe launches this controller
             // already designs around — none of which ever render a menu. Acking

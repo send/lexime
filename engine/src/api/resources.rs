@@ -158,18 +158,33 @@ pub struct LexUserHistory {
     /// 21 bits per generation: a wrap needs ~2M failed appends inside one
     /// session, and the values never leave the process.
     durability_ledger: AtomicU64,
-    /// The strongest breach this session has claimed, whether or not the write
-    /// of it reached the disk.
+    /// This session has claimed a `Lost` breach, whether or not the write of
+    /// it reached the disk.
     ///
     /// The merge that keeps `Lost` from being downgraded runs against the
     /// file, so a failed write used to drop the claim entirely and let the
     /// next, weaker one start from an empty read — on the failing disk where
-    /// the write fails, which is the only disk this path runs on. Holding it
-    /// here means every later raise re-asserts it.
+    /// the write fails, which is the only disk this path runs on.
     ///
-    /// Taken only while the wal mutex is already held (a leaf lock, never
-    /// held across anything), so it adds no ordering to §4.
-    session_breach: Mutex<Option<DeletionBreach>>,
+    /// One bit is enough, which is why this is an atomic and not a second
+    /// lock. The other claim is `Unflushed { seq }`, and seqs are monotonic
+    /// within a session, so a later unflushed witness always dominates an
+    /// earlier one: re-asserting it would change nothing. Only `Lost`, which
+    /// no witness can outrank, has to survive a failed write.
+    session_lost_claim: AtomicBool,
+    /// A `deletion_lost` report from a previous session that nothing has
+    /// delivered yet.
+    ///
+    /// The ledger's `covered` has no authority over it. A checkpoint written
+    /// this session persists the *resurrected* entry rather than removing it,
+    /// so covering this session's own breach settles nothing about the
+    /// inherited one — and the two share a single file. Without this, a
+    /// session that raised a breach of its own and then healed would unlink
+    /// the inherited claim on its way past, and the next launch would report
+    /// nothing while the entry sat in the checkpoint. Cleared by delivery
+    /// (`ack_open_report`) or by a wipe, the two events that really do settle
+    /// it.
+    inherited_report_unacked: AtomicBool,
 }
 
 /// Layout of `LexUserHistory::durability_ledger`, low bits first:
@@ -389,6 +404,7 @@ impl LexUserHistory {
         // it actually is — a live durability problem — so the first durable
         // checkpoint both clears the row and unlinks the marker, instead of
         // recovery retracting on evidence it does not have.
+        let report_deletion_lost = report.deletion_lost;
         let ledger = if report.deletion_pending_checkpoint {
             pack_ledger(0, 1, 0)
         } else {
@@ -402,7 +418,8 @@ impl LexUserHistory {
             commit_log: Mutex::new(commit_log),
             report,
             durability_ledger: AtomicU64::new(ledger),
-            session_breach: Mutex::new(None),
+            session_lost_claim: AtomicBool::new(false),
+            inherited_report_unacked: AtomicBool::new(report_deletion_lost),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -472,6 +489,7 @@ impl LexUserHistory {
             // being acknowledged, and it is still outstanding.
             return;
         }
+        self.inherited_report_unacked.store(false, Ordering::SeqCst);
         deletion_marker::remove(wal.checkpoint_path());
     }
 
@@ -545,10 +563,14 @@ impl LexUserHistory {
             // against the file: a write that failed left nothing on disk to
             // merge with, and starting over from an empty read is how a
             // standing `Lost` gets replaced by a suppressible witness.
-            let mut claimed = lock_recover(&self.session_breach);
-            let merged = claimed.map_or(breach, |prev| prev.merge(breach));
-            *claimed = Some(merged);
-            drop(claimed);
+            let merged = if self.session_lost_claim.load(Ordering::SeqCst) {
+                breach.merge(DeletionBreach::Lost)
+            } else {
+                breach
+            };
+            if merged == DeletionBreach::Lost {
+                self.session_lost_claim.store(true, Ordering::SeqCst);
+            }
             if let Err(e) = deletion_marker::merge_write(wal.checkpoint_path(), merged) {
                 // Nothing else can carry the fact across the restart. The
                 // runtime row still reports it for this session, and the claim
@@ -668,8 +690,15 @@ impl LexUserHistory {
                     // checkpoint covered.
                     let raised = raised_deletion_of(current);
                     if raised > covered_of(current) && raised <= covered {
-                        deletion_marker::remove(wal.checkpoint_path());
-                        *lock_recover(&self.session_breach) = None;
+                        self.session_lost_claim.store(false, Ordering::SeqCst);
+                        // Only this session's claim is settled. The file may
+                        // also carry an inherited report that nothing has
+                        // shown the user, and a checkpoint written here
+                        // persists the resurrected entry rather than removing
+                        // it — so it is no authority over that claim.
+                        if !self.inherited_report_unacked.load(Ordering::SeqCst) {
+                            deletion_marker::remove(wal.checkpoint_path());
+                        }
                     }
                     return;
                 }
@@ -946,7 +975,10 @@ impl LexUserHistory {
         // none (magic, version, flags, a seq), which is also why its failure
         // stays a log line rather than joining `deferred`.
         deletion_marker::remove(wal.checkpoint_path());
-        *lock_recover(&self.session_breach) = None;
+        self.session_lost_claim.store(false, Ordering::SeqCst);
+        // A wipe settles the inherited claim too: it said an entry might be
+        // back, and now nothing is.
+        self.inherited_report_unacked.store(false, Ordering::SeqCst);
 
         // Physical deletions below are deferred-error: the logical clear is
         // committed, so every step runs (the memory reset especially —
@@ -1372,7 +1404,8 @@ mod tests {
                 deletion_pending_checkpoint: false,
             },
             durability_ledger: AtomicU64::new(0),
-            session_breach: Mutex::new(None),
+            session_lost_claim: AtomicBool::new(false),
+            inherited_report_unacked: AtomicBool::new(deletion_lost),
         })
     }
 
@@ -1959,7 +1992,8 @@ mod tests {
         assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
         assert!(lock_recover(&hist.wal).is_frozen());
 
-        // A stale cover thaws the file without settling the claim.
+        // A cover carrying a generation older than the raise settles nothing,
+        // and the truncation that follows it is what thaws the file.
         io.fail_appends.store(false, Ordering::SeqCst);
         {
             let wal = lock_recover(&hist.wal);
@@ -2128,6 +2162,46 @@ mod tests {
             None,
             "a durable checkpoint is what retracts it — the only thing that can"
         );
+    }
+
+    #[test]
+    fn test_a_cover_leaves_an_inherited_report_that_was_never_delivered() {
+        // The third authority error, and the narrowest reopening of #312. A
+        // session that inherits a report, raises a breach of its own, and then
+        // heals gets a cover — but a checkpoint written here persists the
+        // *resurrected* entry rather than removing it, so it settles nothing
+        // about the inherited claim. The two share one file, so unlinking on
+        // the ledger alone destroys a report the user never saw.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io_reporting(&cp, io.boxed(), true);
+        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        block_checkpoint_write(&cp);
+
+        // This session loses a deletion of its own, then the disk recovers.
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        assert!(hist.has_unpersisted_deletion());
+        io.fail_appends.store(false, Ordering::SeqCst);
+        unblock_checkpoint_write(&cp);
+        hist.scrub_pending.store(true, Ordering::SeqCst);
+        hist.run_gated_compact();
+
+        assert!(
+            !hist.has_unpersisted_deletion(),
+            "this session's breach is genuinely covered"
+        );
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "but the undelivered report from the previous session is not"
+        );
+
+        // Delivery is what settles it, and then a later cover may reclaim it.
+        hist.ack_open_report();
+        assert_eq!(marker(&cp), None);
     }
 
     #[test]
@@ -2789,6 +2863,15 @@ mod tests {
         assert!(
             hist.has_unpersisted_deletion(),
             "covering generation 1 must not settle the deletion raised after it"
+        );
+        // And the marker must survive with it. This is the only place the
+        // `raised <= covered` half of the unlink condition is exercised
+        // against a genuinely stale cover: elsewhere the early return fires
+        // first, so the condition is never evaluated at all.
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "a stale cover must not retract a still-outstanding claim"
         );
 
         // A stale cover must not un-settle newer work.

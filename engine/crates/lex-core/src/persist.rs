@@ -89,12 +89,13 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// The temporary path [`write_atomic`] writes through.
 ///
-/// Called by `write_atomic` itself, so every other site that needs to name,
-/// sweep, or block that file derives it from the same definition rather than
-/// re-spelling the convention. Four sites had grown their own copy, and the
-/// one that mattered was a fault injector: a test that plants an obstacle at a
-/// separately-spelled path stops obstructing anything the moment the writer
-/// moves, and passes vacuously instead of failing.
+/// Called by `write_atomic` itself, so a site that needs to name, sweep, or
+/// block that file derives it from the same definition rather than re-spelling
+/// the convention. The one that made this matter is a fault injector: a test
+/// planting an obstacle at a separately-spelled path stops obstructing
+/// anything the moment the writer moves, and passes vacuously instead of
+/// failing. (Fixture code that asserts on a literal name is left alone — it
+/// fails loudly rather than vacuously if the convention moves.)
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     suffixed(path, ".tmp")
 }

@@ -14,7 +14,10 @@ protocol EngineControlService {
     /// Retire the on-disk record behind a startup `deletionLost` report, now
     /// that its row has been rendered. Called from the menu rather than from
     /// bootstrap: a launch that never shows a menu — an IMKit probe — must not
-    /// consume a report on the user's behalf. Idempotent and non-blocking.
+    /// consume a report on the user's behalf.
+    ///
+    /// Idempotent. Never blocks on the engine's locks (a contended call is
+    /// skipped and retried on the next menu open); it does perform one unlink.
     func acknowledgeHistoryReport()
 }
 
@@ -40,11 +43,20 @@ final class DefaultEngineControlService: EngineControlService {
         guard let engine = container.engine else {
             throw EngineControlServiceError.engineUnavailable
         }
+        // `defer`, not a statement after the call. The engine unlinks the
+        // marker at the wipe's commit point and *then* runs physical steps
+        // whose failures it surfaces as a throw — so the throwing path is
+        // exactly the one where the marker is already gone and the session
+        // continues (the reset flow only restarts the process when nothing
+        // failed). Retracting only on success would fire where it is
+        // redundant and skip where it is needed.
+        //
+        // The residue: a clear that fails *before* its commit point retracts
+        // the row a session early. The marker survives that path, so the next
+        // launch reports again — chosen over leaving a standing instruction to
+        // delete an entry from a history that was just wiped.
+        defer { container.historyWasCleared() }
         try engine.clearHistory()
-        // The engine unlinked the marker as part of the wipe; drop the row it
-        // fed, or the menu keeps asking the user to re-delete an entry that no
-        // longer exists.
-        container.historyWasCleared()
     }
 
     func acknowledgeHistoryReport() {
