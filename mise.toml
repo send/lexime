@@ -254,16 +254,17 @@ depends = ["uniffi-gen"]
 # into one binary. If you add a new test file under Tests/, add it here too.
 # Source files required by tests are also listed explicitly (SnippetTOML for
 # TestSnippetTOML; CandidateManager/SessionCoordinator/ModeController/InputSource
-# for the controller tests). This list is the ONLY place CI compiles Swift:
-# the `swift` job runs `mise run test-swift` and nothing else, and no workflow
-# runs `mise run build` — so a file absent from here is never type-checked in
-# CI at all (14 of 22 files under Sources/ currently are: see #316). Add the
-# sources a change touches. EngineContainer costs ~0.15s of build time
+# for the controller tests). This list decides what is *linked and run*, not
+# what is type-checked: `typecheck-swift` below globs all of Sources/, so a
+# file absent from here still gets compiled by CI — it just has no test
+# driving it. Add the sources a change touches. EngineContainer costs ~0.15s
+# of build time
 # (measured, 6 alternating runs); EngineInitFailure is split out so files that
 # only need to *render* a failure do not pull the engine-loading path with it.
-# LeximeInputController stays out because it needs IMKit; the part of it worth
-# asserting — that menu() feeds the polled issues into DegradedStatus.rows —
-# is therefore unpinned, which the PR verifies by hand on the real IME.
+# LeximeInputController stays out of the *test* binary because it needs IMKit;
+# the part of it worth asserting — that menu() feeds the polled issues into
+# DegradedStatus.rows — is therefore unpinned by tests, which the PR verifies
+# by hand on the real IME. It is still type-checked (see `typecheck-swift`).
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -285,6 +286,49 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -o build/test-runner && build/test-runner
 """
 
+[tasks.typecheck-swift]
+description = "Type-check every file under Sources/ (the app files the test binary never links)"
+depends = ["uniffi-gen"]
+# The compensating gate for `test-swift`'s explicit source list (#316). That
+# list exists for a real reason — swiftc compiles all sources into one binary,
+# and the IMKit/SwiftUI files would drag the headless test runner into linking
+# a UI. The bug was that nothing covered the remainder: 13 of 22 files under
+# Sources/, `LeximeInputController.swift` among them, were type-checked by no
+# gate at all, so a Swift compile error in any of them merged green.
+#
+# This **globs** rather than enumerating, which is the whole point: a
+# hand-maintained second list would drift out of date exactly the way the first
+# one did. Whatever is on disk is what gets checked.
+#
+# `-typecheck` only — no codegen, no linking, no signing, no dictionary build,
+# so this stays a per-PR gate rather than a full `mise run build`. It shares
+# the `uniffi-gen` output with `test-swift` in the same CI job, so the marginal
+# cost is the swiftc front end alone.
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+# Collected with `while read` rather than `mapfile` (bash 3.2 on macOS lacks
+# it) and sorted so a failure reproduces in the same order every run. Counted
+# in the same pass rather than with bash's array-length form: mise renders this
+# block as a Tera template, and that form's opening two characters are Tera's
+# comment opener, so the whole task fails to render. Do not reintroduce it —
+# not in the script, and not in a comment either.
+sources=()
+count=0
+while IFS= read -r f; do
+  sources+=("$f")
+  count=$((count + 1))
+done < <(find Sources -name '*.swift' | sort)
+# A find that silently matches nothing would be a gate that checks nothing —
+# the same shape of failure this task exists to close.
+if [ "$count" -eq 0 ]; then
+  echo "typecheck-swift: no Swift sources under Sources/ — refusing to pass vacuously" >&2
+  exit 1
+fi
+swiftc -typecheck -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
+  generated/lex_engine.swift "${sources[@]}"
+echo "type-checked $count files under Sources/"
+"""
 
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"

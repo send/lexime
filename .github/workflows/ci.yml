@@ -61,6 +61,11 @@ jobs:
               - 'Sources/**'
               - 'Tests/**'
               - 'Info.plist'
+              # mise.toml carries the Swift gates themselves: `test-swift`'s
+              # explicit source list and `typecheck-swift`'s glob. Without it,
+              # an edit dropping a file from the test binary would not re-run
+              # the job that would notice (#316).
+              - 'mise.toml'
 
   # Supply-chain screening. Runs the quarantine / build.rs baseline checks
   # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
@@ -358,5 +363,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: false
+
+      # Type-check first: it covers every file under Sources/, so it fails on
+      # broad breakage before the narrower test binary is even linked.
+      - run: mise run typecheck-swift
 
       - run: mise run test-swift
