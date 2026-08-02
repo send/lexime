@@ -3,6 +3,7 @@ anyhow
 bzip2-sys
 camino
 crc32fast
+crossbeam-deque
 crossbeam-epoch
 crossbeam-utils
 crunchy
