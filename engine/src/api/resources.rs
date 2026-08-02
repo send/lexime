@@ -1013,16 +1013,28 @@ impl LexUserHistory {
             // Before the appends, not after: the harm this closes is a WAL that
             // advances past an un-promoted witness, so promoting after the
             // append would leave the same window one batch wide.
-            if !self.project_marker(&wal)
-                && lock_recover(&self.claims).flushed == MarkerState::Unknown
+            // Unconditionally, and its result decides the freeze below —
+            // `&&` would short-circuit the reconcile away on the healthy path,
+            // which is the one place it has to happen.
+            let projected = self.project_marker(&wal);
+            if !projected
+                && self.inherited_owed.load(Ordering::SeqCst)
+                && lock_recover(&self.claims).flushed != MarkerState::Holds(DeletionBreach::Lost)
             {
-                // The one case where appending is genuinely unsafe. A marker
-                // file is there, nobody has managed to read it, and the write
-                // that would replace it with an unconditional `Lost` just
-                // failed — so it may hold an `Unflushed{seq}` naming a number
-                // no floor could protect. Issuing more numbers risks handing
-                // out that one, and a later startup would read it as evidence
-                // the deletion replayed.
+                // The one case where appending is genuinely unsafe: a report is
+                // owed and the disk does not yet say so *unconditionally* —
+                // either nobody could read it, or it still holds the
+                // `Unflushed{seq}` the promotion failed to replace.
+                //
+                // A witness is a claim about one frame in one WAL file, and it
+                // is answered by `seq > applied_seq` — an **inequality** over a
+                // high water mark. Gaps are legal, so once that file has been
+                // replaced *any* later frame above the witness answers it
+                // "applied", whether or not the tombstone ever existed in the
+                // new lineage. Numbering cannot fix this — a floor was tried,
+                // and skipping one number changes nothing — so promotion to the
+                // lineage-independent `Lost` is mandatory, and until it lands
+                // the state that would answer the witness must not advance.
                 //
                 // Freezing is not a new mechanism: `frozen` already means
                 // "this file is not in a state where appending is safe", and
@@ -2758,6 +2770,52 @@ mod tests {
     }
 
     #[test]
+    fn test_a_stronger_claim_on_disk_satisfies_a_weaker_one() {
+        // Without this the projection livelocks. A stale `Lost` survives a
+        // failed cleanup, a later `SyncFailed` deletion makes the desired
+        // state `Unflushed`, and `merge_write` absorbs that request straight
+        // back into `Lost` — so under exact equality the desired state is
+        // unreachable and *every* commit pays another key-thread full sync,
+        // forever, while the restart still reports the loss.
+        //
+        // Claims are one-directional, so a stronger record covers a weaker
+        // want: it reports more, never less, which is the only direction this
+        // format may fail in.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
+
+        // Blocked, which is what makes the difference observable: under exact
+        // equality the projection would try to write and fail, so a `true`
+        // here means it recognised the disk as already sufficient and issued
+        // no syscall at all. Asserting on the resulting state cannot see this
+        // — both paths end at `Holds(Lost)`, since the write merges back.
+        block_marker_write(&cp);
+        {
+            let wal = lock_recover(&hist.wal);
+            assert!(
+                hist.apply_marker(&wal, Some(DeletionBreach::Unflushed { seq: 7 })),
+                "the disk already says more than this asks for, so nothing is written"
+            );
+        }
+        assert_eq!(
+            lock_recover(&hist.claims).flushed,
+            MarkerState::Holds(DeletionBreach::Lost),
+            "and the belief is unchanged — nothing needed writing"
+        );
+
+        // The converse must not hold: a weaker record does not cover a stronger
+        // want, which is what keeps a failed promotion retrying rather than
+        // deciding a witness is good enough for an unconditional claim.
+        assert!(
+            !MarkerState::Holds(DeletionBreach::Unflushed { seq: 7 })
+                .satisfies(Some(DeletionBreach::Lost)),
+            "a witness must never be taken to cover an unconditional claim"
+        );
+    }
+
+    #[test]
     fn test_the_belief_records_what_the_write_actually_persisted() {
         // `merge_write` merges, so a request is not what lands. With a
         // surviving `Lost` on disk and a later `SyncFailed` deletion asking for
@@ -2833,7 +2891,10 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let hist = hist_with_io(&cp, FaultyIo::default().boxed());
         lock_recover(&hist.claims).flushed = MarkerState::Unknown;
-        lock_recover(&hist.claims).session = Some(DeletionBreach::Lost);
+        // Inherited, which is the whole point: a witness from a *previous* WAL
+        // lineage is the one nothing can answer. This session's own claim is
+        // about the file it is still appending to.
+        hist.inherited_owed.store(true, Ordering::SeqCst);
         // Nothing can be written into a directory that will not take one.
         block_marker_write(&cp);
 

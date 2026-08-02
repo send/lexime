@@ -199,13 +199,21 @@ what a generic reviewer misses:
   uniquely-named tmp would break the marker-plus-orphan pair below, and
   anything able to write in that directory can overwrite the destination
   outright with no window to hit;
-  an outstanding `Unflushed{seq}` raises a **seq floor** on the WAL, so a
-  quarantine or reinitialization cannot restart numbering inside the range that
-  claim names — the witness test `seq > applied_seq` is sound only while
-  numbering is monotone, and `adopt_empty` restarting at the checkpoint's
-  `applied_seq + 1` was breaking that precondition itself; promotion to `Lost`
-  was the runtime compensation for it and is now an optimization, which is what
-  retires three rounds of retry-the-promotion findings;
+  promotion of an `Unflushed{seq}` witness to `Lost` is **mandatory, not an
+  optimization** — a seq is a position within one WAL file, not an epoch, and
+  the witness test `seq > applied_seq` is an *inequality over a high water
+  mark*, so once that file is replaced any later frame above the witness
+  answers it "applied" whether or not the tombstone ever existed in the new
+  lineage; a **seq floor** was tried here and removed, because skipping the one
+  number the claim names changes nothing about an inequality (gaps are legal),
+  and the entry that claimed it gave "epoch discipline" was wrong: a floor on a
+  position creates no identity. While a report is owed and the disk does not
+  yet say `Lost`, appends **freeze** — the state that would answer the witness
+  must not advance until the lineage-independent form has landed;
+  a stronger record on disk **satisfies** a weaker desired one (the merge
+  lattice, not equality): `merge_write` absorbs a requested `Unflushed` back
+  into a surviving `Lost`, so exact equality made the desired state
+  unreachable and every commit paid another key-thread full sync forever;
   `merge_write` returns the value it **persisted**, not the one requested, and
   the belief records that — the write merges, so asking for `Unflushed` over a
   surviving `Lost` leaves `Lost`, and a caller repeating its own request would

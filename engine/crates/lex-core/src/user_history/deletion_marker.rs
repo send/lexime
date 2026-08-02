@@ -233,11 +233,21 @@ pub enum MarkerState {
 }
 
 impl MarkerState {
-    /// Whether the disk is already in the desired state. `Unknown` never is.
+    /// Whether the disk already says at least what is wanted. `Unknown` never
+    /// does.
+    ///
+    /// "At least", not "exactly", and the merge lattice decides it: claims are
+    /// one-directional, so a `Lost` on disk covers a desired `Unflushed` — it
+    /// reports more, never less, which is the only direction this format is
+    /// allowed to fail in. Exact equality deadlocked instead: with a stale
+    /// `Lost` surviving and a later `SyncFailed` wanting `Unflushed`,
+    /// `merge_write` absorbs the request back into `Lost` every time, so the
+    /// desired state was unreachable and every commit paid another key-thread
+    /// full sync without converging.
     pub fn satisfies(self, desired: Option<DeletionBreach>) -> bool {
         match (self, desired) {
             (Self::Absent, None) => true,
-            (Self::Holds(held), Some(want)) => held == want,
+            (Self::Holds(held), Some(want)) => held.merge(want) == held,
             _ => false,
         }
     }

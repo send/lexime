@@ -264,18 +264,21 @@ pub fn open_recovering(
     // …and whether it holds anything, before replay can change the answer.
     let checkpoint_empty = history.is_empty();
     let mut wal = HistoryWal::new(checkpoint_path);
-    // Read once, here, because the WAL adoption below needs it: an outstanding
-    // `Unflushed{seq}` claim names a frame, and a quarantined or reinitialized
-    // WAL would otherwise restart numbering inside the very range that claim
-    // covers, letting an unrelated frame satisfy it. The floor makes that
-    // impossible rather than compensating for it afterwards. §3b reuses this
-    // value — nothing between here and there writes the file.
+    // Read once, here; §3b reuses the value, and nothing between writes the
+    // file.
+    //
+    // A sequence *floor* used to be installed from an outstanding
+    // `Unflushed{seq}` here, on the theory that a rebase must not re-issue the
+    // number the claim names. That was a mis-model and is gone: the witness
+    // test is an **inequality** (`seq > applied_seq`), so any later frame above
+    // the witness satisfies it — gaps are legal and `applied_seq` is a high
+    // water mark. Skipping one number changes nothing. The seq is a *position
+    // within one WAL file*, not an epoch, and it stops meaning anything the
+    // moment that file is replaced; only promotion to `Lost` survives a
+    // lineage change, which is why promotion is mandatory rather than an
+    // optimization, and why a report that is owed with the promotion unlanded
+    // freezes appends (see `apply_records`).
     let marker = deletion_marker::read(checkpoint_path);
-    if let Some(observed) = &marker {
-        if let deletion_marker::DeletionBreach::Unflushed { seq } = observed.breach {
-            wal.set_seq_floor(seq);
-        }
-    }
     let mut legacy_wal_consumed = false;
     match fs::read(&wal_path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {

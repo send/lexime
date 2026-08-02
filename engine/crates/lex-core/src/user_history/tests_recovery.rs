@@ -2172,42 +2172,6 @@ fn t10_a_promotion_that_failed_schedules_its_own_retry() {
 }
 
 #[test]
-fn t10_a_rebased_wal_cannot_reissue_a_claimed_seq() {
-    // The precondition the witness rests on, made true by construction. The
-    // startup test for `Unflushed{seq}` is `seq > applied_seq`, which is sound
-    // only while numbering is monotone — and a quarantined or reinitialized
-    // WAL restarts at the checkpoint's `applied_seq + 1`, precisely the range
-    // an outstanding witness occupies. Unrelated later frames then climb past
-    // the witness and satisfy it, and the next startup reads a deletion that
-    // never took as one that did.
-    //
-    // Promotion to `Lost` used to be the answer, and three review rounds went
-    // into retrying it when it failed. A floor removes the need: numbering
-    // that never reuses a claimed range cannot falsely satisfy anything.
-    let f = fx();
-    let mut h = UserHistory::new();
-    h.record_at(&seg(A), T0);
-    h.advance_applied_seq(2);
-    h.save(&f.cp).unwrap();
-    // A witness far above the checkpoint's applied_seq — the range a rebase
-    // would otherwise hand straight back out.
-    write_marker(&f, DeletionBreach::Unflushed { seq: 40 });
-    // Force the rebase: a WAL that classifies as garbage is quarantined and
-    // re-initialized, which is one of the paths that calls `adopt_empty`.
-    fs::write(&f.wal, b"not a wal at all, not even a header").unwrap();
-
-    let (_, wal, report) = open_recovering(&f.cp).unwrap();
-    assert!(
-        report.deletion_lost,
-        "the witness is outstanding, so it is still owed"
-    );
-    assert!(
-        wal.next_seq_for_tests() > 40,
-        "a rebase must not re-issue a number an outstanding witness names"
-    );
-}
-
-#[test]
 fn t10_an_unreadable_marker_is_never_recorded_as_an_observation() {
     // `read` resolves anything unreadable to `Lost` by the fail-safe rule, but
     // that is a *claim*, not knowledge of what the bytes say. Recording it as
@@ -2249,9 +2213,8 @@ fn t10_an_unreadable_marker_is_never_recorded_as_an_observation() {
 
 #[test]
 fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
-    // The floor comes from a *file*, so it can name anything the format can
-    // encode — and `Unflushed { seq: u64::MAX }` round-trips through `decode`
-    // perfectly well. Adding one panics in debug, across the UniFFI
+    // `applied_seq` comes from a *file*, so a corrupt checkpoint can name
+    // anything a `u64` can hold. Adding one panics in debug, across the UniFFI
     // constructor, and wraps to zero in release: the next tombstone would be
     // written with seq 0, recovery would reject it as non-monotonic, and the
     // deletion would resurrect. So adoption saturates and the refusal lives at
@@ -2261,8 +2224,10 @@ fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
     let f = fx();
     let mut h = UserHistory::new();
     h.record_at(&seg(A), T0);
+    // From the *checkpoint*, which is the remaining file-derived input now
+    // that the sequence floor is gone: a corrupt one can name any value.
+    h.advance_applied_seq(u64::MAX);
     h.save(&f.cp).unwrap();
-    write_marker(&f, DeletionBreach::Unflushed { seq: u64::MAX });
 
     let (_, mut wal, _) = open_recovering(&f.cp).unwrap();
     assert_eq!(
