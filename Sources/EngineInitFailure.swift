@@ -22,6 +22,17 @@ enum EngineInitFailure {
     /// User history recovery quarantined corrupt data: learning is running,
     /// but some past learning was lost (bytes preserved in `.corrupt-*`).
     case historyDataLoss(detail: String)
+    /// A deletion requested in an earlier session never reached disk, so the
+    /// history loaded at startup may still hold the entry it was meant to
+    /// remove (#312). The inverse of `.historyDataLoss`: here data survived
+    /// that should not have.
+    ///
+    /// An init failure rather than a `LexHistoryDurabilityIssue` on lifetime.
+    /// Runtime issues are polled because something retracts them — a frozen
+    /// WAL thaws, an unpersisted deletion is covered by the next checkpoint.
+    /// Nothing retracts this one: the deletion is already lost, and only the
+    /// user deleting again resolves it.
+    case historyDeletionLost(detail: String)
     /// Custom settings.toml exists but failed to parse (defaults in effect).
     case customSettings(detail: String)
 }

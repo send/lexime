@@ -125,6 +125,23 @@ final class EngineContainer {
             if report.appendsFrozen {
                 degraded += " appends=frozen(memory-only until compaction)"
             }
+            if report.deletionLost {
+                degraded += " deletion=lost(prior session, entry may be back)"
+            }
+            // Appended outside the branch chain below, not inside it: the
+            // chain is mutually exclusive, and a lost deletion co-occurs
+            // freely with a quarantine (independent facts about the same
+            // startup). Routing it through the chain would hide it behind
+            // dataLossSuspected — which is also why it is a case of its own
+            // and not folded into .historyDataLoss: that one means "past
+            // learning was lost", this one means the opposite, data that
+            // survived a deletion the user asked for (#312).
+            if report.deletionLost {
+                let detail =
+                    "checkpoint: \(report.checkpointState), wal: \(report.walState)\(degraded)"
+                NSLog("Lexime: A deletion from a previous session was not persisted (%@)", detail)
+                failures.append(.historyDeletionLost(detail: detail))
+            }
             if report.dataLossSuspected {
                 var detail =
                     "checkpoint: \(report.checkpointState), wal: \(report.walState)"
@@ -143,6 +160,12 @@ final class EngineContainer {
                     "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)\(degraded)"
                 )
             }
+            // The report has landed in `failures`, which lives as long as this
+            // container, so the on-disk record behind deletionLost can go.
+            // Deliberately after the append and not before: until then the
+            // marker is the only thing that survives the process, and the
+            // launches this exists for are the ones where the disk is failing.
+            h.ackOpenReport()
             history = h
         } catch {
             NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")

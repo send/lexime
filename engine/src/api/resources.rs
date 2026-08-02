@@ -8,6 +8,7 @@ use tracing::warn;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use crate::session::LearningRecord;
+use crate::user_history::deletion_marker::{self, DeletionBreach};
 use crate::user_history::recovery::{CheckpointState, OpenReport, WalState};
 use crate::user_history::wal::{AppendError, HistoryWal, WalRecord};
 use crate::user_history::UserHistory;
@@ -259,6 +260,16 @@ pub struct LexHistoryOpenReport {
     /// Appends were frozen at open: this session's learning stays in memory
     /// until a compaction restores appendable form.
     pub appends_frozen: bool,
+    /// A deletion from a previous session never reached disk, and the state
+    /// just loaded may still hold the entry it was meant to remove (#312).
+    ///
+    /// Surfaced here rather than through `durability_issues()` on lifetime:
+    /// the runtime list reports what holds *now* and retracts when a
+    /// checkpoint covers it, whereas nothing retracts this — the deletion is
+    /// already lost. Consuming it is an explicit `ack_open_report()`, so the
+    /// on-disk record outlives the gap between this report being built and
+    /// something acting on it.
+    pub deletion_lost: bool,
     pub frames_replayed: u64,
     pub frames_skipped: u64,
     pub quarantined_paths: Vec<String>,
@@ -287,6 +298,7 @@ impl From<&OpenReport> for LexHistoryOpenReport {
             migrated_from_v1: r.migrated_from_v1,
             migration_failed: r.migration_failed,
             appends_frozen: r.appends_frozen,
+            deletion_lost: r.deletion_lost,
             frames_replayed: r.frames_replayed,
             frames_skipped: r.frames_skipped,
             // Lossy on purpose: display-only, and a non-UTF-8 path must not
@@ -375,8 +387,36 @@ impl LexUserHistory {
     }
 
     /// What recovery found and did at open time (§10).
+    ///
+    /// Pure — a getter that mutated the disk would be a trap. Clearing the
+    /// unpersisted-deletion record is [`Self::ack_open_report`], called once
+    /// the caller has actually taken the report.
     fn open_report(&self) -> LexHistoryOpenReport {
         (&self.report).into()
+    }
+
+    /// Acknowledge [`Self::open_report`]: the caller has taken the report and
+    /// put it somewhere durable enough for this session (the latching
+    /// degraded-status list), so the on-disk record backing `deletion_lost`
+    /// can go.
+    ///
+    /// Separate from `open_report` because it is the *delivery* that retires
+    /// the record, not the read. `open_recovering` deliberately leaves the
+    /// marker in place: it returns long before anything consumes the report,
+    /// and the launches this feature exists for are exactly the ones where a
+    /// failing disk may take the process down in between. A caller that never
+    /// acknowledges (a headless tool) simply gets the report again next time,
+    /// which is the safe direction.
+    ///
+    /// Idempotent; safe to call when nothing was reported.
+    fn ack_open_report(&self) {
+        if !self.report.deletion_lost {
+            return;
+        }
+        // Under the wal mutex like every other marker mutation, so an
+        // acknowledgement cannot land between a raise and its marker write.
+        let wal = lock_recover(&self.wal);
+        deletion_marker::remove(wal.checkpoint_path());
     }
 
     /// Durability problems that hold right now, most severe first.
@@ -429,12 +469,25 @@ impl LexUserHistory {
     ///   parameter so that half is checked rather than merely documented.
     fn raise_unpersisted(
         &self,
-        _wal: &MutexGuard<'_, HistoryWal>,
+        wal: &MutexGuard<'_, HistoryWal>,
         memory_only: bool,
-        deletion_breach: bool,
+        deletion_breach: Option<DeletionBreach>,
     ) {
-        if !memory_only && !deletion_breach {
+        if !memory_only && deletion_breach.is_none() {
             return;
+        }
+        // On disk before the ledger, and before the synchronous checkpoint
+        // fallback the caller runs next (§5.4) — the same write-ahead
+        // discipline the WAL itself follows. Writing after the fallback would
+        // open a crash window whose only outcome is the silent one; writing
+        // first can only over-report, since a fallback that succeeds unlinks
+        // the marker through the cover below.
+        if let Some(breach) = deletion_breach {
+            if let Err(e) = deletion_marker::merge_write(wal.checkpoint_path(), breach) {
+                // Nothing else can carry the fact across the restart. The
+                // runtime row still reports it for this session.
+                warn!("failed to record the unpersisted deletion for the next start: {e}");
+            }
         }
         let mut current = self.durability_ledger.load(Ordering::SeqCst);
         loop {
@@ -452,7 +505,7 @@ impl LexUserHistory {
             let next = (mem.max(del).max(covered_of(current)) + 1).min(GEN_MASK);
             let updated = pack_ledger(
                 if memory_only { next } else { mem },
-                if deletion_breach { next } else { del },
+                if deletion_breach.is_some() { next } else { del },
                 covered_of(current),
             );
             match self.durability_ledger.compare_exchange_weak(
@@ -505,18 +558,35 @@ impl LexUserHistory {
     /// A CAS loop rather than a store: it must not clobber a raise that
     /// landed since the load (the retry picks up the new generations), and it
     /// must never walk `covered` backwards.
-    fn cover_unpersisted(&self, generation: u64) {
+    ///
+    /// The on-disk marker is unlinked here, in the same call and under the
+    /// same wal guard as the CAS that settles the ledger — not as a follow-up
+    /// statement in the caller. Between a successful CAS and a separate unlink
+    /// there is a window of a few instructions in which a new raise can write
+    /// a marker that the unlink then destroys, dropping the report for a
+    /// deletion that is still outstanding. That window is not something a
+    /// deterministic test can pin (#317 proved twice that tests over such
+    /// windows pass under mutation), so it is removed by construction: the
+    /// guard witness makes "cover without the wal mutex" not compile, and
+    /// every raise takes the same mutex.
+    ///
+    /// Unlinks only on the true→false transition of the deletion predicate.
+    /// In the steady state the early return above fires and no syscall is
+    /// issued at all — this runs inside the critical section the key thread
+    /// waits on.
+    fn cover_unpersisted(&self, wal: &MutexGuard<'_, HistoryWal>, generation: u64) {
         let mut current = self.durability_ledger.load(Ordering::SeqCst);
         loop {
             if covered_of(current) >= generation {
                 return;
             }
+            let covered = generation.min(GEN_MASK - 1);
             let updated = pack_ledger(
                 raised_memory_only_of(current),
                 raised_deletion_of(current),
                 // One below the raise ceiling, so a saturated generation
                 // stays outstanding rather than being covered by accident.
-                generation.min(GEN_MASK - 1),
+                covered,
             );
             match self.durability_ledger.compare_exchange_weak(
                 current,
@@ -524,7 +594,17 @@ impl LexUserHistory {
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    // Decided from the values this CAS itself exchanged, not
+                    // from a fresh load: a re-read could see a raise that
+                    // landed after the swap and mistake it for one this
+                    // checkpoint covered.
+                    let was_outstanding = raised_deletion_of(current) > covered_of(current);
+                    if was_outstanding && raised_deletion_of(current) <= covered {
+                        deletion_marker::remove(wal.checkpoint_path());
+                    }
+                    return;
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -604,7 +684,13 @@ impl LexUserHistory {
         // A Tombstone whose WAL durability failed (SyncFailed or Io): the
         // deletion must be checkpointed synchronously before returning (§5.4),
         // not left to an async scrub that a crash could preempt.
-        let mut durability_failed = false;
+        //
+        // Accumulated across the batch as a `DeletionBreach` rather than a
+        // bool, because the two halves are not interchangeable on the next
+        // start: `Io` has no frame and no heal, while `Unflushed` is settled
+        // by replay. `merge` keeps the claim that covers the whole batch —
+        // `Lost` absorbs, and two unflushed frames keep the higher seq.
+        let mut durability_failed: Option<DeletionBreach> = None;
         let mut needs_threshold_compact = false;
         if !wal_records.is_empty() {
             let mut wal = lock_recover(&self.wal);
@@ -671,7 +757,10 @@ impl LexUserHistory {
                         // the user a *deletion* did not persist — a privacy
                         // claim about an operation they never requested.
                         if matches!(record, WalRecord::Tombstone { .. }) {
-                            durability_failed = true;
+                            durability_failed = Some(match durability_failed {
+                                Some(prev) => prev.merge(DeletionBreach::Unflushed { seq }),
+                                None => DeletionBreach::Unflushed { seq },
+                            });
                         }
                         sequenced.push((record, Some(seq)));
                     }
@@ -691,7 +780,10 @@ impl LexUserHistory {
                         // via the async heal a re-learnable Committed loss can
                         // wait for.
                         if matches!(record, WalRecord::Tombstone { .. }) {
-                            durability_failed = true;
+                            durability_failed = Some(match durability_failed {
+                                Some(prev) => prev.merge(DeletionBreach::Lost),
+                                None => DeletionBreach::Lost,
+                            });
                         }
                         sequenced.push((record, None));
                     }
@@ -724,7 +816,7 @@ impl LexUserHistory {
             self.append_commit_log(line);
         }
 
-        if durability_failed {
+        if durability_failed.is_some() {
             // A Tombstone could not be made durable through the WAL. Write
             // the checkpoint synchronously before returning so the deletion
             // survives a crash instead of resurrecting if an async scrub is
@@ -778,7 +870,20 @@ impl LexUserHistory {
         // vacuously persisted. Without this second cover point, wiping
         // everything would leave a standing "a deletion did not persist"
         // warning on a history that provably holds nothing.
-        self.cover_unpersisted(covered_gen);
+        self.cover_unpersisted(&wal, covered_gen);
+        // Unconditionally, not just via the cover above: a marker left by a
+        // *previous* session raises nothing in this one, so the ledger is
+        // still zero and the cover early-returns without touching it. Without
+        // this line a wipe would leave that marker to report a lost deletion
+        // against a history that provably holds nothing (#312).
+        //
+        // Not routed through `remove_recovery_artifacts`: that helper returns
+        // on its first error and only reaches the `.corrupt-*` files
+        // afterwards, so a marker that refuses to unlink would skip the
+        // deletion of files that do hold the user's input text. This one holds
+        // none (magic, version, flags, a seq), which is also why its failure
+        // stays a log line rather than joining `deferred`.
+        deletion_marker::remove(wal.checkpoint_path());
 
         // Physical deletions below are deferred-error: the logical clear is
         // committed, so every step runs (the memory reset especially —
@@ -982,18 +1087,21 @@ impl LexUserHistory {
             return CompactOutcome::Failed;
         }
 
-        // The deletion is persisted the moment this full-snapshot checkpoint
-        // is durable — before the truncation below, and regardless of whether
-        // it runs. Truncation is the physical scrub of superseded frames, not
-        // what makes the deletion survive a restart, so tying the cover to it
-        // would leave a permanent warning whenever frames land mid-run
-        // (FollowUp) or the truncate fails on an otherwise durable write.
-        self.cover_unpersisted(covered_gen);
-
         // 3. Truncate WAL (brief lock) — conditionally (§5.3): only frames
         // provably covered by the durable checkpoint (seq <= applied_seq at
         // snapshot time) may be destroyed.
         let mut wal = lock_recover(&self.wal);
+
+        // The deletion is persisted the moment the full-snapshot checkpoint
+        // above became durable — before the truncation below, and regardless
+        // of whether it runs. Truncation is the physical scrub of superseded
+        // frames, not what makes the deletion survive a restart, so tying the
+        // cover to it would leave a permanent warning whenever frames land
+        // mid-run (FollowUp) or the truncate fails on an otherwise durable
+        // write. Only the *placement* moved under this guard, and only so the
+        // ledger update and the marker unlink cannot be split by a concurrent
+        // raise; the condition being covered is unchanged.
+        self.cover_unpersisted(&wal, covered_gen);
 
         // The checkpoint is a full snapshot, so everything it contains is
         // now both on disk and in the state it was cloned from: the residue
@@ -1105,12 +1213,21 @@ mod tests {
     /// too, or the witness parameter would be documenting nothing.
     fn raise_under_wal(hist: &LexUserHistory) {
         let wal = lock_recover(&hist.wal);
-        hist.raise_unpersisted(&wal, true, true);
+        hist.raise_unpersisted(&wal, true, Some(DeletionBreach::Lost));
+    }
+
+    fn cover_under_wal(hist: &LexUserHistory, generation: u64) {
+        let wal = lock_recover(&hist.wal);
+        hist.cover_unpersisted(&wal, generation);
     }
 
     fn gen_under_wal(hist: &LexUserHistory) -> u64 {
         let wal = lock_recover(&hist.wal);
         hist.deletion_gen_under_wal_lock(&wal)
+    }
+
+    fn marker(cp: &Path) -> Option<DeletionBreach> {
+        deletion_marker::read(cp)
     }
 
     fn committed(reading: &str, surface: &str) -> LearningRecord {
@@ -1178,6 +1295,7 @@ mod tests {
                 quarantined_paths: Vec::new(),
                 replayed_deletion: false,
                 compaction_recommended: false,
+                deletion_lost: false,
             },
             durability_ledger: AtomicU64::new(0),
         })
@@ -1611,6 +1729,294 @@ mod tests {
         let blocker = cp.parent().unwrap();
         std::fs::remove_file(blocker).unwrap();
         std::fs::create_dir(blocker).unwrap();
+    }
+
+    /// Fail the *checkpoint write only*, leaving every sibling in the family
+    /// writable — including the marker, and including the checkpoint file
+    /// itself, which a restart still has to read.
+    ///
+    /// `blocked_checkpoint` cannot serve here: it makes the whole parent
+    /// directory a file, so the marker (same directory) cannot be written
+    /// either, and a test built on it would observe "no marker" and pass for
+    /// the wrong reason — the #312 case would have no test at all. This
+    /// instead puts a *directory* at the tmp path `write_atomic` needs, so
+    /// `File::create` fails with EISDIR and nothing else is disturbed.
+    fn block_checkpoint_write(cp: &Path) {
+        std::fs::create_dir(crate::user_history::checkpoint_tmp_path(cp)).unwrap();
+    }
+
+    fn unblock_checkpoint_write(cp: &Path) {
+        std::fs::remove_dir(crate::user_history::checkpoint_tmp_path(cp)).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // The unpersisted-deletion marker (#312): the runtime ledger dies with the
+    // process, so before this the `Io` half went unreported on exactly the
+    // restart where the entry comes back.
+    // -----------------------------------------------------------------------
+
+    /// Learn something, then delete it with the tombstone's append failing —
+    /// the `Io` half, where no frame exists at all.
+    fn lose_a_deletion(hist: &Arc<LexUserHistory>, io: &FaultyIo) {
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_appends.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+    }
+
+    #[test]
+    fn test_lost_deletion_is_recorded_for_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+
+        lose_a_deletion(&hist, &io);
+
+        assert!(hist.has_unpersisted_deletion(), "runtime row still holds");
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "a deletion with no frame and no checkpoint must reach the disk as Lost"
+        );
+    }
+
+    #[test]
+    fn test_a_covering_checkpoint_retracts_the_marker() {
+        // The fallback checkpoint (§5.4) succeeding *is* the deletion being
+        // persisted, so nothing should be reported next start.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+
+        lose_a_deletion(&hist, &io);
+
+        assert!(cp.exists(), "the fallback checkpoint must have landed");
+        assert_eq!(marker(&cp), None, "a covered deletion leaves no record");
+        assert!(!hist.has_unpersisted_deletion());
+    }
+
+    #[test]
+    fn test_a_failed_compaction_leaves_the_marker_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+
+        lose_a_deletion(&hist, &io);
+        assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
+
+        // Disk heals: the next compaction writes a checkpoint that no longer
+        // contains the entry, which is what makes the deletion durable.
+        io.fail_appends.store(false, Ordering::SeqCst);
+        unblock_checkpoint_write(&cp);
+        hist.scrub_pending.store(true, Ordering::SeqCst);
+        hist.run_gated_compact();
+
+        assert_eq!(
+            marker(&cp),
+            None,
+            "a durable checkpoint retracts the record along with the ledger"
+        );
+    }
+
+    #[test]
+    fn test_a_follow_up_compaction_still_retracts() {
+        // CompactOutcome::FollowUp means the checkpoint IS durable and only
+        // the covered-only truncation was skipped. Gating retraction on the
+        // truncation would leave a standing warning whenever frames land
+        // mid-run.
+        //
+        // Built on the SyncFailed half deliberately: an Io append freezes the
+        // WAL, and a frozen WAL cannot take the later frame that produces the
+        // FollowUp shape in the first place.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日")]);
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        io.fail_full_sync.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            marker(&cp),
+            Some(DeletionBreach::Unflushed { .. })
+        ));
+        unblock_checkpoint_write(&cp);
+
+        let (generation, snapshot) = hist.snapshot_to_cover();
+        snapshot.save(&cp).unwrap();
+        // Lands after the snapshot, so `truncate_covered` will decline.
+        hist.apply_records(&[committed("あした", "明日")]);
+        let mut wal = lock_recover(&hist.wal);
+        hist.cover_unpersisted(&wal, generation);
+        assert!(
+            !wal.truncate_covered(snapshot.applied_seq()).unwrap(),
+            "fixture must produce the FollowUp shape"
+        );
+        assert_eq!(
+            marker(&cp),
+            None,
+            "the checkpoint is durable, so the deletion is persisted"
+        );
+    }
+
+    #[test]
+    fn test_lost_absorbs_an_unflushed_raise_in_either_order() {
+        // The failure this pins: a plain overwrite would let the `Unflushed`
+        // raise replace an outstanding `Lost`, handing the next start a
+        // witness it can suppress — the #312 report vanishes again. Both
+        // orders, because a SyncFailed append does not freeze the WAL, so
+        // either can follow the other within one session.
+        for lost_first in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let cp = dir.path().join("history.lxud");
+            let io = FaultyIo::default();
+            let hist = hist_with_io(&cp, io.boxed());
+            block_checkpoint_write(&cp);
+
+            hist.apply_records(&[committed("きょう", "今日"), committed("あす", "明日")]);
+            let (first, second) = if lost_first {
+                (&io.fail_appends, &io.fail_full_sync)
+            } else {
+                (&io.fail_full_sync, &io.fail_appends)
+            };
+
+            first.store(true, Ordering::SeqCst);
+            hist.apply_records(&[deletion("きょう", "今日")]);
+            first.store(false, Ordering::SeqCst);
+            second.store(true, Ordering::SeqCst);
+            hist.apply_records(&[deletion("あす", "明日")]);
+
+            assert_eq!(
+                marker(&cp),
+                Some(DeletionBreach::Lost),
+                "lost_first={lost_first}: the unhealable claim must win"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unflushed_raises_keep_the_higher_seq() {
+        // The suppression test asks whether the loaded state reached the
+        // witness, so the lower of two seqs can be covered while the higher is
+        // still missing. Keeping the minimum would suppress a real loss.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+
+        hist.apply_records(&[committed("きょう", "今日"), committed("あす", "明日")]);
+        io.fail_full_sync.store(true, Ordering::SeqCst);
+        hist.apply_records(&[deletion("きょう", "今日")]);
+        let first = match marker(&cp) {
+            Some(DeletionBreach::Unflushed { seq }) => seq,
+            other => panic!("expected an unflushed witness, got {other:?}"),
+        };
+        hist.apply_records(&[deletion("あす", "明日")]);
+
+        match marker(&cp) {
+            Some(DeletionBreach::Unflushed { seq }) => {
+                assert!(
+                    seq > first,
+                    "the later frame's seq must win ({seq} > {first})"
+                )
+            }
+            other => panic!("expected an unflushed witness, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_clear_removes_a_marker_it_did_not_raise() {
+        // A marker from a *previous* session raises nothing in this one, so
+        // the ledger is zero and the cover early-returns without touching it.
+        // Only the unconditional wipe in clear_impl removes it — and it must,
+        // or a full wipe would keep reporting a lost deletion against a
+        // history that provably holds nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = open_hist(&cp);
+        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+
+        hist.clear_impl().unwrap();
+
+        assert_eq!(marker(&cp), None, "a wipe must retire a stale marker too");
+    }
+
+    #[test]
+    fn test_clear_removes_a_marker_it_did_raise() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io(&cp, io.boxed());
+        block_checkpoint_write(&cp);
+        lose_a_deletion(&hist, &io);
+        assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
+
+        unblock_checkpoint_write(&cp);
+        io.fail_appends.store(false, Ordering::SeqCst);
+        hist.clear_impl().unwrap();
+
+        assert_eq!(marker(&cp), None);
+    }
+
+    #[test]
+    fn test_a_lost_deletion_survives_the_restart_that_resurrects_it() {
+        // The end-to-end shape of #312, and the only test that exercises the
+        // writer and the reader against one real file: delete, lose it, close
+        // the process, reopen. The entry comes back — and this time the
+        // report comes back with it.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+
+        {
+            let io = FaultyIo::default();
+            let hist = hist_with_io(&cp, io.boxed());
+            // A real checkpoint first, so the reopen below has something to
+            // load that still holds the entry.
+            hist.apply_records(&[committed("きょう", "今日")]);
+            hist.scrub_pending.store(true, Ordering::SeqCst);
+            hist.run_gated_compact();
+            assert!(cp.exists());
+
+            block_checkpoint_write(&cp);
+            io.fail_appends.store(true, Ordering::SeqCst);
+            hist.apply_records(&[deletion("きょう", "今日")]);
+            assert!(learned(&hist, "きょう").is_empty(), "memory delete runs");
+            assert!(hist.has_unpersisted_deletion());
+        }
+        unblock_checkpoint_write(&cp);
+
+        let reopened = open_hist(&cp);
+        assert_eq!(
+            learned(&reopened, "きょう"),
+            vec!["今日".to_string()],
+            "the deletion did not persist, so the entry is back"
+        );
+        assert!(
+            reopened.open_report().deletion_lost,
+            "and the report is back with it — this is the whole of #312"
+        );
+        // Nothing retracts it, so it must not be on the retractable channel.
+        assert!(
+            !reopened
+                .durability_issues()
+                .contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            "a past loss is not a live durability problem"
+        );
+
+        // "It appears" is half the property; "it goes away once delivered" is
+        // the other half. Without the second, a permanently latched row would
+        // pass the first.
+        assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
+        reopened.ack_open_report();
+        assert_eq!(marker(&cp), None);
+        assert!(!open_hist(&cp).open_report().deletion_lost);
     }
 
     #[test]
@@ -2069,7 +2475,7 @@ mod tests {
 
         let (generation, _snapshot) = hist.snapshot_to_cover();
         raise_under_wal(&hist); // lands after the pair was taken
-        hist.cover_unpersisted(generation);
+        cover_under_wal(&hist, generation);
 
         assert!(
             hist.has_unpersisted_deletion(),
@@ -2077,7 +2483,7 @@ mod tests {
         );
         // The next compaction, pairing a fresh generation, does clear it.
         let (generation, _snapshot) = hist.snapshot_to_cover();
-        hist.cover_unpersisted(generation);
+        cover_under_wal(&hist, generation);
         assert!(!hist.has_unpersisted_deletion());
     }
 
@@ -2100,16 +2506,16 @@ mod tests {
         let observed = gen_under_wal(&hist);
         // A second deletion fails while the first cover is being computed.
         raise_under_wal(&hist);
-        hist.cover_unpersisted(observed);
+        cover_under_wal(&hist, observed);
         assert!(
             hist.has_unpersisted_deletion(),
             "covering generation 1 must not settle the deletion raised after it"
         );
 
         // A stale cover must not un-settle newer work.
-        hist.cover_unpersisted(gen_under_wal(&hist));
+        cover_under_wal(&hist, gen_under_wal(&hist));
         assert!(!hist.has_unpersisted_deletion());
-        hist.cover_unpersisted(observed);
+        cover_under_wal(&hist, observed);
         assert!(
             !hist.has_unpersisted_deletion(),
             "a late cover carrying an older generation must not reopen it"

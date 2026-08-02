@@ -12,6 +12,13 @@
 //! migration writes). Offline tooling must keep using the strict, side-
 //! effect-free [`UserHistory::open`] / [`super::wal::open_with_wal`]: an
 //! audit tool renaming a live IME's files would be an incident.
+//!
+//! It also runs **before the history is shared**: the `HistoryWal` it returns
+//! has not entered its mutex yet and no session can reach it. That is the
+//! standing exemption for touching the unpersisted-deletion marker here, which
+//! everywhere else in the engine happens only under the wal mutex (the mutex
+//! is what makes a raise and a cover unable to interleave). A future path that
+//! re-opens a *live* history would break the exemption, not merely bend it.
 
 use std::fs;
 use std::io;
@@ -21,6 +28,7 @@ use tracing::{info, warn};
 
 use crate::persist;
 
+use super::deletion_marker;
 use super::persistence::{load_checkpoint, CheckpointLoaded};
 use super::wal::{
     classify_wal, legacy_valid_prefix, scan_legacy, scan_v2, wal_path_for, HistoryWal, WalFormat,
@@ -116,6 +124,23 @@ pub struct OpenReport {
     /// Startup-compaction hint (§5.1-6): recovery results should be
     /// checkpointed early so the next startup is clean. Consumed in PR2.
     pub compaction_recommended: bool,
+    /// A previous session could not persist a deletion the user asked for,
+    /// and nothing since has covered it (#312) — so the state just loaded may
+    /// still hold the entry that deletion was meant to remove.
+    ///
+    /// Its own field for the same reason `migration_failed` is: on this path
+    /// `checkpoint_state` is *truthfully* `Loaded` — the checkpoint read
+    /// perfectly, it just contains something that should be gone — so no
+    /// existing enum can carry the fact without a state per combination. It
+    /// deliberately stays out of `data_loss_suspected()`, whose user-facing
+    /// wording is "some past learning was lost": this is the opposite loss,
+    /// data that survived when it should not have.
+    ///
+    /// Deliberately does **not** feed `compaction_recommended`. A compaction
+    /// here would checkpoint the resurrected entry and cover the ledger — i.e.
+    /// tell the user everything is fine — which is the one thing that must not
+    /// happen. Like `migration_failed`, this is reported, not healed.
+    pub deletion_lost: bool,
 }
 
 impl OpenReport {
@@ -137,6 +162,7 @@ impl OpenReport {
             && !self.migrated_from_v1
             && !self.migration_failed
             && !self.appends_frozen
+            && !self.deletion_lost
     }
 }
 
@@ -156,6 +182,7 @@ pub fn open_recovering(
         appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
+        deletion_lost: false,
     };
 
     // --- 1. checkpoint ---
@@ -291,6 +318,34 @@ pub fn open_recovering(
 
     // Replay applied frames without evicting; settle capacity once (§5.1-4).
     history.evict();
+
+    // --- 2b. unpersisted-deletion marker (#312) ---
+    // After the replay, because the witness is settled against the state that
+    // was actually loaded: `applied_seq` is now
+    // `max(checkpoint.applied_seq, last replayed seq)`, so one comparison
+    // answers "did that tombstone's frame make it into this state".
+    //
+    // Before the migration commit below, and read-only either way. The
+    // marker is *not* consumed here: the fact has to reach the report's
+    // consumer first, and this function returns long before Swift reads it —
+    // dropping the only durable trace in between would lose the report on
+    // exactly the failing-disk restarts this exists for. `ack_open_report`
+    // clears it once the fact has landed in the latching channel. Nor may any
+    // checkpoint written during this startup (the migration commit, the
+    // recommended compaction) clear it: those snapshot a memory state that
+    // has the resurrected entry back in it.
+    if let Some(breach) = deletion_marker::read(checkpoint_path) {
+        if breach.outstanding(history.applied_seq()) {
+            warn!("a deletion from a previous session was never persisted ({breach:?})");
+            report.deletion_lost = true;
+        } else {
+            // The frame replayed after all, so the deletion took. Retract by
+            // deleting the marker — leaving it would latch a privacy alarm
+            // about data that is provably gone.
+            info!("unflushed deletion was applied by replay; clearing the marker");
+            deletion_marker::remove(checkpoint_path);
+        }
+    }
 
     // --- 3. migration commit (§7) ---
     if migrate {

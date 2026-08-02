@@ -3,6 +3,7 @@
 //! Records confirmed conversions and uses frequency × recency scoring to
 //! promote learned candidates in subsequent sessions.
 
+pub mod deletion_marker;
 mod persistence;
 pub mod recovery;
 #[cfg(test)]
@@ -700,4 +701,17 @@ impl UserHistory {
     pub fn cover_durable_residue(&mut self, snapshot: &UserHistory) {
         self.durable_residue.cover(&snapshot.durable_residue);
     }
+}
+
+/// The temporary path a durable checkpoint write goes through.
+///
+/// Exported for fault injection: a test in a dependent crate can put a
+/// directory here to make the checkpoint write — and only the checkpoint
+/// write — fail, leaving the rest of the family (notably the
+/// unpersisted-deletion marker) writable and the existing checkpoint
+/// readable. Deriving it here rather than re-spelling the convention in the
+/// test keeps the injection from silently becoming a no-op if the naming
+/// changes.
+pub fn checkpoint_tmp_path(checkpoint_path: &std::path::Path) -> std::path::PathBuf {
+    crate::persist::suffixed(checkpoint_path, ".tmp")
 }

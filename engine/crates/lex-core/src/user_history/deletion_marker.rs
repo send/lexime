@@ -1,0 +1,188 @@
+//! Sidecar marker: a deletion the user asked for did not reach disk (#312).
+//!
+//! The runtime durability ledger lives in an atomic on `LexUserHistory`, so it
+//! dies with the process — and the `Io` half of `DeletionNotPersisted` has no
+//! startup heal: the old checkpoint still holds the entry and wins on the next
+//! start. The report was therefore gone on the very restart where the deletion
+//! resurrects. This file is the ledger's on-disk projection, so the fact
+//! survives to the launch that materialises it.
+//!
+//! Layout — 16 fixed bytes, no CRC (see "fail-safe" below):
+//!
+//! | offset | size | field       | content                                  |
+//! |--------|------|-------------|------------------------------------------|
+//! | 0      | 4    | magic       | `LXDM`                                   |
+//! | 4      | 1    | version     | `1`                                      |
+//! | 5      | 1    | flags       | bit0 = a witness seq follows             |
+//! | 6      | 2    | reserved    | 0 on write, ignored on read              |
+//! | 8      | 8    | witness_seq | u64 LE, meaningful only when bit0 is set |
+//!
+//! **Fail-safe by construction: only `NotFound` means clean.** A read error, a
+//! short file, a bad magic, an unknown version — every outcome other than
+//! "there is no file" resolves to the strongest claim ([`DeletionBreach::Lost`],
+//! reported unconditionally). Suppressing a report is the only direction that
+//! demands a well-formed witness, which is why no CRC is needed: corruption can
+//! only push the marker toward reporting. It is also why reading never returns
+//! an error to the caller — surfacing one would let a sidecar nobody can read
+//! fail the whole history open, i.e. stop learning outright.
+//!
+//! Deliberately holds **no** input strings: which entry was deleted is exactly
+//! the text the deletion was meant to erase. The witness is a WAL seq.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use tracing::warn;
+
+use crate::persist::{self, write_atomic};
+
+const MAGIC: &[u8; 4] = b"LXDM";
+const VERSION: u8 = 1;
+const LEN: usize = 16;
+const FLAG_WITNESS: u8 = 0b0000_0001;
+
+/// A deletion whose durability failed, in the form the next startup needs.
+///
+/// The two halves differ in whether a restart heals them, which is the whole
+/// reason the witness exists: reporting the healed half would be a latching
+/// privacy alarm about data that is, in fact, gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeletionBreach {
+    /// No durable representation at all: the WAL append failed, so no frame
+    /// exists, and the synchronous checkpoint fallback failed too. The old
+    /// checkpoint still holds the entry and no restart heals it.
+    Lost,
+    /// The frame reached the WAL at `seq` but its flush was not confirmed. A
+    /// plain restart replays it (the deletion takes); only power loss can
+    /// still undo it — which is what makes the seq worth recording.
+    Unflushed { seq: u64 },
+}
+
+impl DeletionBreach {
+    /// Combine two breaches into the claim that covers both.
+    ///
+    /// `Lost` absorbs: one deletion with no durable representation is not made
+    /// healable by another that has a frame. Two `Unflushed` keep the **max**
+    /// seq — the suppression test asks "did the loaded state reach this seq",
+    /// and the lower of two seqs can be covered while the higher is still
+    /// missing.
+    ///
+    /// Both rules are one-directional, which is what lets the marker be
+    /// rewritten in place: no merge can weaken an outstanding claim.
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Lost, _) | (_, Self::Lost) => Self::Lost,
+            (Self::Unflushed { seq: a }, Self::Unflushed { seq: b }) => {
+                Self::Unflushed { seq: a.max(b) }
+            }
+        }
+    }
+
+    /// Whether this breach still stands against a state that has replayed up
+    /// to `applied_seq`.
+    ///
+    /// `Lost` always stands. `Unflushed` is settled once the loaded state
+    /// includes its frame — `applied_seq` after replay is
+    /// `max(checkpoint.applied_seq, last replayed seq)`, so one comparison
+    /// answers both "the checkpoint already covered it" and "replay applied
+    /// it". A frame beyond a repaired tail leaves `applied_seq` short of the
+    /// witness, which is the power-loss case and correctly still stands.
+    pub fn outstanding(self, applied_seq: u64) -> bool {
+        match self {
+            Self::Lost => true,
+            Self::Unflushed { seq } => seq > applied_seq,
+        }
+    }
+
+    fn encode(self) -> [u8; LEN] {
+        let mut buf = [0u8; LEN];
+        buf[0..4].copy_from_slice(MAGIC);
+        buf[4] = VERSION;
+        if let Self::Unflushed { seq } = self {
+            buf[5] = FLAG_WITNESS;
+            buf[8..16].copy_from_slice(&seq.to_le_bytes());
+        }
+        buf
+    }
+
+    /// Total decode: every malformed input resolves to `Lost`, never a panic.
+    /// Reached from `#[uniffi::constructor]`, where a slice panic would cross
+    /// the FFI boundary.
+    fn decode(bytes: &[u8]) -> Self {
+        if bytes.len() < LEN || &bytes[0..4] != MAGIC || bytes[4] != VERSION {
+            return Self::Lost;
+        }
+        if bytes[5] & FLAG_WITNESS == 0 {
+            return Self::Lost;
+        }
+        Self::Unflushed {
+            seq: u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte field")),
+        }
+    }
+}
+
+/// Path of the marker for a history family (`<checkpoint>.deletion-pending`).
+///
+/// Suffixed, not `with_extension`: the family shares the checkpoint's full
+/// file name so quarantine rotation and the clear sweep keep matching it.
+/// It does **not** contain `.corrupt-`, so [`persist::quarantined_files`]
+/// never picks it up (pinned by a test).
+pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
+    persist::suffixed(checkpoint_path, ".deletion-pending")
+}
+
+/// Read the marker. `None` means — and only means — there is no file.
+///
+/// See the module docs: every other outcome, including an unreadable file, is
+/// [`DeletionBreach::Lost`].
+pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
+    match fs::read(marker_path(checkpoint_path)) {
+        Ok(bytes) => Some(DeletionBreach::decode(&bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
+            Some(DeletionBreach::Lost)
+        }
+    }
+}
+
+/// Merge `breach` into whatever the marker already claims and write it back.
+///
+/// Read-modify-write, not a plain overwrite. A full replacement is
+/// last-write-wins, and an `Unflushed` landing on top of an outstanding `Lost`
+/// would downgrade the claim to one the next startup can suppress — losing
+/// exactly the report this file exists for. The path is reachable: a
+/// `SyncFailed` append does not freeze the WAL, so a later record in the same
+/// batch can still fail with `Io`, and two of the WAL's guards return `Io`
+/// without freezing.
+///
+/// Callers hold the wal mutex, which is what serializes the read against a
+/// concurrent write.
+pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
+    let merged = match read(checkpoint_path) {
+        Some(existing) => existing.merge(breach),
+        None => breach,
+    };
+    write_atomic(&marker_path(checkpoint_path), &merged.encode())
+}
+
+/// Remove the marker (and any `.tmp` residue of a torn write).
+///
+/// Best-effort: the marker holds no user text, so a failure to unlink is worth
+/// a log line and nothing more. What remains is re-reported on the next start,
+/// which is the safe direction. Retrying is deliberately not attempted — the
+/// disk this runs against is the one that just failed.
+pub fn remove(checkpoint_path: &Path) {
+    let path = marker_path(checkpoint_path);
+    for p in [persist::suffixed(&path, ".tmp"), path] {
+        match fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => warn!(
+                "failed to remove unpersisted-deletion marker {}: {e}",
+                p.display()
+            ),
+        }
+    }
+}

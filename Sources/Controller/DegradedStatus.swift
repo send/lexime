@@ -12,6 +12,10 @@ import Foundation
 ///   covered by the next durable checkpoint. Folding these into `initFailures`
 ///   would make a recovered disk keep warning forever.
 ///
+/// The dividing line is retraction, not where the fact came from:
+/// `.historyDeletionLost` is a durability failure too, but it is a *past* one
+/// with nothing left to retract it, so it latches like the rest of startup.
+///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch
 /// followed by a disk that fails hours later. So `menu()` gates on "are there
@@ -54,6 +58,16 @@ enum DegradedStatus {
             return NSLocalizedString(
                 "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）",
                 comment: "Degraded status: user history partially lost, learning continues")
+        case .historyDeletionLost:
+            // Says 「前回」 and tells the user what to do, where the runtime row
+            // below says only that a save is failing right now. Without that
+            // split the two read as near-duplicates, and on a disk that is
+            // still failing they appear together — the steady state, not a
+            // corner. This is the one that has already happened: the entry is
+            // back, and only the user can finish the job.
+            return NSLocalizedString(
+                "⚠️ 前回のセッションの削除が保存されていません（削除した内容が復元されている可能性があります。確認して再度削除してください）",
+                comment: "Degraded status: a deletion from a previous session never reached disk")
         case .customSettings:
             return NSLocalizedString(
                 "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）",
