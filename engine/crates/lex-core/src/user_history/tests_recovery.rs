@@ -2106,6 +2106,61 @@ fn t10_a_fifo_at_the_marker_tmp_does_not_block_the_writer() {
 }
 
 #[test]
+fn t10_a_promotion_that_failed_schedules_its_own_retry() {
+    // The promotion is best-effort, and when it fails the disk keeps the
+    // *suppressible* `Unflushed{seq}` while memory holds `Lost`. A healthy
+    // session raises nothing, so nothing re-projects until a threshold
+    // compaction a thousand frames off — and ordinary commits advance the WAL
+    // past the witness meanwhile, so a restart before then reads the witness
+    // as replayed and suppresses a report that is still owed.
+    //
+    // Scheduling the compaction is what makes the promotion actually happen.
+    // This reverses a settled note that said a compaction here would "tell the
+    // user everything is fine": it cannot cover the ledger (nothing raised it,
+    // so the cover early-returns) and it cannot touch the row (driven by the
+    // latched failure and the owed predicate) — all it does is project, which
+    // with the claim standing writes `Lost`.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 1 });
+    // Block the *write* without disturbing the read: a read-only parent stops
+    // `create_regular` from making the tmp (EACCES) while the canonical marker
+    // still reads fine. Planting an obstacle at the tmp path itself does not
+    // work — `read` merges the orphan tmp, and an unreadable one resolves to
+    // `Lost`, which changes the very branch under test.
+    use std::os::unix::fs::PermissionsExt;
+    let parent = f.cp.parent().unwrap().to_path_buf();
+    let original = fs::metadata(&parent).unwrap().permissions();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let report = open_report_of(&f);
+    fs::set_permissions(&parent, original).unwrap();
+    assert!(report.deletion_lost, "the report is owed");
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        Some(DeletionBreach::Unflushed { seq: applied + 1 }),
+        "fixture must actually block the promotion, leaving the witness"
+    );
+    assert!(
+        report.compaction_recommended,
+        "a promotion that did not land has to be retried, or a later replay settles the witness"
+    );
+
+    // And the converse: a promotion that landed owes the disk nothing.
+    let g = fx();
+    build_v2_state(&g, false);
+    write_marker(&g, DeletionBreach::Unflushed { seq: applied + 1 });
+    let report = open_report_of(&g);
+    assert!(report.deletion_lost);
+    assert_eq!(deletion_marker::read(&g.cp), Some(DeletionBreach::Lost));
+    assert!(
+        !report.compaction_recommended,
+        "nothing is owed once the disk holds the unconditional claim"
+    );
+}
+
+#[test]
 fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
     // The migration commit writes a durable v2 checkpoint serialized from the
     // replayed state — which, when replay applied a tombstone, is a checkpoint

@@ -142,12 +142,32 @@ pub struct OpenReport {
     /// wording is "some past learning was lost": this is the opposite loss,
     /// data that survived when it should not have.
     ///
-    /// Deliberately does **not** feed `compaction_recommended`. A compaction
-    /// here would checkpoint the resurrected entry and cover the ledger — i.e.
-    /// tell the user everything is fine — which is the one thing that must not
-    /// happen. Like `migration_failed`, this is reported, not healed. (The
-    /// startup compaction other conditions schedule cannot cover it either:
-    /// nothing raised the ledger this session, so the cover early-returns.)
+    /// Feeds `compaction_recommended` **when the disk does not already say
+    /// `Lost`** — a reversal of the note that used to sit here, kept as a
+    /// record of why.
+    ///
+    /// That note said a compaction "would checkpoint the resurrected entry and
+    /// cover the ledger — i.e. tell the user everything is fine". All three
+    /// premises are false now, and the last was false when it was written:
+    ///
+    /// - it cannot cover the ledger — nothing raised it this session, so the
+    ///   cover early-returns, which the note's own parenthetical conceded;
+    /// - it cannot tell the user anything is fine — the row is driven by
+    ///   `inherited_owed` and the latched `EngineInitFailure`, and a
+    ///   compaction touches neither;
+    /// - re-checkpointing the resurrected entry changes nothing. The entry is
+    ///   already in the durable checkpoint. That is *why* it resurrected.
+    ///
+    /// What a compaction does do is project, and with the inherited claim
+    /// standing the projection writes `Lost`. That is the point: recovery's
+    /// promotion is best-effort, and when it fails the disk keeps the
+    /// *suppressible* `Unflushed{seq}` under a memory claim of `Lost`. A
+    /// healthy session raises nothing, so nothing re-projects until a
+    /// threshold compaction a thousand frames away — and ordinary commits
+    /// advance the WAL past the witness in the meantime, so a restart before
+    /// then reads the witness as replayed and suppresses a report that is
+    /// still owed. Scheduling the compaction is what makes the promotion
+    /// actually happen.
     pub deletion_lost: bool,
     /// What the marker file holds once this function is done with it, as
     /// observed rather than assumed.
@@ -571,6 +591,14 @@ pub fn open_recovering(
     // everything is fine. A *retracted* claim is the opposite case — it is
     // already false, so there is nothing a checkpoint could wrongly bless.
     report.compaction_recommended = marker_retraction_stuck
+        // A report is owed but the disk does not yet say so unconditionally:
+        // the promotion above failed. Scheduled so the runtime's projection
+        // re-asserts `Lost` promptly, because nothing else will — see
+        // `deletion_lost`'s doc for why the old "never schedule here" rule was
+        // wrong. Skipped when the disk already holds `Lost`, since then the
+        // projection and the file agree and a compaction buys nothing.
+        || (report.deletion_lost
+            && report.marker_on_disk != Some(deletion_marker::DeletionBreach::Lost))
         || report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)

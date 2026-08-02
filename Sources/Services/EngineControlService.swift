@@ -79,10 +79,18 @@ final class DefaultEngineControlService: EngineControlService {
         // `menu()` is built, so it disappears on the next open regardless of
         // whether the ack finished before this call returned. Retracting back
         // on main keeps `initFailures` single-threaded.
+        // Captured strongly, and that is load-bearing: the click handler calls
+        // this on a *temporary* — `makeEngineControlService().acknowledgeHistoryReport()`
+        // — so the service is released the moment this method returns. A weak
+        // capture would let the ack unlink the marker and clear the engine's
+        // owed predicate while the main-queue half saw `nil`, leaving the
+        // acknowledged row on screen for the rest of the process's life. The
+        // closure owning what it needs is the whole guarantee; there is no
+        // cycle, since nothing retains the closure past its run.
         guard let history = container.history else { return }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [self] in
             history.ackOpenReport()
-            DispatchQueue.main.async { self?.retractRowIfSettled() }
+            DispatchQueue.main.async { retractRowIfSettled() }
         }
     }
 

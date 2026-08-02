@@ -222,8 +222,9 @@ final class EngineContainer {
             // including the short-lived IMKit probe launches this controller
             // already designs around — none of which ever render a menu. Acking
             // at load would consume the report on the user's behalf and put
-            // #295's gap back one layer up. `menu()` acks once the row is
-            // actually on screen.
+            // #295's gap back one layer up. Nor does `menu()` ack: IMKit
+            // builds the menu without displaying it, so construction is not
+            // delivery either. The row's click handler is what acknowledges.
             history = h
         } catch {
             NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")
