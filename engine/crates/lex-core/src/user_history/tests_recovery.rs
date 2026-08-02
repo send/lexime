@@ -1737,11 +1737,13 @@ fn t10_malformed_markers_all_report() {
         ("unknown flags", {
             let mut b = good.clone();
             b[5] = 0x03;
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
             b
         }),
         ("non-zero reserved", {
             let mut b = good.clone();
             b[6] = 1;
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
             b
         }),
         ("seq without the witness flag", {
@@ -1848,7 +1850,9 @@ fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
         .expect("mkfifo");
     assert!(status.success());
 
-    // Would hang forever without the file-type guard.
+    // Note the failure mode: without the guard this does not fail, it HANGS —
+    // which is exactly the defect (a startup that never completes). A mutation
+    // check on the guard therefore shows up as a timeout, not a red test.
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
     assert!(open_report_of(&f).deletion_lost);
 }
