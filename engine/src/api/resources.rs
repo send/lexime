@@ -2067,6 +2067,70 @@ mod tests {
     }
 
     #[test]
+    fn test_a_replayed_unflushed_deletion_is_a_live_problem_until_checkpointed() {
+        // The cross-crate half of "startup never retracts". Recovery hands the
+        // claim over instead of unlinking, and this is where it becomes a live
+        // durability problem: replay applied the deletion out of the page
+        // cache, so until a checkpoint covers it, power loss still undoes it.
+        // Without the hand-off the row is silent and the marker gets settled by
+        // whatever the next compaction happens to do.
+        //
+        // Built against real files rather than `hist_with_io`: that fixture
+        // mocks every WAL write, so a tombstone frame never reaches the disk
+        // and no reopen can replay one.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+
+        let mut history = UserHistory::new();
+        history.record_at(
+            &[("きょう".to_string(), "今日".to_string())],
+            crate::user_history::now_epoch(),
+        );
+        history.save(&cp).unwrap();
+
+        // A real tombstone frame, as a SyncFailed append leaves it: on disk,
+        // its flush unconfirmed.
+        let seq = {
+            let mut wal = HistoryWal::new(&cp);
+            wal.append_record(&WalRecord::Tombstone {
+                segments: vec![("きょう".to_string(), "今日".to_string())],
+                timestamp: crate::user_history::now_epoch(),
+            })
+            .unwrap()
+        };
+        deletion_marker::merge_write(&cp, DeletionBreach::Unflushed { seq }).unwrap();
+
+        let reopened = open_hist(&cp);
+        assert!(
+            learned(&reopened, "きょう").is_empty(),
+            "replay must have applied the deletion"
+        );
+        assert!(
+            !reopened.open_report().deletion_lost,
+            "so nothing is owed to the user as a past loss"
+        );
+        assert!(
+            reopened
+                .durability_issues()
+                .contains(&LexHistoryDurabilityIssue::DeletionNotPersisted),
+            "but it is not durable yet, and the runtime row is what says so"
+        );
+        assert!(
+            marker(&cp).is_some(),
+            "the record stands until a checkpoint covers it"
+        );
+
+        reopened.scrub_pending.store(true, Ordering::SeqCst);
+        reopened.run_gated_compact();
+        assert!(reopened.durability_issues().is_empty());
+        assert_eq!(
+            marker(&cp),
+            None,
+            "a durable checkpoint is what retracts it — the only thing that can"
+        );
+    }
+
+    #[test]
     fn test_ack_leaves_a_marker_this_session_raised() {
         // `report.deletion_lost` is frozen at open, so acknowledging on it
         // alone deletes whatever marker is on disk *now* — including one a
