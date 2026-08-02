@@ -127,7 +127,26 @@ pub(crate) fn write_atomic_staged(path: &Path, bytes: &[u8]) -> Result<(), Atomi
     f.write_all(bytes).map_err(NotDurable)?;
     f.sync_all().map_err(NotDurable)?;
     drop(f);
-    fs::rename(&tmp, path).map_err(FlushedNotRenamed)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        // The tmp's contents are durable — `sync_all` above — but its *name*
+        // may not be: `create_regular` added a directory entry that nothing has
+        // flushed yet. A caller that treats the orphan as a landed claim is
+        // relying on the next `read` finding it, so the entry has to survive a
+        // power loss too. Here the parent-dir fsync is load-bearing rather than
+        // the best-effort it is on the success path (where the worst case is
+        // rolling back to the previous file); if it fails, nothing about this
+        // write is dependable and the caller must not build on it.
+        //
+        // Confirmed undetectable by measurement: no deterministic test can
+        // tell a synced directory entry from an unsynced one without
+        // simulating power loss, so removing this survives the suite. It is
+        // carried by the argument, not by a test.
+        return Err(if sync_parent_dir(path) {
+            FlushedNotRenamed(e)
+        } else {
+            NotDurable(e)
+        });
+    }
     if !sync_parent_dir(path) {
         warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
     }

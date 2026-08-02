@@ -623,16 +623,7 @@ pub fn open_recovering(
     // keystroke, and losing one costs nothing but latency. Keeping that
     // division explicit matters: six review rounds were spent adding retry
     // triggers one event at a time, and the answer was never another trigger.
-    // The two marker feeders are gated on `!migration_failed`, and that gate is
-    // not about the marker at all: a compaction is **not** the migration — it
-    // writes a v2 checkpoint over the v1 file with none of the commit's steps
-    // (no `.v1.bak`, no `Migrated`) — so scheduling one here would destroy the
-    // v1 bytes on exactly the path where the commit is already failing, which
-    // is the hazard `migration_failed`'s own doc states. Both feeders are
-    // promptness only; ordinary commits reconcile the marker regardless, so
-    // suppressing them costs latency and nothing else.
-    let marker_prompt = !report.migration_failed
-        && (marker_retraction_stuck
+    let marker_prompt = marker_retraction_stuck
             // A report is owed but the disk does not yet say so
             // unconditionally: the promotion above failed. Scheduled so the
             // runtime's projection re-asserts `Lost` promptly, because nothing
@@ -640,11 +631,9 @@ pub fn open_recovering(
             // schedule here" rule was wrong. Skipped when the disk already
             // holds `Lost`, since then the projection and the file agree and a
             // compaction buys nothing.
-            || (report.deletion_lost
-                && report.marker_on_disk
-                    != deletion_marker::MarkerState::Holds(
-                        deletion_marker::DeletionBreach::Lost,
-                    )));
+        || (report.deletion_lost
+            && report.marker_on_disk
+                != deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost));
     report.compaction_recommended = marker_prompt
         || report.migrated_from_v1
         || report.data_loss_suspected()
@@ -653,6 +642,25 @@ pub fn open_recovering(
         || report.replayed_deletion
         || wal.needs_compact()
         || report.appends_frozen;
+
+    // …and then vetoed outright when a v1 checkpoint is still on disk waiting
+    // for its commit to be retried. A compaction is **not** the migration — it
+    // writes a v2 checkpoint over the v1 file with none of the commit's steps
+    // (no `.v1.bak`, no `Migrated`) — so running one here destroys the v1 bytes
+    // on exactly the path where they are the only copy. That is the hazard
+    // `migration_failed`'s own doc states, and it is a property of *running a
+    // compaction at all*, not of any one feeder: gating the marker feeders
+    // alone left `replayed_deletion` scheduling the same worker, which a
+    // replayed `Unflushed` witness necessarily sets.
+    //
+    // The legacy-WAL variant is exempt because there the compaction *is* the
+    // intended heal: that path freezes the WAL, and the compaction which thaws
+    // it writes the v2 checkpoint as a side effect, completing the conversion.
+    // Without a legacy WAL there is nothing to heal and everything to lose, so
+    // the next launch retries the commit properly.
+    if report.migration_failed && !legacy_wal_consumed {
+        report.compaction_recommended = false;
+    }
 
     // --- 5. quarantine rotation + v1-backup GC ---
     persist::rotate_quarantined(checkpoint_path, QUARANTINE_KEEP);

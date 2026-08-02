@@ -2309,11 +2309,21 @@ fn t10_a_failed_migration_suppresses_the_marker_compaction() {
     let mut h = UserHistory::new();
     h.record_at(&seg(A), T0);
     fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
-    // A report owed with the disk not yet saying `Lost` — what the feeder fires
-    // on — and the migration commit blocked, which must veto it. One
-    // read-only directory produces both: the commit cannot write its
-    // checkpoint, and the promotion cannot write the marker.
-    write_marker(&f, DeletionBreach::Unflushed { seq: 99 });
+    // The witness **with its WAL frame**, not just the marker: replaying that
+    // tombstone sets `replayed_deletion`, which is a feeder of its own. The
+    // first version of this test planted the marker alone and so exercised
+    // only the feeders the fix had gated — it passed while the hazard was
+    // still reachable through the other one. The veto has to sit on the
+    // recommendation, and this fixture is what proves it does.
+    let seq = {
+        let mut wal = HistoryWal::new(&f.cp);
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(A),
+            timestamp: T0 + 1,
+        })
+        .unwrap()
+    };
+    write_marker(&f, DeletionBreach::Unflushed { seq });
     use std::os::unix::fs::PermissionsExt;
     let dir = f.cp.parent().unwrap().to_path_buf();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
@@ -2329,7 +2339,10 @@ fn t10_a_failed_migration_suppresses_the_marker_compaction() {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let report = result.unwrap().2;
     assert!(report.migration_failed, "fixture must block the commit");
-    assert!(report.deletion_lost, "and the report is still owed");
+    assert!(
+        report.replayed_deletion,
+        "the replayed tombstone must arm the feeder the veto has to cover"
+    );
     assert!(
         !report.compaction_recommended,
         "no compaction may run over a retained v1 checkpoint"
