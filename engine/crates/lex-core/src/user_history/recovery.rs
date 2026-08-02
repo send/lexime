@@ -412,7 +412,22 @@ pub fn open_recovering(
         checkpoint_applied_seq
     };
     if let Some(breach) = deletion_marker::read(checkpoint_path) {
-        if !breach.outstanding(durable_applied_seq) {
+        if breach == deletion_marker::DeletionBreach::Lost && history.is_empty() {
+            // `Lost` says an entry survived the deletion. Nothing was loaded,
+            // from the checkpoint or the WAL, so there is no such entry and the
+            // claim is not stale but *false* — the same reasoning `clear` uses
+            // when it covers the ledger from its empty checkpoint. Without
+            // this, a wipe that could not unlink its marker warned on the next
+            // launch about a history that provably holds nothing.
+            //
+            // Scoped to `Lost`, and to the state actually loaded. An
+            // `Unflushed` claim is about durability, not presence: replay can
+            // empty memory while the checkpoint still holds the entry a power
+            // loss would bring back, so emptiness settles nothing there and the
+            // branches below decide it.
+            info!("an unpersisted-deletion marker outlived the entries it referred to");
+            deletion_marker::remove(checkpoint_path);
+        } else if !breach.outstanding(durable_applied_seq) {
             // A durable checkpoint contains the deletion's effect, so it is
             // persisted. Either a crash landed between a successful `save()`
             // and the unlink that follows it, or the migration above just wrote

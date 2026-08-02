@@ -1004,10 +1004,13 @@ impl LexUserHistory {
         // deletion of files that do hold the user's input text. This one holds
         // none (magic, version, flags, a seq), which is also why its failure
         // stays a log line rather than joining `deferred`.
+        // A wipe settles every claim: they said an entry might be back, and now
+        // nothing is. That holds whether or not the file could be unlinked —
+        // an unremovable marker is stale, not owed — and the next startup
+        // reaches the same verdict from the empty history it loads, so the two
+        // cannot disagree.
         deletion_marker::remove(wal.checkpoint_path());
         self.session_lost_claim.store(false, Ordering::SeqCst);
-        // A wipe settles the inherited claim too: it said an entry might be
-        // back, and now nothing is.
         self.inherited_report_unacked.store(false, Ordering::SeqCst);
 
         // Physical deletions below are deferred-error: the logical clear is
@@ -2059,9 +2062,13 @@ mod tests {
         block_checkpoint_write(&cp);
         hist.apply_records(&[committed("きょう", "今日"), committed("あす", "明日")]);
 
-        // A directory at the marker path fails that write and nothing else.
+        // A *non-empty* directory at the marker path fails that write and
+        // nothing else. An empty one would not: the writer owns this path and
+        // clears a placeholder out of its way. What it will not do is delete
+        // someone else's contents.
         let marker_dir = deletion_marker::marker_path(&cp);
         std::fs::create_dir(&marker_dir).unwrap();
+        std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
         io.fail_appends.store(true, Ordering::SeqCst);
         hist.apply_records(&[deletion("きょう", "今日")]);
         assert_eq!(
@@ -2069,7 +2076,7 @@ mod tests {
             Some(DeletionBreach::Lost),
             "unreadable reads as Lost"
         );
-        std::fs::remove_dir(&marker_dir).unwrap();
+        std::fs::remove_dir_all(&marker_dir).unwrap();
         assert_eq!(
             marker(&cp),
             None,

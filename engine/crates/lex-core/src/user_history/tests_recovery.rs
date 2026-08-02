@@ -1683,14 +1683,42 @@ fn t10_a_reported_witness_cannot_be_settled_by_a_rebased_seq() {
     write_marker(&f, DeletionBreach::Unflushed { seq: applied + 5 });
 
     assert!(open_report_of(&f).deletion_lost);
-    // Numbering advances past the old witness on wholly unrelated work.
+    // Numbering advances past the old witness on wholly unrelated work. The
+    // checkpoint must still hold entries: an *empty* durable set settles the
+    // claim outright (there is nothing left for a deletion to have failed
+    // against), which is a different rule and would mask this one.
     let mut h = UserHistory::new();
+    h.record_at(&seg(B), T0);
     h.advance_applied_seq(applied + 99);
     h.save(&f.cp).unwrap();
 
     assert!(
         open_report_of(&f).deletion_lost,
         "the report must not be settled by seqs the witness never referred to"
+    );
+}
+
+#[test]
+fn t10_an_empty_history_settles_the_marker() {
+    // A claim that some entry survived a deletion is *false*, not stale, when
+    // no entry was loaded at all — the same reasoning `clear` uses when it
+    // covers the ledger from its empty checkpoint. Without this, a wipe that
+    // could not unlink the marker warned on the next launch about a history
+    // that provably holds nothing.
+    let f = fx();
+    let empty = UserHistory::new();
+    empty.save(&f.cp).unwrap();
+    write_marker(&f, DeletionBreach::Lost);
+
+    let report = open_report_of(&f);
+    assert!(
+        !report.deletion_lost,
+        "there is no entry for the deletion to have failed against"
+    );
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        None,
+        "and the record goes with the claim"
     );
 }
 
@@ -1833,6 +1861,55 @@ fn t10_removal_reports_whether_the_path_is_actually_clear() {
     );
     // The report is then still owed, which the reader agrees with.
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_the_writer_replaces_what_it_does_not_own() {
+    // `File::create` follows symlinks, so a link left at the marker path would
+    // have the engine truncate and overwrite whatever it points at. The writer
+    // owns this path: anything that is not its own regular file is unlinked
+    // first — the link, not the target.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let victim = f.cp.with_file_name("someone-elses-file");
+    fs::write(&victim, b"must survive").unwrap();
+    std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+    deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).unwrap();
+
+    assert_eq!(
+        fs::read(&victim).unwrap(),
+        b"must survive",
+        "the symlink target must not be written through"
+    );
+    assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
+    assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_a_promotion_can_replace_an_unwritable_marker() {
+    // The promotion to `Lost` is what stops a re-based sequence space from
+    // satisfying a stale witness, so a promotion that cannot be written
+    // reopens that hole. A read-only *file* is still removable — that needs
+    // write permission on the parent, not on the file — so the writer replaces
+    // it rather than giving up. What is left is the directory-level failure
+    // this design already documents as unclosable.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 5 });
+    let path = deletion_marker::marker_path(&f.cp);
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&path, perms).unwrap();
+
+    assert!(open_report_of(&f).deletion_lost);
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        Some(DeletionBreach::Lost),
+        "the promotion must land even on a marker that refuses to be rewritten"
+    );
 }
 
 #[test]

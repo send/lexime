@@ -256,7 +256,41 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
     persist::ensure_parent_dir(checkpoint_path)?;
-    let mut f = fs::File::create(marker_path(checkpoint_path))?;
+    let path = marker_path(checkpoint_path);
+
+    // The writer owns this path: whatever else is there gets *replaced*, never
+    // written through. `File::create` follows symlinks, so without this a link
+    // left by a restore would have the engine truncate and overwrite a file it
+    // has no business touching — or block forever on a link to a FIFO, inside
+    // the synchronous deletion path. Unlinking removes the link itself.
+    //
+    // It also unlinks a marker the engine cannot rewrite. That is the
+    // difference between a read-only *file* and a read-only *directory*:
+    // removing an entry needs write permission on the parent, not on the file,
+    // so a marker that refuses `create` can still be replaced with a fresh
+    // one. Without it, a promotion to `Lost` that failed left a witness on
+    // disk that later, re-based sequence numbers could satisfy — silencing a
+    // report that was still owed. What remains is the directory-level failure
+    // this design already documents as unclosable.
+    let replace_first = match fs::symlink_metadata(&path) {
+        Ok(meta) => !meta.file_type().is_file(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    };
+    if replace_first {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&path);
+    }
+    let mut f = match fs::File::create(&path) {
+        Ok(f) => f,
+        Err(create_err) => {
+            // Present but not writable: take the entry out and start over.
+            if fs::remove_file(&path).is_err() {
+                return Err(create_err);
+            }
+            fs::File::create(&path)?
+        }
+    };
     io::Write::write_all(&mut f, &merged.encode())?;
     f.sync_all()
 }

@@ -573,6 +573,16 @@ impl UserHistory {
 
     /// Iterate all unigram records as (reading, surface, entry).
     /// Used by offline tooling (`lextool history-audit`) to mine the history.
+    /// Whether this history holds nothing at all.
+    ///
+    /// Used by recovery to settle an unpersisted-deletion marker: a claim that
+    /// some entry survived a deletion is false, not merely stale, when there
+    /// is no entry. Mirrors the reasoning `clear` uses when it covers the
+    /// ledger from its empty checkpoint.
+    pub fn is_empty(&self) -> bool {
+        self.unigrams.is_empty() && self.bigrams.is_empty()
+    }
+
     pub fn unigrams(&self) -> impl Iterator<Item = (&str, &str, &HistoryEntry)> {
         self.unigrams.iter().flat_map(|(reading, inner)| {
             inner

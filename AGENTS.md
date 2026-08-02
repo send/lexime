@@ -183,7 +183,14 @@ what a generic reviewer misses:
   **round trip against the writer** (only what `encode` emits is accepted)
   rather than by validating fields, which missed four shapes in a row; the
   reader also refuses to *open* anything that is not a regular file, since a
-  FIFO at that path would block the IME's startup thread forever; writes **merge** rather than replace,
+  FIFO at that path would block the IME's startup thread forever, and the
+  **writer owns the path** — a symlink, a FIFO or an unwritable file there is
+  unlinked and replaced rather than written through, which also keeps a failed
+  promotion from leaving a witness that re-based seq numbers could satisfy;
+  an empty loaded history settles a `Lost` claim outright — the startup
+  counterpart of `clear` covering the ledger from its empty checkpoint, scoped
+  to `Lost` because `Unflushed` is about durability rather than presence and
+  replay can empty memory while the checkpoint still holds the entry; writes **merge** rather than replace,
   `Io` absorbing, and go **in place** rather than through `write_atomic` — a
   torn marker decodes to the strongest claim, so atomicity buys nothing while
   the tmp/rename gap loses a stronger claim to a sibling nobody reads; a claim
