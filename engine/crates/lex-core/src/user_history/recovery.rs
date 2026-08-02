@@ -585,11 +585,14 @@ pub fn open_recovering(
     // re-attempts properly. The legacy-WAL variant still heals, via
     // `appends_frozen` below: there the WAL is frozen, which is a real
     // degradation the compaction genuinely fixes.
-    // `marker_retraction_stuck` belongs here and `deletion_lost` deliberately
-    // does not (see its doc): a compaction under an outstanding report would
-    // checkpoint the resurrected entry and cover the ledger, telling the user
-    // everything is fine. A *retracted* claim is the opposite case — it is
-    // already false, so there is nothing a checkpoint could wrongly bless.
+    // The two marker feeders below are **promptness, not correctness**. What
+    // guarantees the disk eventually agrees with the projection is that every
+    // commit reconciles it (`apply_records`, under the wal mutex, before the
+    // appends) — a free memory comparison when they already agree. These only
+    // spare a user whose startup was degraded from waiting until their next
+    // keystroke, and losing one costs nothing but latency. Keeping that
+    // division explicit matters: six review rounds were spent adding retry
+    // triggers one event at a time, and the answer was never another trigger.
     report.compaction_recommended = marker_retraction_stuck
         // A report is owed but the disk does not yet say so unconditionally:
         // the promotion above failed. Scheduled so the runtime's projection

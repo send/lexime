@@ -199,8 +199,17 @@ what a generic reviewer misses:
   uniquely-named tmp would break the marker-plus-orphan pair below, and
   anything able to write in that directory can overwrite the destination
   outright with no window to hit;
+  **every commit reconciles the marker** — in `apply_records`, under the wal
+  mutex, before the appends — and that, not any per-event retry, is what makes
+  the disk agree with the projection; a record reconciled only at chosen events
+  is a cache with invalidation, which is why six review rounds each found a
+  different event with no retry behind it (ack, wipe, the compaction's cover,
+  recovery's removal, recovery's promotion, that compaction itself), and it is
+  affordable on the key path only because a matching `flushed` makes it a
+  memory comparison; before the appends because the harm is a WAL advancing
+  past an un-promoted witness;
   a startup retraction whose unlink fails hands the debt to
-  `compaction_recommended`, so the runtime's projection retries it promptly
+  `compaction_recommended` for promptness alone
   instead of a thousand frames later; the runtime seeds `MarkerClaims::flushed`
   from `OpenReport::marker_on_disk` rather than assuming a clear disk, since
   `None` is a positive claim that a failed promotion contradicts by leaving a

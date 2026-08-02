@@ -968,6 +968,31 @@ impl LexUserHistory {
         let mut needs_threshold_compact = false;
         if !wal_records.is_empty() {
             let mut wal = lock_recover(&self.wal);
+            // Reconcile the marker with what the projection wants, before this
+            // batch touches the WAL. **This is where the projection's
+            // correctness lives**; every other projection point is either
+            // write-ahead ordering or promptness.
+            //
+            // Six review rounds arrived here one event at a time — the ack, the
+            // wipe, the compaction's cover, recovery's removal, recovery's
+            // promotion, and then the compaction that recovery schedules, each
+            // one a place where a failed write had nothing to revisit it. The
+            // answer was never another trigger. A record that is only
+            // reconciled at *some* events is not a projection, it is a cache
+            // with invalidation, and the design calls this the ledger's on-disk
+            // projection. So it reconciles wherever the process is running and
+            // able to act, which is here.
+            //
+            // Free in the steady state, and only because `flushed` is seeded
+            // from what recovery observed: `apply_marker` compares two
+            // `Option<DeletionBreach>` under a mutex this thread already holds
+            // and returns. No syscall on a healthy history, which is what makes
+            // a key-path reconcile affordable at all.
+            //
+            // Before the appends, not after: the harm this closes is a WAL that
+            // advances past an un-promoted witness, so promoting after the
+            // append would leave the same window one batch wide.
+            self.project_marker(&wal);
             let mut sequenced: Vec<(WalRecord, Option<u64>)> =
                 Vec::with_capacity(wal_records.len());
             for record in wal_records {
@@ -1241,11 +1266,11 @@ impl LexUserHistory {
         match deferred {
             None => {
                 if marker_stuck {
-                    // Correctness is already carried by `flushed`: the next
-                    // durable checkpoint re-projects and retries the unlink.
-                    // This only makes it prompt, because "the next checkpoint"
-                    // is a thousand frames away and a restart before then
-                    // reports a loss this wipe made false.
+                    // Promptness only. Correctness is the commit-path
+                    // reconcile: the next commit retires this record whether or
+                    // not the compaction below ever runs. Without it a user who
+                    // wipes and then stops typing would keep a stale file until
+                    // they resumed — harmless, but a wipe should finish.
                     self.spawn_compact();
                 }
                 Ok(())
@@ -2618,6 +2643,57 @@ mod tests {
             vec![LexHistoryDurabilityIssue::LearningMemoryOnly]
         );
         assert_eq!(marker(&cp), None, "learning is not a deletion");
+    }
+
+    #[test]
+    fn test_an_ordinary_commit_reconciles_the_marker_both_ways() {
+        // Where the projection's correctness actually lives, after six review
+        // rounds spent adding one retry trigger at a time (the ack, the wipe,
+        // the compaction's cover, recovery's removal, recovery's promotion,
+        // and the compaction recovery schedules). None of those is needed for
+        // *correctness* any more: whatever left the disk disagreeing, the next
+        // ordinary commit fixes it, because a projection that only reconciles
+        // at chosen events is a cache with invalidation rather than a
+        // projection.
+        //
+        // No compaction anywhere in this test — one record is nowhere near the
+        // threshold — which is the whole point.
+        //
+        // What this cannot pin is the *placement*: reconciling after the
+        // appends instead of before passes every test here, because the only
+        // difference is a crash landing between the append and the reconcile,
+        // one batch wide. Confirmed undetectable by measurement, so the
+        // ordering is carried by the comment at the call site and by the
+        // argument for it — a WAL that advances past an un-promoted witness is
+        // exactly the harm being closed.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+
+        // Direction 1: the disk holds a record nothing claims — an unlink that
+        // failed, wherever it failed.
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
+        assert!(!hist.deletion_report_owed(), "nothing is owed");
+        hist.apply_records(&[committed("きょう", "今日")]);
+        assert_eq!(
+            marker(&cp),
+            None,
+            "a commit must retire a record no claim stands behind"
+        );
+
+        // Direction 2: a claim is owed and the disk does not say so — the
+        // startup promotion that could not write. Left unreconciled, ordinary
+        // commits advance the WAL past the witness and the next start reads it
+        // as replayed.
+        let owed = hist_with_io_reporting(&cp, FaultyIo::default().boxed(), true);
+        std::fs::remove_file(deletion_marker::marker_path(&cp)).unwrap();
+        lock_recover(&owed.claims).flushed = None;
+        owed.apply_records(&[committed("あした", "明日")]);
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "a commit must re-assert a claim the disk is missing"
+        );
     }
 
     #[test]
