@@ -1471,6 +1471,21 @@ impl LexUserHistory {
     /// whether the checkpoint became durable and whether a follow-up is
     /// warranted (see [`CompactOutcome`]).
     fn run_compact_impl(&self) -> CompactOutcome {
+        if self.report.v1_checkpoint_retained {
+            // The one invariant that has to live *here* rather than at the
+            // schedulers: a compaction writes a v2 checkpoint over the v1 file
+            // with none of the migration commit's steps, so while that file is
+            // the only copy no compaction may run — whichever of the five
+            // schedulers asked for it. Guarding them one at a time took three
+            // review rounds and still left the scrub branch open; this is the
+            // single site that performs the write.
+            //
+            // `Failed` rather than `Done`: the scrub really is still pending,
+            // and saying otherwise would drop it. The next launch retries the
+            // migration properly and everything proceeds from there.
+            warn!("compaction refused: a v1 checkpoint is awaiting its migration commit");
+            return CompactOutcome::Failed;
+        }
         // 1. Clone history under read lock (brief), taking the generation
         // this checkpoint can vouch for under the same guard (#295).
         let (covered_gen, snapshot) = self.snapshot_to_cover();
@@ -1727,6 +1742,7 @@ mod tests {
                 quarantined_paths: Vec::new(),
                 replayed_deletion: false,
                 compaction_recommended: false,
+                v1_checkpoint_retained: false,
                 // Paired with `deletion_lost`, because recovery cannot produce
                 // one without the other: the report is owed *because* a marker
                 // was read and deliberately left in place. A fixture that
@@ -2805,6 +2821,53 @@ mod tests {
             marker(&cp),
             Some(DeletionBreach::Unflushed { seq }),
             "only a covering checkpoint may retire it, not an unrelated commit"
+        );
+    }
+
+    #[test]
+    fn test_a_retained_v1_checkpoint_refuses_every_compaction() {
+        // The guard has to be here, not at the schedulers. Three rounds went
+        // into gating them one at a time — the marker feeders, then the
+        // startup hint — and the scrub branch still reached `spawn_compact()`
+        // after the directory recovered, overwriting the v1 checkpoint with a
+        // v2 snapshot that skips the migration commit's `.v1.bak` and
+        // `Migrated` steps. There are five schedulers and nothing stops a
+        // sixth; this is the single site that performs the write.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+        // The state recovery reports when a v1 checkpoint is still awaiting its
+        // commit and no legacy WAL was consumed.
+        let v1 = b"not a v2 checkpoint at all".to_vec();
+        std::fs::write(&cp, &v1).unwrap();
+
+        let refused = {
+            // Reach the executor directly: going through a scheduler would test
+            // that scheduler, which is exactly the level this moved away from.
+            let mut report = hist.report.clone();
+            report.v1_checkpoint_retained = true;
+            let guarded = LexUserHistory {
+                inner: Arc::clone(&hist.inner),
+                wal: Mutex::new(HistoryWal::new(&cp)),
+                compact_gate: Mutex::new(()),
+                scrub_pending: AtomicBool::new(false),
+                commit_log: Mutex::new(CommitLog {
+                    path: cp.with_file_name("commit-log.jsonl"),
+                    file: None,
+                }),
+                report,
+                durability_ledger: AtomicU64::new(0),
+                claims: Mutex::new(MarkerClaims::default()),
+                inherited_owed: AtomicBool::new(false),
+            };
+            matches!(guarded.run_compact(), CompactOutcome::Failed)
+        };
+
+        assert!(refused, "the executor must refuse, not merely not be asked");
+        assert_eq!(
+            std::fs::read(&cp).unwrap(),
+            v1,
+            "and the v1 bytes — the only copy — must still be there"
         );
     }
 

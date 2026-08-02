@@ -130,6 +130,26 @@ pub struct OpenReport {
     /// Startup-compaction hint (§5.1-6): recovery results should be
     /// checkpointed early so the next startup is clean. Consumed in PR2.
     pub compaction_recommended: bool,
+    /// A **v1 checkpoint is still on disk** waiting for its migration commit to
+    /// be retried, and no legacy WAL was consumed.
+    ///
+    /// While this holds, no compaction may run at all: a compaction is not the
+    /// migration — it writes a v2 checkpoint over the v1 file with none of the
+    /// commit's steps (no `.v1.bak`, no `Migrated`) — so it would destroy the
+    /// v1 bytes on the one path where they are the only copy.
+    ///
+    /// A *field* rather than a guard at each scheduler, because guarding
+    /// schedulers is inherently incomplete: there are five of them (the
+    /// startup hint, the scrub branch, the threshold, `clear`'s heal, and
+    /// `FollowUp`), nothing stops a sixth, and three review rounds went into
+    /// gating them one at a time. `run_compact_impl` refuses instead, which is
+    /// the single place that performs the write.
+    ///
+    /// The legacy-WAL variant is excluded because there the compaction **is**
+    /// the intended heal: that path freezes the WAL, and the compaction which
+    /// thaws it writes the v2 checkpoint as a side effect, completing the
+    /// conversion.
+    pub v1_checkpoint_retained: bool,
     /// A previous session could not persist a deletion the user asked for,
     /// and nothing since has covered it (#312) — so the state just loaded may
     /// still hold the entry that deletion was meant to remove.
@@ -231,6 +251,7 @@ pub fn open_recovering(
         appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
+        v1_checkpoint_retained: false,
         marker_on_disk: deletion_marker::MarkerState::Absent,
         deletion_lost: false,
         deletion_pending_checkpoint: false,
@@ -658,7 +679,11 @@ pub fn open_recovering(
     // it writes the v2 checkpoint as a side effect, completing the conversion.
     // Without a legacy WAL there is nothing to heal and everything to lose, so
     // the next launch retries the commit properly.
-    if report.migration_failed && !legacy_wal_consumed {
+    report.v1_checkpoint_retained = report.migration_failed && !legacy_wal_consumed;
+    if report.v1_checkpoint_retained {
+        // Not the guard — `run_compact_impl` refuses on the same flag, and that
+        // is what makes this safe. This only avoids spawning a worker that
+        // would immediately give up.
         report.compaction_recommended = false;
     }
 

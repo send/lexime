@@ -272,12 +272,15 @@ what a generic reviewer misses:
   affordable on the key path only because a matching `flushed` makes it a
   memory comparison; before the appends because the harm is a WAL advancing
   past an un-promoted witness;
-  the marker's two `compaction_recommended` feeders are **vetoed while
-  `migration_failed`**: a compaction is not the migration — it writes a v2
-  checkpoint over the v1 file with none of the commit's steps — so scheduling
-  one there would destroy the v1 bytes on exactly the path where they are the
-  only copy; both feeders are promptness alone, so the veto costs latency and
-  nothing else;
+  **no compaction runs while a v1 checkpoint awaits its migration commit**
+  (`OpenReport::v1_checkpoint_retained`), and the refusal lives in
+  `run_compact_impl` — the single site that performs the write — not at any
+  scheduler: a compaction is not the migration (it writes a v2 checkpoint over
+  the v1 file with none of the commit's steps), and there are five schedulers
+  with nothing stopping a sixth, so gating them one at a time took three review
+  rounds and still left the scrub branch reaching it. The startup hint is also
+  suppressed, but only to avoid spawning a worker that would refuse. The
+  legacy-WAL variant is exempt because there the compaction *is* the heal;
   a startup retraction whose unlink fails hands the debt to
   `compaction_recommended` for promptness alone
   instead of a thousand frames later; the runtime seeds `MarkerClaims::flushed`
