@@ -179,7 +179,11 @@ what a generic reviewer misses:
   condition *is* a failed checkpoint write (and an in-place header rewrite
   would recompute a CRC outside tmp+rename, risking the whole history to report
   one deletion); only `NotFound` is clean, so every malformed or unreadable
-  marker reports and no CRC is needed; writes **merge** rather than replace,
+  marker reports and no CRC is needed — and that is enforced by decoding as a
+  **round trip against the writer** (only what `encode` emits is accepted)
+  rather than by validating fields, which missed four shapes in a row; the
+  reader also refuses to *open* anything that is not a regular file, since a
+  FIFO at that path would block the IME's startup thread forever; writes **merge** rather than replace,
   `Io` absorbing, and go **in place** rather than through `write_atomic` — a
   torn marker decodes to the strongest claim, so atomicity buys nothing while
   the tmp/rename gap loses a stronger claim to a sibling nobody reads; a claim
@@ -193,7 +197,11 @@ what a generic reviewer misses:
   and a separate unlink cannot be pinned by a deterministic test — but it does
   **not** retract an inherited report that nothing has delivered yet, since a
   checkpoint written this session persists the *resurrected* entry and so
-  settles nothing about a previous session's claim; `clear`
+  settles nothing about a previous session's claim; removal reports whether the path is
+  actually clear and an acknowledgement settles only when it is (an empty
+  directory left there is a placeholder and gets cleared; a non-empty one is
+  someone else's and does not, which the return value makes visible rather than
+  silent); `clear`
   removes the marker **unconditionally and separately**, since a previous
   session's marker moves no counter in this one and the cover would early-return
   past it when the ledger is untouched; and the acknowledgement happens where the **row is rendered**, not at

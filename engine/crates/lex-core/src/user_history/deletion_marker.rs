@@ -109,31 +109,36 @@ impl DeletionBreach {
         buf
     }
 
-    /// Total decode: every malformed input resolves to `Lost`, never a panic.
-    /// "Malformed" includes any shape the writer cannot produce — a length
-    /// other than [`LEN`], an unknown version, a witness of 0 — because the
-    /// fail-safe rule is about what this decoder *accepts*, not only about
-    /// what it can parse.
+    /// Total decode: **only what [`Self::encode`] can produce is accepted**;
+    /// everything else is `Lost`, and nothing panics.
+    ///
+    /// Written as a round-trip against the writer rather than as a series of
+    /// field checks. Field checks are what this was, and they were wrong four
+    /// times in a row — a length other than [`LEN`], an unknown version, a
+    /// witness of 0, an unrecognized flags byte — each found separately, each
+    /// the same bug: a byte the writer never emits, read as if it meant
+    /// something. Comparing against the encoding leaves no unchecked byte, so
+    /// there is no fifth one to forget. It also rejects a non-zero reserved
+    /// field, a witness flag with no seq, and a seq with no witness flag,
+    /// none of which anyone had thought to name.
+    ///
     /// Reached from `#[uniffi::constructor]`, where a slice panic would cross
     /// the FFI boundary.
     fn decode(bytes: &[u8]) -> Self {
-        if bytes.len() != LEN || &bytes[0..4] != MAGIC || bytes[4] != VERSION {
+        let Ok(exact) = <[u8; LEN]>::try_from(bytes) else {
+            return Self::Lost;
+        };
+        if exact == Self::Lost.encode() {
             return Self::Lost;
         }
-        if bytes[5] & FLAG_WITNESS == 0 {
-            return Self::Lost;
+        // Seq 0 cannot round-trip: `encode` writes it only for `Lost`, which
+        // the comparison above already claimed.
+        let seq = u64::from_le_bytes(exact[8..16].try_into().expect("8-byte field"));
+        let witnessed = Self::Unflushed { seq };
+        if seq != 0 && exact == witnessed.encode() {
+            return witnessed;
         }
-        let seq = u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte field"));
-        // Seq 0 is not a value the writer can produce — WAL numbering starts at
-        // 1 — so a witness of 0 is a malformed marker, and malformed means
-        // `Lost`. Accepting it would be the one shape that resolves to
-        // *silence*: `outstanding(0)` is false against every applied_seq, so
-        // recovery would read it as "the checkpoint already covers this",
-        // remove the marker, and report nothing.
-        if seq == 0 {
-            return Self::Lost;
-        }
-        Self::Unflushed { seq }
+        Self::Lost
     }
 }
 
@@ -164,6 +169,27 @@ pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
 /// [`LEN`] bytes, and a file that has more of them is not this format.
 pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
     let path = marker_path(checkpoint_path);
+    // Ask what is there before opening it. A FIFO left at this path by a
+    // restore or a sync tool would make a read-only `File::open` block until
+    // someone opens the other end — and this runs synchronously inside
+    // `LexUserHistory::open`, on the thread the IME starts up on, so the
+    // input method would simply never become available. `symlink_metadata`
+    // rather than `metadata`: a symlink pointing at a FIFO is the same trap.
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
+            return Some(DeletionBreach::Lost);
+        }
+        Ok(meta) if !meta.file_type().is_file() => {
+            warn!(
+                "unpersisted-deletion marker at {} is not a regular file; reporting conservatively",
+                path.display()
+            );
+            return Some(DeletionBreach::Lost);
+        }
+        Ok(_) => {}
+    }
     let mut file = match fs::File::open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
@@ -173,10 +199,7 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
         }
     };
     // LEN + 1, so a longer file is *seen* to be longer rather than read as a
-    // well-formed prefix. Reading exactly LEN would decode the first 16 bytes
-    // of anything as a valid witness — the one malformed shape that resolves
-    // toward suppression, which would falsify the fail-safe rule the whole
-    // format (and its absent CRC) rests on.
+    // well-formed prefix — the round-trip in `decode` then rejects it.
     let mut buf = Vec::with_capacity(LEN + 1);
     match io::Read::read_to_end(&mut io::Read::take(&mut file, LEN as u64 + 1), &mut buf) {
         Ok(_) => Some(DeletionBreach::decode(&buf)),
@@ -238,37 +261,42 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
     f.sync_all()
 }
 
-/// Remove the marker.
+/// Remove the marker, reporting whether the path is now clear.
 ///
-/// Best-effort: it holds no user text, so a failure to unlink is worth a log
-/// line and nothing more, and what remains is re-reported on the next start —
-/// the safe direction. Retrying is deliberately not attempted; the disk this
-/// runs against is the one that just failed.
+/// `true` means the record is gone — removed, or never there. `false` means it
+/// stands, and the caller must keep telling the user so: an acknowledgement
+/// that says it succeeded while the marker survives drops the row, takes away
+/// the retry, and lets the warning come back on the next launch anyway.
 ///
-/// Falls back to removing a *directory* at the path. That is not defensive
-/// noise: `read` resolves an unreadable path to `Lost`, so anything that leaves
-/// a non-file here — a sync tool, a restore — would otherwise report a lost
-/// deletion on every launch with no way to clear it, since every retraction
-/// path in the system clears it by unlinking. A latch the user is told to
-/// resolve but cannot is worse than the over-report it came from. Scoped to
-/// this one derived path, which the engine owns.
-pub fn remove(checkpoint_path: &Path) {
+/// Best-effort in the sense that it does not retry — the disk this runs
+/// against is the one that just failed — but never in the sense of hiding the
+/// outcome.
+///
+/// A **directory** at the path is removed only when empty. It is not ours:
+/// something external put it there, and `remove_dir_all` would both walk an
+/// unbounded tree on the thread the menu runs on and delete whatever a restore
+/// had placed inside. An empty one is a placeholder and safe to clear; a full
+/// one stays, and the `false` return makes that visible instead of silent —
+/// which is the honest form of the "unclearable latch" this fallback was added
+/// to prevent, since the user is now told the acknowledgement did not take.
+pub fn remove(checkpoint_path: &Path) -> bool {
     let path = marker_path(checkpoint_path);
     let Err(e) = fs::remove_file(&path) else {
-        return;
+        return true;
     };
     if e.kind() == io::ErrorKind::NotFound {
-        return;
+        return true;
     }
-    if fs::remove_dir_all(&path).is_ok() {
+    if fs::remove_dir(&path).is_ok() {
         warn!(
-            "removed a directory left at the marker path {}",
+            "removed an empty directory left at the marker path {}",
             path.display()
         );
-        return;
+        return true;
     }
     warn!(
         "failed to remove unpersisted-deletion marker {}: {e}",
         path.display()
     );
+    false
 }

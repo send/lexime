@@ -1731,6 +1731,24 @@ fn t10_malformed_markers_all_report() {
         // reports" rule, and the absent CRC that rests on it, would both be
         // false. Seq 1 is load-bearing here: a witness beyond `applied_seq`
         // reports either way and would prove nothing.
+        // Bytes the writer cannot emit. Each of these was found separately as
+        // its own bug before `decode` became a round-trip against `encode`;
+        // the last two nobody had named at all.
+        ("unknown flags", {
+            let mut b = good.clone();
+            b[5] = 0x03;
+            b
+        }),
+        ("non-zero reserved", {
+            let mut b = good.clone();
+            b[6] = 1;
+            b
+        }),
+        ("seq without the witness flag", {
+            let mut b = good.clone();
+            b[5] = 0;
+            b
+        }),
         // The shape that resolved to *silence* rather than to a suppressible
         // witness: seq 0 is below every applied_seq, so recovery read it as
         // "the checkpoint already covers this", removed the marker, and
@@ -1779,25 +1797,60 @@ fn t10_unreadable_marker_reports_without_failing_the_open() {
 }
 
 #[test]
-fn t10_a_non_file_at_the_marker_path_can_still_be_cleared() {
-    // The other half, which the test above cannot reach (an unreadable marker
-    // is always outstanding, so recovery never tries to remove it). Every
-    // retraction path in the system clears the marker by unlinking, and
-    // `remove_file` fails on a directory — so without a fallback, anything
-    // that leaves a non-file here (a sync tool, a restore) latches a report the
-    // user is told to resolve and cannot.
+fn t10_removal_reports_whether_the_path_is_actually_clear() {
+    // Every retraction clears the marker by unlinking, so a removal that
+    // fails must say so — otherwise the caller drops the status row while the
+    // record stands, and the warning returns on the next launch with the
+    // retry gone.
+    //
+    // A directory at the path is removed only when empty. A non-empty one is
+    // not the engine's to delete (a restore put it there, and walking it would
+    // block the thread the menu runs on), so the honest outcome is `false`.
     let f = fx();
     build_v2_state(&f, false);
     let path = deletion_marker::marker_path(&f.cp);
-    fs::create_dir(&path).unwrap();
-    fs::write(path.join("stray"), b"x").unwrap();
 
-    deletion_marker::remove(&f.cp);
+    assert!(deletion_marker::remove(&f.cp), "absent counts as clear");
+
+    fs::create_dir(&path).unwrap();
     assert!(
-        !path.exists(),
-        "a non-file at the path must still be clearable"
+        deletion_marker::remove(&f.cp),
+        "an empty placeholder is ours to clear"
     );
-    assert_eq!(deletion_marker::read(&f.cp), None);
+    assert!(!path.exists());
+
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("restored"), b"someone else's bytes").unwrap();
+    assert!(
+        !deletion_marker::remove(&f.cp),
+        "a non-empty directory is not ours to delete, and saying so is the point"
+    );
+    assert!(
+        path.join("restored").exists(),
+        "and its contents must survive"
+    );
+    // The report is then still owed, which the reader agrees with.
+    assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
+    // A read-only `File::open` on a FIFO blocks until a writer appears, and
+    // this runs synchronously inside the IME's startup. Left unguarded, a
+    // sidecar nobody can read would stop the input method from ever becoming
+    // available — so the file type is checked before anything is opened.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+
+    // Would hang forever without the file-type guard.
+    assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+    assert!(open_report_of(&f).deletion_lost);
 }
 
 #[test]
@@ -1960,6 +2013,28 @@ fn t10_marker_is_not_a_quarantine_file() {
     crate::persist::rotate_quarantined(&f.cp, 3);
     assert!(marker.exists(), "rotation must not reach the marker");
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_decode_accepts_only_what_encode_emits() {
+    // The property the round-trip form buys, stated directly: whatever the
+    // writer can produce reads back as itself, and nothing else is trusted.
+    // Field-by-field validation cannot be checked this way, which is why it
+    // was wrong four times.
+    for breach in [
+        DeletionBreach::Lost,
+        DeletionBreach::Unflushed { seq: 1 },
+        DeletionBreach::Unflushed { seq: u64::MAX },
+    ] {
+        let f = fx();
+        build_v2_state(&f, false);
+        write_marker(&f, breach);
+        assert_eq!(
+            deletion_marker::read(&f.cp),
+            Some(breach),
+            "{breach:?} must survive a round trip"
+        );
+    }
 }
 
 #[test]

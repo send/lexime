@@ -497,8 +497,13 @@ impl LexUserHistory {
             // still outstanding — so it stays, and so does the report.
             return;
         }
-        self.inherited_report_unacked.store(false, Ordering::SeqCst);
-        deletion_marker::remove(wal.checkpoint_path());
+        // Settle only if the record is actually gone. `remove` can fail on a
+        // path the engine does not control, and clearing the flag on a failed
+        // removal would drop the row while the marker stands — the warning
+        // returns next launch and the retry went with the row.
+        if deletion_marker::remove(wal.checkpoint_path()) {
+            self.inherited_report_unacked.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Whether a lost-deletion report from a previous session is still owed to
@@ -2186,6 +2191,33 @@ mod tests {
             marker(&cp),
             None,
             "a durable checkpoint is what retracts it — the only thing that can"
+        );
+    }
+
+    #[test]
+    fn test_an_ack_whose_removal_fails_keeps_the_report_owed() {
+        // The acknowledgement clears the flag only when the record is really
+        // gone. A path the engine cannot clear — here a directory something
+        // else filled — used to be settled anyway, so the row disappeared
+        // while the marker stood and the warning came back next launch with
+        // the retry gone.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let io = FaultyIo::default();
+        let hist = hist_with_io_reporting(&cp, io.boxed(), true);
+        let marker_path = deletion_marker::marker_path(&cp);
+        std::fs::create_dir(&marker_path).unwrap();
+        std::fs::write(marker_path.join("restored"), b"not ours").unwrap();
+
+        hist.ack_open_report();
+
+        assert!(
+            hist.deletion_report_owed(),
+            "an acknowledgement that could not clear the record still owes it"
+        );
+        assert!(
+            marker_path.join("restored").exists(),
+            "and it did not delete what it does not own"
         );
     }
 
