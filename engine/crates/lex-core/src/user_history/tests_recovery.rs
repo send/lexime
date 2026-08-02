@@ -2235,8 +2235,37 @@ fn t10_an_unreadable_marker_is_never_recorded_as_an_observation() {
     fs::set_permissions(&path, original).unwrap();
     assert!(report.deletion_lost, "and it is reported");
     assert_eq!(
-        report.marker_on_disk, None,
-        "the runtime must not be told the disk holds Lost when nobody read it"
+        report.marker_on_disk,
+        deletion_marker::MarkerState::Unknown,
+        "unknown, not absent: the runtime must neither be told the disk holds \
+         Lost when nobody read it, nor that the path is clear when a file is \
+         sitting there — the second is what let a failed unlink look settled"
+    );
+}
+
+#[test]
+fn t10_a_ceiling_witness_freezes_rather_than_wrapping() {
+    // The floor comes from a *file*, so it can name anything the format can
+    // encode — and `Unflushed { seq: u64::MAX }` round-trips through `decode`
+    // perfectly well. Adding one panics in debug, across the UniFFI
+    // constructor, and wraps to zero in release: the next tombstone would be
+    // written with seq 0, recovery would reject it as non-monotonic, and the
+    // deletion would resurrect. Exhaustion has to freeze instead — no number
+    // is safe to issue, which is what `frozen` means.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    h.save(&f.cp).unwrap();
+    write_marker(&f, DeletionBreach::Unflushed { seq: u64::MAX });
+
+    let (_, wal, report) = open_recovering(&f.cp).unwrap();
+    assert!(
+        report.appends_frozen,
+        "a witness at the ceiling leaves no safe number to assign"
+    );
+    assert!(
+        wal.next_seq_for_tests() == u64::MAX,
+        "and numbering must not have wrapped"
     );
 }
 

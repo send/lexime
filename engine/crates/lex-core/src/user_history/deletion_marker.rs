@@ -199,6 +199,50 @@ pub struct MarkerObservation {
     pub confirmed: bool,
 }
 
+impl MarkerObservation {
+    /// What the disk holds, as a belief: only a confirmed read can name bytes.
+    pub fn state(self) -> MarkerState {
+        if self.confirmed {
+            MarkerState::Holds(self.breach)
+        } else {
+            MarkerState::Unknown
+        }
+    }
+}
+
+/// What a process believes the marker path holds.
+///
+/// Three states, because reality has three and an `Option` has two. The
+/// missing one is `Unknown` — a file is there and nobody has managed to read
+/// it — and collapsing that into "absent" is what let a failed unlink of an
+/// unreadable marker look settled: the projection found the disk already in
+/// the desired state, skipped, and the surviving file reported a lost deletion
+/// on the next start. A `confirmed` bit bolted onto the *read* was the
+/// half-measure; the belief itself has to carry it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MarkerState {
+    /// Nothing there — an observed absence, or a removal that succeeded.
+    #[default]
+    Absent,
+    /// These exact bytes are there.
+    Holds(DeletionBreach),
+    /// A file is there and nobody has read it. Never equal to any desired
+    /// state, so a projection can never conclude it has nothing to do — which
+    /// is the entire point of the variant.
+    Unknown,
+}
+
+impl MarkerState {
+    /// Whether the disk is already in the desired state. `Unknown` never is.
+    pub fn satisfies(self, desired: Option<DeletionBreach>) -> bool {
+        match (self, desired) {
+            (Self::Absent, None) => true,
+            (Self::Holds(held), Some(want)) => held == want,
+            _ => false,
+        }
+    }
+}
+
 pub fn read(checkpoint_path: &Path) -> Option<MarkerObservation> {
     let path = marker_path(checkpoint_path);
     // The marker *and* any orphan tmp beside it. A crash between the tmp's

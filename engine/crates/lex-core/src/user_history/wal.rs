@@ -618,7 +618,23 @@ impl HistoryWal {
         self.last_appended_seq = max_seq;
         // `seq_floor` too: a rebase must never hand out a number an
         // outstanding witness already names (see `set_seq_floor`).
-        self.next_seq = max_seq.max(applied_seq).max(self.seq_floor) + 1;
+        //
+        // Checked, because the floor comes from a *file*. A restored marker
+        // encoding `Unflushed { seq: u64::MAX }` round-trips through `decode`
+        // perfectly well, and `+ 1` on it panics in debug — across the UniFFI
+        // constructor — and wraps to zero in release, so the next tombstone
+        // would be written with seq 0 and rejected as non-monotonic, letting
+        // the deletion resurrect. Exhaustion instead freezes: no number is
+        // safe to issue, which is precisely what `frozen` means.
+        let base = max_seq.max(applied_seq).max(self.seq_floor);
+        match base.checked_add(1) {
+            Some(next) => self.next_seq = next,
+            None => {
+                warn!("sequence space exhausted; freezing appends rather than reusing numbers");
+                self.next_seq = u64::MAX;
+                self.set_frozen(true);
+            }
+        }
         // Existing frames may include an unbarriered tail from before the
         // restart (their power-loss durability is unknown even though they
         // were readable). Seed the counter so the first new append issues a

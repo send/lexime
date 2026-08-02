@@ -206,6 +206,19 @@ what a generic reviewer misses:
   `applied_seq + 1` was breaking that precondition itself; promotion to `Lost`
   was the runtime compensation for it and is now an optimization, which is what
   retires three rounds of retry-the-promotion findings;
+  what the disk holds is a **three**-valued belief (`MarkerState`:
+  absent / holds-these-bytes / unknown), because a file nobody could read is
+  neither of the first two — collapsing it into absence let a failed unlink of
+  an unreadable marker look settled, and `Unknown` never satisfies a desired
+  state so the retry cannot be skipped;
+  an unreadable marker whose replacement write also fails **freezes appends**,
+  the one case where a sidecar may stop learning: it may name a sequence no
+  floor could protect, so issuing more numbers risks handing that one out, and
+  `frozen` already means "appending to this file is not safe" (a `Lost` claim
+  is unsatisfiable and a decoded witness has its floor, so neither freezes);
+  a witness at the representable ceiling freezes rather than wrapping, since
+  `+1` would panic across the UniFFI constructor in debug and hand out seq 0 in
+  release;
   a marker's *claim* and the *observation* of it are separate — anything
   unreadable claims `Lost` by the fail-safe rule but confirms nothing, so only
   a `confirmed` read reaches `marker_on_disk`, and `deletion_pending_checkpoint`

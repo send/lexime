@@ -183,7 +183,7 @@ pub struct OpenReport {
     /// promotion exists to make unconditional.
     ///
     /// Internal; not surfaced over UniFFI.
-    pub marker_on_disk: Option<deletion_marker::DeletionBreach>,
+    pub marker_on_disk: deletion_marker::MarkerState,
     /// A previous session's deletion *was* applied by this startup's replay,
     /// but out of the page cache — the flush that failed never happened, so
     /// power loss still undoes it. Not a report: a live durability problem the
@@ -231,7 +231,7 @@ pub fn open_recovering(
         appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
-        marker_on_disk: None,
+        marker_on_disk: deletion_marker::MarkerState::Absent,
         deletion_lost: false,
         deletion_pending_checkpoint: false,
     };
@@ -497,7 +497,10 @@ pub fn open_recovering(
             info!("an unpersisted-deletion marker outlived the entries it referred to");
             marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
             if marker_retraction_stuck {
-                report.marker_on_disk = observed.confirmed.then_some(breach);
+                // `state()`, not the claim: an unlink that failed on a file
+                // nobody could read leaves the disk *unknown*, and recording
+                // that as absence let the projection skip the retry.
+                report.marker_on_disk = observed.state();
             }
         } else if !breach.outstanding(durable_applied_seq) {
             // A durable checkpoint contains the deletion's effect, so it is
@@ -508,7 +511,7 @@ pub fn open_recovering(
             info!("an unpersisted-deletion marker is covered by a durable checkpoint");
             marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
             if marker_retraction_stuck {
-                report.marker_on_disk = observed.confirmed.then_some(breach);
+                report.marker_on_disk = observed.state();
             }
         } else if breach.outstanding(history.applied_seq()) {
             // The frame is provably not in the state we just loaded, so the
@@ -534,22 +537,24 @@ pub fn open_recovering(
             // the disk holds `Lost` when it may hold a live `Unflushed`
             // witness. `flushed` would then match, every reconcile would skip,
             // and the witness would sit there until something satisfied it.
-            report.marker_on_disk = observed.confirmed.then(|| {
-                if breach == deletion_marker::DeletionBreach::Lost {
-                    breach
-                } else {
-                    match deletion_marker::merge_write(
-                        checkpoint_path,
-                        deletion_marker::DeletionBreach::Lost,
-                    ) {
-                        Ok(()) => deletion_marker::DeletionBreach::Lost,
-                        Err(e) => {
-                            warn!("failed to promote the unpersisted-deletion claim: {e}");
-                            breach
-                        }
+            report.marker_on_disk = if !observed.confirmed {
+                deletion_marker::MarkerState::Unknown
+            } else if breach == deletion_marker::DeletionBreach::Lost {
+                deletion_marker::MarkerState::Holds(breach)
+            } else {
+                match deletion_marker::merge_write(
+                    checkpoint_path,
+                    deletion_marker::DeletionBreach::Lost,
+                ) {
+                    Ok(()) => {
+                        deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost)
+                    }
+                    Err(e) => {
+                        warn!("failed to promote the unpersisted-deletion claim: {e}");
+                        deletion_marker::MarkerState::Holds(breach)
                     }
                 }
-            });
+            };
         } else {
             // Replay applied the deletion and no durable checkpoint covers it,
             // so nothing is owed to the user — but replay read that frame out
@@ -562,7 +567,7 @@ pub fn open_recovering(
             // the file.
             info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
             report.deletion_pending_checkpoint = true;
-            report.marker_on_disk = Some(breach);
+            report.marker_on_disk = deletion_marker::MarkerState::Holds(breach);
             // Reachable only with a decoded `Unflushed` — an unreadable marker
             // resolves to `Lost`, which is always outstanding and never lands
             // here — so this observation is confirmed by construction.
@@ -625,7 +630,8 @@ pub fn open_recovering(
         // wrong. Skipped when the disk already holds `Lost`, since then the
         // projection and the file agree and a compaction buys nothing.
         || (report.deletion_lost
-            && report.marker_on_disk != Some(deletion_marker::DeletionBreach::Lost))
+            && report.marker_on_disk
+                != deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost))
         || report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
