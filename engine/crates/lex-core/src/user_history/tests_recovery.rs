@@ -1801,6 +1801,56 @@ fn t10_a_non_file_at_the_marker_path_can_still_be_cleared() {
 }
 
 #[test]
+fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
+    // The migration commit writes a durable v2 checkpoint serialized from the
+    // replayed state — which, when replay applied a tombstone, is a checkpoint
+    // that *contains* the deletion. That is coverage, so the marker is settled
+    // and nothing is handed to the runtime ledger.
+    //
+    // Evaluating the marker before the commit answered against the v1 file,
+    // which predates the deletion: the engine then seeded a live durability
+    // warning for an already-persisted deletion and left the marker for an
+    // asynchronous compaction that might never run.
+    //
+    // The fixture is the state the migration path documents as reachable: a
+    // previous startup's commit failed, so later commits appended v2 frames
+    // beside the still-v1 checkpoint.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
+    let seq = {
+        let mut wal = HistoryWal::new(&f.cp);
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(A),
+            timestamp: T0 + 1,
+        })
+        .unwrap()
+    };
+    write_marker(&f, DeletionBreach::Unflushed { seq });
+
+    let report = open_report_of(&f);
+    assert!(report.migrated_from_v1, "fixture must actually migrate");
+    assert!(
+        !report.deletion_lost,
+        "the deletion took, so nothing is owed"
+    );
+    assert!(
+        !report.deletion_pending_checkpoint,
+        "the migration's own checkpoint is the durable coverage"
+    );
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        None,
+        "and it settles the marker rather than leaving it to a compaction"
+    );
+
+    // The deletion really is gone from the checkpoint that was just written.
+    let (reloaded, _, _) = open_recovering(&f.cp).unwrap();
+    assert_contents(&reloaded, &[], &[A]);
+}
+
+#[test]
 fn t10_marker_survives_a_migrating_startup() {
     // A migrating startup writes a durable v2 checkpoint — but one snapshotting
     // a memory state that has the resurrected entry back in it, so it must not

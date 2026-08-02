@@ -19,8 +19,10 @@
 //! marker, which everywhere else in the engine happens only under the wal mutex
 //! (the mutex is what makes a raise and a cover unable to interleave). A future
 //! path that re-opens a *live* history would break the exemption, not merely
-//! bend it. This function never *removes* the marker: retraction is owed to a
-//! durable checkpoint, and recovery writes none.
+//! bend it. Retraction is owed to a *durable checkpoint*, so this function
+//! removes the marker only when one on disk already covers the witness —
+//! including the one the migration path writes itself. Replay reaching the
+//! witness is not that: it proves the frame was readable, not flushed.
 
 use std::fs;
 use std::io;
@@ -335,56 +337,6 @@ pub fn open_recovering(
     // Replay applied frames without evicting; settle capacity once (§5.1-4).
     history.evict();
 
-    // --- 2b. unpersisted-deletion marker (#312) ---
-    // After the replay, because the witness is settled against the state that
-    // was actually loaded: `applied_seq` is now
-    // `max(checkpoint.applied_seq, last replayed seq)`.
-    //
-    // Neither branch unlinks. Retraction belongs to a *durable checkpoint*, and
-    // this function has not written one — the marker is the only thing that
-    // survives the process, and the launches it exists for are the ones where
-    // the disk is failing.
-    if let Some(breach) = deletion_marker::read(checkpoint_path) {
-        if !breach.outstanding(checkpoint_applied_seq) {
-            // The durable checkpoint already contains the deletion's effect,
-            // so it is persisted — this is the residue of a crash between a
-            // successful `save()` and the unlink that follows it. Retracting
-            // here is sound because the evidence is the checkpoint itself.
-            info!("an unpersisted-deletion marker was already covered by the checkpoint");
-            deletion_marker::remove(checkpoint_path);
-        } else if breach.outstanding(history.applied_seq()) {
-            // The frame is provably not in the state we just loaded, so the
-            // deletion did not take and nothing will make it take. Promote the
-            // claim to unconditional: seq numbering is *re-based* whenever a
-            // WAL is quarantined or reinitialized (`adopt_empty` restarts at
-            // the checkpoint's applied_seq + 1), so an unrelated later frame
-            // could otherwise satisfy this witness and settle a report that is
-            // still owed. Having answered the question once, the answer stops
-            // depending on a comparison a reset can invalidate.
-            warn!("a deletion from a previous session was never persisted ({breach:?})");
-            report.deletion_lost = true;
-            if breach != deletion_marker::DeletionBreach::Lost {
-                if let Err(e) = deletion_marker::merge_write(
-                    checkpoint_path,
-                    deletion_marker::DeletionBreach::Lost,
-                ) {
-                    warn!("failed to promote the unpersisted-deletion claim: {e}");
-                }
-            }
-        } else {
-            // Replay applied the deletion, so nothing is owed to the user. But
-            // replay read that frame out of the page cache, which is not the
-            // flush that failed: until a checkpoint covers it, power loss still
-            // undoes the deletion. Retracting here would be
-            // retract-then-persist, the inverse of the discipline every other
-            // write on this path follows. Hand the claim to the runtime ledger
-            // instead — it is a live durability problem now, and the first
-            // durable checkpoint both settles it and unlinks the file.
-            info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
-            report.deletion_pending_checkpoint = true;
-        }
-    }
-
     // --- 3. migration commit (§7) ---
     if migrate {
         if v1_checkpoint_present {
@@ -438,6 +390,68 @@ pub fn open_recovering(
         // is conditional on a legacy WAL, so a v1 checkpoint next to a fresh
         // v2 WAL fails the commit without freezing anything.
         report.migration_failed = !report.migrated_from_v1;
+    }
+
+    // --- 3b. unpersisted-deletion marker (#312) ---
+    // Evaluated here, after the migration commit, because the question it asks
+    // is "does the checkpoint that is durable **when this function returns**
+    // cover the witness" — and on the migration path this function writes that
+    // checkpoint itself. Asking before the commit answered against a v1 file
+    // that predates the deletion, so a migration whose save had just persisted
+    // the deletion still handed the engine a live durability warning and left
+    // the marker for an asynchronous compaction to clean up. One evaluation
+    // point against one durable state, rather than a settle-again special case
+    // in the migration branch.
+    //
+    // `durable_applied_seq` is what is on disk now: the checkpoint this startup
+    // wrote if the migration committed (it was serialized from `history`, so it
+    // covers everything memory holds), otherwise the one that was loaded.
+    let durable_applied_seq = if report.migrated_from_v1 {
+        history.applied_seq()
+    } else {
+        checkpoint_applied_seq
+    };
+    if let Some(breach) = deletion_marker::read(checkpoint_path) {
+        if !breach.outstanding(durable_applied_seq) {
+            // A durable checkpoint contains the deletion's effect, so it is
+            // persisted. Either a crash landed between a successful `save()`
+            // and the unlink that follows it, or the migration above just wrote
+            // the covering checkpoint. Retracting is sound because the evidence
+            // is a checkpoint on disk.
+            info!("an unpersisted-deletion marker is covered by a durable checkpoint");
+            deletion_marker::remove(checkpoint_path);
+        } else if breach.outstanding(history.applied_seq()) {
+            // The frame is provably not in the state we just loaded, so the
+            // deletion did not take and nothing will make it take. Promote the
+            // claim to unconditional: seq numbering is *re-based* whenever a
+            // WAL is quarantined or reinitialized (`adopt_empty` restarts at
+            // the checkpoint's applied_seq + 1), so an unrelated later frame
+            // could otherwise satisfy this witness and settle a report that is
+            // still owed. Having answered the question once, the answer stops
+            // depending on a comparison a reset can invalidate.
+            warn!("a deletion from a previous session was never persisted ({breach:?})");
+            report.deletion_lost = true;
+            if breach != deletion_marker::DeletionBreach::Lost {
+                if let Err(e) = deletion_marker::merge_write(
+                    checkpoint_path,
+                    deletion_marker::DeletionBreach::Lost,
+                ) {
+                    warn!("failed to promote the unpersisted-deletion claim: {e}");
+                }
+            }
+        } else {
+            // Replay applied the deletion and no durable checkpoint covers it,
+            // so nothing is owed to the user — but replay read that frame out
+            // of the page cache, which is not the flush that failed: until a
+            // checkpoint covers it, power loss still undoes the deletion.
+            // Retracting here would be retract-then-persist, the inverse of the
+            // discipline every other write on this path follows. Hand the claim
+            // to the runtime ledger instead — it is a live durability problem
+            // now, and the first durable checkpoint both settles it and unlinks
+            // the file.
+            info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
+            report.deletion_pending_checkpoint = true;
+        }
     }
 
     // Whatever branch froze the WAL — or left it frozen — this session's
