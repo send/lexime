@@ -360,7 +360,33 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
     // change what has to be written, and merging is one-directional so an
     // unreadable existing marker (conservatively `Lost`) can only strengthen.
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.breach.merge(breach));
-    write_atomic(&marker_path(checkpoint_path), &merged.encode())?;
+    let image = merged.encode();
+    if let Err(e) = write_atomic(&marker_path(checkpoint_path), &image) {
+        // The logical marker is the canonical file **and** its orphan tmp —
+        // `read` merges them and `remove` clears both — and that rule has to
+        // hold here too. `write_atomic` flushes the tmp before renaming, so a
+        // rename that fails (a non-empty directory sitting at the canonical
+        // name, say) still leaves the exact bytes durable in the orphan, where
+        // the next `read` will find them. Reporting failure there made the
+        // claim look unlanded forever: appends froze on every commit, each
+        // compaction thawed them, and the next keystroke froze again, while
+        // the record on disk already said what was wanted.
+        //
+        // The check is byte equality against the image just built, not a
+        // re-read of the *claim*: matching bytes are only evidence because
+        // they are the ones this call flushed. A partial tmp — the sync itself
+        // failing — does not match, so it stays an error rather than being
+        // waved through by a malformed decode that resolves to `Lost`.
+        let path = marker_path(checkpoint_path);
+        let landed = [read_at(&path), read_at(&persist::tmp_path(&path))]
+            .into_iter()
+            .flatten()
+            .any(|(bytes, readable)| readable && bytes == image);
+        if !landed {
+            return Err(e);
+        }
+        warn!("marker rename failed ({e}); the flushed orphan carries the claim");
+    }
     // The **merged** value, not the requested one. Writing `Unflushed` over a
     // surviving `Lost` persists `Lost`, and a caller that recorded its request
     // would hold a belief the disk never had — later reconciles would find it

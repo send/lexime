@@ -2377,7 +2377,13 @@ mod tests {
         // nothing else. An empty one would not: the writer owns this path and
         // clears a placeholder out of its way. What it will not do is delete
         // someone else's contents.
-        let marker_dir = deletion_marker::marker_path(&cp);
+        // At the *tmp*, not the canonical name: a directory at the canonical
+        // name no longer fails the write, because `write_atomic` flushes the
+        // tmp before renaming and `read` merges that orphan — the claim lands.
+        // Blocking the tmp stops `create_regular` outright, which is what
+        // "the write failed" now means.
+        let marker_dir =
+            crate::user_history::checkpoint_tmp_path(&deletion_marker::marker_path(&cp));
         std::fs::create_dir(&marker_dir).unwrap();
         std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
         io.fail_appends.store(true, Ordering::SeqCst);
@@ -2392,7 +2398,6 @@ mod tests {
         // absent marker holding the claim — and `read` merges it, which is
         // what makes an orphan strengthen rather than hide. Clearing it here
         // isolates what this test is about: the claim surviving in *memory*.
-        std::fs::remove_file(cp.with_file_name("history.lxud.deletion-pending.tmp")).ok();
         assert_eq!(
             marker(&cp),
             None,
@@ -2537,7 +2542,13 @@ mod tests {
         block_checkpoint_write(&cp);
         hist.apply_records(&[committed("きょう", "今日")]);
 
-        let marker_dir = deletion_marker::marker_path(&cp);
+        // At the *tmp*, not the canonical name: a directory at the canonical
+        // name no longer fails the write, because `write_atomic` flushes the
+        // tmp before renaming and `read` merges that orphan — the claim lands.
+        // Blocking the tmp stops `create_regular` outright, which is what
+        // "the write failed" now means.
+        let marker_dir =
+            crate::user_history::checkpoint_tmp_path(&deletion_marker::marker_path(&cp));
         std::fs::create_dir(&marker_dir).unwrap();
         std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
         io.fail_appends.store(true, Ordering::SeqCst);
@@ -2575,7 +2586,13 @@ mod tests {
 
         // The marker write fails: a non-empty directory is the one shape the
         // writer will not clear out of its way.
-        let marker_dir = deletion_marker::marker_path(&cp);
+        // At the *tmp*, not the canonical name: a directory at the canonical
+        // name no longer fails the write, because `write_atomic` flushes the
+        // tmp before renaming and `read` merges that orphan — the claim lands.
+        // Blocking the tmp stops `create_regular` outright, which is what
+        // "the write failed" now means.
+        let marker_dir =
+            crate::user_history::checkpoint_tmp_path(&deletion_marker::marker_path(&cp));
         std::fs::create_dir(&marker_dir).unwrap();
         std::fs::write(marker_dir.join("restored"), b"not ours").unwrap();
         io.fail_appends.store(true, Ordering::SeqCst);
@@ -2583,7 +2600,6 @@ mod tests {
         std::fs::remove_dir_all(&marker_dir).unwrap();
         // Same as above: the failed rename leaves the atomic write's tmp, and
         // `read` merges it. Clear it so the assertion is about memory.
-        std::fs::remove_file(cp.with_file_name("history.lxud.deletion-pending.tmp")).ok();
         assert_eq!(marker(&cp), None, "nothing reached the disk");
 
         // A later *commit* against the frozen WAL — no deletion, so no breach.

@@ -210,6 +210,13 @@ what a generic reviewer misses:
   position creates no identity. While a report is owed and the disk does not
   yet say `Lost`, appends **freeze** — the state that would answer the witness
   must not advance until the lineage-independent form has landed;
+  a claim counts as landed when the **logical** marker holds it — the canonical
+  file *or* its flushed orphan tmp — because `write_atomic` syncs before it
+  renames, so a rename that fails has still made the bytes durable where the
+  next `read` merges them; treating that as failure froze appends on every
+  commit forever against a record that already said what was wanted (the test
+  is byte equality with the image this call flushed, so a partial tmp stays an
+  error rather than passing on a malformed decode);
   a stronger record on disk **satisfies** a weaker desired one (the merge
   lattice, not equality): `merge_write` absorbs a requested `Unflushed` back
   into a surviving `Lost`, so exact equality made the desired state

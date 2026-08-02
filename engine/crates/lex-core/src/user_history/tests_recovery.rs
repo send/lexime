@@ -2264,6 +2264,36 @@ fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
 }
 
 #[test]
+fn t10_a_flushed_orphan_counts_as_a_landed_claim() {
+    // The logical marker is the canonical file *and* its orphan tmp — `read`
+    // merges them, `remove` clears both — so a rename that fails after the tmp
+    // was flushed has still landed the claim. Reporting failure there made it
+    // look unlanded forever: appends froze on every commit, each compaction
+    // thawed them, and the next keystroke froze again, against a record on
+    // disk that already said what was wanted.
+    let f = fx();
+    build_v2_state(&f, false);
+    // A non-empty directory at the canonical name: `create_regular` still
+    // makes the tmp, the flush succeeds, and only the rename fails.
+    let path = deletion_marker::marker_path(&f.cp);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("left-by-something-else"), b"x").unwrap();
+
+    let landed = deletion_marker::merge_write(&f.cp, DeletionBreach::Lost)
+        .expect("a flushed orphan is a landed claim, not a failure");
+    assert_eq!(landed, DeletionBreach::Lost);
+    assert_eq!(
+        marker_claim(&f.cp),
+        Some(DeletionBreach::Lost),
+        "and the next read finds it, which is why it counts"
+    );
+    assert!(
+        open_report_of(&f).deletion_lost,
+        "so the report survives the restart it exists for"
+    );
+}
+
+#[test]
 fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
     // The migration commit writes a durable v2 checkpoint serialized from the
     // replayed state — which, when replay applied a tombstone, is a checkpoint
