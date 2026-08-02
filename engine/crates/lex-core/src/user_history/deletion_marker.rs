@@ -158,7 +158,21 @@ pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
 /// without freezing.
 ///
 /// Callers hold the wal mutex, which is what serializes the read against a
-/// concurrent write.
+/// concurrent write — and that mutex is held by the key-processing thread, so
+/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS):
+/// **p50 10.1ms / p95 14.8ms**, against **12.3ms p50** for the synchronous
+/// fallback checkpoint (5k entries) that the same call runs immediately
+/// afterwards. It roughly doubles a path already costing tens of milliseconds,
+/// and only ever runs when a tombstone failed to reach the disk.
+///
+/// Two ways to make it cheaper were considered and rejected. A barrier flush
+/// instead of `sync_all` would cost ~0.3ms and would still cover the scenario
+/// #312 is named for (a process restart keeps the page cache), but it would
+/// reopen a power-loss window in the *report* about a deletion whose own
+/// power-loss window §6 sets to zero. Skipping tmp+rename is defensible from
+/// the format alone — a torn marker decodes to `Lost`, which is the outcome we
+/// want anyway — but it would fork [`write_atomic`] into a second, weaker
+/// durable-write path to save milliseconds on a disk that is already failing.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
     let merged = match read(checkpoint_path) {
         Some(existing) => existing.merge(breach),
