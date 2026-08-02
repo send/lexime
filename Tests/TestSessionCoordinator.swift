@@ -574,6 +574,45 @@ func testSessionCoordinator() {
                     "and settles the session once")
     }
 
+    // #298: coalescing re-entrant teardowns must not lose the continuation.
+    // Two re-entries land in the same pending slot; only the first carries a
+    // completion (`LeximeInputController` always passes one, but the slot must
+    // not depend on that). Overwriting the slot wholesale drops it and
+    // `super.deactivateServer` never runs for this focus loss — the R7/R9
+    // failure reached from the caller side instead of the layering side.
+    do {
+        let session = FakeLexSession()
+        // Two `.commit`s in one response: two `insertText` calls, so two
+        // re-entries inside a single `applyEvents` — both queue into the slot
+        // before the delivery ends and the teardown is dispatched.
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .commit(text: "は"),
+                .setMarkedText(text: "ね"),
+            ])
+        ]
+        session.isComposingValue = true
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var ran = false
+        var reentries = 0
+
+        client.onInsertText = { [weak coordinator] in
+            reentries += 1
+            if reentries == 1 {
+                coordinator?.deactivate(client: nil) { ran = true }
+            } else {
+                // A later re-entry with no continuation of its own.
+                coordinator?.deactivate(client: nil)
+            }
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertTrue(reentries >= 2, "the fixture must produce a second re-entry")
+        assertTrue(ran, "a completion-less re-entry must not displace the queued completion")
+    }
+
     // #298: nothing composing → nothing to settle. An Idle `commit()` is
     // harmless (commit_current_state early-returns with no events), so this
     // gate is an optimization, not a host-correctness guard — pinned here so a

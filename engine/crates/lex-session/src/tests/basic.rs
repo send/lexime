@@ -695,6 +695,14 @@ fn settle_unconfirmed_commits_the_reading_when_the_user_never_navigated() {
     // host is showing even though candidates exist.
     let shown = type_string_returning_marked(&mut session, "kyou");
     assert!(!session.comp().candidates.is_empty());
+    // The test rests on the reading and top-1 differing. If a fixture change
+    // ever made them equal, the assertion below would decay into `f(x) == x`
+    // while keeping its name.
+    assert_ne!(
+        shown,
+        session.comp().candidates.surfaces[0],
+        "fixture must keep the reading distinct from top-1, or this test proves nothing",
+    );
 
     let resp = session.settle_unconfirmed(&shown);
 

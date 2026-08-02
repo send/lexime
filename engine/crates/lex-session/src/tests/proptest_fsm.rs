@@ -541,14 +541,23 @@ fn assert_invariants(
     //
     //     `HostMarked` is the model of what is on screen, and the driver feeds
     //     it straight back in as `settle_unconfirmed`'s argument — the same
-    //     thing `SessionCoordinator` passes from `currentDisplay`. So this
-    //     pins the whole contract across every generated sequence: whatever
-    //     the host had is what lands, and nothing else is invented.
+    //     thing `SessionCoordinator` passes from `currentDisplay`. Whatever the
+    //     host had is what lands, and nothing else is invented.
     //
-    //     Deriving this inside the engine failed twice (PR315 Codex R2/R3):
-    //     inferred from selection state it went stale on a re-render, and
-    //     recorded at emission it ran ahead of a delivery that can be dropped.
-    //     Taking it as input is what makes it unconditionally true.
+    //     What it does and does not discriminate. It kills any engine-side
+    //     *re-derivation* of the displayed string: inferred from selection
+    //     state (PR315 Codex R1) it diverges here as soon as a Backspace
+    //     re-renders the reading, and re-flushing pending romaji shows up as a
+    //     commit the host never had. It does **not** reach the second failure
+    //     (R2, recording the string at emission): this driver applies every
+    //     response to `HostMarked` unconditionally, so emission and delivery
+    //     are equal by construction — exactly the assumption R2 broke, since a
+    //     `receive_candidates` response is queued to the UI thread and can be
+    //     dropped there. What rules that one out is the argument being an
+    //     *input* at all, not this assertion.
+    //
+    //     Generated only by `arb_action_with_snippets`, so
+    //     `session_invariants_with_snippets` is the proptest that exercises it.
     //     Composing only: a snippet browse *cancels* (§状態遷移) — there is
     //     nothing confirmed to keep — so it discards what was on screen by
     //     design, exactly as `commit` does for the same state.

@@ -117,9 +117,11 @@ what a generic reviewer misses:
   ends the marked session too, so a per-response check cannot see that shape;
   findings proposing to replace the cumulative model with a per-response check
   re-litigate it — do not raise them.
-- **Focus loss settles the session, by committing (settled)**: on
-  `deactivateServer` the session is settled in the same call that clears the
-  display (`SessionCoordinator.deactivate(client:)`). Two parts are settled:
+- **Focus loss settles the session, without learning (settled)**: on
+  `deactivateServer` the settle and the display clear are one teardown
+  (`SessionCoordinator.deactivate(client:)`); re-entry may defer that teardown
+  to the end of the delivery, but never splits the two apart. Two parts are
+  settled:
   (a) it settles through **`settle_unconfirmed()`, not `commit()`** — focus loss
   is not acceptance, so it keeps what the host was showing and records no
   history, where a voluntary commit would resolve to the selected candidate and
@@ -147,13 +149,19 @@ what a generic reviewer misses:
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
-  composing, and the assert that would catch it is compiled out at `-O` (SPEC
-  records it); and the general display/commit divergence — marked text
-  shows the reading while a **voluntary** commit resolves to the selected
-  surface, which affects Enter too and contradicts SPEC § 候補操作 — is #309,
-  still open and needing accuracy measurement. Note the narrow scope of (a): it
-  settles *whether to commit or discard*, not whether the `resetDisplay()` gap
-  is acceptable.
+  composing, the assert that would catch it is compiled out at `-O`, and the
+  next real `deactivateServer` then settles against an empty display and drops
+  the typed text without a trace (SPEC § 不変条件 records the path and that
+  consequence); whether this settle should ever *learn* is **#310**, still open
+  — recording nothing is the safe default, not a measured answer, and it means a
+  surface the user did navigate to reaches the document while the ranking that
+  produced it stays untrained; and the general display/commit divergence —
+  marked text shows the reading while a **voluntary** commit resolves to the
+  selected surface, which affects Enter too and contradicts SPEC
+  § 各状態でのキー操作 — is #309, still open and needing accuracy measurement.
+  Note the narrow scope of (a): it settles *whether to commit or discard*, not
+  whether the `resetDisplay()` gap is acceptable, and not whether the no-learn
+  default is right.
 - **Unusable config entries are dropped, not rejected (settled)**: an empty
   side in `[keymap]` and a snippet body that expands to nothing are ignored,
   and the file still loads. Rejecting was tried and reversed: `init_custom` is

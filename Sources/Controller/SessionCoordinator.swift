@@ -132,14 +132,15 @@ final class SessionCoordinator {
     /// reason Rust checks per *response*, not per event.
     ///
     /// What it can actually catch: `deactivate(client:)` cannot trip it —
-    /// settling there is unconditional and `commit()` resets state on both its
-    /// branches, so the session is Idle regardless of whether the text could be
+    /// settling there is unconditional and `settleUnconfirmed` resets state on
+    /// both its branches (Composing commits and resets, a Snippet browse
+    /// cancels), so the session is Idle regardless of whether the text could be
     /// delivered. The live path is `resetDisplay()`, which by design does not
     /// settle: if IMKit skipped the previous `deactivateServer` (see
     /// `LeximeInputController.activateServer`), the session arrives here still
     /// composing. Note the assert is compiled out at `-O`, so on that path the
     /// shipped build has neither structure nor detection — recorded as a known
-    /// gap in SPEC.md rather than claimed as covered.
+    /// gap in SPEC.md § 不変条件 rather than claimed as covered.
     private func clearDisplay() {
         assert(!session.isComposing(),
                "display cleared while the session is still composing (#298)")
@@ -204,7 +205,13 @@ final class SessionCoordinator {
         // while the teardown is running. Both windows fold into the same
         // `pendingTeardown` slot.
         if isApplyingEvents || isTearingDown {
-            pendingTeardown = (client, completion)
+            // One teardown also means one completion. A re-entrant call that
+            // carries none must not displace one already queued — that is how
+            // `super.deactivateServer` would go missing for this focus loss,
+            // the R7/R9 failure reached from a different direction. Keeping the
+            // first non-nil continuation makes that hold for any caller, rather
+            // than resting on every caller passing one.
+            pendingTeardown = (client, completion ?? pendingTeardown?.completion)
             return true
         }
         runTeardown(client: client, completion: completion)
@@ -285,11 +292,14 @@ final class SessionCoordinator {
             case .commit(let text):
                 // Update our record of the display *before* calling the client,
                 // the way `.setMarkedText` below already does. `insertText` ends
-                // the host's marked session and can re-enter
-                // `deactivate(client:)` synchronously; a settle running in that
-                // window reads `currentDisplay`, and if it still held the
-                // pre-commit composition it would re-commit the text this very
-                // call is inserting — duplicating it after the prefix.
+                // the host's marked session and hands control to it, and the
+                // host reads this record back synchronously from in there:
+                // `composedString(_:)` / `originalString(_:)` answer out of
+                // `currentDisplay`, so leaving the pre-commit composition in it
+                // reports text the host has just been told to insert as still
+                // composing. (A re-entrant `deactivate(client:)` no longer
+                // observes this window — its teardown is deferred to the end of
+                // the delivery — but the host's own readers still do.)
                 currentDisplay = nil
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
                 candidateManager.flagReposition()
