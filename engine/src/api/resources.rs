@@ -551,6 +551,10 @@ impl LexUserHistory {
         // that explicitly keeps a future change to that guard from turning
         // this into "wrote the session's claim, then retired the inherited
         // one", which is the shape R3 found.
+        //
+        // Confirmed by mutation that no test can detect this clause today —
+        // the ledger guard makes it always true — so it is stated here rather
+        // than left to a reader to re-derive.
         let desired = without.projected();
         if desired.is_none() && self.apply_marker(&wal, None) {
             // The only site that commits its change *after* the disk agrees.
@@ -615,6 +619,10 @@ impl LexUserHistory {
             // Already written and flushed by this process. The claim is
             // re-projected on every raise while it is outstanding, and each
             // write is an F_FULLFSYNC on the key-processing thread.
+            //
+            // A cost, not a behaviour: removing this skip is invisible to the
+            // tests by construction, which is why the *recording* of a
+            // successful flush below is what they pin instead.
             return true;
         }
         match desired {
