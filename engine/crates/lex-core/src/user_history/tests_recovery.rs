@@ -1873,78 +1873,49 @@ fn t10_removal_reports_whether_the_path_is_actually_clear() {
 }
 
 #[test]
-fn t10_an_orphan_tmp_strengthens_the_claim() {
-    // The reason this file can go back through the shared atomic write. A
-    // crash between the tmp's flush and the rename leaves the stronger claim
-    // in the sibling; reading only the marker would hand the next startup a
-    // witness it can suppress. Merging both makes the orphan able to
-    // strengthen and never to weaken.
+fn t10_removal_covers_the_orphan_tmp_too() {
+    // The logical marker is the pair. `read` merges the atomic write's orphan
+    // so a crash between its flush and the rename can only strengthen a claim
+    // — which means removing only the canonical file leaves the claim alive.
+    // A `Lost` orphan would then re-report on every launch with nothing able
+    // to clear it: the unclearable latch, rebuilt out of the fix for hiding.
     let f = fx();
     build_v2_state(&f, false);
-    let path = deletion_marker::marker_path(&f.cp);
     let tmp =
         f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
-
-    write_marker(&f, DeletionBreach::Unflushed { seq: 1 });
-    fs::copy(&path, &tmp).unwrap();
-    // Now the marker holds the weaker claim and the orphan the stronger.
-    fs::write(&path, encoded_marker(DeletionBreach::Unflushed { seq: 1 })).unwrap();
+    write_marker(&f, DeletionBreach::Lost);
     fs::write(&tmp, encoded_marker(DeletionBreach::Lost)).unwrap();
 
-    assert_eq!(
-        deletion_marker::read(&f.cp),
-        Some(DeletionBreach::Lost),
-        "an orphan may only strengthen"
-    );
-    assert!(open_report_of(&f).deletion_lost);
+    assert!(deletion_marker::remove(&f.cp));
+    assert!(!tmp.exists(), "the orphan is part of what had to go");
+    assert_eq!(deletion_marker::read(&f.cp), None);
+    assert!(!open_report_of(&f).deletion_lost);
 }
 
 #[test]
-fn t10_the_writer_replaces_what_it_does_not_own() {
-    // `File::create` follows symlinks, so a link left at the marker path would
-    // have the engine truncate and overwrite whatever it points at. The writer
-    // owns this path: anything that is not its own regular file is unlinked
-    // first — the link, not the target.
+fn t10_removal_reports_false_when_only_the_orphan_resists() {
+    // And the outcome is honest about either half: a claim the caller cannot
+    // clear must not be reported as cleared just because the other file went.
     let f = fx();
     build_v2_state(&f, false);
-    let path = deletion_marker::marker_path(&f.cp);
-    let victim = f.cp.with_file_name("someone-elses-file");
-    fs::write(&victim, b"must survive").unwrap();
-    std::os::unix::fs::symlink(&victim, &path).unwrap();
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+    write_marker(&f, DeletionBreach::Lost);
+    fs::create_dir(&tmp).unwrap();
+    fs::write(tmp.join("restored"), b"not ours").unwrap();
 
-    deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).unwrap();
-
-    assert_eq!(
-        fs::read(&victim).unwrap(),
-        b"must survive",
-        "the symlink target must not be written through"
+    assert!(
+        !deletion_marker::remove(&f.cp),
+        "an orphan that resists leaves the record standing"
     );
-    assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
-    assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
-}
-
-#[test]
-fn t10_a_promotion_can_replace_an_unwritable_marker() {
-    // The promotion to `Lost` is what stops a re-based sequence space from
-    // satisfying a stale witness, so a promotion that cannot be written
-    // reopens that hole. A read-only *file* is still removable — that needs
-    // write permission on the parent, not on the file — so the writer replaces
-    // it rather than giving up. What is left is the directory-level failure
-    // this design already documents as unclosable.
-    let f = fx();
-    build_v2_state(&f, false);
-    let applied = applied_seq_of(&f);
-    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 5 });
-    let path = deletion_marker::marker_path(&f.cp);
-    let mut perms = fs::metadata(&path).unwrap().permissions();
-    perms.set_readonly(true);
-    fs::set_permissions(&path, perms).unwrap();
-
-    assert!(open_report_of(&f).deletion_lost);
+    assert!(
+        !deletion_marker::marker_path(&f.cp).exists(),
+        "the half that could go, went"
+    );
     assert_eq!(
         deletion_marker::read(&f.cp),
         Some(DeletionBreach::Lost),
-        "the promotion must land even on a marker that refuses to be rewritten"
+        "and the surviving orphan still carries the claim"
     );
 }
 

@@ -207,8 +207,11 @@ what a generic reviewer misses:
   and a separate unlink cannot be pinned by a deterministic test — but it does
   **not** retract an inherited report that nothing has delivered yet, since a
   checkpoint written this session persists the *resurrected* entry and so
-  settles nothing about a previous session's claim; removal reports whether the path is
-  actually clear and an acknowledgement settles only when it is (an empty
+  settles nothing about a previous session's claim; the logical marker is the canonical
+  file *and* the atomic write's orphan tmp — `read` merges the second, so
+  removal must clear both or a `Lost` orphan rebuilds the unclearable latch —
+  removal reports whether it is actually clear and an acknowledgement settles
+  only when it is (an empty
   directory left there is a placeholder and gets cleared; a non-empty one is
   someone else's and does not, which the return value makes visible rather than
   silent); `clear`

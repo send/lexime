@@ -280,7 +280,14 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
     write_atomic(&marker_path(checkpoint_path), &merged.encode())
 }
 
-/// Remove the marker, reporting whether the path is now clear.
+/// Remove the marker, reporting whether the record is now gone.
+///
+/// **Both files.** [`read`] merges the atomic write's orphan tmp so that a
+/// crash between its flush and the rename can only strengthen a claim; the
+/// logical marker is therefore the pair, and removing one of them would leave
+/// the claim standing. A `Lost` orphan would then re-report on every launch
+/// with no acknowledgement able to clear it — the unclearable latch, rebuilt
+/// out of the fix for hiding.
 ///
 /// `true` means the record is gone — removed, or never there. `false` means it
 /// stands, and the caller must keep telling the user so: an acknowledgement
@@ -291,7 +298,7 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
 /// against is the one that just failed — but never in the sense of hiding the
 /// outcome.
 ///
-/// A **directory** at the path is removed only when empty. It is not ours:
+/// A **directory** at either path is removed only when empty. It is not ours:
 /// something external put it there, and `remove_dir_all` would both walk an
 /// unbounded tree on the thread the menu runs on and delete whatever a restore
 /// had placed inside. An empty one is a placeholder and safe to clear; a full
@@ -300,13 +307,20 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
 /// to prevent, since the user is now told the acknowledgement did not take.
 pub fn remove(checkpoint_path: &Path) -> bool {
     let path = marker_path(checkpoint_path);
-    let Err(e) = fs::remove_file(&path) else {
+    // Both, and `&` not `&&`: the orphan must be attempted even when the
+    // canonical marker refuses, or a `false` return would leave a claim the
+    // caller was never told about.
+    remove_one(&path) & remove_one(&persist::tmp_path(&path))
+}
+
+fn remove_one(path: &Path) -> bool {
+    let Err(e) = fs::remove_file(path) else {
         return true;
     };
     if e.kind() == io::ErrorKind::NotFound {
         return true;
     }
-    if fs::remove_dir(&path).is_ok() {
+    if fs::remove_dir(path).is_ok() {
         warn!(
             "removed an empty directory left at the marker path {}",
             path.display()
