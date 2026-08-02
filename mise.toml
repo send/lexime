@@ -1,3 +1,21 @@
+# NOTE for every `run = """..."""` block below: mise renders them as Tera
+# templates. Bash's array-length form — a dollar sign, brace, hash — opens a
+# Tera comment and fails the whole task at render time with "Closing comment
+# tag not found". It fails inside a `#` shell comment too, so do not spell the
+# sequence anywhere in a run block, prose included. Count in the read loop.
+
+# Minimum macOS the app is built for. Shared so `build` and `compile-swift`
+# cannot drift: a gate compiling at the host's SDK version accepts APIs the
+# real build rejects — silently, and precisely on the SwiftUI/AppKit files
+# `compile-swift` exists to cover (verified: `containerRelativeFrame` passes
+# at the host default and errors at 13.0). The hoist leaves two spellings:
+# this one, and Info.plist's LSMinimumSystemVersion, which mise cannot reach —
+# so `compile-swift` asserts they agree rather than trusting a comment. A third
+# lives in README.md's requirements line; it is prose, not a build input, and
+# nothing checks it, so bump all three together.
+[env]
+MACOS_MIN = "13.0"
+
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
 sources = ["engine/src/**/*.rs", "engine/crates/**/*.rs", "engine/crates/**/*.toml", "engine/Cargo.toml", "engine/Cargo.lock"]
@@ -172,6 +190,12 @@ description = "Build Lexime.app (universal binary)"
 depends = ["uniffi-gen", "dict", "conn"]
 sources = [
   "Sources/**/*.swift",
+  # Decide which of those files get compiled and at what deployment target,
+  # so a change to either changes the output even when no .swift file moved.
+  # mise.toml is here for MACOS_MIN: without it, bumping the target leaves
+  # this task cache-skipping while the gate and Info.plist have both moved.
+  "scripts/swift-sources.sh",
+  "mise.toml",
   "generated/lex_engine.swift",
   "generated/lex_engineFFI.h",
   "generated/lex_engineFFI.modulemap",
@@ -194,10 +218,11 @@ rm -f ~/Library/Logs/Lexime/lexime-trace.jsonl
 APP=build/Lexime.app
 MACOS=$APP/Contents/MacOS
 RES=$APP/Contents/Resources
-MACOS_MIN=13.0
 SWIFTC_FLAGS="-O -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap"
 LINK_FLAGS="-Lbuild -llex_engine"
-SWIFT_SOURCES=$(find Sources -name '*.swift' -type f)
+# MACOS_MIN comes from mise's [env]; `compile-swift` gates against the same
+# value. Source set likewise — see scripts/swift-sources.sh for why it is shared.
+SWIFT_SOURCES=$(bash scripts/swift-sources.sh Sources)
 
 mkdir -p "$MACOS" "$RES"
 swiftc $SWIFTC_FLAGS $LINK_FLAGS -target x86_64-apple-macosx$MACOS_MIN \
@@ -250,24 +275,39 @@ run = "bash scripts/icon.sh"
 [tasks.test-swift]
 description = "Run Swift unit tests (UniFFI round-trip)"
 depends = ["uniffi-gen"]
-# NOTE: Test files are listed explicitly because swiftc compiles all sources
-# into one binary. If you add a new test file under Tests/, add it here too.
-# Source files required by tests are also listed explicitly (SnippetTOML for
-# TestSnippetTOML; CandidateManager/SessionCoordinator/ModeController/InputSource
-# for the controller tests). This list is the ONLY place CI compiles Swift:
-# the `swift` job runs `mise run test-swift` and nothing else, and no workflow
-# runs `mise run build` — so a file absent from here is never type-checked in
-# CI at all (14 of 22 files under Sources/ currently are: see #316). Add the
-# sources a change touches. EngineContainer costs ~0.15s of build time
-# (measured, 6 alternating runs); EngineInitFailure is split out so files that
-# only need to *render* a failure do not pull the engine-loading path with it.
-# LeximeInputController stays out because it needs IMKit; the part of it worth
+# Tests/ is globbed rather than listed, so which files *compile* is derived
+# from what is on disk. Which tests *run* is not: `TestRunner.main()` still
+# dispatches by hand, so a test function that is never called compiles, links,
+# and silently does not run while CI stays green. Deriving that too was tried
+# in this PR and reverted — see #324. It needs the Swift compiler's own parse
+# (or a test framework); a shell scanner over source cannot separate code from
+# comments from string literals, and the version that shipped here could drop
+# a test that runs today. Nothing forced Tests/ to be enumerated for
+# compilation, though — one `@main` (TestRunner), no UI to link — so it is not.
+#
+# Sources/ is enumerated, and that part is deliberate rather than legacy:
+# given this single-module swiftc build, `Sources/main.swift` is top-level code
+# and cannot coexist with the test runner's `@main`. (Separate SwiftPM targets
+# would dissolve the constraint and delete this list; deferred as more churn
+# than the gate needs. Revisit if a second hand-maintained Swift source list
+# appears, or if this subset grows past roughly half of Sources/.) So this is
+# the subset the tests actually drive (SnippetTOML for TestSnippetTOML;
+# CandidateManager/SessionCoordinator/ModeController/InputSource for the
+# controller tests) — add the sources a change touches. It bounds what is
+# *linked and run*, not what is compiled: `compile-swift` compiles all of
+# Sources/, so a file absent here is still gated, it just has no test driving
+# it. EngineContainer costs ~0.15s of build time (measured, 6 alternating
+# runs); EngineInitFailure is split out so files that only need to *render* a
+# failure do not pull the engine-loading path with it. LeximeInputController
+# stays out of the *test* binary because it needs IMKit; the part of it worth
 # asserting — that menu() feeds the polled issues into DegradedStatus.rows —
-# is therefore unpinned, which the PR verifies by hand on the real IME.
+# is therefore unpinned by tests — it was verified by hand on the real IME
+# when it landed, and nothing re-checks it since.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p build
+TEST_SOURCES=$(bash scripts/swift-sources.sh Tests)
 swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   -Lbuild -llex_engine \
   generated/lex_engine.swift \
@@ -280,11 +320,74 @@ swiftc -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
   Sources/EngineInitFailure.swift \
   Sources/EngineContainer.swift \
   Sources/Services/EngineControlService.swift \
-  Tests/TestRunner.swift Tests/TestRomajiFFI.swift Tests/TestDictFFI.swift Tests/TestSessionFFI.swift Tests/TestSnippetTOML.swift \
-  Tests/TestFakes.swift Tests/TestCandidateManager.swift Tests/TestModeController.swift Tests/TestAbcRevertPolicy.swift Tests/TestInputSourceReverter.swift Tests/TestSessionCoordinator.swift Tests/TestDegradedStatus.swift \
+  $TEST_SOURCES \
   -o build/test-runner && build/test-runner
 """
 
+[tasks.compile-swift]
+description = "Compile every file under Sources/ (the app files the test binary never links)"
+depends = ["uniffi-gen"]
+# The compensating gate for `test-swift`'s explicit Sources list (#316). That
+# list is not the bug: `Sources/main.swift` is top-level code and
+# `Tests/TestRunner.swift` is `@main`, and swiftc rejects both in one module,
+# so — given this single-module build — `main.swift` specifically cannot join
+# the test binary, and the UI files would drag IMKit and SwiftUI into a
+# headless runner. (The nine Sources files the tests actually drive *are*
+# linked in; see `test-swift`.) The bug was
+# that nothing covered the remainder — 13 of 22 files under Sources/,
+# `LeximeInputController.swift` among them, were type-checked by no gate at
+# all, so a Swift compile error in any of them merged green.
+#
+# It compiles the same set as `build`, from the same definition, at the same
+# deployment target, for the same two arches. That is the whole design:
+# anything the gate derives independently is something it can be wrong about.
+# Two such derivations were tried and rejected:
+#   - the host SDK instead of MACOS_MIN — accepts post-13 APIs the real build
+#     rejects, on exactly the SwiftUI files this covers (`containerRelative-
+#     Frame` passes at the host default, errors at 13.0);
+#   - `-typecheck` instead of `-c` — Sema only, so it never reaches the SIL
+#     mandatory passes. Missing-return and definite-initialization are compile
+#     errors that `-typecheck` reports as clean (verified both). Since no CI
+#     job runs `mise run build`, this gate *is* the compile for these files;
+#     type-checking them would have left #316's headline case open.
+# So: real codegen, discarded via `-o /dev/null`. Measured 1.7s per arch.
+#
+# Still not the full build — no linking, no signing, no `-O`, and none of
+# `build`'s dict/conn dependencies (which pull a network Mozc fetch). Be
+# precise about what that leaves uncovered: `test-swift` links the engine
+# archive in this same job, so the FFI surface is exercised for real (every
+# generated call runs the uniffi checksum assertions on first use), but it
+# links only the nine Sources files the tests drive. A link-only defect
+# confined to the other thirteen — a duplicate `@_cdecl`, a framework only
+# those files import — is caught by no CI job. `-O`-only failures likewise:
+# `build` compiles at `-O`, this gate at `-Onone`, because `-O` measured
+# 4.4s/arch against 1.7s and buys diagnostics nothing else here needs. `-wmo` compiles the module in one frontend job instead of one per
+# file. Shares `uniffi-gen` with `test-swift`, so the marginal cost is these
+# two swiftc passes alone.
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+# The deployment target is spelled twice: here (via [env]) and in Info.plist,
+# which ships to users. mise can share the first with `build`, but not the
+# second, so assert instead of trusting a comment — a one-sided bump ships a
+# bundle advertising one minimum and a binary enforcing another, and dyld
+# enforces the binary's.
+PLIST_MIN=$(plutil -extract LSMinimumSystemVersion raw Info.plist)
+if [ "$PLIST_MIN" != "$MACOS_MIN" ]; then
+  echo "compile-swift: MACOS_MIN=$MACOS_MIN but Info.plist says $PLIST_MIN" >&2
+  exit 1
+fi
+SWIFT_SOURCES=$(bash scripts/swift-sources.sh Sources)
+for ARCH in arm64 x86_64; do
+  # Named, because a failure on one arch and not the other is otherwise
+  # indistinguishable from a plain compile error to anyone on the other one.
+  echo "compile-swift: $ARCH-apple-macosx$MACOS_MIN"
+  swiftc -c -wmo -target $ARCH-apple-macosx$MACOS_MIN \
+    -Xcc -fmodule-map-file=generated/lex_engineFFI.modulemap \
+    generated/lex_engine.swift $SWIFT_SOURCES -o /dev/null
+done
+echo "compiled $(printf '%s\\n' "$SWIFT_SOURCES" | wc -l | tr -d ' ') files under Sources/ (arm64 + x86_64)"
+"""
 
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"

@@ -39,7 +39,7 @@ cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets -
 |---|---|
 | lint / test-* | 上の基本 verify でカバー済み |
 | accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・reranker・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
-| swift | `mise run test-swift` |
+| swift | `mise run compile-swift && mise run test-swift` |
 | screen + audit | `mise run audit` (CI の screen job [quarantine / build.rs baseline] + audit job を screen-first 順で束ねたもの) |
 | msrv | `cd engine && cargo +<toolchain> check --workspace --locked` (`<toolchain>` は ci.yml の msrv job が指定する toolchain 値をそのまま使う — 正規化・別ソース参照をしない。未導入なら `rustup toolchain install <toolchain>`) |
 | CodeQL / Analyze | ローカル等価なし — CI に委ねる |

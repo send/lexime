@@ -61,6 +61,13 @@ jobs:
               - 'Sources/**'
               - 'Tests/**'
               - 'Info.plist'
+              # Defines which files `compile-swift` gates and `build`
+              # compiles, so an edit to it changes what this job checks. Not
+              # covered by any other filter — `core` names only the two
+              # supply-chain scripts.
+              - 'scripts/swift-sources.sh'
+              # Deliberately no 'mise.toml' here: it is already in `core`, and
+              # this job's `if` ORs `core`, so adding it would be dead config.
 
   # Supply-chain screening. Runs the quarantine / build.rs baseline checks
   # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
@@ -358,5 +365,11 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           install: false
+
+      # Real compile (not just a type-check) of every file under Sources/, at
+      # the app's deployment target, for both arches — the 13 that `test-swift`
+      # never links included (#316). ~3.4s on top of the uniffi-gen prelude the
+      # two steps share.
+      - run: mise run compile-swift
 
       - run: mise run test-swift
