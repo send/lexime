@@ -249,7 +249,47 @@ class LeximeInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
-        coordinator?.deactivate()
+        // The settle below performs the commit `commitComposition` would have,
+        // so the ESC flag has to be consumed with it. Its contract is "the next
+        // commit is the ESC-caused one"; once we commit, every later reading is
+        // a lie, and a stale `true` fires `revertWhenAbcAppears` — which has no
+        // provenance check — yanking a deliberate ABC switch back to Japanese.
+        //
+        // Consumed but the revert is NOT armed. `revertToLeximeIfEscapeRaced`
+        // is a global TIS action and focus has already left this client: its
+        // watch would overlap macOS restoring the *newly focused* app's input
+        // source and could drag the user into Lexime Japanese in an app where
+        // they never chose it. The genuine-ESC-race residual is still covered,
+        // at lower fidelity, by InputSourceMonitor; a spurious flip *into*
+        // Japanese has no net at all. That asymmetry is what decides it.
+        // Distinguishing "deactivate caused by the ESC input-source flip" from
+        // "deactivate caused by focus moving away" would need a signal IMKit
+        // does not provide.
+        _ = modeController.takePendingEscapeCommit()
+        guard let coordinator else {
+            super.deactivateServer(sender)
+            return
+        }
+        // `super.deactivateServer` is the other half of the same teardown, so it
+        // has to wait on the same condition. If the coordinator defers (a client
+        // callback re-entered us from inside `insertText`), deactivating the
+        // host here would strand the rest of the response: its `.setMarkedText`
+        // would land on an already torn-down client.
+        // Captured **strongly** on purpose. This runs after this override has
+        // returned, and the focus loss that triggered it is exactly when IMKit
+        // may release the controller — a weak capture would go nil and silently
+        // skip the superclass teardown this deferral exists to order. The cycle
+        // it creates is bounded: the coordinator clears `pendingTeardown`
+        // before invoking it, and the delivery it waits on is a synchronous
+        // main-thread loop that always unwinds.
+        coordinator.deactivate(client: sender as? IMKTextInput) {
+            self.finishDeactivateServer(sender)
+        }
+    }
+
+    /// The superclass half of `deactivateServer`, split out so it can run after
+    /// a deferred coordinator teardown (`super` cannot be called from a closure).
+    private func finishDeactivateServer(_ sender: Any!) {
         super.deactivateServer(sender)
     }
 

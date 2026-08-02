@@ -283,7 +283,9 @@ func testSessionCoordinator() {
         }
     }
 
-    // deactivate: invalidates candidates, hides panel, clears display
+    // deactivate: invalidates candidates, hides panel, clears display.
+    // Nothing is composing here, so this covers the no-settle branch only —
+    // the settling branch is covered by the block below.
     do {
         let session = FakeLexSession()
         session.handleKeyResponses = [
@@ -293,10 +295,380 @@ func testSessionCoordinator() {
         let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
         _ = coordinator.handleKey(.text(text: "y", shift: false), client: FakeIMKClient())
         let genBefore = manager.generation
-        coordinator.deactivate()
+        coordinator.deactivate(client: nil)
         assertTrue(manager.generation == genBefore &+ 1,
                    "deactivate invalidates generation")
         assertTrue(panel.hideCount >= 1, "deactivate hides panel")
         assertTrue(coordinator.currentDisplay == nil, "deactivate clears display")
+    }
+
+    // #298: the same teardown, but on the settling branch — the one the
+    // no-settle block above cannot reach. The generation must be bumped
+    // *before* the settle applies its events: a deferred panel show queued by
+    // the last keystroke is guarded by `generation`, not by the epoch
+    // watermark, so if the settle ran first that block could still re-show the
+    // shared panel for a composition being committed right now.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .setMarkedText(text: "にほんご"),
+                .showCandidates(surfaces: ["日本語", "二本語"], selected: 0),
+            ])
+        ]
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
+        ]
+        let panel = FakePanel()
+        let client = FakeIMKClient()
+        let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        session.isComposingValue = true
+        let genBefore = manager.generation
+
+        coordinator.deactivate(client: client)
+
+        assertTrue(manager.generation == genBefore &+ 1,
+                   "the settling branch invalidates the generation too")
+        assertTrue(panel.hideCount >= 1, "the settling branch hides the panel")
+        assertEqual(session.settleUnconfirmedCalls, 1, "and still settles the session")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "and still delivers what the host was showing")
+        assertTrue(coordinator.currentDisplay == nil, "and still clears the display")
+    }
+
+    // #298: deactivate settles a live composition instead of orphaning it.
+    // Measured 2026-08-01 — IMKit delivers deactivateServer with the session
+    // still composing and, in most focus changes, never sends
+    // commitComposition at all. Clearing the display while the session keeps
+    // composing is the #293 leak shape reached from the Swift side.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "にほんご",
+                    "precondition: composing with a display")
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1,
+                    "deactivate settles through the focus-loss path")
+        assertEqual(session.commitCalls, 0,
+                    "and never through the learning commit path")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "the text the host was showing reaches the client that had focus")
+        assertTrue(coordinator.currentDisplay == nil,
+                   "deactivate still clears the display")
+    }
+
+    // #298: `deactivateServer(_ sender: Any!)` is untyped, so the cast to
+    // IMKTextInput is defensive — this is not an observed IMKit behaviour, and
+    // `handle(_:client:)` failing the same cast would mean the IME cannot type
+    // at all. `lastClient` going nil (it is weak) is the reachable case. Either
+    // way the composition must still be settled rather than orphaned.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "にほんご")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: nil)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "settles through lastClient")
+        assertTrue(client.insertCalls.contains { $0.text == "にほんご" },
+                   "the text the host was showing reaches the client it was typed into")
+    }
+
+    // PR315 Codex R3: the engine keeps no copy of what the host is showing —
+    // it emits marked text but cannot see whether the response reached the
+    // screen. So the coordinator must hand it `currentDisplay`, the value
+    // written next to the setMarkedText call, and not let the engine guess.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "にほんご")])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        _ = coordinator.handleKey(.text(text: "o", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "にほんご", "precondition")
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.settleUnconfirmedDisplayed.count, 1, "settled once")
+        assertEqual(session.settleUnconfirmedDisplayed[0], "にほんご",
+                    "the engine is told exactly what we put on screen")
+    }
+
+    // PR315 Codex R3/R6: a client callback can re-enter deactivateServer from
+    // inside `insertText`, i.e. between an auto-commit's `.commit` and its
+    // `.setMarkedText`. The epoch watermark cannot help — it only rejects
+    // separately *queued* responses. Teardown is deferred to the end of the
+    // delivery so the response describes one complete transition; settling
+    // mid-way acted on a state that never existed.
+    do {
+        let session = FakeLexSession()
+        // An auto-commit shape: insertText first, then more events after it.
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+                .showCandidates(surfaces: ["は", "歯"], selected: 0),
+            ])
+        ]
+        let panel = FakePanel()
+        let (coordinator, _) = makeCoordinator(session: session, panel: panel)
+        let client = FakeIMKClient()
+        // Re-enter deactivate from inside the client's insertText, the way a
+        // host that changes focus synchronously would.
+        client.onInsertText = { [weak coordinator] in
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil)
+        }
+
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled, once")
+        assertTrue(client.markedCalls.contains { $0.text == "は" },
+                   "the response finishes describing its transition before teardown runs")
+        assertTrue(coordinator.currentDisplay == nil,
+                   "and no display is left behind an Idle session")
+    }
+
+    // PR315 Codex R4/R6: the settle's input is `currentDisplay`, so a reentrant
+    // teardown must see neither the *stale* pre-commit composition (R4 —
+    // duplicates the text being inserted) nor *nothing* (R6 — loses the
+    // remainder). Deferring teardown to the end of the delivery gives it
+    // exactly the remainder the completed response left marked.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        // Put the full pre-commit composition on screen first.
+        session.handleKeyResponses.insert(
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: "きょうは")]), at: 0)
+        _ = coordinator.handleKey(.text(text: "a", shift: false), client: client)
+        assertEqual(coordinator.currentDisplay, "きょうは", "precondition: composition on screen")
+
+        client.onInsertText = { [weak coordinator] in
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil)
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "the reentrant deactivate settled")
+        assertEqual(session.settleUnconfirmedDisplayed[0], "は",
+                    "the settle sees the remainder the completed response left marked")
+        assertTrue(!client.insertCalls.contains { $0.text == "きょうは" },
+                   "never the stale pre-commit composition (that would duplicate)")
+    }
+
+    // PR315 Codex R7: the caller's half of the teardown must keep the same
+    // order as the coordinator's. `LeximeInputController.deactivateServer` runs
+    // `super.deactivateServer` through this completion — if it fired before the
+    // deferred teardown, the host would be deactivated while the response still
+    // had a `.setMarkedText` to apply, and that call would land on a torn-down
+    // client. The controller cannot be unit-tested here (it needs IMKit), so
+    // the ordering is expressed and pinned at this seam instead.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "は")])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var order: [String] = []
+
+        client.onInsertText = { [weak coordinator] in
+            guard order.isEmpty else { return }   // only the first insert re-enters
+            session.isComposingValue = true
+            coordinator?.deactivate(client: nil) { order.append("callerHalf") }
+            order.append("deactivateReturned")
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(order, ["deactivateReturned", "callerHalf"],
+                    "the caller's half runs after the deferred teardown, not before it")
+        assertTrue(client.markedCalls.contains { $0.text == "は" },
+                   "and the remainder was still marked while the client was live")
+    }
+
+    // Not deferred: with no delivery in flight the completion runs inline, so
+    // the caller's ordering is unchanged on the ordinary path.
+    do {
+        let session = FakeLexSession()
+        let (coordinator, _) = makeCoordinator(session: session)
+        var ran = false
+        let deferred = coordinator.deactivate(client: nil) { ran = true }
+        assertTrue(!deferred, "no delivery in flight → not deferred")
+        assertTrue(ran, "completion ran inline")
+    }
+
+    // PR315 Codex R9/R10: the deferred completion carries the caller's half of
+    // the teardown (`super.deactivateServer`), so it must survive until it runs
+    // — the controller captures itself strongly for that reason. ARC lifetime
+    // is not reachable from here; what is pinned is the coordinator's side:
+    // **one focus loss performs one teardown**, however many times it re-enters.
+    //
+    // The settle inside the teardown emits its own `insertText`, so re-entry can
+    // arrive while a response is being delivered *and* while the teardown is
+    // running. An earlier version of this test left the fake non-composing, so
+    // the settle produced no commit and the second window was never exercised —
+    // which is exactly how a double `super.deactivateServer` survived.
+    do {
+        let session = FakeLexSession()
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .setMarkedText(text: "は"),
+            ])
+        ]
+        // Composing, so the teardown's settle really does emit a commit —
+        // and therefore a second `insertText`, and a second chance to re-enter.
+        session.isComposingValue = true
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.commit(text: "は")])
+        ]
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var completions = 0
+
+        client.onInsertText = { [weak coordinator] in
+            // Re-enter on *every* client call — the delivery's and the
+            // settle's — the way a host that changes focus synchronously would.
+            coordinator?.deactivate(client: nil) { completions += 1 }
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertEqual(completions, 1,
+                    "one focus loss runs the caller's teardown once, not once per re-entry")
+        assertEqual(session.settleUnconfirmedCalls, 1,
+                    "and settles the session once")
+    }
+
+    // #298: coalescing re-entrant teardowns must not lose the continuation.
+    // Two re-entries land in the same pending slot; only the first carries a
+    // completion (`LeximeInputController` always passes one, but the slot must
+    // not depend on that). Overwriting the slot wholesale drops it and
+    // `super.deactivateServer` never runs for this focus loss — the R7/R9
+    // failure reached from the caller side instead of the layering side.
+    do {
+        let session = FakeLexSession()
+        // Two `.commit`s in one response: two `insertText` calls, so two
+        // re-entries inside a single `applyEvents` — both queue into the slot
+        // before the delivery ends and the teardown is dispatched.
+        session.handleKeyResponses = [
+            LexKeyResponse(consumed: true, events: [
+                .commit(text: "今日"),
+                .commit(text: "は"),
+                .setMarkedText(text: "ね"),
+            ])
+        ]
+        session.isComposingValue = true
+        let (coordinator, _) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+        var ran = false
+        var reentries = 0
+
+        client.onInsertText = { [weak coordinator] in
+            reentries += 1
+            if reentries == 1 {
+                coordinator?.deactivate(client: nil) { ran = true }
+            } else {
+                // A later re-entry with no continuation of its own.
+                coordinator?.deactivate(client: nil)
+            }
+        }
+        _ = coordinator.handleKey(.text(text: "h", shift: false), client: client)
+
+        assertTrue(reentries >= 2, "the fixture must produce a second re-entry")
+        assertTrue(ran, "a completion-less re-entry must not displace the queued completion")
+    }
+
+    // #298: nothing composing → nothing to settle. An Idle `commit()` is
+    // harmless (commit_current_state early-returns with no events), so this
+    // gate is an optimization, not a host-correctness guard — pinned here so a
+    // future change that needs to settle unconditionally is not argued down by
+    // a justification that does not hold.
+    do {
+        let session = FakeLexSession()
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        session.isComposingValue = false
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 0, "no settle when not composing")
+        assertTrue(client.insertCalls.isEmpty, "no text inserted when not composing")
+    }
+
+    // #298: no reachable client at all — IMKit hands a non-IMKTextInput sender
+    // *and* the weak lastClient has gone. Settling is still mandatory: leaving
+    // the session composing while the display is cleared is the leak shape, and
+    // "there was nowhere to put the text" does not make it acceptable. Delivery
+    // is what degrades here, not settlement.
+    do {
+        let session = FakeLexSession()
+        let (coordinator, _) = makeCoordinator(session: session)
+        // No handleKey → lastClient was never set, so both sources are nil.
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: nil)
+
+        // Note: asserting !session.isComposingValue here would be tautological
+        // — FakeLexSession.commit() sets it. What actually pins the invariant is
+        // clearDisplay()'s assert, which is live in this (-Onone) build and
+        // would trap if the display were cleared over a composing session.
+        assertEqual(session.settleUnconfirmedCalls, 1,
+                    "settles the session even with no client to deliver to")
+        assertTrue(coordinator.currentDisplay == nil, "display cleared")
+    }
+
+    // #298: `isComposing()` also covers snippet browse, where the engine's
+    // commit cancels rather than commits (no .commit event). The invariant is
+    // that the session reaches Idle — not that text is preserved, which holds
+    // for the composing case only.
+    do {
+        let session = FakeLexSession()
+        session.settleUnconfirmedResponses = [
+            LexKeyResponse(consumed: true, events: [.setMarkedText(text: ""), .hideCandidates])
+        ]
+        let client = FakeIMKClient()
+        let (coordinator, _) = makeCoordinator(session: session)
+        session.isComposingValue = true
+
+        coordinator.deactivate(client: client)
+
+        assertEqual(session.settleUnconfirmedCalls, 1, "snippet browse is settled too")
+        assertTrue(client.insertCalls.isEmpty, "a cancelled browse inserts nothing")
+        assertTrue(coordinator.currentDisplay == nil, "display cleared")
     }
 }

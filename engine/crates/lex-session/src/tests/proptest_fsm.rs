@@ -46,6 +46,10 @@ enum Action {
     /// IMKit `commitComposition` — the session's other public entry point.
     /// Reached on focus loss and after Escape, so it can land in any state.
     CommitComposition,
+    /// The involuntary end: the host tears its marked session down without the
+    /// user confirming anything (IMKit `deactivateServer`). Like
+    /// `CommitComposition` it can land in any state.
+    SettleUnconfirmed,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,7 @@ fn arb_action_with_snippets() -> impl Strategy<Value = Action> {
         1 => Just(Action::SnippetTrigger),
         1 => any::<bool>().prop_map(|empty| Action::SetSnippetStore { empty }),
         1 => Just(Action::CommitComposition),
+        1 => Just(Action::SettleUnconfirmed),
     ]
 }
 
@@ -250,6 +255,7 @@ fn execute_action(
     session: &mut InputSession,
     action: &Action,
     dict: &dyn Dictionary,
+    displayed: &str,
 ) -> Option<crate::KeyResponse> {
     match action {
         Action::TypeRomaji(ch) => Some(session.handle_key(KeyEvent::text(&ch.to_string()))),
@@ -288,6 +294,7 @@ fn execute_action(
             None
         }
         Action::CommitComposition => Some(session.commit()),
+        Action::SettleUnconfirmed => Some(session.settle_unconfirmed(displayed)),
     }
 }
 
@@ -302,6 +309,7 @@ fn assert_invariants(
     prev: PrevState,
     host: &HostMarked,
     store_empty: bool,
+    was_showing: &str,
 ) {
     // 1. Idle → composed_string is empty, and the host has been taken out of
     //    composition too (a live marked string with no session behind it would
@@ -528,6 +536,44 @@ fn assert_invariants(
             }
         }
     }
+
+    // 10. An involuntary settle commits exactly what the host was showing.
+    //
+    //     `HostMarked` is the model of what is on screen, and the driver feeds
+    //     it straight back in as `settle_unconfirmed`'s argument — the same
+    //     thing `SessionCoordinator` passes from `currentDisplay`. Whatever the
+    //     host had is what lands, and nothing else is invented.
+    //
+    //     What it does and does not discriminate. It kills any engine-side
+    //     *re-derivation* of the displayed string: inferred from selection
+    //     state (PR315 Codex R1) it diverges here as soon as a Backspace
+    //     re-renders the reading, and re-flushing pending romaji shows up as a
+    //     commit the host never had. It does **not** reach the second failure
+    //     (R2, recording the string at emission): this driver applies every
+    //     response to `HostMarked` unconditionally, so emission and delivery
+    //     are equal by construction — exactly the assumption R2 broke, since a
+    //     `receive_candidates` response is queued to the UI thread and can be
+    //     dropped there. What rules that one out is the argument being an
+    //     *input* at all, not this assertion.
+    //
+    //     Generated only by `arb_action_with_snippets`, so
+    //     `session_invariants_with_snippets` is the proptest that exercises it.
+    //     Composing only: a snippet browse *cancels* (§状態遷移) — there is
+    //     nothing confirmed to keep — so it discards what was on screen by
+    //     design, exactly as `commit` does for the same state.
+    if matches!(action, Action::SettleUnconfirmed) && prev == PrevState::Composing {
+        assert_eq!(
+            resp.commit.as_deref().unwrap_or(""),
+            was_showing,
+            "settle must commit exactly what the host was showing, after {:?}",
+            action,
+        );
+        assert!(
+            !session.is_composing(),
+            "settle must reach Idle, after {:?}",
+            action,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -559,9 +605,18 @@ fn run_sequence(actions: &[Action], defer_candidates: bool) {
         if let Action::SetSnippetStore { empty } = action {
             store_empty = *empty;
         }
-        if let Some(resp) = execute_action(&mut session, action, &*dict) {
+        let displayed = host.0.clone().unwrap_or_default();
+        if let Some(resp) = execute_action(&mut session, action, &*dict, &displayed) {
             host.apply(&resp);
-            assert_invariants(&session, &resp, action, prev, &host, store_empty);
+            assert_invariants(
+                &session,
+                &resp,
+                action,
+                prev,
+                &host,
+                store_empty,
+                &displayed,
+            );
         }
     }
 }

@@ -659,3 +659,189 @@ fn test_forward_delete_no_history_no_record() {
     let records = session.take_history_records();
     assert!(records.is_empty());
 }
+
+/// Type `input` and return the marked text the final response emitted — i.e.
+/// exactly what the host is showing afterwards.
+fn type_string_returning_marked(session: &mut InputSession, input: &str) -> String {
+    let mut shown = String::new();
+    for ch in input.chars() {
+        if let Some(m) = session
+            .handle_key(KeyEvent::Text {
+                text: ch.to_string(),
+                shift: false,
+            })
+            .marked
+        {
+            shown = m.text;
+        }
+    }
+    shown
+}
+
+// --- settle_unconfirmed (#298 / #309 / #310) ---
+//
+// The involuntary counterpart to `commit`. IMKit delivers `deactivateServer`
+// mid-composition without reliably sending `commitComposition` first, so the
+// session has to settle — but an app switch is not acceptance, and settling
+// through `commit()` would both insert a conversion the user never saw and
+// train top-1 on it.
+
+#[test]
+fn settle_unconfirmed_commits_the_reading_when_the_user_never_navigated() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    // The composing response emitted `display_kana()`, so that is what the
+    // host is showing even though candidates exist.
+    let shown = type_string_returning_marked(&mut session, "kyou");
+    assert!(!session.comp().candidates.is_empty());
+    // The test rests on the reading and top-1 differing. If a fixture change
+    // ever made them equal, the assertion below would decay into `f(x) == x`
+    // while keeping its name.
+    assert_ne!(
+        shown,
+        session.comp().candidates.surfaces[0],
+        "fixture must keep the reading distinct from top-1, or this test proves nothing",
+    );
+
+    let resp = session.settle_unconfirmed(&shown);
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "settle must commit what the host was showing, not a candidate surface",
+    );
+    assert!(!session.is_composing(), "settle reaches Idle");
+}
+
+#[test]
+fn settle_unconfirmed_commits_the_surface_once_the_user_has_navigated() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    let shown = session
+        .handle_key(KeyEvent::Space)
+        .marked
+        .expect("navigation re-renders the marked text")
+        .text;
+
+    let resp = session.settle_unconfirmed(&shown);
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "after navigating, the surface is what the host shows",
+    );
+}
+
+#[test]
+fn settle_unconfirmed_follows_the_display_back_to_the_reading() {
+    // PR315 Codex R2: navigating and then editing re-renders the reading. A
+    // rule that inferred "surface" from a flag set at navigation went stale
+    // here and committed a candidate the host was no longer showing.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    type_string(&mut session, "kyou");
+    session.handle_key(KeyEvent::Space);
+    let shown = session
+        .handle_key(KeyEvent::Backspace)
+        .marked
+        .expect("backspace re-renders the marked text")
+        .text;
+
+    let resp = session.settle_unconfirmed(&shown);
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "editing after navigating puts the reading back on screen",
+    );
+}
+
+#[test]
+fn settle_unconfirmed_preserves_pending_romaji_exactly() {
+    // PR315 Codex R2: a trailing `n` is displayed as `n`. Flushing before
+    // settling converted it to `ん` and committed text never shown.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let shown = type_string_returning_marked(&mut session, "kyoun");
+    assert!(
+        shown.ends_with('n'),
+        "precondition: pending romaji is on screen, got {shown:?}",
+    );
+
+    let resp = session.settle_unconfirmed(&shown);
+
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some(shown.as_str()),
+        "settle must not force pending romaji the host never rendered",
+    );
+}
+
+#[test]
+fn settle_unconfirmed_records_no_history() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    let shown = type_string_returning_marked(&mut session, "kyou");
+    session.settle_unconfirmed(&shown);
+
+    assert!(
+        session.take_history_records().is_empty(),
+        "an app switch is not acceptance — it must not feed top-1",
+    );
+}
+
+#[test]
+fn settle_unconfirmed_records_no_history_even_after_navigating() {
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    let shown = session
+        .handle_key(KeyEvent::Space)
+        .marked
+        .map(|m| m.text)
+        .unwrap_or_default();
+    session.settle_unconfirmed(&shown);
+
+    assert!(
+        session.take_history_records().is_empty(),
+        "navigating is not confirming either — only an explicit commit learns",
+    );
+}
+
+#[test]
+fn commit_still_learns_and_resolves_the_surface() {
+    // The voluntary path is deliberately unchanged: Enter converts and learns.
+    let dict = make_test_dict();
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    type_string(&mut session, "kyou");
+    let surface = session.comp().candidates.surfaces[0].clone();
+    let resp = session.commit();
+
+    assert_eq!(resp.commit.as_deref(), Some(surface.as_str()));
+    assert!(!session.take_history_records().is_empty());
+}
+
+#[test]
+fn settle_unconfirmed_on_idle_is_a_no_op() {
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let resp = session.settle_unconfirmed("");
+
+    assert!(
+        resp.commit.is_none(),
+        "nothing composing → nothing to commit"
+    );
+    assert!(!session.is_composing());
+}

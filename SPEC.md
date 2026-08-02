@@ -155,7 +155,8 @@ UniFFI proc-macro で Swift バインディングを自動生成。`generated/le
 | メソッド | 説明 |
 |---|---|
 | `handle_key(event)` | キー入力処理（`LexKeyEvent`）→ `LexKeyResponse` |
-| `commit()` | 現在の入力を確定 → `LexKeyResponse` |
+| `commit()` | 現在の入力を確定（選択候補に解決 + 学習記録）→ `LexKeyResponse` |
+| `settle_unconfirmed(displayed)` | 非自発的な composition の終了（フォーカス喪失等）。**呼び出し側が渡した表示中テキストを確定し、学習しない** → `LexKeyResponse`（§不変条件） |
 | `is_composing()` | 入力中かどうか |
 | `set_defer_candidates(enabled)` | 非同期候補生成の有効化 |
 | `set_conversion_mode(mode)` | 変換モード切替（LexConversionMode enum） |
@@ -237,11 +238,28 @@ proptest の invariant 3 / 3b で固定している。
 
 `fix/snippet-enter-leak` (#293) 由来。Chromium/Electron は marked text の有無で `KeyboardEvent.isComposing` を決めるため、**session が composing のまま host の marked text が消えると、確定キーが IME に消費されると同時に web ページにも届く**（チャットアプリなら送信されてしまう）。したがって:
 
-- **composing を続ける response は、host の marked text を残さなければならない**。host が marked text を失う経路は 3 つあり、いずれも session 全体の不変条件（呼び出し箇所ごとの約束ではない）なので、`InputSession::debug_assert_response_contract` が response を返す 3 つの公開入口（`handle_key` / `commit` / `receive_candidates`）でまとめて検査する: ①空の marked text を明示的に出す ②`commit` を出して marked text を出し直さない（`insertText` も marked セッションを終わらせ、`marked: None` は「そのまま」の意味なので誰も開き直さない）③空の `commit`（②の何も挿入しない版）
+- **composing を続ける response は、host の marked text を残さなければならない**。host が marked text を失う経路は 3 つあり、いずれも session 全体の不変条件（呼び出し箇所ごとの約束ではない）なので、`InputSession::debug_assert_response_contract` が response を返す 4 つの公開入口（`handle_key` / `commit` / `settle_unconfirmed` / `receive_candidates`）でまとめて検査する: ①空の marked text を明示的に出す ②`commit` を出して marked text を出し直さない（`insertText` も marked セッションを終わらせ、`marked: None` は「そのまま」の意味なので誰も開き直さない）③空の `commit`（②の何も挿入しない版）
 - **検査の範囲**: 上記は per-response で見える形だけ。「数 response 後にまだ composing か」は `marked: None` が前の値を引き継ぐため累積的で、proptest 側の `HostMarked` モデルが担当する。また `debug_assert` なので出荷ビルド（`--release`）では落ちる — 構造的保証は下の各条項が担い、これは回帰検出器
 - snippet 状態のインライン表示は**常に非空**。フィルタが空のときは選択中スニペットの key を表示する。key が空になり得ないことは `SnippetStore::new` が構造的に保証し、body が空に展開されるエントリは `prefix_search` が落とす（`$date` 系は時刻依存なので、構築時の判定は陳腐化しうる。落とされた key は `LexSnippetStore::unusable_keys()` で取得でき、Swift 側が再読み込み時に報告する。engine の `tracing` 出力は出荷ビルドに乗らないので、診断はログではなく FFI 経由で返す）。提示できるエントリが 0 件のときは snippet 状態に入らない
 - ブラウズは開始時の store スナップショットに対するトランザクション。ブラウズ中の `snippetsDidReload` は進行中のピッカーに影響しない。ただし空になった store でトリガーを再度押すとブラウズは畳まれる（提示できるものが無いため）
-- **未モデル**: `SessionCoordinator.resetDisplay()` / `deactivate()` は session に触れずに `currentDisplay` を消すため、`activateServer` / `deactivateServer` を挟むと同じ desync が起こり得る。Rust 側のテストからは到達できない
+- **フォーカス喪失時の settle**（#298。以前は「未モデル」として保留していたが、実測の結果**到達可能**だった）: `deactivateServer` はホストが marked セッションを畳むことを意味するので、session を composing のまま残してはならない。IMKit は先に `commitComposition` を送るとは限らない（2026-08-01 実測: 未確定のままフォーカスを移す操作で `deactivateServer` が composing のまま届き、その大半で `commitComposition` は最後まで来なかった。指標は `activateServer` 時点で composing が残っていた回数で、同等の操作列で修正前 4 回 → 修正後 0 回）。したがって **settle と表示クリアは 1 つの teardown** として `SessionCoordinator.deactivate(client:)` が担う — 分かれていたから乖離した。（この teardown は再入時に delivery の完了まで**遅延**し得るが、遅延しても 2 つは必ず同じ teardown の中で連続して走る。下の「再入するホストへの防御」を参照）
+  - **settle は無条件、delivery は best-effort**。テキストを挿入する先（`lastClient`、無ければ IMKit が渡す sender）が無くても、session を composing のまま残す理由にはならない。`settle_unconfirmed()` は挿入先の有無に関係なく状態を Idle にする（Composing は確定して reset、Snippet ブラウズは cancel）
+  - **settle は `commit()` ではなく `settle_unconfirmed()`**。フォーカス喪失は受容ではないので、自発的 commit の 2 つの副作用を持ち込んではならない: ①選択候補への解決 — 入力中のマークドテキストは navigate するまで**読み**なので、`commit()` で確定するとアプリを切り替えただけでユーザーが見ていない変換が文書に入る ②学習の記録 — 非自発的な操作を受容として扱うと top-1 が非シグナルで訓練され、1発目精度が劣化する。`settle_unconfirmed()` は**表示していたものをそのまま確定**し、履歴を書かない。**「書かない」が最終解答かは未決（#310 で追跡）**: navigate 済みの状態でフォーカスを失うと、ユーザーが選んだサーフェスが文書に入る一方で学習は残らないため、同じ読みは次回も同じ順位から始まる。現状は「非自発的操作で top-1 を訓練しない」側に倒した安全側の既定であって、測定で裏を取った選択ではない
+  - **「表示していたもの」は engine が持たない。呼び出し側が渡す**。engine は marked text を *emit* するが、それが画面に届いたかは FFI 境界の向こう・別スレッドで決まる（`receive_candidates` は worker で走り、その response は UI スレッドにキューされてそこで落ち得る）。engine 内にコピーを置くと**観測できない状態の影**になる。実際 2 回失敗した: ①選択状態から推論 → 再描画で陳腐化 ②emit 時点で記録 → 配送前に先走る。`SessionCoordinator.currentDisplay` は `setMarkedText` 呼び出しと同じ場所で書かれるので、これが正解。engine は session の意味論（学習せず確定、Idle 復帰）だけを持ち、表示は入力として受け取る
+  - settle は渡された文字列を**そのまま**確定する — prefix の再結合も `flush()` も行わない（pending の `n` を `ん` に変えると画面に無かった文字を入れることになる）。proptest invariant 10 が `HostMarked` モデルの値をそのまま渡して「表示していたものと確定されたものが一致する」ことを固定する（`Action::SettleUnconfirmed` を持つのは `arb_action_with_snippets` だけなので、実際に走るのは `session_invariants_with_snippets`）。**この invariant が潰せるのは engine 側での「再導出」まで** — 選択状態からの推論や `flush()` の再適用は model 値とずれて落ちる。「emit 時点で記録」は潰せない: driver は全 response を無条件に `HostMarked` へ適用するので emit と配送が構造上一致してしまい、それこそが実機で崩れる前提だからである。そちらを塞いでいるのは「引数として受け取る」という形そのもの
+  - **再入するホストへの防御**: client コールバック（`insertText`）が同期的に `deactivateServer` を再入し得る。epoch watermark は*別途キューされた* response しか弾けないので、実行中の delivery には効かない。
+    - **response は 1 つの host 遷移の不可分な記述**である。auto-commit の `.commit` + `.setMarkedText` は「marked を A から B へ移す」1 手であり、両方揃って初めて host は一貫した状態になる。その途中（`insertText` の中）で settle すると、engine には remainder があり host には prefix だけが渡った、**存在しなかった状態**に対して確定することになる
+    - したがって **teardown は delivery の完了まで遅延する**（`SessionCoordinator.isApplyingEvents` / `pendingTeardown`）。途中で気づいて残りを捨てる方式は、remainder が挿入も再 marked もされずに消える
+    - **teardown は 2 層にまたがる**（coordinator の settle/表示/パネル と、controller の `super.deactivateServer`）。遅延は**両方**に効かなければならない — coordinator 側だけ遅らせると、残りの `.setMarkedText` が既に畳まれた host に届いて落ちる。`deactivate(client:completion:)` の completion が controller 側の後半を同じ順序で走らせる（completion は強参照で保持する: フォーカス喪失は IMKit が controller を解放し得るタイミングそのもので、weak だと遅延の目的である後半が黙って飛ぶ）
+    - **1 回のフォーカス喪失 = 1 回の teardown**。再入は「予約済み/実行中の teardown」に畳み込む（`isApplyingEvents` / `isTearingDown` / `pendingTeardown`）。窓は 2 つある — response の delivery 中と、**teardown 自身の settle が出す `insertText` の中** — ので、片方だけ塞ぐと `super.deactivateServer` が 1 回のフォーカス喪失で 2 回走る。畳み込みは completion を落とさない: continuation を持たない再入が既に予約済みのものを上書きすると、その後半（`super.deactivateServer`）が黙って消える。slot は最初の非 nil を残す（呼び出し側が必ず渡す、という慣習に依存させない）
+    - あわせて `applyEvents` は **client を呼ぶ前に `currentDisplay` を更新する**（`.setMarkedText` は元からこの順、`.commit` を揃えた）。`insertText` の中でホストが `composedString(_:)` / `originalString(_:)` を同期的に読み返し、これらは `currentDisplay` で答えるため、確定前の composition を残すと「今まさに挿入した文字列がまだ composing」と報告することになる（teardown 自体はもう遅延されるので、この窓を見るのは settle ではなくホスト側の読み手）
+  - **未モデルのまま残る半分（`activateServer` 側、未解決）**: 上記が塞ぐのは `deactivateServer` が届く経路だけ。IMKit がそれを**飛ばす**と session は composing のまま `resetDisplay()` に到達し、ここは設計上 settle しない（確定すると前の文書のテキストが、いまフォーカスを得たクライアントに入る）。`clearDisplay()` の `assert` が唯一の検出だが `-O` で消えるので、**出荷ビルドにはこの経路の構造も検出も無い**。派生する具体的な損失が 1 つある: この経路を通ると `currentDisplay` だけが nil になり session は composing のまま残るので、次に本物の `deactivateServer` が来たとき settle は「表示していたもの」を空と受け取り、**何も確定せずに Idle へ戻す**（`commit_displayed` は空文字列に対して commit を出さない）。ユーザーが打った文字列が痕跡なく消える。空を確定するのは設計通り（画面に無かったものを入れない）で、直すべきはこの gap の側
+
+- **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§各状態でのキー操作 の composing 表: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:
+  - ネイティブホスト（TextEdit 等）: こちらの `insertText` が効くので、画面で かな を見ていたユーザーの文書に**選んでいないサーフェス**が入る
+  - Chromium / Electron 系: blur で**自前の composition を確定する**ため、残るのは表示していた読みで、こちらの `insertText` は視覚的に効かない
+
+  2026-08-01 **実測**（`commit()` で settle していた時点のビルド、`deactivateServer` 経路で計測）: こちらは 8/8 で選択サーフェスを commit していたが、Slack の文書に残ったのは読みだった。`insertText` が視覚的に効かない以上、settle の追加でこれらのホストの見え方は変わっていない（settle 以前は commit 自体を発行していなかった）。その後 settle は `settle_unconfirmed()` に置き換わり、表示していた読みをそのまま確定するようになった — したがって**この経路に限れば両系統のホストの結果は一致する**。これは上の実測から導いた**演繹であって再測定ではない**（ネイティブ側が読みを入れることは engine 側のテストで固定済み、Chromium 側は元から `insertText` が視覚的に効かない）
 
 **キーリマップ（settings.toml `[keymap]`）**
 
@@ -458,7 +476,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 
 ### コミットログ（診断用）
 
-変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
+変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開、フォーカス喪失時の `settle_unconfirmed`）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
 
 ## ユーザー辞書
 

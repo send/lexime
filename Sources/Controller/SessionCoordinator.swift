@@ -32,6 +32,26 @@ final class SessionCoordinator {
     /// applied is a re-ordered delivery and must be dropped.
     private(set) var highestAppliedEpoch: UInt64 = 0
 
+    /// Whether an `applyEvents` loop is currently running, and a teardown that
+    /// arrived while it was.
+    ///
+    /// A response is one atomic description of a host transition — an
+    /// auto-commit's `.commit` + `.setMarkedText` pair moves the host from one
+    /// marked string to the next, and only both together leave it consistent.
+    /// A client callback can re-enter `deactivateServer` from inside
+    /// `insertText`, i.e. *between* those two events. Settling there acts on a
+    /// half-applied transition: the engine still holds the remainder, the host
+    /// has been given the prefix, and neither the display nor the session
+    /// describes a state that ever existed.
+    ///
+    /// So the teardown is deferred to the end of the delivery instead of being
+    /// interleaved with it. That is stronger than detecting the interleave and
+    /// abandoning the rest of the response, which was the earlier shape: it
+    /// left the remainder neither inserted nor re-marked.
+    private var isApplyingEvents = false
+    private var isTearingDown = false
+    private var pendingTeardown: (client: IMKTextInput?, completion: (() -> Void)?)?
+
     init(factory: (LexSessionEvents) -> LexSessionProtocol,
          candidateManager: CandidateManager,
          onSwitchToAbc: @escaping () -> Void) {
@@ -77,20 +97,161 @@ final class SessionCoordinator {
 
     func commit(client: IMKTextInput) {
         lastClient = client
-        let resp = session.commit()
+        deliver(session.commit(), to: client)
+    }
+
+    /// Apply a settlement response: raise the epoch watermark, then deliver.
+    ///
+    /// Delivery is best-effort — with no reachable client there is nowhere to
+    /// put the text. Settling is not: the caller has already asked the engine
+    /// to leave the composing state, because a session left composing after its
+    /// display is gone is the #293 leak shape.
+    private func deliver(_ resp: LexKeyResponse, to client: IMKTextInput?) {
+        // Raise the watermark *before* applying. `applyEvents` calls into the
+        // client and the panel; if either ever pumped the run loop, a re-entrant
+        // `applyAsyncResponse` would find `lastClient` still set and be stopped
+        // only by the epoch guard. This ordering is what makes that safe.
         highestAppliedEpoch = max(highestAppliedEpoch, resp.epoch)
-        applyEvents(resp, client: client)
+        if let client {
+            applyEvents(resp, client: client)
+        }
     }
 
     // MARK: - Lifecycle
 
-    func resetDisplay() {
+    /// The one place the display is cleared *out of band* — driven by an IMKit
+    /// lifecycle event rather than by a session response. Both such clears come
+    /// through here so the invariant is checked in the call that performs the
+    /// clear, the way the Rust side checks inside each response producer rather
+    /// than at the next event.
+    ///
+    /// Deliberately not a `didSet` on `currentDisplay`: `applyEvents`
+    /// legitimately nils the display on a `.commit` while the session keeps
+    /// composing, with a later `.setMarkedText` in the same response restoring
+    /// it (SPEC.md § 不変条件 ②). A per-write check would false-fire — the same
+    /// reason Rust checks per *response*, not per event.
+    ///
+    /// What it can actually catch: `deactivate(client:)` cannot trip it —
+    /// settling there is unconditional and `settleUnconfirmed` resets state on
+    /// both its branches (Composing commits and resets, a Snippet browse
+    /// cancels), so the session is Idle regardless of whether the text could be
+    /// delivered. The live path is `resetDisplay()`, which by design does not
+    /// settle: if IMKit skipped the previous `deactivateServer` (see
+    /// `LeximeInputController.activateServer`), the session arrives here still
+    /// composing. Note the assert is compiled out at `-O`, so on that path the
+    /// shipped build has neither structure nor detection — recorded as a known
+    /// gap in SPEC.md § 不変条件 rather than claimed as covered.
+    private func clearDisplay() {
+        assert(!session.isComposing(),
+               "display cleared while the session is still composing (#298)")
         currentDisplay = nil
     }
 
-    func deactivate() {
+    /// Focus is arriving. The display starts empty, but the session must *not*
+    /// be settled here: committing now would insert the previous client's
+    /// pending text into the client that just gained focus — the wrong document.
+    /// `deactivate(client:)` is the only place allowed to settle.
+    func resetDisplay() {
+        clearDisplay()
+    }
+
+    /// Focus is leaving this client. The host tears down its marked-text session
+    /// with it, so ours must not stay composing — that is #293's leak shape
+    /// reached from the Swift side.
+    ///
+    /// IMKit does **not** reliably send `commitComposition` first (measured
+    /// 2026-08-01 by instrumenting the lifecycle boundaries and changing focus
+    /// mid-composition), so settling is this call's job, and it happens in the
+    /// same call that clears the display — splitting the two is what let them
+    /// diverge. Settling is unconditional: whether the text can be *delivered*
+    /// depends on having a client, but leaving the session composing does not
+    /// become acceptable just because there is nowhere to put the text.
+    ///
+    /// It settles through `settleUnconfirmed()`, **not** `commit()`. Focus loss
+    /// is not acceptance, and the engine's voluntary commit does two things
+    /// this must not: it resolves to the selected candidate (so an app switch
+    /// would drop a conversion the user never saw into their document — the
+    /// composing response shows the *reading* until they navigate) and it
+    /// records that conversion as accepted history, training top-1 on a
+    /// non-signal. `settleUnconfirmed` learns nothing and commits exactly what
+    /// we pass it — `currentDisplay`, which is written right next to the
+    /// `setMarkedText` call, so it is what the client was actually told to show.
+    /// The engine deliberately does not keep its own copy: it emits marked text
+    /// but cannot see whether a response reached the screen (an async one is
+    /// queued to this thread and can be dropped here), so a copy on that side
+    /// would be a shadow of state it cannot observe. For a `Snippet` browse —
+    /// which `isComposing()` also covers — it cancels, exactly as `commit()`
+    /// does: there is nothing confirmed to keep.
+    ///
+    /// One pre-existing hazard survives: an auto-commit already accepted by the
+    /// engine but not yet delivered can be dropped here (#314).
+    ///
+    /// Rule, evidence, and the host difference this does *not* address:
+    /// SPEC.md § 不変条件（marked text と session の同期）, #298, #309.
+    /// `completion` runs after this coordinator's teardown, deferred or not, so
+    /// the caller's own teardown keeps the same order. `LeximeInputController`
+    /// uses it for `super.deactivateServer`: deferring only the coordinator's
+    /// half would deactivate the host while the response still had a
+    /// `.setMarkedText` to apply, and those calls land on a torn-down client.
+    ///
+    /// Returns whether it was deferred, for callers that want to know.
+    @discardableResult
+    func deactivate(client: IMKTextInput?, completion: (() -> Void)? = nil) -> Bool {
+        // One focus loss performs one teardown. Re-entry coalesces into the
+        // teardown already scheduled or running, rather than stacking another:
+        // a client callback can re-enter from inside `insertText`, and the
+        // settle this teardown performs *itself* emits an `insertText`, so the
+        // re-entry can arrive either while a response is being delivered or
+        // while the teardown is running. Both windows fold into the same
+        // `pendingTeardown` slot.
+        if isApplyingEvents || isTearingDown {
+            // One teardown also means one completion. A re-entrant call that
+            // carries none must not displace one already queued — that is how
+            // `super.deactivateServer` would go missing for this focus loss,
+            // the R7/R9 failure reached from a different direction. Keeping the
+            // first non-nil continuation makes that hold for any caller, rather
+            // than resting on every caller passing one.
+            pendingTeardown = (client, completion ?? pendingTeardown?.completion)
+            return true
+        }
+        runTeardown(client: client, completion: completion)
+        return false
+    }
+
+    /// Perform the teardown and the caller's half, swallowing any re-entry that
+    /// happens during it.
+    ///
+    /// The settle inside `performDeactivate` inserts text, which is a client
+    /// call and therefore another re-entry point. Anything it schedules belongs
+    /// to *this* focus loss — the session is already Idle by then, so a second
+    /// pass would be a no-op, while its completion would run
+    /// `super.deactivateServer` a second time. So the slot is cleared on the way
+    /// out rather than flushed.
+    private func runTeardown(client: IMKTextInput?, completion: (() -> Void)?) {
+        isTearingDown = true
+        defer {
+            isTearingDown = false
+            pendingTeardown = nil
+        }
+        performDeactivate(client: client)
+        completion?()
+    }
+
+    private func performDeactivate(client: IMKTextInput?) {
+        // Invalidate first. `applyEvents` below calls into the client and the
+        // panel, and a deferred show queued by the last keystroke is guarded by
+        // `CandidateManager.generation`, not by the epoch watermark — bumping it
+        // here is what stops that block re-showing the shared panel for a
+        // composition we are about to settle.
         candidateManager.deactivate()
-        currentDisplay = nil
+        if session.isComposing() {
+            // Prefer `lastClient`: it is by construction the client the marked
+            // text was put on, so settling there replaces that marked text in
+            // place. `client` is whatever IMKit hands `deactivateServer`, and is
+            // the fallback for `lastClient` being weak and already gone.
+            deliver(session.settleUnconfirmed(displayed: currentDisplay), to: lastClient ?? client)
+        }
+        clearDisplay()
         lastClient = nil
     }
 
@@ -114,11 +275,33 @@ final class SessionCoordinator {
 
     private func applyEvents(_ resp: LexKeyResponse, client: IMKTextInput) {
         assert(Thread.isMainThread)
+        // Deliver the whole response before any teardown runs. Nested calls
+        // (the settle inside a deferred `deactivate`) re-enter here, so this is
+        // saved and restored rather than simply cleared.
+        let wasApplying = isApplyingEvents
+        isApplyingEvents = true
+        defer {
+            isApplyingEvents = wasApplying
+            if !isApplyingEvents, !isTearingDown, let pending = pendingTeardown {
+                pendingTeardown = nil
+                runTeardown(client: pending.client, completion: pending.completion)
+            }
+        }
         for event in resp.events {
             switch event {
             case .commit(let text):
-                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                // Update our record of the display *before* calling the client,
+                // the way `.setMarkedText` below already does. `insertText` ends
+                // the host's marked session and hands control to it, and the
+                // host reads this record back synchronously from in there:
+                // `composedString(_:)` / `originalString(_:)` answer out of
+                // `currentDisplay`, so leaving the pre-commit composition in it
+                // reports text the host has just been told to insert as still
+                // composing. (A re-entrant `deactivate(client:)` no longer
+                // observes this window — its teardown is deferred to the end of
+                // the delivery — but the host's own readers still do.)
                 currentDisplay = nil
+                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
                 candidateManager.flagReposition()
             case .setMarkedText(let text):
                 currentDisplay = text.isEmpty ? nil : text

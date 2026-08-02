@@ -204,8 +204,52 @@ what a generic reviewer misses:
   session proptest models the host's marked text cumulatively, because `commit`
   ends the marked session too, so a per-response check cannot see that shape;
   findings proposing to replace the cumulative model with a per-response check
-  re-litigate it — do not raise them. Everything else is open, including the
-  unmodelled `currentDisplay` writers SPEC names.
+  re-litigate it — do not raise them.
+- **Focus loss settles the session, without learning (settled)**: on
+  `deactivateServer` the settle and the display clear are one teardown
+  (`SessionCoordinator.deactivate(client:)`); re-entry may defer that teardown
+  to the end of the delivery, but never splits the two apart. Two parts are
+  settled:
+  (a) it settles through **`settle_unconfirmed()`, not `commit()`** — focus loss
+  is not acceptance, so it keeps what the host was showing and records no
+  history, where a voluntary commit would resolve to the selected candidate and
+  learn from it (Codex raised both halves as P1 on #315). "What the host was
+  showing" is **passed in by the frontend**, not held by the engine:
+  `settle_unconfirmed(displayed:)` takes `SessionCoordinator.currentDisplay`.
+  Two engine-side alternatives were tried and reverted — inferring it from
+  selection state (goes stale the moment a re-render puts the reading back) and
+  recording it when the response is emitted (runs ahead of a delivery that the
+  UI thread can still drop, so the settle commits text never shown). The engine
+  emits marked text but cannot observe whether it reached the screen, so any
+  copy it keeps is a shadow of unobservable state. Findings proposing to move
+  this back into the session re-litigate it. It settles rather
+  than discards because IMKit does not reliably send `commitComposition` first
+  (measured, #298) and discarding would throw away text the user typed on every
+  app switch; (b) settling is **unconditional
+  while delivery is best-effort** — with no reachable client there is nowhere
+  to insert the text, but that is not a reason to leave the session composing.
+  `resetDisplay()` deliberately does *not* settle: committing on arrival would
+  insert the previous document's text into the client that just gained focus.
+  A `didSet` on `currentDisplay` was considered and rejected — `applyEvents`
+  legitimately nils the display on `.commit` while the session keeps composing,
+  so a per-write check false-fires, the same reason the Rust side checks per
+  *response*. Findings re-proposing exactly these re-litigate them.
+  **Everything else in this area is open**, and specifically these are known
+  and unfixed, not settled: the `activateServer` side is still unmodelled — if
+  IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
+  composing, the assert that would catch it is compiled out at `-O`, and the
+  next real `deactivateServer` then settles against an empty display and drops
+  the typed text without a trace (SPEC § 不変条件 records the path and that
+  consequence); whether this settle should ever *learn* is **#310**, still open
+  — recording nothing is the safe default, not a measured answer, and it means a
+  surface the user did navigate to reaches the document while the ranking that
+  produced it stays untrained; and the general display/commit divergence —
+  marked text shows the reading while a **voluntary** commit resolves to the
+  selected surface, which affects Enter too and contradicts SPEC
+  § 各状態でのキー操作 — is #309, still open and needing accuracy measurement.
+  Note the narrow scope of (a): it settles *whether to commit or discard*, not
+  whether the `resetDisplay()` gap is acceptable, and not whether the no-learn
+  default is right.
 - **Unusable config entries are dropped, not rejected (settled)**: an empty
   side in `[keymap]` and a snippet body that expands to nothing are ignored,
   and the file still loads. Rejecting was tried and reversed: `init_custom` is

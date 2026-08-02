@@ -148,6 +148,37 @@ impl LexSession {
         convert_to_events(resp, epoch)
     }
 
+    /// Settle a session the host is tearing down without the user confirming
+    /// anything (IMKit `deactivateServer`, a client crash, app termination).
+    ///
+    /// Commits `displayed` — **what the frontend last put on screen** — and
+    /// records no history. The frontend passes it because only the frontend
+    /// knows: responses reach the screen past this boundary, and an async one
+    /// can be dropped on the UI thread after the engine emitted it. Pass the
+    /// value written alongside the `setMarkedText` call (`currentDisplay`), not
+    /// a re-derivation. `nil`/empty means the host is showing nothing, so
+    /// nothing is committed.
+    ///
+    /// Must not be simulated with `commit()`: that resolves to the selected
+    /// candidate and learns from it, so a focus change would insert a
+    /// conversion the user never saw and train top-1 on it.
+    fn settle_unconfirmed(&self, displayed: Option<String>) -> LexKeyResponse {
+        if let Some(worker) = self.worker.lock().unwrap().as_ref() {
+            worker.invalidate_candidates();
+        }
+
+        let mut session = self.session.lock().unwrap();
+        let resp = session.settle_unconfirmed(displayed.as_deref().unwrap_or_default());
+        let epoch = session.epoch();
+        // Drained for the same reason `commit` drains: an earlier voluntary
+        // commit in this session may have left records pending. This settle
+        // contributes none of its own.
+        let records = session.take_history_records();
+        drop(session);
+        self.record_history(&records);
+        convert_to_events(resp, epoch)
+    }
+
     fn is_composing(&self) -> bool {
         self.session.lock().unwrap().is_composing()
     }

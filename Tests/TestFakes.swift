@@ -20,6 +20,10 @@ final class FakeIMKClient: NSObject, IMKTextInput {
     var insertCalls: [InsertCall] = []
     var markedCalls: [MarkedCall] = []
 
+    /// Fired from inside `insertText`, so a test can re-enter the coordinator
+    /// the way a host that changes focus synchronously does.
+    var onInsertText: (() -> Void)?
+
     /// Optional rect returned from `attributes(forCharacterIndex:...)` so
     /// CandidateManager has a non-zero cursor position to work with.
     var attributesRect: NSRect = .zero
@@ -29,6 +33,7 @@ final class FakeIMKClient: NSObject, IMKTextInput {
     func insertText(_ string: Any!, replacementRange: NSRange) {
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
         insertCalls.append(InsertCall(text: text, replacementRange: replacementRange))
+        onInsertText?()
     }
 
     func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) {
@@ -134,6 +139,11 @@ final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {
 
     var handleKeyCalls: [LexKeyEvent] = []
     var commitCalls: Int = 0
+    var settleUnconfirmedCalls: Int = 0
+    var settleUnconfirmedResponses: [LexKeyResponse] = []
+    /// What the coordinator said was on screen when it settled. The real
+    /// engine keeps no copy of this, so the argument is the whole contract.
+    var settleUnconfirmedDisplayed: [String?] = []
     var shutdownCalls: Int = 0
     var isComposingValue: Bool = false
 
@@ -152,10 +162,28 @@ final class FakeLexSession: LexSessionProtocol, @unchecked Sendable {
 
     func commit() -> LexKeyResponse {
         commitCalls += 1
+        // The real session leaves the composing state on commit
+        // (`commit_current_state` → `reset_state`). Model that here: a fake
+        // that reports "still composing" after a commit lets a caller pass
+        // tests against a state the engine can never be in.
+        isComposingValue = false
         if commitResponses.isEmpty {
             return LexKeyResponse(consumed: false, events: [])
         }
         return commitResponses.removeFirst()
+    }
+
+    /// Mirrors the real `settle_unconfirmed`: reaches Idle like `commit`, but is
+    /// a distinct entry point so tests can prove the coordinator does not settle
+    /// focus loss through the learning/candidate-resolving commit path.
+    func settleUnconfirmed(displayed: String?) -> LexKeyResponse {
+        settleUnconfirmedCalls += 1
+        settleUnconfirmedDisplayed.append(displayed)
+        isComposingValue = false
+        if settleUnconfirmedResponses.isEmpty {
+            return LexKeyResponse(consumed: false, events: [])
+        }
+        return settleUnconfirmedResponses.removeFirst()
     }
 
     func isComposing() -> Bool { isComposingValue }

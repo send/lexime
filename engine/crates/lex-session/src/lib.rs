@@ -142,7 +142,8 @@ impl InputSession {
     }
 
     /// Check the contracts every response leaving this session must satisfy, at
-    /// the three public entry points that produce one.
+    /// the four public entry points that produce one (`handle_key` / `commit` /
+    /// `settle_unconfirmed` / `receive_candidates`).
     ///
     /// These are invariants of the *whole* session, not of any one call site, so
     /// enforcing them at each site is how they drift: an emitting site added
@@ -224,23 +225,52 @@ impl InputSession {
 
     /// Commit the current composition (called by commitComposition).
     pub fn commit(&mut self) -> KeyResponse {
-        let resp = self.commit_inner();
+        let resp = self.end_composition(Self::commit_current_state);
         self.debug_assert_response_contract(&resp);
         resp
     }
 
-    fn commit_inner(&mut self) -> KeyResponse {
-        // Same contract as `handle_key`: every state-mutating entry point
-        // invalidates in-flight async candidate responses.
+    /// End a composition the user did not choose to end — the host is tearing
+    /// down its marked-text session (IMKit delivers this as `deactivateServer`,
+    /// but nothing here depends on that: a client crash or app termination is
+    /// the same event to the engine).
+    ///
+    /// The session must not stay composing once the host's marked text is gone
+    /// — that is #293's leak shape — but an involuntary end is not a commit:
+    /// it keeps what was on screen and records no history. See
+    /// `commit_displayed` for why each half matters.
+    ///
+    /// `displayed` is what the host is actually showing, and the caller supplies
+    /// it because **only the caller can know**. The engine emits marked text;
+    /// whether it reached the screen is settled past the FFI boundary, on
+    /// another thread — `receive_candidates` runs on the worker and its response
+    /// is queued to the UI thread, where it can still be dropped. A copy kept
+    /// inside the session would be a shadow of state the session cannot
+    /// observe, which is how this went wrong twice: first inferred from
+    /// selection state, then recorded at emission rather than at delivery. The
+    /// frontend's `currentDisplay` is written next to the `setMarkedText` call
+    /// itself, so it is authoritative. The engine keeps the session semantics —
+    /// settle without learning, reach Idle — and takes the display as input.
+    pub fn settle_unconfirmed(&mut self, displayed: &str) -> KeyResponse {
+        let resp = self.end_composition(|s| s.commit_displayed(displayed));
+        self.debug_assert_response_contract(&resp);
+        resp
+    }
+
+    /// Shared preamble for the two ways a composition ends.
+    ///
+    /// Both invalidate in-flight async candidate work, and both cancel a
+    /// snippet browse rather than terminating it — there is nothing confirmed
+    /// to keep. Only the composing case differs, which is `terminal`.
+    fn end_composition(&mut self, terminal: impl FnOnce(&mut Self) -> KeyResponse) -> KeyResponse {
         self.bump_epoch();
         if matches!(self.state, SessionState::Snippet(_)) {
-            // Snippet mode: cancel and go back to idle
             self.reset_state();
             return KeyResponse::consumed()
                 .with_marked(String::new())
                 .with_hide_candidates();
         }
-        self.commit_current_state()
+        terminal(self)
     }
 
     /// Take recorded history entries, clearing the internal buffer.
