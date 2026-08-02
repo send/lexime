@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use crate::persist::{self, write_atomic};
+use crate::persist;
 
 const MAGIC: &[u8; 4] = b"LXDM";
 const VERSION: u8 = 1;
