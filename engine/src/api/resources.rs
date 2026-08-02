@@ -470,36 +470,52 @@ impl LexUserHistory {
     ///   ack costs one more report next launch, the safe direction; a blocked
     ///   main thread costs the UI.
     ///
-    /// Returns whether the record is now retired. `false` means the caller
-    /// should keep showing the row: both early exits below leave the marker on
-    /// disk, so dropping the row on a failed acknowledgement would take away
-    /// the only affordance for retrying it while the warning comes back on
-    /// every launch.
+    /// Whether the row should still be shown afterwards is
+    /// [`Self::deletion_report_owed`], not this call's outcome — the same
+    /// predicate answers for a wipe, which retires the report without anyone
+    /// acknowledging it. Both early exits below leave the marker on disk and
+    /// the report owed, so a caller that drops the row on a failed
+    /// acknowledgement takes away the only affordance for retrying it while
+    /// the warning returns on every launch.
     ///
     /// Idempotent; safe to call when nothing was reported.
-    fn ack_open_report(&self) -> bool {
+    fn ack_open_report(&self) {
         if !self.report.deletion_lost {
-            // Nothing was reported, so there is nothing to retire and no row
-            // to keep.
-            return true;
+            return;
         }
         // Under the wal mutex like every other marker mutation, so an
         // acknowledgement cannot land between a raise and its marker write.
         let wal = match self.wal.try_lock() {
             Ok(w) => w,
-            Err(std::sync::TryLockError::WouldBlock) => return false,
+            Err(std::sync::TryLockError::WouldBlock) => return,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
         };
         let ledger = self.durability_ledger.load(Ordering::SeqCst);
         if raised_deletion_of(ledger) > covered_of(ledger) {
             // This session raised a breach of its own after the report was
             // built. The marker on disk is now that breach's too, and it is
-            // still outstanding — so it stays, and so does the row.
-            return false;
+            // still outstanding — so it stays, and so does the report.
+            return;
         }
         self.inherited_report_unacked.store(false, Ordering::SeqCst);
         deletion_marker::remove(wal.checkpoint_path());
-        true
+    }
+
+    /// Whether a lost-deletion report from a previous session is still owed to
+    /// the user.
+    ///
+    /// The single authority for whether the status row belongs on screen, and
+    /// deliberately not two: an acknowledgement that could not retire the
+    /// record and a wipe that failed before its commit point both leave the
+    /// report owed, and both used to be reasoned about separately — the ack by
+    /// returning its outcome, the wipe by a comment arguing that retracting a
+    /// session early was the better of two wrongs. One predicate covers both,
+    /// because both are asking the same question.
+    ///
+    /// One atomic load, no lock: this is read from the menu path, which
+    /// `durability_issues()` above is careful never to block.
+    fn deletion_report_owed(&self) -> bool {
+        self.inherited_report_unacked.load(Ordering::SeqCst)
     }
 
     /// Durability problems that hold right now, most severe first.
@@ -2209,7 +2225,11 @@ mod tests {
         );
 
         // Delivery is what settles it, and then a later cover may reclaim it.
-        assert!(hist.ack_open_report(), "a clean ack retires the record");
+        hist.ack_open_report();
+        assert!(
+            !hist.deletion_report_owed(),
+            "a clean ack retires the report"
+        );
         assert_eq!(marker(&cp), None);
     }
 
@@ -2235,9 +2255,10 @@ mod tests {
         assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
         assert!(hist.has_unpersisted_deletion());
 
+        hist.ack_open_report();
         assert!(
-            !hist.ack_open_report(),
-            "an ack that retires nothing must say so, or the caller drops the              row that is the only way to retry it"
+            hist.deletion_report_owed(),
+            "an ack that retires nothing leaves the report owed, or the caller drops the row that is the only way to retry it"
         );
         assert_eq!(
             marker(&cp),
@@ -2378,7 +2399,11 @@ mod tests {
         // the other half. Without the second, a permanently latched row would
         // pass the first.
         assert_eq!(marker(&cp), Some(DeletionBreach::Lost));
-        assert!(reopened.ack_open_report(), "a clean ack retires the record");
+        reopened.ack_open_report();
+        assert!(
+            !reopened.deletion_report_owed(),
+            "a clean ack retires the report"
+        );
         assert_eq!(marker(&cp), None);
         assert!(!open_hist(&cp).open_report().deletion_lost);
     }

@@ -223,16 +223,12 @@ class LeximeInputController: IMKInputController {
     /// The user clicked the lost-deletion row, which is the only evidence
     /// this process can have that the report reached a person.
     ///
-    /// The row goes only if the record actually went with it. The engine
-    /// declines to retire it while a compaction holds the wal mutex, or while
-    /// this session has an unpersisted deletion of its own — and in both cases
-    /// the marker stays, so dropping the row would remove the one affordance
-    /// for retrying while the warning returned on every launch.
+    /// The row's fate is the engine's to decide — it declines to retire the
+    /// record while a compaction holds the wal mutex, or while this session
+    /// has an unpersisted deletion of its own, and in both cases the marker
+    /// stays and the row must too.
     @objc private func acknowledgeDeletionReport() {
-        guard AppContext.shared.makeEngineControlService().acknowledgeHistoryReport() else {
-            return
-        }
-        AppContext.shared.engineContainer.retractDeletionLostRow()
+        AppContext.shared.makeEngineControlService().acknowledgeHistoryReport()
     }
 
     @objc private func showSettings() {

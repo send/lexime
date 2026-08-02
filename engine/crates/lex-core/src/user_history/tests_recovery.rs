@@ -1851,17 +1851,16 @@ fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
 }
 
 #[test]
-fn t10_marker_survives_a_migrating_startup() {
-    // A migrating startup writes a durable v2 checkpoint — but one snapshotting
-    // a memory state that has the resurrected entry back in it, so it must not
-    // be mistaken for coverage. The marker has to come out the other side.
+fn t10_a_migration_does_not_settle_an_unconditional_claim() {
+    // A `Lost` claim is unconditional, so the checkpoint the migration writes
+    // — which does contain the resurrected entry, replay having applied no
+    // tombstone here — settles nothing. It has to come out the other side.
     //
-    // Named for what it can actually detect. An earlier version claimed to pin
-    // the *ordering* of the marker read against the migration commit, using a
-    // `Lost` fixture whose verdict does not depend on any state the commit
-    // touches — moving the whole block past the commit left it green. The
-    // ordering that is real, and is pinned, is "after the replay", by
-    // `t10_unflushed_witness_pins_the_boundary`.
+    // The sibling test above is the complement: when replay *did* apply the
+    // tombstone, that same commit is genuine coverage. What separates them is
+    // the claim, not the migration, which is why an earlier version of this
+    // test asserting "a migration checkpoint is never coverage" stated a rule
+    // its own neighbour disproves.
     let f = fx();
     write_v1_state(&f);
     write_marker(&f, DeletionBreach::Lost);
@@ -1870,11 +1869,11 @@ fn t10_marker_survives_a_migrating_startup() {
     assert!(report.migrated_from_v1, "fixture must actually migrate");
     assert!(
         report.deletion_lost,
-        "a migrating startup still owes the report"
+        "an unconditional claim is owed no matter what was written"
     );
     assert!(
         deletion_marker::marker_path(&f.cp).exists(),
-        "the migration checkpoint contains the resurrected entry, so it is not a retraction"
+        "and its record stays until someone is told"
     );
 }
 

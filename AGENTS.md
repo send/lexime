@@ -203,9 +203,13 @@ what a generic reviewer misses:
   the marker lives in the checkpoint's directory, so a failure of that whole
   directory (read-only volume, EACCES, parent removed) takes the marker with
   it. Findings proposing a header flag, a CRC, a plain overwrite, a tmp+rename
-  write, a cover outside the wal mutex, a retraction at startup, an ack at load,
-  or folding `clear`'s wipe into the cover re-litigate these — do not raise
-  them. Separately, #313 records a
+  write, a cover outside the wal mutex, a *replay-evidence* retraction at
+  startup, an ack at load or at menu-build time, or folding `clear`'s wipe into
+  the cover re-litigate these — do not raise them. (Retraction against a
+  durable checkpoint at startup **is implemented**, not rejected, and so is the
+  single owed-predicate that decides whether the status row stays. Findings
+  about either are in scope — this list must never suppress review of the
+  mechanism it describes.) Separately, #313 records a
   pre-existing privacy race: `apply_records` appends to the commit log outside
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the

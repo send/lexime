@@ -12,17 +12,22 @@ protocol EngineControlService {
     func historyDurabilityIssues() -> [LexHistoryDurabilityIssue]
 
     /// Retire the on-disk record behind a startup `deletionLost` report, now
-    /// that its row has been rendered. Called from the menu rather than from
-    /// bootstrap: a launch that never shows a menu — an IMKit probe — must not
-    /// consume a report on the user's behalf.
+    /// that its row has been shown to a person. Called from the menu row's
+    /// action rather than from bootstrap or from building the menu: IMKit does
+    /// both on its own, without displaying anything, so neither is evidence
+    /// that the report reached anyone.
     ///
-    /// Returns whether the record is now retired. `false` means keep the row:
-    /// the acknowledgement did not take, and the row is the only way to retry.
+    /// Whether the row survives is `deletionReportOwed()`, not this call —
+    /// see there. Idempotent, and never blocks on the engine's locks.
+    func acknowledgeHistoryReport()
+
+    /// Whether a lost-deletion report from a previous session is still owed.
     ///
-    /// Idempotent. Never blocks on the engine's locks (a contended call is
-    /// skipped and retried on the next menu open); it does perform one unlink.
-    @discardableResult
-    func acknowledgeHistoryReport() -> Bool
+    /// The single authority for whether the row belongs on screen. Both an
+    /// acknowledgement the engine could not complete and a wipe that failed
+    /// before its commit point leave it owed, so one question answers for both
+    /// call sites.
+    func deletionReportOwed() -> Bool
 }
 
 enum EngineControlServiceError: Error, LocalizedError {
@@ -47,31 +52,34 @@ final class DefaultEngineControlService: EngineControlService {
         guard let engine = container.engine else {
             throw EngineControlServiceError.engineUnavailable
         }
-        // `defer`, not a statement after the call. The engine unlinks the
-        // marker at the wipe's commit point and *then* runs physical steps
-        // whose failures it surfaces as a throw — so the throwing path is
-        // exactly the one where the marker is already gone and the session
-        // continues (the reset flow only restarts the process when nothing
-        // failed). Retracting only on success would fire where it is
-        // redundant and skip where it is needed.
-        //
-        // The residue: a clear that fails *before* its commit point retracts
-        // the row a session early. The marker survives that path, so the next
-        // launch reports again — chosen over leaving a standing instruction to
-        // delete an entry from a history that was just wiped.
-        defer { container.historyWasCleared() }
+        // `defer`, because the wipe's commit point comes before the physical
+        // steps whose failures it throws: a throw does not tell us whether the
+        // report was retired. `retractRowIfSettled` asks the engine instead of
+        // inferring it from control flow — the same rule the acknowledgement
+        // uses, so the row has one authority rather than two.
+        defer { retractRowIfSettled() }
         try engine.clearHistory()
-    }
-
-    @discardableResult
-    func acknowledgeHistoryReport() -> Bool {
-        // No history means nothing was reported and there is no row to keep.
-        container.history?.ackOpenReport() ?? true
     }
 
     func historyDurabilityIssues() -> [LexHistoryDurabilityIssue] {
         // No history means learning never started — a startup failure the
         // container already latched as `.history`, not a durability problem.
         container.history?.durabilityIssues() ?? []
+    }
+
+    func acknowledgeHistoryReport() {
+        container.history?.ackOpenReport()
+        retractRowIfSettled()
+    }
+
+    func deletionReportOwed() -> Bool {
+        // No history means nothing was reported, so nothing is owed.
+        container.history?.deletionReportOwed() ?? false
+    }
+
+    /// Drop the status row exactly when the engine no longer owes the report.
+    private func retractRowIfSettled() {
+        guard !deletionReportOwed() else { return }
+        container.retractDeletionLostRow()
     }
 }

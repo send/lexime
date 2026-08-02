@@ -15,12 +15,15 @@
 //! | 4      | 1    | version     | `1`                                      |
 //! | 5      | 1    | flags       | bit0 = a witness seq follows             |
 //! | 6      | 2    | reserved    | 0 on write, ignored on read              |
-//! | 8      | 8    | witness_seq | u64 LE, meaningful only when bit0 is set |
+//! | 8      | 8    | witness_seq | u64 LE, set with bit0; 0 is invalid      |
 //!
 //! **Fail-safe by construction: only `NotFound` means clean.** A read error, a
-//! short file, a bad magic, an unknown version — every outcome other than
-//! "there is no file" resolves to the strongest claim ([`DeletionBreach::Lost`],
-//! reported unconditionally). Suppressing a report is the only direction that
+//! bad magic, an unknown version, any length other than [`LEN`], a witness of
+//! 0 — every outcome other than "there is no file" resolves to the strongest
+//! claim ([`DeletionBreach::Lost`], reported unconditionally). The last two are
+//! the load-bearing ones, because they are the shapes that would otherwise
+//! resolve toward *suppression*: a longer file read as a well-formed prefix,
+//! and a zero seq that no applied_seq can fail to cover. Suppressing a report is the only direction that
 //! demands a well-formed witness, which is why no CRC is needed: corruption can
 //! only push the marker toward reporting. It is also why reading never returns
 //! an error to the caller — surfacing one would let a sidecar nobody can read
