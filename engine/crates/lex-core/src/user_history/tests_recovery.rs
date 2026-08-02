@@ -2250,8 +2250,10 @@ fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
     // perfectly well. Adding one panics in debug, across the UniFFI
     // constructor, and wraps to zero in release: the next tombstone would be
     // written with seq 0, recovery would reject it as non-monotonic, and the
-    // deletion would resurrect. Exhaustion has to freeze instead — no number
-    // is safe to issue, which is what `frozen` means.
+    // deletion would resurrect. So adoption saturates and the refusal lives at
+    // the point a number is *issued* — deliberately not a `frozen` flag, which
+    // a compaction is entitled to clear by rewriting the file, and rewriting a
+    // file creates no numbers.
     let f = fx();
     let mut h = UserHistory::new();
     h.record_at(&seg(A), T0);
@@ -2262,7 +2264,8 @@ fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
     assert_eq!(
         wal.next_seq_for_tests(),
         u64::MAX,
-        "saturated, not wrapped — one number is left"
+        "saturated, not wrapped — and this value is the exhausted state, not a \
+         spendable last number"
     );
 
     // The ceiling value is refused rather than spent — assigning it would

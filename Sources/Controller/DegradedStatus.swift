@@ -15,11 +15,16 @@ import Foundation
 /// The dividing line is retraction, not where the fact came from:
 /// `.historyDeletionLost` is a durability failure too, but it is a *past* one,
 /// so no amount of the disk recovering retracts it and it latches like the rest
-/// of startup. It has exactly one retraction, and it is not the disk healing:
-/// wiping the whole history makes the claim false rather than stale. Both that
-/// and the user's acknowledgement retract it through
-/// `EngineControlService.retractRowIfSettled()`, which asks the engine whether
-/// the report is still owed instead of inferring it from which action ran.
+/// of startup. Two things retire it, and neither is the disk healing:
+///
+/// - **a full wipe**, which makes the claim false rather than stale — there is
+///   no longer an entry the deletion could have failed against;
+/// - **the user acknowledging it**, which leaves the claim true but delivered.
+///
+/// Both reach `EngineControlService.retractRowIfSettled()`, which asks the
+/// engine whether the report is still owed rather than inferring it from which
+/// action ran — so a wipe that fails before its commit point, or an
+/// acknowledgement whose unlink fails, keeps the row.
 ///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch

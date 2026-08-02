@@ -2157,8 +2157,17 @@ mod tests {
     /// the wrong reason — the #312 case would have no test at all. This
     /// instead puts a *directory* at the tmp path `write_atomic` needs, so
     /// `File::create` fails with EISDIR and nothing else is disturbed.
+    ///
+    /// Idempotent: an `unwrap` here raced a startup compaction that a test's
+    /// own `open` had scheduled, which creates and renames that same tmp path.
+    /// It passed locally and failed in CI. What the caller needs is the
+    /// obstacle to be present, not to have been the one who placed it.
     fn block_checkpoint_write(cp: &Path) {
-        std::fs::create_dir(crate::user_history::checkpoint_tmp_path(cp)).unwrap();
+        match std::fs::create_dir(crate::user_history::checkpoint_tmp_path(cp)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("could not block the checkpoint write: {e}"),
+        }
     }
 
     /// Make every marker write fail, without disturbing a read: a directory
@@ -2724,14 +2733,16 @@ mod tests {
         };
         deletion_marker::merge_write(&cp, DeletionBreach::Unflushed { seq }).unwrap();
 
+        // Before the open, not after: `open` schedules a startup compaction for
+        // the replayed deletion, and that compaction *is* a covering
+        // checkpoint. Blocking afterwards left the two racing — the test
+        // passed locally and failed in CI.
+        block_checkpoint_write(&cp);
         let hist = open_hist(&cp);
         assert!(
             hist.has_unpersisted_deletion(),
             "the replayed witness is a live durability problem"
         );
-        // Blocked so the commit below cannot quietly become the covering
-        // checkpoint and settle it for the right reason.
-        block_checkpoint_write(&cp);
         hist.apply_records(&[committed("あした", "明日")]);
 
         assert_eq!(
