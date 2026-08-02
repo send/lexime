@@ -669,8 +669,13 @@ impl LexUserHistory {
         }
         match desired {
             Some(claim) => match deletion_marker::merge_write(wal.checkpoint_path(), claim) {
-                Ok(()) => {
-                    lock_recover(&self.claims).flushed = MarkerState::Holds(claim);
+                Ok(persisted) => {
+                    // What landed, not what was asked for: the write merges, so
+                    // a request of `Unflushed` over a surviving `Lost` leaves
+                    // `Lost` on disk. Recording the request would be a belief
+                    // the disk never held, and the next reconcile would find it
+                    // already satisfied and skip.
+                    lock_recover(&self.claims).flushed = MarkerState::Holds(persisted);
                     true
                 }
                 Err(e) => {
@@ -2749,6 +2754,37 @@ mod tests {
             marker(&cp),
             Some(DeletionBreach::Unflushed { seq }),
             "only a covering checkpoint may retire it, not an unrelated commit"
+        );
+    }
+
+    #[test]
+    fn test_the_belief_records_what_the_write_actually_persisted() {
+        // `merge_write` merges, so a request is not what lands. With a
+        // surviving `Lost` on disk and a later `SyncFailed` deletion asking for
+        // `Unflushed`, the write correctly keeps the stronger `Lost` — and a
+        // caller that recorded its own request would hold a belief the disk
+        // never had. The next reconcile would then find the desired witness
+        // "already satisfied", skip, and leave the stronger claim standing for
+        // the next startup to report against a deletion replay had applied.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
+
+        {
+            let wal = lock_recover(&hist.wal);
+            hist.apply_marker(&wal, Some(DeletionBreach::Unflushed { seq: 7 }));
+        }
+
+        assert_eq!(
+            marker(&cp),
+            Some(DeletionBreach::Lost),
+            "the merge keeps the stronger claim on disk"
+        );
+        assert_eq!(
+            lock_recover(&hist.claims).flushed,
+            MarkerState::Holds(DeletionBreach::Lost),
+            "and the belief must say so, not repeat the request"
         );
     }
 

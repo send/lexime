@@ -546,9 +546,7 @@ pub fn open_recovering(
                     checkpoint_path,
                     deletion_marker::DeletionBreach::Lost,
                 ) {
-                    Ok(()) => {
-                        deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost)
-                    }
+                    Ok(persisted) => deletion_marker::MarkerState::Holds(persisted),
                     Err(e) => {
                         warn!("failed to promote the unpersisted-deletion claim: {e}");
                         deletion_marker::MarkerState::Holds(breach)

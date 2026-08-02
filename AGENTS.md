@@ -206,6 +206,11 @@ what a generic reviewer misses:
   `applied_seq + 1` was breaking that precondition itself; promotion to `Lost`
   was the runtime compensation for it and is now an optimization, which is what
   retires three rounds of retry-the-promotion findings;
+  `merge_write` returns the value it **persisted**, not the one requested, and
+  the belief records that — the write merges, so asking for `Unflushed` over a
+  surviving `Lost` leaves `Lost`, and a caller repeating its own request would
+  hold a belief the disk never had and skip the next reconcile as already
+  satisfied;
   what the disk holds is a **three**-valued belief (`MarkerState`:
   absent / holds-these-bytes / unknown), because a file nobody could read is
   neither of the first two — collapsing it into absence let a failed unlink of

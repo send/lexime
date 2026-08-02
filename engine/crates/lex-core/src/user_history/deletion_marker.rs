@@ -345,12 +345,19 @@ fn read_at(path: &Path) -> Option<(Vec<u8>, bool)> {
 /// cover the scenario #312 is named for (a process restart keeps the page
 /// cache), but it would reopen a power-loss window in the *report* about a
 /// deletion whose own power-loss window §6 sets to zero.
-pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
+pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<DeletionBreach> {
     // The claim only — whether the existing bytes were readable does not
     // change what has to be written, and merging is one-directional so an
     // unreadable existing marker (conservatively `Lost`) can only strengthen.
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.breach.merge(breach));
-    write_atomic(&marker_path(checkpoint_path), &merged.encode())
+    write_atomic(&marker_path(checkpoint_path), &merged.encode())?;
+    // The **merged** value, not the requested one. Writing `Unflushed` over a
+    // surviving `Lost` persists `Lost`, and a caller that recorded its request
+    // would hold a belief the disk never had — later reconciles would find it
+    // "already satisfied" and skip, leaving a stronger claim on disk than
+    // anyone thinks is there. Only the writer knows what landed, so only the
+    // writer can say.
+    Ok(merged)
 }
 
 /// Remove the marker, reporting whether the record is now gone.

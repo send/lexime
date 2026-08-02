@@ -2041,7 +2041,11 @@ fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
     // A read-only `File::open` on a FIFO blocks until a writer appears, and
     // this runs synchronously inside the IME's startup. Left unguarded, a
     // sidecar nobody can read would stop the input method from ever becoming
-    // available — so the file type is checked before anything is opened.
+    // available — so the open itself carries `O_NOFOLLOW | O_NONBLOCK` and the
+    // descriptor it returns is what gets `fstat`-checked. Deliberately not a
+    // file-type check *before* the open: that is two resolutions of one name,
+    // and the paragraph below records why the race between them was the whole
+    // point of the fix.
     let f = fx();
     build_v2_state(&f, false);
     let path = deletion_marker::marker_path(&f.cp);
