@@ -173,11 +173,12 @@ pub struct LexUserHistory {
     ///
     /// Two claims, kept apart because they retire on different events:
     /// - `session` — what this process has failed to persist. Retired by a
-    ///   durable checkpoint covering it.
-    /// - `inherited` — what a previous session left, as read at open. The
-    ///   ledger's `covered` has no authority over it: a checkpoint written now
-    ///   persists the *resurrected* entry rather than removing it. Retired by
-    ///   delivery (`ack_open_report`) or by a wipe.
+    ///   durable checkpoint covering it. Lives here.
+    /// - `inherited` — what a previous session left. The ledger's `covered`
+    ///   has no authority over it: a checkpoint written now persists the
+    ///   *resurrected* entry rather than removing it. Retired by delivery
+    ///   (`ack_open_report`) or by a wipe. Lives in
+    ///   [`Self::inherited_owed`], outside this mutex.
     ///
     /// Every mutation happens under the wal mutex, so the value and the file
     /// cannot be updated out of order. This mutex itself is **never held
@@ -187,13 +188,23 @@ pub struct LexUserHistory {
     /// must not queue behind history I/O. Holders are instruction-length; the
     /// wal mutex is what actually serializes writers.
     claims: Mutex<MarkerClaims>,
+    /// Whether a previous session's report is still owed.
+    ///
+    /// A bool rather than a claim, and outside the mutex, for one reason each.
+    /// It is faithful because recovery reports `deletion_lost` only from the
+    /// branch that promotes the claim to unconditional, so an inherited claim
+    /// is *always* `Lost` — this is the claim, not a cached derivation of it.
+    /// And it is lock-free because the status menu reads it on the main
+    /// thread: AGENTS' ledger entry makes "the read must take no lock" a hard
+    /// blocker, and a mutex there can be waited on whenever a history worker
+    /// is preempted mid-update, however briefly it means to hold it.
+    inherited_owed: AtomicBool,
 }
 
 /// The two outstanding deletion claims, and what they project onto disk.
 #[derive(Clone, Copy, Default)]
 struct MarkerClaims {
     session: Option<DeletionBreach>,
-    inherited: Option<DeletionBreach>,
     /// The value this process last wrote **and flushed** successfully.
     ///
     /// What makes a redundant projection skippable. Comparing the file's bytes
@@ -205,12 +216,15 @@ struct MarkerClaims {
 }
 
 impl MarkerClaims {
-    /// What the marker should hold — the stronger of the two, or nothing.
-    fn projected(&self) -> Option<DeletionBreach> {
-        match (self.session, self.inherited) {
-            (Some(a), Some(b)) => Some(a.merge(b)),
-            (only @ Some(_), None) | (None, only @ Some(_)) => only,
-            (None, None) => None,
+    /// What the marker should hold — the stronger of the two claims, or
+    /// nothing. `inherited` is passed in because it is kept outside this
+    /// mutex; see [`LexUserHistory::inherited_owed`].
+    fn projected(&self, inherited: bool) -> Option<DeletionBreach> {
+        match (self.session, inherited) {
+            (Some(s), true) => Some(s.merge(DeletionBreach::Lost)),
+            (Some(s), false) => Some(s),
+            (None, true) => Some(DeletionBreach::Lost),
+            (None, false) => None,
         }
     }
 }
@@ -440,7 +454,7 @@ impl LexUserHistory {
         // back into memory and project it again — undoing the promotion the
         // report is predicated on. It also costs no syscall on the startup
         // thread.
-        let inherited_claim = report.deletion_lost.then_some(DeletionBreach::Lost);
+        let inherited_owed = report.deletion_lost;
         let ledger = if report.deletion_pending_checkpoint {
             pack_ledger(0, 1, 0)
         } else {
@@ -456,14 +470,12 @@ impl LexUserHistory {
             durability_ledger: AtomicU64::new(ledger),
             claims: Mutex::new(MarkerClaims {
                 session: None,
-                // Read at open, so the projection knows what a previous
-                // session left rather than having to re-read the file.
-                inherited: inherited_claim,
                 // Nothing written by this process yet; the inherited claim is
                 // already on disk but not by us, so a first projection still
                 // has to establish it.
                 flushed: None,
             }),
+            inherited_owed: AtomicBool::new(inherited_owed),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -541,10 +553,7 @@ impl LexUserHistory {
             // to deliver away yet.
             return;
         }
-        let without = MarkerClaims {
-            inherited: None,
-            ..*lock_recover(&self.claims)
-        };
+        let session_only = *lock_recover(&self.claims);
         // `session` is provably `None` here — a session claim implies
         // `raised_deletion > covered`, which the guard above returned on — so
         // the projection without the inherited claim is an unlink. Requiring
@@ -555,14 +564,14 @@ impl LexUserHistory {
         // Confirmed by mutation that no test can detect this clause today —
         // the ledger guard makes it always true — so it is stated here rather
         // than left to a reader to re-derive.
-        let desired = without.projected();
+        let desired = session_only.projected(false);
         if desired.is_none() && self.apply_marker(&wal, None) {
             // The only site that commits its change *after* the disk agrees.
             // Delivery is not done until the record is gone: dropping the
             // claim on a failed unlink would take the row away while the
             // marker stood, and the warning would come back on the next
             // launch with the retry.
-            lock_recover(&self.claims).inherited = None;
+            self.inherited_owed.store(false, Ordering::SeqCst);
         }
     }
 
@@ -573,7 +582,7 @@ impl LexUserHistory {
     /// before its commit point leave it owed, so one question answers for both
     /// call sites.
     fn deletion_report_owed(&self) -> bool {
-        lock_recover(&self.claims).inherited.is_some()
+        self.inherited_owed.load(Ordering::SeqCst)
     }
 
     /// Durability problems that hold right now, most severe first.
@@ -653,7 +662,8 @@ impl LexUserHistory {
         // The guard is released before the I/O — see the field docs: every
         // holder of `claims` must be instruction-length, because the status
         // menu reads it.
-        let desired = lock_recover(&self.claims).projected();
+        let desired =
+            lock_recover(&self.claims).projected(self.inherited_owed.load(Ordering::SeqCst));
         self.apply_marker(wal, desired);
     }
 
@@ -707,7 +717,7 @@ impl LexUserHistory {
                     None => breach,
                 });
             }
-            let desired = claims.projected();
+            let desired = claims.projected(self.inherited_owed.load(Ordering::SeqCst));
             drop(claims);
             if desired.is_some() {
                 self.apply_marker(wal, desired);
@@ -1114,6 +1124,7 @@ impl LexUserHistory {
         // reaches the same verdict from the empty history it loads, so the two
         // cannot disagree.
         *lock_recover(&self.claims) = MarkerClaims::default();
+        self.inherited_owed.store(false, Ordering::SeqCst);
         self.project_marker(&wal);
 
         // Physical deletions below are deferred-error: the logical clear is
@@ -1542,9 +1553,9 @@ mod tests {
             durability_ledger: AtomicU64::new(0),
             claims: Mutex::new(MarkerClaims {
                 session: None,
-                inherited: deletion_lost.then_some(DeletionBreach::Lost),
                 flushed: None,
             }),
+            inherited_owed: AtomicBool::new(deletion_lost),
         })
     }
 
@@ -2183,6 +2194,11 @@ mod tests {
             "unreadable reads as Lost"
         );
         std::fs::remove_dir_all(&marker_dir).unwrap();
+        // The rename failed, so the atomic write's tmp is still beside the
+        // absent marker holding the claim — and `read` merges it, which is
+        // what makes an orphan strengthen rather than hide. Clearing it here
+        // isolates what this test is about: the claim surviving in *memory*.
+        std::fs::remove_file(cp.with_file_name("history.lxud.deletion-pending.tmp")).ok();
         assert_eq!(
             marker(&cp),
             None,
@@ -2369,6 +2385,9 @@ mod tests {
         io.fail_appends.store(true, Ordering::SeqCst);
         hist.apply_records(&[deletion("きょう", "今日")]);
         std::fs::remove_dir_all(&marker_dir).unwrap();
+        // Same as above: the failed rename leaves the atomic write's tmp, and
+        // `read` merges it. Clear it so the assertion is about memory.
+        std::fs::remove_file(cp.with_file_name("history.lxud.deletion-pending.tmp")).ok();
         assert_eq!(marker(&cp), None, "nothing reached the disk");
 
         // A later *commit* against the frozen WAL — no deletion, so no breach.

@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use crate::persist;
+use crate::persist::{self, write_atomic};
 
 const MAGIC: &[u8; 4] = b"LXDM";
 const VERSION: u8 = 1;
@@ -168,21 +168,32 @@ pub fn marker_path(checkpoint_path: &Path) -> PathBuf {
 /// readers). A longer file is malformed anyway — `decode` needs the first
 /// [`LEN`] bytes, and a file that has more of them is not this format.
 pub fn read(checkpoint_path: &Path) -> Option<DeletionBreach> {
-    read_raw(checkpoint_path).map(|bytes| DeletionBreach::decode(&bytes))
+    let path = marker_path(checkpoint_path);
+    // The marker *and* any orphan tmp beside it. A crash between the tmp's
+    // flush and the rename leaves the stronger claim in the sibling, and
+    // reading only the marker would hand the next startup a witness it can
+    // suppress. Merging makes the orphan able to strengthen the claim and
+    // never to weaken it, which is what lets this go back through the shared
+    // atomic write instead of a hand-rolled in-place one.
+    let claims = [read_at(&path), read_at(&persist::tmp_path(&path))];
+    claims
+        .into_iter()
+        .flatten()
+        .map(|bytes| DeletionBreach::decode(&bytes))
+        .reduce(DeletionBreach::merge)
 }
 
-/// The marker's bytes, under the same rules as [`read`]: `None` means — and
-/// only means — there is no file, and anything unreadable comes back as a
-/// buffer that [`DeletionBreach::decode`] resolves to `Lost`.
-fn read_raw(checkpoint_path: &Path) -> Option<Vec<u8>> {
-    let path = marker_path(checkpoint_path);
+/// One file's bytes, under the fail-safe rule: `None` means — and only means —
+/// there is no file, and anything unreadable comes back as a buffer that
+/// [`DeletionBreach::decode`] resolves to `Lost`.
+fn read_at(path: &Path) -> Option<Vec<u8>> {
     // Ask what is there before opening it. A FIFO left at this path by a
     // restore or a sync tool would make a read-only `File::open` block until
     // someone opens the other end — and this runs synchronously inside
-    // `LexUserHistory::open`, on the thread the IME starts up on, so the
-    // input method would simply never become available. `symlink_metadata`
-    // rather than `metadata`: a symlink pointing at a FIFO is the same trap.
-    match fs::symlink_metadata(&path) {
+    // `LexUserHistory::open`, on the thread the IME starts up on, so the input
+    // method would simply never become available. `symlink_metadata` rather
+    // than `metadata`: a symlink pointing at a FIFO is the same trap.
+    match fs::symlink_metadata(path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!("unpersisted-deletion marker unreadable ({e}); reporting conservatively");
@@ -197,7 +208,7 @@ fn read_raw(checkpoint_path: &Path) -> Option<Vec<u8>> {
         }
         Ok(_) => {}
     }
-    let mut file = match fs::File::open(&path) {
+    let mut file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
@@ -234,82 +245,39 @@ fn read_raw(checkpoint_path: &Path) -> Option<Vec<u8>> {
 /// `truncate_covered`, which thaws the file. The next tombstone can then append
 /// and fail its flush, arriving as `Unflushed` on top of a standing `Lost`.
 ///
-/// **Written in place — deliberately not through [`write_atomic`].** The usual
-/// reason for tmp+rename is that a torn file is worse than an old one; here it
-/// is the opposite, because a torn marker decodes to `Lost`, the strongest
-/// claim this file can make. What tmp+rename does buy is a window: a crash
-/// between the tmp's flush and the rename leaves the stronger claim in a
-/// sibling that `read` does not consult and the next `remove` deletes, so the
-/// deletion goes unreported — the exact outcome this file exists to prevent.
-/// Writing in place has no such intermediate object, and costs one flush
-/// instead of two.
+/// **Through [`write_atomic`], the shared primitive.** A revision of this file
+/// wrote in place instead, on the argument that a torn marker decodes to
+/// `Lost` so atomicity buys nothing, and that tmp+rename's crash window hides
+/// a stronger claim in a sibling. The first half was true and the second was
+/// the wrong fix: hiding is what [`read`] now prevents by merging the orphan,
+/// which can only strengthen a claim. What writing by hand cost was everything
+/// `write_atomic` already encodes — three review rounds re-derived it one
+/// durability detail at a time (a symlink at the path being followed and its
+/// target truncated, an unlink failure left unchecked before `File::create`, a
+/// newly created directory entry never fsynced so power loss could drop the
+/// filename while its contents were durable). `rename` replaces a symlink or a
+/// FIFO at the destination rather than writing through it, and syncs the
+/// parent. `persist`'s own module doc calls these the single-source
+/// implementations "so the stores cannot drift apart on the durability
+/// details"; this file drifted, and is back.
 ///
-/// Callers must hold the wal mutex, which is what serializes the read against
-/// a concurrent write. The one exception is recovery's promotion of an
-/// unsatisfied witness, which runs before the `HistoryWal` enters its mutex and
-/// is therefore exclusive by ownership rather than by locking. That mutex is
-/// held by the key-processing thread, so
-/// this lands on the ForwardDelete path. Measured on an M4 (release, APFS):
-/// **p50 4.0ms / p95 5.0ms**, against **12.3ms p50** for the synchronous
-/// fallback checkpoint (5k entries) the same call runs immediately afterwards.
-/// The tmp+rename form this replaced measured 10.1ms p50 — dropping the second
-/// flush, the rename and the directory fsync is most of the difference. It only
-/// ever runs when a tombstone failed to reach the disk.
+/// Callers hold the wal mutex, which serializes the read against a concurrent
+/// write. The one exception is recovery's promotion of an unsatisfied witness,
+/// which runs before the `HistoryWal` enters its mutex and is exclusive by
+/// ownership rather than by locking.
+///
+/// Measured on an M4 (release, APFS) at **p50 10.1ms**, against **12.3ms p50**
+/// for the synchronous fallback checkpoint the same call runs immediately
+/// afterwards. The caller skips a projection whose value it has already
+/// flushed, so the cost is per *change* of claim, not per raise.
 ///
 /// A barrier flush instead of `sync_all` would cost ~0.3ms and would still
 /// cover the scenario #312 is named for (a process restart keeps the page
 /// cache), but it would reopen a power-loss window in the *report* about a
 /// deletion whose own power-loss window §6 sets to zero.
 pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<()> {
-    let existing = read_raw(checkpoint_path);
-    let merged = existing
-        .as_deref()
-        .map_or(breach, |bytes| DeletionBreach::decode(bytes).merge(breach));
-    let encoded = merged.encode();
-    // Deliberately no "the bytes already match, skip" short-circuit here.
-    // Matching bytes prove the content reached the page cache, not that it was
-    // flushed — so a failed `sync_all` would read back as up-to-date and never
-    // be retried, reopening in silence the power-loss window this function
-    // refuses to open for a 0.3ms saving. The caller skips redundant writes
-    // instead, keyed on having *successfully flushed* the value.
-    persist::ensure_parent_dir(checkpoint_path)?;
-    let path = marker_path(checkpoint_path);
-
-    // The writer owns this path: whatever else is there gets *replaced*, never
-    // written through. `File::create` follows symlinks, so without this a link
-    // left by a restore would have the engine truncate and overwrite a file it
-    // has no business touching — or block forever on a link to a FIFO, inside
-    // the synchronous deletion path. Unlinking removes the link itself.
-    //
-    // It also unlinks a marker the engine cannot rewrite. That is the
-    // difference between a read-only *file* and a read-only *directory*:
-    // removing an entry needs write permission on the parent, not on the file,
-    // so a marker that refuses `create` can still be replaced with a fresh
-    // one. Without it, a promotion to `Lost` that failed left a witness on
-    // disk that later, re-based sequence numbers could satisfy — silencing a
-    // report that was still owed. What remains is the directory-level failure
-    // this design already documents as unclosable.
-    let replace_first = match fs::symlink_metadata(&path) {
-        Ok(meta) => !meta.file_type().is_file(),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-        Err(_) => true,
-    };
-    if replace_first {
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_dir(&path);
-    }
-    let mut f = match fs::File::create(&path) {
-        Ok(f) => f,
-        Err(create_err) => {
-            // Present but not writable: take the entry out and start over.
-            if fs::remove_file(&path).is_err() {
-                return Err(create_err);
-            }
-            fs::File::create(&path)?
-        }
-    };
-    io::Write::write_all(&mut f, &encoded)?;
-    f.sync_all()
+    let merged = read(checkpoint_path).map_or(breach, |existing| existing.merge(breach));
+    write_atomic(&marker_path(checkpoint_path), &merged.encode())
 }
 
 /// Remove the marker, reporting whether the path is now clear.

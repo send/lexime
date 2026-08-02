@@ -183,17 +183,20 @@ what a generic reviewer misses:
   **round trip against the writer** (only what `encode` emits is accepted)
   rather than by validating fields, which missed four shapes in a row; the
   reader also refuses to *open* anything that is not a regular file, since a
-  FIFO at that path would block the IME's startup thread forever, and the
-  **writer owns the path** — a symlink, a FIFO or an unwritable file there is
-  unlinked and replaced rather than written through, which also keeps a failed
-  promotion from leaving a witness that re-based seq numbers could satisfy;
+  FIFO at that path would block the IME's startup thread forever, and `rename`
+  replaces a symlink, a FIFO or an unwritable file at the path rather than
+  writing through it, which also keeps a failed promotion from leaving a
+  witness that re-based seq numbers could satisfy;
   an empty loaded history settles a `Lost` claim outright — the startup
   counterpart of `clear` covering the ledger from its empty checkpoint, scoped
   to `Lost` because `Unflushed` is about durability rather than presence and
   replay can empty memory while the checkpoint still holds the entry; writes **merge** rather than replace,
-  `Io` absorbing, and go **in place** rather than through `write_atomic` — a
-  torn marker decodes to the strongest claim, so atomicity buys nothing while
-  the tmp/rename gap loses a stronger claim to a sibling nobody reads; a claim
+  `Io` absorbing, and go through the shared `write_atomic`; the tmp/rename gap
+  that once argued for a hand-rolled in-place write is closed by `read` merging
+  the orphan tmp, which can only strengthen a claim — writing by hand instead
+  cost three rounds of re-deriving durability details the shared primitive
+  already encodes (symlink replacement, unlink-failure checking, the new dir
+  entry's fsync); a claim
   whose write failed is held in memory so the next raise re-asserts it; startup
   **never retracts**, because a witness satisfied by replay was only satisfied
   out of the page cache — it hands the claim to the runtime ledger for a durable

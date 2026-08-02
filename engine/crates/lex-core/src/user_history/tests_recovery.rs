@@ -1548,6 +1548,15 @@ fn write_marker(f: &Fx, breach: DeletionBreach) {
     deletion_marker::merge_write(&f.cp, breach).unwrap();
 }
 
+/// The on-disk encoding of a breach, obtained through the writer so the test
+/// never re-spells the format.
+fn encoded_marker(breach: DeletionBreach) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("scratch.lxud");
+    deletion_marker::merge_write(&cp, breach).unwrap();
+    fs::read(deletion_marker::marker_path(&cp)).unwrap()
+}
+
 fn marker_bytes(f: &Fx, bytes: &[u8]) {
     fs::write(deletion_marker::marker_path(&f.cp), bytes).unwrap();
 }
@@ -1861,6 +1870,33 @@ fn t10_removal_reports_whether_the_path_is_actually_clear() {
     );
     // The report is then still owed, which the reader agrees with.
     assert_eq!(deletion_marker::read(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_an_orphan_tmp_strengthens_the_claim() {
+    // The reason this file can go back through the shared atomic write. A
+    // crash between the tmp's flush and the rename leaves the stronger claim
+    // in the sibling; reading only the marker would hand the next startup a
+    // witness it can suppress. Merging both makes the orphan able to
+    // strengthen and never to weaken.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+
+    write_marker(&f, DeletionBreach::Unflushed { seq: 1 });
+    fs::copy(&path, &tmp).unwrap();
+    // Now the marker holds the weaker claim and the orphan the stronger.
+    fs::write(&path, encoded_marker(DeletionBreach::Unflushed { seq: 1 })).unwrap();
+    fs::write(&tmp, encoded_marker(DeletionBreach::Lost)).unwrap();
+
+    assert_eq!(
+        deletion_marker::read(&f.cp),
+        Some(DeletionBreach::Lost),
+        "an orphan may only strengthen"
+    );
+    assert!(open_report_of(&f).deletion_lost);
 }
 
 #[test]
