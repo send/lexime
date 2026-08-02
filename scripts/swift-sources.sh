@@ -17,7 +17,10 @@ set -euo pipefail
 
 dir=${1:?usage: swift-sources.sh <dir>}
 
-sources=$(find "$dir" -name '*.swift' -type f | sort)
+# -L so a symlinked source is followed, and `-type f -o -type l` so a
+# dangling one still shows up as a compile error rather than vanishing:
+# a file silently missing from this list is the #316 shape.
+sources=$(find -L "$dir" -name '*.swift' \( -type f -o -type l \) | sort)
 
 # An empty result would make the consumers pass by compiling nothing — the same
 # shape of failure these gates exist to close. This needs its own test: `find`

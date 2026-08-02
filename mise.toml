@@ -1,10 +1,18 @@
+# NOTE for every `run = """..."""` block below: mise renders them as Tera
+# templates. Bash's array-length form — a dollar sign, brace, hash — opens a
+# Tera comment and fails the whole task at render time with "Closing comment
+# tag not found". It fails inside a `#` shell comment too, so do not spell the
+# sequence anywhere in a run block, prose included. Count in the read loop.
+
 # Minimum macOS the app is built for. Shared so `build` and `compile-swift`
 # cannot drift: a gate compiling at the host's SDK version accepts APIs the
 # real build rejects — silently, and precisely on the SwiftUI/AppKit files
 # `compile-swift` exists to cover (verified: `containerRelativeFrame` passes
-# at the host default and errors at 13.0). The third spelling of this value,
-# Info.plist's LSMinimumSystemVersion, cannot be shared through mise, so
-# `compile-swift` asserts the two agree rather than trusting a comment.
+# at the host default and errors at 13.0). The hoist leaves two spellings:
+# this one, and Info.plist's LSMinimumSystemVersion, which mise cannot reach —
+# so `compile-swift` asserts they agree rather than trusting a comment. A third
+# lives in README.md's requirements line; it is prose, not a build input, and
+# nothing checks it, so bump all three together.
 [env]
 MACOS_MIN = "13.0"
 
@@ -182,9 +190,12 @@ description = "Build Lexime.app (universal binary)"
 depends = ["uniffi-gen", "dict", "conn"]
 sources = [
   "Sources/**/*.swift",
-  # Decides which of those files actually get compiled, so a change to it
-  # changes the output even when no .swift file moved.
+  # Decide which of those files get compiled and at what deployment target,
+  # so a change to either changes the output even when no .swift file moved.
+  # mise.toml is here for MACOS_MIN: without it, bumping the target leaves
+  # this task cache-skipping while the gate and Info.plist have both moved.
   "scripts/swift-sources.sh",
+  "mise.toml",
   "generated/lex_engine.swift",
   "generated/lex_engineFFI.h",
   "generated/lex_engineFFI.modulemap",
@@ -289,7 +300,8 @@ depends = ["uniffi-gen"]
 # failure do not pull the engine-loading path with it. LeximeInputController
 # stays out of the *test* binary because it needs IMKit; the part of it worth
 # asserting — that menu() feeds the polled issues into DegradedStatus.rows —
-# is therefore unpinned by tests and verified by hand on the real IME.
+# is therefore unpinned by tests — it was verified by hand on the real IME
+# when it landed, and nothing re-checks it since.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -321,8 +333,10 @@ depends = ["uniffi-gen"]
 # The compensating gate for `test-swift`'s explicit Sources list (#316). That
 # list is not the bug: `Sources/main.swift` is top-level code and
 # `Tests/TestRunner.swift` is `@main`, and swiftc rejects both in one module,
-# so — given this single-module build — the app's sources cannot go in the
-# test binary. The bug was
+# so — given this single-module build — `main.swift` specifically cannot join
+# the test binary, and the UI files would drag IMKit and SwiftUI into a
+# headless runner. (The nine Sources files the tests actually drive *are*
+# linked in; see `test-swift`.) The bug was
 # that nothing covered the remainder — 13 of 22 files under Sources/,
 # `LeximeInputController.swift` among them, were type-checked by no gate at
 # all, so a Swift compile error in any of them merged green.
@@ -341,10 +355,16 @@ depends = ["uniffi-gen"]
 #     type-checking them would have left #316's headline case open.
 # So: real codegen, discarded via `-o /dev/null`. Measured 1.7s per arch.
 #
-# Still not the full build — no linking, no signing, and none of `build`'s
-# dict/conn dependencies (which pull a network Mozc fetch). Link-time breakage
-# is covered in the same job by `test-swift`, which does link the engine
-# archive. `-wmo` compiles the module in one frontend job instead of one per
+# Still not the full build — no linking, no signing, no `-O`, and none of
+# `build`'s dict/conn dependencies (which pull a network Mozc fetch). Be
+# precise about what that leaves uncovered: `test-swift` links the engine
+# archive in this same job, so the FFI surface is exercised for real (every
+# generated call runs the uniffi checksum assertions on first use), but it
+# links only the nine Sources files the tests drive. A link-only defect
+# confined to the other thirteen — a duplicate `@_cdecl`, a framework only
+# those files import — is caught by no CI job. `-O`-only failures likewise:
+# `build` compiles at `-O`, this gate at `-Onone`, because `-O` measured
+# 4.4s/arch against 1.7s and buys diagnostics nothing else here needs. `-wmo` compiles the module in one frontend job instead of one per
 # file. Shares `uniffi-gen` with `test-swift`, so the marginal cost is these
 # two swiftc passes alone.
 run = """
