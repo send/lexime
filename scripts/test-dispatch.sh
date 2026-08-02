@@ -37,11 +37,14 @@ sources=$(bash "$here/swift-sources.sh" Tests)
 code=$(printf '%s\n' "$sources" | xargs cat | sed -E 's://.*::')
 
 # Strict: declarations we can safely emit a call for — top level, no attributes
-# or modifiers, no parameters. `|| true` because "no match" is answered by the
-# explicit emptiness check below, with a better message than a bare exit 1.
+# or modifiers, no parameters. Whitespace is `[[:space:]]+` to match the broad
+# pattern below: any difference between the two stops the whole suite, so the
+# two must not disagree over something as incidental as a second space.
+# `|| true` because "no match" is answered by the explicit emptiness check
+# below, with a better message than a bare exit 1.
 strict=$(printf '%s\n' "$code" \
-  | grep -oE '^func test[A-Za-z0-9_]*\(\)' \
-  | sed -E 's/^func //; s/\(\)$//' | sort -u || true)
+  | grep -oE '^func[[:space:]]+test[A-Za-z0-9_]*\(\)' \
+  | sed -E 's/^func[[:space:]]+//; s/\(\)$//' | sort -u || true)
 
 # Broad: anything that reads as a test declaration in any form — indented, or
 # behind `private` / `@MainActor` / any other attribute, or taking parameters.
@@ -61,8 +64,11 @@ missed=$(comm -13 <(printf '%s\n' "$strict") <(printf '%s\n' "$broad"))
 if [ -n "$missed" ]; then
   echo "test-dispatch: these read as tests but cannot be dispatched" >&2
   echo "$missed" | sed 's/^/  /' >&2
-  echo "  Give them the plain top-level 'func testX()' form, or widen this" >&2
-  echo "  generator deliberately — do not leave them undispatched." >&2
+  echo "  If it is a helper rather than a test, rename it off the 'test'" >&2
+  echo "  prefix — that is the usual cause. If it is a test, give it the" >&2
+  echo "  plain top-level 'func testX()' form. Widening this generator is a" >&2
+  echo "  last resort: it may only emit calls that compile, so a declaration" >&2
+  echo "  taking parameters can never be admitted here." >&2
   exit 1
 fi
 
