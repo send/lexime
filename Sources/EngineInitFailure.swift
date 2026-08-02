@@ -28,10 +28,13 @@ enum EngineInitFailure {
     /// that should not have.
     ///
     /// An init failure rather than a `LexHistoryDurabilityIssue` on lifetime.
-    /// Runtime issues are polled because something retracts them — a frozen
+    /// Runtime issues are polled because the *disk* retracts them — a frozen
     /// WAL thaws, an unpersisted deletion is covered by the next checkpoint.
-    /// Nothing retracts this one: the deletion is already lost, and only the
-    /// user deleting again resolves it.
+    /// No amount of the disk recovering retracts this one: the deletion is
+    /// already lost, and only the user deleting again resolves it. Two user
+    /// actions do retire the row — acknowledging it, and wiping the history,
+    /// which makes the claim false rather than stale — and both go through
+    /// `EngineControlService.retractRowIfSettled()`.
     case historyDeletionLost(detail: String)
     /// Custom settings.toml exists but failed to parse (defaults in effect).
     case customSettings(detail: String)

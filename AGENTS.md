@@ -155,10 +155,12 @@ what a generic reviewer misses:
   collapse the list, treat `SyncFailed` as benign, gate the cover on
   truncation, or merge these two issues into `initFailures` re-litigate these
   — do not raise them. The dividing line is **retraction, not provenance**: a
-  durability fact whose retracting event still exists belongs on this list,
-  and one with nothing left to retract it belongs with the latching startup
-  failures. `EngineInitFailure.historyDeletionLost` (#312) is the second kind
-  — the deletion is already lost and only the user deleting again resolves it
+  durability fact the *disk* can retract belongs on this list, and one no
+  amount of recovery can retract belongs with the latching startup failures.
+  `EngineInitFailure.historyDeletionLost` (#312) is the second kind — the
+  deletion is already lost and only the user deleting again resolves it (two
+  user actions retire the *row*: acknowledging it, and a wipe that makes the
+  claim false; neither is the disk healing)
   — so it is not a breach of this entry, and proposals to move it onto the
   runtime list (or to fold the runtime rows into it) contradict the same rule
   from the other side. The "no commit-side ledger" clause that used to sit in this

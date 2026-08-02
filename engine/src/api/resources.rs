@@ -348,10 +348,11 @@ pub struct LexHistoryOpenReport {
     ///
     /// Surfaced here rather than through `durability_issues()` on lifetime:
     /// the runtime list reports what holds *now* and retracts when a
-    /// checkpoint covers it, whereas nothing retracts this — the deletion is
-    /// already lost. Consuming it is an explicit `ack_open_report()`, so the
-    /// on-disk record outlives the gap between this report being built and
-    /// something acting on it.
+    /// checkpoint covers it, whereas no disk recovery retracts this — the
+    /// deletion is already lost. What does retire it is a user action, and
+    /// consuming it is an explicit `ack_open_report()`, so the on-disk record
+    /// outlives the gap between this report being built and something acting
+    /// on it.
     pub deletion_lost: bool,
     pub frames_replayed: u64,
     pub frames_skipped: u64,
@@ -3134,7 +3135,8 @@ mod tests {
             reopened.open_report().deletion_lost,
             "and the report is back with it — this is the whole of #312"
         );
-        // Nothing retracts it, so it must not be on the retractable channel.
+        // No disk recovery retracts it — only a user action does — so it must
+        // not be on the channel that retracts itself.
         assert!(
             !reopened
                 .durability_issues()
