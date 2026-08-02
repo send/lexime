@@ -6,7 +6,10 @@ import Foundation
 /// the point:
 ///
 /// - `EngineInitFailure` latches. It records what went wrong while the engine
-///   was starting, and nothing during the session retracts it.
+///   was starting, and nothing the *disk* does during the session retracts it.
+///   One row has an exception, and it is a user action rather than a recovery:
+///   `.historyDeletionLost` is retired by acknowledging it or by a wipe (see
+///   below).
 /// - `LexHistoryDurabilityIssue` is polled and clearable. A frozen WAL thaws
 ///   when a compaction restores appendable form; an unpersisted deletion is
 ///   covered by the next durable checkpoint. Folding these into `initFailures`

@@ -623,16 +623,29 @@ pub fn open_recovering(
     // keystroke, and losing one costs nothing but latency. Keeping that
     // division explicit matters: six review rounds were spent adding retry
     // triggers one event at a time, and the answer was never another trigger.
-    report.compaction_recommended = marker_retraction_stuck
-        // A report is owed but the disk does not yet say so unconditionally:
-        // the promotion above failed. Scheduled so the runtime's projection
-        // re-asserts `Lost` promptly, because nothing else will — see
-        // `deletion_lost`'s doc for why the old "never schedule here" rule was
-        // wrong. Skipped when the disk already holds `Lost`, since then the
-        // projection and the file agree and a compaction buys nothing.
-        || (report.deletion_lost
-            && report.marker_on_disk
-                != deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost))
+    // The two marker feeders are gated on `!migration_failed`, and that gate is
+    // not about the marker at all: a compaction is **not** the migration — it
+    // writes a v2 checkpoint over the v1 file with none of the commit's steps
+    // (no `.v1.bak`, no `Migrated`) — so scheduling one here would destroy the
+    // v1 bytes on exactly the path where the commit is already failing, which
+    // is the hazard `migration_failed`'s own doc states. Both feeders are
+    // promptness only; ordinary commits reconcile the marker regardless, so
+    // suppressing them costs latency and nothing else.
+    let marker_prompt = !report.migration_failed
+        && (marker_retraction_stuck
+            // A report is owed but the disk does not yet say so
+            // unconditionally: the promotion above failed. Scheduled so the
+            // runtime's projection re-asserts `Lost` promptly, because nothing
+            // else will — see `deletion_lost`'s doc for why the old "never
+            // schedule here" rule was wrong. Skipped when the disk already
+            // holds `Lost`, since then the projection and the file agree and a
+            // compaction buys nothing.
+            || (report.deletion_lost
+                && report.marker_on_disk
+                    != deletion_marker::MarkerState::Holds(
+                        deletion_marker::DeletionBreach::Lost,
+                    )));
+    report.compaction_recommended = marker_prompt
         || report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)

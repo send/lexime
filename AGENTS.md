@@ -272,6 +272,12 @@ what a generic reviewer misses:
   affordable on the key path only because a matching `flushed` makes it a
   memory comparison; before the appends because the harm is a WAL advancing
   past an un-promoted witness;
+  the marker's two `compaction_recommended` feeders are **vetoed while
+  `migration_failed`**: a compaction is not the migration — it writes a v2
+  checkpoint over the v1 file with none of the commit's steps — so scheduling
+  one there would destroy the v1 bytes on exactly the path where they are the
+  only copy; both feeders are promptness alone, so the veto costs latency and
+  nothing else;
   a startup retraction whose unlink fails hands the debt to
   `compaction_recommended` for promptness alone
   instead of a thousand frames later; the runtime seeds `MarkerClaims::flushed`

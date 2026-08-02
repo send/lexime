@@ -1607,8 +1607,12 @@ fn t10_lost_marker_reports_and_survives_the_open() {
     // Not folded into the data-loss channel: that one means past learning was
     // lost, this means data survived a deletion.
     assert!(!report.data_loss_suspected());
-    // A compaction here would checkpoint the resurrected entry and cover the
-    // ledger — i.e. tell the user it is fine. Reported, not healed.
+    // Nothing to schedule: the disk already holds `Lost`, so the projection and
+    // the file agree. Not because a compaction would wrongly reassure — it
+    // cannot. `inherited_owed` sits outside the session ledger, so a cover
+    // cannot settle it, and the projection re-asserts `Lost` after every one.
+    // A checkpoint written now persists the resurrected entry and says nothing
+    // about the previous session's undelivered report.
     assert!(!report.compaction_recommended);
     // Consumption is `ack_open_report`, not the open: the report has to
     // outlive the gap between being built and being delivered.
@@ -2290,6 +2294,45 @@ fn t10_a_flushed_orphan_counts_as_a_landed_claim() {
     assert!(
         open_report_of(&f).deletion_lost,
         "so the report survives the restart it exists for"
+    );
+}
+
+#[test]
+fn t10_a_failed_migration_suppresses_the_marker_compaction() {
+    // A compaction is not the migration: it writes a v2 checkpoint over the v1
+    // file with none of the commit's steps — no `.v1.bak`, no `Migrated`. So
+    // scheduling one while the commit is failing destroys the v1 bytes on
+    // exactly the path where they are the only copy. The marker feeders are
+    // promptness alone (ordinary commits reconcile regardless), which makes
+    // suppressing them here free.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
+    // A report owed with the disk not yet saying `Lost` — what the feeder fires
+    // on — and the migration commit blocked, which must veto it. One
+    // read-only directory produces both: the commit cannot write its
+    // checkpoint, and the promotion cannot write the marker.
+    write_marker(&f, DeletionBreach::Unflushed { seq: 99 });
+    use std::os::unix::fs::PermissionsExt;
+    let dir = f.cp.parent().unwrap().to_path_buf();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    // Root / CAP_DAC_OVERRIDE (containerized CI) ignores directory
+    // permissions, so the failure cannot be injected — skip rather than
+    // assert one that will not happen.
+    if fs::write(dir.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: directory permissions are not enforced here");
+        return;
+    }
+    let result = open_recovering(&f.cp);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let report = result.unwrap().2;
+    assert!(report.migration_failed, "fixture must block the commit");
+    assert!(report.deletion_lost, "and the report is still owed");
+    assert!(
+        !report.compaction_recommended,
+        "no compaction may run over a retained v1 checkpoint"
     );
 }
 
