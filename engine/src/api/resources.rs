@@ -538,8 +538,10 @@ impl LexUserHistory {
     /// launches this exists for are the ones where a failing disk may take the
     /// process down in between. For the same reason the caller must not ack at
     /// load — a short-lived IMKit probe launch opens the history, never shows a
-    /// menu, and would consume the report on the user's behalf. Ack where the
-    /// row is actually rendered.
+    /// menu, and would consume the report on the user's behalf. Nor at
+    /// menu-build time: IMKit constructs the menu without displaying it, so
+    /// construction is not delivery either. Ack when a person **clicks** the
+    /// row — that is the only evidence anyone saw it.
     ///
     /// Two guards, both load-bearing:
     /// - **the ledger, not the startup flag.** `report.deletion_lost` is frozen
@@ -2715,9 +2717,9 @@ mod tests {
         // raise wrote minutes later, whose breach is still outstanding. That
         // session's own report would then be the thing that goes missing.
         //
-        // Reachable as soon as the ack moves to where the row is rendered,
-        // which is exactly where it had to move so probe launches stop
-        // consuming reports.
+        // Reachable as soon as the ack moves to the row's click handler, which
+        // is exactly where it had to move so probe launches — and menu builds
+        // nobody sees — stop consuming reports.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let io = FaultyIo::default();

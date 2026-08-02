@@ -214,9 +214,11 @@ what a generic reviewer misses:
   file *or* its flushed orphan tmp — because `write_atomic` syncs before it
   renames, so a rename that fails has still made the bytes durable where the
   next `read` merges them; treating that as failure froze appends on every
-  commit forever against a record that already said what was wanted (the test
-  is byte equality with the image this call flushed, so a partial tmp stays an
-  error rather than passing on a malformed decode);
+  commit forever against a record that already said what was wanted (which
+  stage failed comes from `write_atomic_staged`, never from comparing the
+  bytes back — a `write_all` that completed before `sync_all` failed leaves an
+  image that compares equal without being durable, and calling that landed is
+  the power-loss hole the sidecar exists to close);
   a stronger record on disk **satisfies** a weaker desired one (the merge
   lattice, not equality): `merge_write` absorbs a requested `Unflushed` back
   into a surviving `Lost`, so exact equality made the desired state
