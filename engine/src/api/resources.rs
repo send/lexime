@@ -135,6 +135,33 @@ pub struct LexUserHistory {
     /// `open_report()` for the degraded-state menu (data loss) and NSLog
     /// (benign events).
     report: OpenReport,
+    /// Whether the v1 checkpoint a failed migration left behind is *still* the
+    /// only copy of the user's history.
+    ///
+    /// Seeded from [`OpenReport::v1_checkpoint_retained`] and then owned here,
+    /// because the report answers "what did recovery see at open time" while
+    /// the compaction veto needs "what is on that path now". `clear` writes an
+    /// empty v2 checkpoint over the very same file, so its commit point
+    /// supersedes the v1 bytes — deliberately; a wipe is a wipe — and a veto
+    /// still keyed on the startup observation would go on refusing for the rest
+    /// of the process's life, including the heal `clear` posts for its own
+    /// failed physical steps. That leaves a frozen WAL and a half-finished wipe
+    /// with no retry short of a restart, on a path that deliberately does not
+    /// restart.
+    ///
+    /// Set once at open, cleared once by the only other writer of the
+    /// checkpoint path. Two readers, one cell: [`Self::run_compact_impl`]
+    /// refuses (load-bearing), and the schedulers skip creating a worker that
+    /// could only reach that refusal (promptness/cost). They cannot disagree,
+    /// which is the whole reason the fact is not re-derived at each site.
+    v1_checkpoint_retained: AtomicBool,
+    /// Compaction workers this resource has created. Test-only, and here
+    /// because "no OS thread was created" has no other observable: a worker
+    /// that spawns and then refuses leaves exactly the state one that never
+    /// spawned leaves, so the cost the veto's scheduler skip exists to avoid is
+    /// invisible to every assertion about history, WAL or ledger.
+    #[cfg(test)]
+    compact_threads: AtomicU64,
     /// Runtime durability ledger (#295 / #288): what memory holds that no
     /// durable checkpoint covers.
     ///
@@ -474,6 +501,7 @@ impl LexUserHistory {
         } else {
             0
         };
+        let v1_checkpoint_retained = report.v1_checkpoint_retained;
         let this = Arc::new(Self {
             inner: Arc::new(RwLock::new(history)),
             wal: Mutex::new(wal),
@@ -481,6 +509,7 @@ impl LexUserHistory {
             scrub_pending: AtomicBool::new(false),
             commit_log: Mutex::new(commit_log),
             report,
+            v1_checkpoint_retained: AtomicBool::new(v1_checkpoint_retained),
             durability_ledger: AtomicU64::new(ledger),
             claims: Mutex::new(MarkerClaims {
                 // The replayed witness, when there is one.
@@ -504,6 +533,8 @@ impl LexUserHistory {
                 flushed: marker_on_disk,
             }),
             inherited_owed: AtomicBool::new(inherited_owed),
+            #[cfg(test)]
+            compact_threads: AtomicU64::new(0),
         });
         // Startup compaction (§5.1-6): checkpoint recovery results early so
         // the next startup is clean. This is also the heal path for a
@@ -1235,6 +1266,15 @@ impl LexUserHistory {
         // Consumed only after the commit point: the wipe supersedes every
         // scrub request posted so far.
         self.scrub_pending.store(false, Ordering::SeqCst);
+        // …and so does the compaction veto, for the same reason and by the same
+        // act. The save above wrote a v2 checkpoint over the path a failed
+        // migration had left in v1 form, which is exactly what the veto existed
+        // to prevent a compaction from doing — except here it is intended: a
+        // wipe supersedes the history, including the copy nothing had migrated
+        // yet. Leaving it set would refuse the heal this very call posts below
+        // when a physical step fails, so a partial wipe with a frozen WAL could
+        // never be retried in this process.
+        self.v1_checkpoint_retained.store(false, Ordering::SeqCst);
         // A wipe settles every claim before the cover, not after it: they said
         // an entry might be back, and now nothing is. Ordering matters — the
         // cover projects, so resetting afterwards would have it write the
@@ -1364,6 +1404,13 @@ impl LexUserHistory {
         }
     }
 
+    /// Whether a compaction may not run right now because the checkpoint path
+    /// still holds v1 bytes that only the migration commit knows how to
+    /// preserve. See [`Self::v1_checkpoint_retained`].
+    fn compaction_barred(&self) -> bool {
+        self.v1_checkpoint_retained.load(Ordering::SeqCst)
+    }
+
     /// Acquire the compaction gate. Poison recovery is trivially safe here:
     /// the gate protects no data (see the field docs).
     fn lock_gate(&self) -> MutexGuard<'_, ()> {
@@ -1388,6 +1435,15 @@ impl LexUserHistory {
     /// Spawn a threshold compaction (the caller has already observed
     /// `needs_compact()` under the wal lock).
     fn spawn_threshold_compact(self: &Arc<Self>) {
+        // Nothing to gain from a worker whose first act is `compaction_barred`.
+        // Not a second guard — the refusal in `run_compact_impl` is what makes
+        // this safe, and this cell is the same one it reads. It matters because
+        // a veto that holds never clears the threshold, so *every* commit from
+        // there on would spawn a thread that immediately gives up, on the key
+        // path, for the life of a degraded session.
+        if self.compaction_barred() {
+            return;
+        }
         // §4: threshold compactions skip when one is in flight — the
         // threshold stays exceeded and the next commit retries. Advisory
         // pre-check to avoid spawning a thread per commit while a
@@ -1398,6 +1454,8 @@ impl LexUserHistory {
             Err(std::sync::TryLockError::WouldBlock) => return,
             Err(std::sync::TryLockError::Poisoned(_)) => {}
         }
+        #[cfg(test)]
+        self.compact_threads.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         if let Err(e) = std::thread::Builder::new()
             .name("lexime-history-compact".into())
@@ -1451,6 +1509,16 @@ impl LexUserHistory {
     /// redundant run.
     fn spawn_compact(self: &Arc<Self>) {
         self.scrub_pending.store(true, Ordering::SeqCst);
+        // Posted first and then not run: the request is real and stays posted
+        // for whoever lifts the veto (only `clear` can, and it consumes the
+        // flag at its commit point before posting its own). What is skipped is
+        // the worker — see `spawn_threshold_compact` for why that is worth
+        // skipping rather than letting it park and refuse.
+        if self.compaction_barred() {
+            return;
+        }
+        #[cfg(test)]
+        self.compact_threads.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         if let Err(e) = std::thread::Builder::new()
             .name("lexime-history-compact".into())
@@ -1471,7 +1539,7 @@ impl LexUserHistory {
     /// whether the checkpoint became durable and whether a follow-up is
     /// warranted (see [`CompactOutcome`]).
     fn run_compact_impl(&self) -> CompactOutcome {
-        if self.report.v1_checkpoint_retained {
+        if self.compaction_barred() {
             // The one invariant that has to live *here* rather than at the
             // schedulers: a compaction writes a v2 checkpoint over the v1 file
             // with none of the migration commit's steps, so while that file is
@@ -1767,6 +1835,36 @@ mod tests {
                 },
             }),
             inherited_owed: AtomicBool::new(deletion_lost),
+            v1_checkpoint_retained: AtomicBool::new(false),
+            compact_threads: AtomicU64::new(0),
+        })
+    }
+
+    /// As `hist_with_io`, but opened the way a session is when a failed
+    /// migration left a v1 checkpoint on disk: the report recovery produced
+    /// *and* the runtime cell it seeds both say so. Both, because the two
+    /// answer different questions — what open time saw, and what the path holds
+    /// now — and a fixture that set only one would describe a session no
+    /// startup can produce.
+    fn hist_with_retained_v1(cp: &Path) -> Arc<LexUserHistory> {
+        let base = hist_with_io(cp, FaultyIo::default().boxed());
+        let mut report = base.report.clone();
+        report.v1_checkpoint_retained = true;
+        Arc::new(LexUserHistory {
+            inner: Arc::clone(&base.inner),
+            wal: Mutex::new(HistoryWal::new(cp)),
+            compact_gate: Mutex::new(()),
+            scrub_pending: AtomicBool::new(false),
+            commit_log: Mutex::new(CommitLog {
+                path: cp.with_file_name("commit-log.jsonl"),
+                file: None,
+            }),
+            report,
+            durability_ledger: AtomicU64::new(0),
+            claims: Mutex::new(MarkerClaims::default()),
+            inherited_owed: AtomicBool::new(false),
+            v1_checkpoint_retained: AtomicBool::new(true),
+            compact_threads: AtomicU64::new(0),
         })
     }
 
@@ -2835,39 +2933,80 @@ mod tests {
         // sixth; this is the single site that performs the write.
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
-        let hist = hist_with_io(&cp, FaultyIo::default().boxed());
+        let guarded = hist_with_retained_v1(&cp);
         // The state recovery reports when a v1 checkpoint is still awaiting its
         // commit and no legacy WAL was consumed.
         let v1 = b"not a v2 checkpoint at all".to_vec();
         std::fs::write(&cp, &v1).unwrap();
 
-        let refused = {
-            // Reach the executor directly: going through a scheduler would test
-            // that scheduler, which is exactly the level this moved away from.
-            let mut report = hist.report.clone();
-            report.v1_checkpoint_retained = true;
-            let guarded = LexUserHistory {
-                inner: Arc::clone(&hist.inner),
-                wal: Mutex::new(HistoryWal::new(&cp)),
-                compact_gate: Mutex::new(()),
-                scrub_pending: AtomicBool::new(false),
-                commit_log: Mutex::new(CommitLog {
-                    path: cp.with_file_name("commit-log.jsonl"),
-                    file: None,
-                }),
-                report,
-                durability_ledger: AtomicU64::new(0),
-                claims: Mutex::new(MarkerClaims::default()),
-                inherited_owed: AtomicBool::new(false),
-            };
-            matches!(guarded.run_compact(), CompactOutcome::Failed)
-        };
-
-        assert!(refused, "the executor must refuse, not merely not be asked");
+        // Reach the executor directly: going through a scheduler would test
+        // that scheduler, which is exactly the level this moved away from.
+        assert!(
+            matches!(guarded.run_compact(), CompactOutcome::Failed),
+            "the executor must refuse, not merely not be asked"
+        );
         assert_eq!(
             std::fs::read(&cp).unwrap(),
             v1,
             "and the v1 bytes — the only copy — must still be there"
+        );
+    }
+
+    #[test]
+    fn test_a_committed_clear_releases_the_compaction_veto() {
+        // The veto protects a v1 checkpoint that only the migration commit
+        // knows how to preserve — and `clear` overwrites that same path with an
+        // empty v2 checkpoint, on purpose: a wipe supersedes the history,
+        // including the copy nothing had migrated yet. Keyed on the startup
+        // report the veto would outlive the bytes it protects and refuse the
+        // heal `clear` itself posts for a failed physical step, leaving a
+        // frozen WAL and a half-finished wipe with no retry short of a restart
+        // — on a flow that deliberately does not restart.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_retained_v1(&cp);
+        std::fs::write(&cp, b"not a v2 checkpoint at all").unwrap();
+
+        hist.clear_impl().expect("the wipe itself must succeed");
+
+        assert!(
+            matches!(hist.run_compact(), CompactOutcome::Done),
+            "the v1 bytes are gone — nothing is left for the veto to protect"
+        );
+    }
+
+    #[test]
+    fn test_no_compaction_worker_is_created_while_the_veto_holds() {
+        // A veto that holds never clears the threshold, so every commit from
+        // there on asks for a compaction that cannot run. The refusal in
+        // `run_compact_impl` keeps that correct; what it cannot do is keep a
+        // degraded session from creating an OS thread per commit on the key
+        // path. Counted rather than inferred: a worker that spawns and then
+        // refuses leaves exactly the state one that never spawned leaves.
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        let hist = hist_with_retained_v1(&cp);
+        std::fs::write(&cp, b"not a v2 checkpoint at all").unwrap();
+
+        hist.spawn_compact();
+        hist.spawn_threshold_compact();
+        assert_eq!(
+            hist.compact_threads.load(Ordering::SeqCst),
+            0,
+            "no worker may be created while every one of them would refuse"
+        );
+        assert!(
+            hist.scrub_pending.load(Ordering::SeqCst),
+            "the request itself stays posted for whoever lifts the veto"
+        );
+
+        // …and the skip really is the veto's, not an unconditional one.
+        hist.clear_impl().unwrap();
+        hist.spawn_compact();
+        assert_eq!(
+            hist.compact_threads.load(Ordering::SeqCst),
+            1,
+            "and once the veto lifts the same call does create one"
         );
     }
 

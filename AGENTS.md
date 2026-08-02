@@ -278,8 +278,17 @@ what a generic reviewer misses:
   scheduler: a compaction is not the migration (it writes a v2 checkpoint over
   the v1 file with none of the commit's steps), and there are five schedulers
   with nothing stopping a sixth, so gating them one at a time took three review
-  rounds and still left the scrub branch reaching it. The startup hint is also
-  suppressed, but only to avoid spawning a worker that would refuse. The
+  rounds and still left the scrub branch reaching it. The startup hint and both
+  schedulers do suppress, but only to avoid creating a worker that would refuse
+  — while the veto holds the threshold never clears, so a degraded session would
+  otherwise spawn an OS thread per commit from the key path. The veto is a
+  runtime cell seeded from the report and **released by `clear`'s commit point**,
+  because it is a fact about the bytes on that path and not about what startup
+  saw: a wipe writes an empty v2 checkpoint over the same file, superseding the
+  un-migrated copy on purpose, and a veto keyed on the startup observation would
+  outlive the bytes it protects and refuse the heal `clear` itself posts for a
+  failed physical step — a frozen WAL and a half-finished wipe with no retry, on
+  a flow that deliberately does not restart. The
   legacy-WAL variant is exempt because there the compaction *is* the heal;
   a startup retraction whose unlink fails hands the debt to
   `compaction_recommended` for promptness alone

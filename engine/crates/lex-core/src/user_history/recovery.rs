@@ -145,6 +145,11 @@ pub struct OpenReport {
     /// gating them one at a time. `run_compact_impl` refuses instead, which is
     /// the single place that performs the write.
     ///
+    /// What this field states is what recovery *observed*, so the runtime seeds
+    /// a cell from it rather than reading it as the live answer: a `clear`
+    /// writes an empty v2 checkpoint over the same path and supersedes the v1
+    /// bytes mid-session. See `HistoryResource::v1_checkpoint_retained`.
+    ///
     /// The legacy-WAL variant is excluded because there the compaction **is**
     /// the intended heal: that path freezes the WAL, and the compaction which
     /// thaws it writes the v2 checkpoint as a side effect, completing the
@@ -681,9 +686,10 @@ pub fn open_recovering(
     // the next launch retries the commit properly.
     report.v1_checkpoint_retained = report.migration_failed && !legacy_wal_consumed;
     if report.v1_checkpoint_retained {
-        // Not the guard — `run_compact_impl` refuses on the same flag, and that
-        // is what makes this safe. This only avoids spawning a worker that
-        // would immediately give up.
+        // Not the guard — `run_compact_impl` refuses on the cell this seeds,
+        // and that is what makes this safe. This only avoids spawning a worker
+        // that would immediately give up; the schedulers do the same for the
+        // requests that arise after startup.
         report.compaction_recommended = false;
     }
 
