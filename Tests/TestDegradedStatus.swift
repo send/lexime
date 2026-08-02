@@ -39,6 +39,34 @@ func testDegradedStatus() {
         DegradedStatus.title(for: LexHistoryDurabilityIssue.deletionNotPersisted)
             != DegradedStatus.title(for: LexHistoryDurabilityIssue.learningMemoryOnly),
         "the two runtime issues need distinguishable rows")
+
+    // S3 (#312). A disk that is still failing shows the past loss and the live
+    // one together — the steady state, not a corner. They must not read as the
+    // same sentence twice: one says a save is failing now, the other that one
+    // already failed and the entry may be back.
+    let acrossRestart = DegradedStatus.rows(
+        initFailures: [.historyDeletionLost(detail: "x")],
+        runtimeIssues: [.deletionNotPersisted])
+    assertEqual(acrossRestart.count, 2, "a past loss and a live one are two rows")
+    assertTrue(
+        DegradedStatus.title(for: EngineInitFailure.historyDeletionLost(detail: "x"))
+            != DegradedStatus.title(for: LexHistoryDurabilityIssue.deletionNotPersisted),
+        "the latching row must not duplicate the polled one")
+    assertTrue(
+        DegradedStatus.title(for: EngineInitFailure.historyDeletionLost(detail: "x"))
+            .contains("前回"),
+        "the latching row must place the loss in a previous session")
+
+    // It also co-occurs with a quarantine: independent facts about one startup,
+    // and EngineContainer appends it outside the mutually exclusive chain so
+    // neither can mask the other.
+    assertEqual(
+        DegradedStatus.rows(
+            initFailures: [.historyDeletionLost(detail: "x"), .historyDataLoss(detail: "y")],
+            runtimeIssues: []
+        ).count,
+        2,
+        "a lost deletion and a quarantine are independent")
 }
 
 func testHistoryDurabilityFFI() {

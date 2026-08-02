@@ -129,7 +129,12 @@ what a generic reviewer misses:
   re-derive either row from `is_frozen()` re-litigate this. (c) The deletion raise **does not branch on the error variant**
   — `SyncFailed` and `Io` both raise. §8 ※1's silent power-loss window is the
   *Committed* window; the Tombstone window is zero by §6, so a failed flush is
-  a real breach. (d) The cover is tied to a **durable checkpoint save**, not
+  a real breach. The *marker* that carries the raise across a restart (#312)
+  does distinguish them, and that is not a contradiction: within a session
+  neither half is durable, so both are reported the same; across a restart
+  `SyncFailed`'s frame is replayable, so reporting it after replay applied the
+  deletion would be a latching alarm about data that is gone. Which is why the
+  marker records a seq for that half and nothing for `Io`. (d) The cover is tied to a **durable checkpoint save**, not
   to the WAL truncation that follows: truncation is the physical scrub of
   superseded frames, and gating on it leaves a permanent warning whenever
   frames land mid-run (`FollowUp`) or the truncate fails on an otherwise
@@ -148,8 +153,15 @@ what a generic reviewer misses:
   "are there rows", not on the engine being degraded — because the main #295
   scenario is a clean launch followed by a later failure. Findings proposing to
   collapse the list, treat `SyncFailed` as benign, gate the cover on
-  truncation, or merge the issues into `initFailures` re-litigate these — do
-  not raise them. The "no commit-side ledger" clause that used to sit in this
+  truncation, or merge these two issues into `initFailures` re-litigate these
+  — do not raise them. The dividing line is **retraction, not provenance**: a
+  durability fact whose retracting event still exists belongs on this list,
+  and one with nothing left to retract it belongs with the latching startup
+  failures. `EngineInitFailure.historyDeletionLost` (#312) is the second kind
+  — the deletion is already lost and only the user deleting again resolves it
+  — so it is not a breach of this entry, and proposals to move it onto the
+  runtime list (or to fold the runtime rows into it) contradict the same rule
+  from the other side. The "no commit-side ledger" clause that used to sit in this
   list is **withdrawn**; see (b).
   Deliberately **out of scope**, for two different reasons — do not merge them.
   (i) a persistent `spawn_compact` thread-spawn failure leaves `scrub_pending`
@@ -157,13 +169,25 @@ what a generic reviewer misses:
   scrub compaction's `save()` fails raises nothing (#311), so deleted strings
   sit in the old checkpoint and past Committed frames for the session. Both are
   deferred *physical scrubs*: the deletion itself is durable and startup heals
-  it. (iii) is **not** like them — the ledger is process-local, so on the `Io`
+  it. (iii) was **not** like them — the ledger is process-local, so on the `Io`
   half, where no frame reached the WAL and no checkpoint landed, the deletion is
-  not durable, startup does not heal it, and the report is gone on the very
-  restart where the entry resurrects (#312). **#295 is therefore only
-  half-closed**, with #312 as the remainder; it wants an on-disk marker, which
-  is new persisted state and so its own PR. Do not cite this entry to suppress
-  that. Separately, #313 records a
+  not durable, startup does not heal it, and the report was gone on the very
+  restart where the entry resurrects. **#312 closed it** (and with it #295) via
+  the `.deletion-pending` sidecar, whose settled shape is: the checkpoint
+  header's reserved bytes are unusable because the raise condition *is* a
+  failed checkpoint write (and an in-place header rewrite would recompute a
+  CRC outside tmp+rename, risking the whole history to report one deletion);
+  only `NotFound` is clean, so every malformed or unreadable marker reports and
+  no CRC is needed; writes merge rather than replace, `Io` absorbing, because a
+  `SyncFailed` append does not freeze the WAL and a later `Io` in the same
+  session would otherwise be downgraded to a suppressible witness; and the
+  retraction shares the wal guard with the ledger cover, because the window
+  between a CAS and a separate unlink cannot be pinned by a deterministic test.
+  One class stays open by construction and is documented rather than fixed:
+  the marker lives in the checkpoint's directory, so a failure of that whole
+  directory (read-only volume, EACCES, parent removed) takes the marker with
+  it. Findings proposing a header flag, a CRC, a plain overwrite, or a cover
+  outside the wal mutex re-litigate these — do not raise them. Separately, #313 records a
   pre-existing privacy race: `apply_records` appends to the commit log outside
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the
@@ -186,12 +210,17 @@ what a generic reviewer misses:
   for writing inside the wal critical section on every commit and a compaction
   holds for `cover_durable_residue`, so a merged ledger would put a main-thread
   menu poll behind history I/O, where the ledger's single atomic load blocks
-  on nothing. Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
-  `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
-  tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
-  design, since the residue deliberately excludes `SyncFailed` (its frame is
-  replayable). Merging would mean widening that witness to a three-state
-  durability value across a settled PR1 surface to serve a reporting concern.
+  on nothing. Reason (2) is the harder blocker. (2) **`apply_batch`'s witness must not widen.**
+  It is `(WalRecord, Option<u64>)`, and a `SyncFailed` tombstone carries
+  `Some(seq)`, indistinguishable from a healthy one — by design, since the
+  residue deliberately excludes `SyncFailed` (its frame is replayable).
+  Merging would mean widening that witness to a three-state durability value
+  across a settled PR1 surface to serve a reporting concern. (#312 put the
+  ledger's *on-disk projection* in lex-core, `user_history/deletion_marker.rs`,
+  so "lex-core never sees this distinction" is no longer the phrasing — lex-core
+  owns the file family and the format. What it still does not see is the raise
+  event: the engine classifies the failure and calls in. The blocker is the
+  witness, not the crate.)
   The two ledgers answer different questions: the residue asks "may the
   durable set still hold this key" (gating the no-op skip), the ledger asks
   "did this deletion reach disk at all" (reporting). Findings proposing to
