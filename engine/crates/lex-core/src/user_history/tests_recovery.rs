@@ -2244,7 +2244,7 @@ fn t10_an_unreadable_marker_is_never_recorded_as_an_observation() {
 }
 
 #[test]
-fn t10_a_ceiling_witness_freezes_rather_than_wrapping() {
+fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
     // The floor comes from a *file*, so it can name anything the format can
     // encode — and `Unflushed { seq: u64::MAX }` round-trips through `decode`
     // perfectly well. Adding one panics in debug, across the UniFFI
@@ -2258,14 +2258,36 @@ fn t10_a_ceiling_witness_freezes_rather_than_wrapping() {
     h.save(&f.cp).unwrap();
     write_marker(&f, DeletionBreach::Unflushed { seq: u64::MAX });
 
-    let (_, wal, report) = open_recovering(&f.cp).unwrap();
-    assert!(
-        report.appends_frozen,
-        "a witness at the ceiling leaves no safe number to assign"
+    let (_, mut wal, _) = open_recovering(&f.cp).unwrap();
+    assert_eq!(
+        wal.next_seq_for_tests(),
+        u64::MAX,
+        "saturated, not wrapped — one number is left"
     );
+
+    // The ceiling value is refused rather than spent — assigning it would
+    // leave no representable successor, and one number out of 2^64 is a
+    // cheaper price than a second "exhausted but for one" state.
+    let err = wal
+        .append_record(&WalRecord::Committed {
+            segments: seg(B),
+            timestamp: T0,
+        })
+        .expect_err("the append must refuse rather than wrap");
+    assert!(matches!(err, super::wal::AppendError::Io(_)));
+
+    // The refusal is at the point the number is issued, so nothing can clear
+    // it. Representing exhaustion as a *freeze* failed exactly here: a
+    // compaction heals a freeze by rewriting the file, and rewriting a file
+    // creates no sequence numbers, so the next append wrapped to zero.
+    wal.truncate_wal().ok();
     assert!(
-        wal.next_seq_for_tests() == u64::MAX,
-        "and numbering must not have wrapped"
+        wal.append_record(&WalRecord::Committed {
+            segments: seg(D),
+            timestamp: T0,
+        })
+        .is_err(),
+        "a heal must not resurrect a number that does not exist"
     );
 }
 

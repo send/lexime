@@ -487,8 +487,25 @@ impl HistoryWal {
         let payload = bincode::serialize(record).map_err(io::Error::other)?;
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
+        // Checked here, where the number is *issued*, rather than carried by a
+        // flag. `u64::MAX` itself is refused rather than spent: assigning it
+        // would leave no representable successor, and giving up one number out
+        // of 2^64 costs nothing next to carrying a second exhausted-but-one
+        // state. Exhaustion was briefly represented with `frozen`, which is
+        // wrong in kind: `frozen` means "this file is not in appendable v2
+        // form" and a compaction legitimately clears it by rewriting the file
+        // — but rewriting a file does not create more sequence numbers, so the
+        // heal would clear the freeze and leave the next append to wrap. The
+        // check belongs where it cannot be cleared.
         let seq = self.next_seq;
-        self.next_seq += 1;
+        self.next_seq = match self.next_seq.checked_add(1) {
+            Some(next) => next,
+            None => {
+                return Err(AppendError::Io(io::Error::other(
+                    "WAL sequence space exhausted",
+                )))
+            }
+        };
 
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&seq.to_le_bytes());
@@ -626,15 +643,19 @@ impl HistoryWal {
         // would be written with seq 0 and rejected as non-monotonic, letting
         // the deletion resurrect. Exhaustion instead freezes: no number is
         // safe to issue, which is precisely what `frozen` means.
+        // Saturating, not `+ 1`: the floor comes from a *file*, and a restored
+        // marker encoding `Unflushed { seq: u64::MAX }` round-trips through
+        // `decode` perfectly well, so `+ 1` would panic in debug — across the
+        // UniFFI constructor — and wrap to zero in release, handing the next
+        // tombstone seq 0 for replay to reject as non-monotonic.
+        //
+        // Saturating is safe *because* the refusal lives at the assignment
+        // point: `next_seq == u64::MAX` means one number is left, and once it
+        // is spent `append_record` fails rather than wrapping. Representing
+        // exhaustion as a freeze instead was wrong in kind — a compaction
+        // clears a freeze by rewriting the file, which creates no numbers.
         let base = max_seq.max(applied_seq).max(self.seq_floor);
-        match base.checked_add(1) {
-            Some(next) => self.next_seq = next,
-            None => {
-                warn!("sequence space exhausted; freezing appends rather than reusing numbers");
-                self.next_seq = u64::MAX;
-                self.set_frozen(true);
-            }
-        }
+        self.next_seq = base.saturating_add(1);
         // Existing frames may include an unbarriered tail from before the
         // restart (their power-loss durability is unknown even though they
         // were readable). Seed the counter so the first new append issues a

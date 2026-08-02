@@ -216,9 +216,13 @@ what a generic reviewer misses:
   floor could protect, so issuing more numbers risks handing that one out, and
   `frozen` already means "appending to this file is not safe" (a `Lost` claim
   is unsatisfiable and a decoded witness has its floor, so neither freezes);
-  a witness at the representable ceiling freezes rather than wrapping, since
-  `+1` would panic across the UniFFI constructor in debug and hand out seq 0 in
-  release;
+  sequence exhaustion is refused **where the number is issued**, never carried
+  by `frozen`: a witness at the representable ceiling would otherwise make `+1`
+  panic across the UniFFI constructor in debug and hand out seq 0 in release,
+  and representing it as a freeze is wrong in kind — a compaction clears a
+  freeze by rewriting the file, and rewriting a file creates no numbers, so the
+  heal put the wrap straight back (adoption saturates instead, and `u64::MAX`
+  is refused rather than spent since assigning it leaves no successor);
   a marker's *claim* and the *observation* of it are separate — anything
   unreadable claims `Lost` by the fail-safe rule but confirms nothing, so only
   a `confirmed` read reaches `marker_on_disk`, and `deletion_pending_checkpoint`
