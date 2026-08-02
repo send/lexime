@@ -16,9 +16,13 @@ protocol EngineControlService {
     /// bootstrap: a launch that never shows a menu — an IMKit probe — must not
     /// consume a report on the user's behalf.
     ///
+    /// Returns whether the record is now retired. `false` means keep the row:
+    /// the acknowledgement did not take, and the row is the only way to retry.
+    ///
     /// Idempotent. Never blocks on the engine's locks (a contended call is
     /// skipped and retried on the next menu open); it does perform one unlink.
-    func acknowledgeHistoryReport()
+    @discardableResult
+    func acknowledgeHistoryReport() -> Bool
 }
 
 enum EngineControlServiceError: Error, LocalizedError {
@@ -59,8 +63,10 @@ final class DefaultEngineControlService: EngineControlService {
         try engine.clearHistory()
     }
 
-    func acknowledgeHistoryReport() {
-        container.history?.ackOpenReport()
+    @discardableResult
+    func acknowledgeHistoryReport() -> Bool {
+        // No history means nothing was reported and there is no row to keep.
+        container.history?.ackOpenReport() ?? true
     }
 
     func historyDurabilityIssues() -> [LexHistoryDurabilityIssue] {

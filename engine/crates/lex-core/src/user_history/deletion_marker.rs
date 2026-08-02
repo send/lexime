@@ -107,6 +107,10 @@ impl DeletionBreach {
     }
 
     /// Total decode: every malformed input resolves to `Lost`, never a panic.
+    /// "Malformed" includes any shape the writer cannot produce — a length
+    /// other than [`LEN`], an unknown version, a witness of 0 — because the
+    /// fail-safe rule is about what this decoder *accepts*, not only about
+    /// what it can parse.
     /// Reached from `#[uniffi::constructor]`, where a slice panic would cross
     /// the FFI boundary.
     fn decode(bytes: &[u8]) -> Self {
@@ -116,9 +120,17 @@ impl DeletionBreach {
         if bytes[5] & FLAG_WITNESS == 0 {
             return Self::Lost;
         }
-        Self::Unflushed {
-            seq: u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte field")),
+        let seq = u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte field"));
+        // Seq 0 is not a value the writer can produce — WAL numbering starts at
+        // 1 — so a witness of 0 is a malformed marker, and malformed means
+        // `Lost`. Accepting it would be the one shape that resolves to
+        // *silence*: `outstanding(0)` is false against every applied_seq, so
+        // recovery would read it as "the checkpoint already covers this",
+        // remove the marker, and report nothing.
+        if seq == 0 {
+            return Self::Lost;
         }
+        Self::Unflushed { seq }
     }
 }
 

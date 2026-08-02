@@ -1731,6 +1731,16 @@ fn t10_malformed_markers_all_report() {
         // reports" rule, and the absent CRC that rests on it, would both be
         // false. Seq 1 is load-bearing here: a witness beyond `applied_seq`
         // reports either way and would prove nothing.
+        // The shape that resolved to *silence* rather than to a suppressible
+        // witness: seq 0 is below every applied_seq, so recovery read it as
+        // "the checkpoint already covers this", removed the marker, and
+        // reported nothing. The writer cannot produce it — WAL numbering
+        // starts at 1 — so it is malformed like the rest.
+        ("witness of zero", {
+            let mut b = good.clone();
+            b[8..16].copy_from_slice(&0u64.to_le_bytes());
+            b
+        }),
         ("valid prefix, extra bytes", {
             let mut b = good.clone();
             b[8..16].copy_from_slice(&1u64.to_le_bytes());
@@ -1744,6 +1754,10 @@ fn t10_malformed_markers_all_report() {
         assert!(
             open_report_of(&f).deletion_lost,
             "{name}: an unreadable marker must report, not suppress"
+        );
+        assert!(
+            deletion_marker::marker_path(&f.cp).exists(),
+            "{name}: and it must not be silently retracted as checkpoint-covered"
         );
     }
 }
