@@ -74,12 +74,15 @@ impl DeletionBreach {
     ///
     /// `Lost` absorbs: one deletion with no durable representation is not made
     /// healable by another that has a frame. Two `Unflushed` keep the **max**
-    /// seq — the suppression test asks "did the loaded state reach this seq",
-    /// and the lower of two seqs can be covered while the higher is still
+    /// seq — the suppression test asks whether a given state has reached this
+    /// seq, and the lower of two seqs can be covered while the higher is still
     /// missing.
     ///
-    /// Both rules are one-directional, which is what lets the marker be
-    /// rewritten in place: no merge can weaken an outstanding claim.
+    /// Both rules are one-directional: no merge can weaken an outstanding
+    /// claim. That is what makes a read-modify-write safe against a concurrent
+    /// reader — and, with the write being tmp+rename through
+    /// [`crate::persist::write_atomic`], what makes the orphan tmp a crash can
+    /// leave harmless, since it can only carry a claim at least as strong.
     pub fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Lost, _) | (_, Self::Lost) => Self::Lost,
@@ -92,12 +95,17 @@ impl DeletionBreach {
     /// Whether this breach still stands against a state that has replayed up
     /// to `applied_seq`.
     ///
-    /// `Lost` always stands. `Unflushed` is settled once the loaded state
-    /// includes its frame — `applied_seq` after replay is
-    /// `max(checkpoint.applied_seq, last replayed seq)`, so one comparison
-    /// answers both "the checkpoint already covered it" and "replay applied
-    /// it". A frame beyond a repaired tail leaves `applied_seq` short of the
-    /// witness, which is the power-loss case and correctly still stands.
+    /// `Lost` always stands. `Unflushed` is settled once the state in question
+    /// includes its frame. *Which* state is the caller's choice, and recovery
+    /// deliberately asks twice with different ones rather than folding them
+    /// into a single comparison: against the **durable checkpoint's**
+    /// `applied_seq` to decide retraction, because only a checkpoint on disk
+    /// can settle a durability claim, and against the **loaded** `applied_seq`
+    /// only to choose between promoting the claim to `Lost` and handing it to
+    /// the runtime ledger. A witness that replay satisfied is explicitly not
+    /// retracted — replay proves the frame was readable, not that the flush
+    /// happened. A frame beyond a repaired tail leaves `applied_seq` short of
+    /// the witness, which is the power-loss case and correctly still stands.
     pub fn outstanding(self, applied_seq: u64) -> bool {
         match self {
             Self::Lost => true,

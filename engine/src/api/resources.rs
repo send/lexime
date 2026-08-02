@@ -205,13 +205,23 @@ pub struct LexUserHistory {
 #[derive(Clone, Copy, Default)]
 struct MarkerClaims {
     session: Option<DeletionBreach>,
-    /// The value this process last wrote **and flushed** successfully.
+    /// What the marker file holds, as far as this process knows: either what
+    /// it wrote **and flushed** successfully, or what recovery read off the
+    /// disk at open.
     ///
-    /// What makes a redundant projection skippable. Comparing the file's bytes
-    /// instead would be wrong: matching bytes prove the content reached the
-    /// page cache, not that `sync_all` returned — so a failed flush would read
-    /// back as up-to-date and never be retried, which is the power-loss window
-    /// the marker's own docs refuse to open.
+    /// What makes a redundant projection skippable. Re-reading the file's
+    /// bytes instead would be wrong: matching bytes prove the content reached
+    /// the page cache, not that `sync_all` returned — so a failed flush would
+    /// read back as up-to-date and never be retried, which is the power-loss
+    /// window the marker's own docs refuse to open.
+    ///
+    /// Seeded from `OpenReport::marker_on_disk` rather than started at `None`.
+    /// `None` is a positive claim — "the disk is clear" — and a startup that
+    /// could not unlink a retracted marker, or could not promote a witness to
+    /// `Lost`, leaves bytes that contradict it. Believing them gone is what
+    /// let a stale `Unflushed{seq}` sit under a memory claim of `Lost` until
+    /// some later checkpoint satisfied the witness and retracted a report that
+    /// was still owed.
     flushed: Option<DeletionBreach>,
 }
 
@@ -455,6 +465,7 @@ impl LexUserHistory {
         // report is predicated on. It also costs no syscall on the startup
         // thread.
         let inherited_owed = report.deletion_lost;
+        let marker_on_disk = report.marker_on_disk;
         let ledger = if report.deletion_pending_checkpoint {
             pack_ledger(0, 1, 0)
         } else {
@@ -470,10 +481,11 @@ impl LexUserHistory {
             durability_ledger: AtomicU64::new(ledger),
             claims: Mutex::new(MarkerClaims {
                 session: None,
-                // Nothing written by this process yet; the inherited claim is
-                // already on disk but not by us, so a first projection still
-                // has to establish it.
-                flushed: None,
+                // Observed, not assumed. When recovery promoted the claim
+                // successfully this equals what the projection wants, so the
+                // first compaction skips the write entirely; when it did not,
+                // the mismatch is what drives the re-assertion.
+                flushed: marker_on_disk,
             }),
             inherited_owed: AtomicBool::new(inherited_owed),
         });
@@ -624,14 +636,20 @@ impl LexUserHistory {
         wal: &MutexGuard<'_, HistoryWal>,
         desired: Option<DeletionBreach>,
     ) -> bool {
-        if lock_recover(&self.claims).flushed == desired && desired.is_some() {
-            // Already written and flushed by this process. The claim is
-            // re-projected on every raise while it is outstanding, and each
-            // write is an F_FULLFSYNC on the key-processing thread.
+        if lock_recover(&self.claims).flushed == desired {
+            // The disk already says what it should. Symmetric — `None == None`
+            // skips too — which is sound only because `flushed` is seeded from
+            // what recovery observed rather than assumed: an asymmetric skip
+            // was how a healthy compaction still paid two `unlink` syscalls
+            // inside the wal critical section for a file that was never there.
+            //
+            // The `Some` side matters more: the claim is re-projected on every
+            // raise while it is outstanding, and each write is an F_FULLFSYNC
+            // on the key-processing thread.
             //
             // A cost, not a behaviour: removing this skip is invisible to the
-            // tests by construction, which is why the *recording* of a
-            // successful flush below is what they pin instead.
+            // tests by construction, which is why the *recording* of what the
+            // disk holds is what they pin instead.
             return true;
         }
         match desired {
@@ -712,10 +730,10 @@ impl LexUserHistory {
         {
             let mut claims = lock_recover(&self.claims);
             if let Some(breach) = deletion_breach {
-                claims.session = Some(match claims.session {
-                    Some(prev) => prev.merge(breach),
-                    None => breach,
-                });
+                // Through `note_breach`, which exists so the rule that makes
+                // `Lost` absorbing is written once rather than at each arm
+                // that raises.
+                note_breach(&mut claims.session, breach);
             }
             let desired = claims.projected(self.inherited_owed.load(Ordering::SeqCst));
             drop(claims);
@@ -797,20 +815,36 @@ impl LexUserHistory {
     /// same wal guard as the CAS that settles the ledger — not as a follow-up
     /// statement in the caller. Re-projected rather than unlinked: an
     /// inherited claim nobody has delivered yet still has to be on disk, and
-    /// this checkpoint is no authority over it. Between a successful CAS and a separate unlink
-    /// there is a window of a few instructions in which a new raise can write
-    /// a marker that the unlink then destroys, dropping the report for a
-    /// deletion that is still outstanding. That window is not something a
-    /// deterministic test can pin (#317 proved twice that tests over such
-    /// windows pass under mutation), so it is removed by construction: the
-    /// guard witness makes "cover without the wal mutex" not compile, and
-    /// every raise takes the same mutex.
+    /// this checkpoint is no authority over it. Between a successful CAS and a
+    /// separate unlink there is a window of a few instructions in which a new
+    /// raise can write a marker that the unlink then destroys, dropping the
+    /// report for a deletion that is still outstanding. That window is not
+    /// something a deterministic test can pin (#317 proved twice that tests
+    /// over such windows pass under mutation), so it is removed by
+    /// construction: the guard witness makes "cover without the wal mutex" not
+    /// compile, and every raise takes the same mutex.
     ///
-    /// Projects only on the true→false transition of the deletion predicate.
-    /// In the steady state the early return above fires and no syscall is
-    /// issued at all — this runs inside the critical section the key thread
-    /// waits on.
-    fn cover_unpersisted(&self, _wal: &MutexGuard<'_, HistoryWal>, generation: u64) {
+    /// **Unconditionally, including on the early-return path**, and that is
+    /// not a cost the steady state pays: a projection whose write or unlink
+    /// failed has nothing else to revisit it — the ledger is covered, so later
+    /// covers return early, and a healthy session raises nothing — so the
+    /// durable checkpoint is the retry. `apply_marker` skips when the disk
+    /// already agrees, which on a healthy history is every time, so no syscall
+    /// is issued inside the critical section the key thread waits on. Having
+    /// the caller do it instead left "every cover is followed by a projection
+    /// under the same guard" as an unenforced convention.
+    fn cover_unpersisted(&self, wal: &MutexGuard<'_, HistoryWal>, generation: u64) {
+        self.settle_ledger(generation);
+        // Paired here, so it cannot be forgotten at a call site: the two
+        // together are what "a durable checkpoint reconciles the record" means.
+        self.project_marker(wal);
+    }
+
+    /// Move `covered` to `generation`, settling the session's claim if this
+    /// checkpoint is what settled it. Split out only so the projection above
+    /// runs on every path, including the already-covered early return — the
+    /// retry has to happen whether or not this particular call moved anything.
+    fn settle_ledger(&self, generation: u64) {
         let mut current = self.durability_ledger.load(Ordering::SeqCst);
         loop {
             if covered_of(current) >= generation {
@@ -1099,17 +1133,31 @@ impl LexUserHistory {
         // Consumed only after the commit point: the wipe supersedes every
         // scrub request posted so far.
         self.scrub_pending.store(false, Ordering::SeqCst);
+        // A wipe settles every claim before the cover, not after it: they said
+        // an entry might be back, and now nothing is. Ordering matters — the
+        // cover projects, so resetting afterwards would have it write the
+        // pre-wipe claim to disk and then need a second projection to take it
+        // straight back off.
+        //
+        // The reset holds whether or not the file can be unlinked: an
+        // unremovable marker is stale, not owed. What does *not* follow, and
+        // was claimed here until the design re-gate, is that the next startup
+        // reaches the same verdict on its own — it only does so while the
+        // history is still empty, and the user typing one thing before the
+        // restart makes replay non-empty and the stale `Lost` report again.
+        // `flushed` carries the disagreement instead, so the projection keeps
+        // retrying; the heal below is what makes the retry prompt.
+        // `session` only. `flushed` is not a claim to be settled, it is what
+        // this process knows about the disk, and a wipe does not make the file
+        // disappear — clearing it here would have the projection conclude the
+        // disk already agrees and skip the very removal this is for.
+        lock_recover(&self.claims).session = None;
+        self.inherited_owed.store(false, Ordering::SeqCst);
         // Likewise for the durability ledger (#295). An empty durable set
         // contains no un-deleted entry, so every raised deletion is now
         // vacuously persisted. Without this second cover point, wiping
         // everything would leave a standing "a deletion did not persist"
         // warning on a history that provably holds nothing.
-        self.cover_unpersisted(&wal, covered_gen);
-        // Unconditionally, not just via the cover above: a marker left by a
-        // *previous* session raises nothing in this one, so the ledger is
-        // still zero and the cover early-returns without touching it. Without
-        // this line a wipe would leave that marker to report a lost deletion
-        // against a history that provably holds nothing (#312).
         //
         // Not routed through `remove_recovery_artifacts`: that helper returns
         // on its first error and only reaches the `.corrupt-*` files
@@ -1117,14 +1165,8 @@ impl LexUserHistory {
         // deletion of files that do hold the user's input text. This one holds
         // none (magic, version, flags, a seq), which is also why its failure
         // stays a log line rather than joining `deferred`.
-        // A wipe settles every claim: they said an entry might be back, and now
-        // nothing is. That holds whether or not the file could be unlinked —
-        // an unremovable marker is stale, not owed — and the next startup
-        // reaches the same verdict from the empty history it loads, so the two
-        // cannot disagree.
-        *lock_recover(&self.claims) = MarkerClaims::default();
-        self.inherited_owed.store(false, Ordering::SeqCst);
-        self.project_marker(&wal);
+        self.cover_unpersisted(&wal, covered_gen);
+        let marker_stuck = lock_recover(&self.claims).flushed.is_some();
 
         // Physical deletions below are deferred-error: the logical clear is
         // committed, so every step runs (the memory reset especially —
@@ -1197,7 +1239,17 @@ impl LexUserHistory {
         drop(wal);
 
         match deferred {
-            None => Ok(()),
+            None => {
+                if marker_stuck {
+                    // Correctness is already carried by `flushed`: the next
+                    // durable checkpoint re-projects and retries the unlink.
+                    // This only makes it prompt, because "the next checkpoint"
+                    // is a thousand frames away and a restart before then
+                    // reports a loss this wipe made false.
+                    self.spawn_compact();
+                }
+                Ok(())
+            }
             Some(e) => {
                 // Partial physical failure: the logical clear is done
                 // (memory and checkpoint are empty) but some bytes remain.
@@ -1343,17 +1395,6 @@ impl LexUserHistory {
         // ledger update and the marker unlink cannot be split by a concurrent
         // raise; the condition being covered is unchanged.
         self.cover_unpersisted(&wal, covered_gen);
-        // Unconditionally, not only when the cover settled something. Every
-        // other projection point is driven by a claim *changing*; this one is
-        // the retry. A projection that failed earlier — an unlink refused
-        // between the save and the removal — leaves the file asserting a
-        // deletion this checkpoint has since persisted, and nothing else ever
-        // revisits it: the ledger is covered, so later covers early-return,
-        // and a healthy session raises nothing. The stale file then reports a
-        // loss that did not happen on the next launch. Free when the disk
-        // already agrees (`apply_marker` skips a value it has flushed), one
-        // ENOENT unlink otherwise.
-        self.project_marker(&wal);
 
         // The checkpoint is a full snapshot, so everything it contains is
         // now both on disk and in the state it was cloned from: the residue
@@ -1482,6 +1523,20 @@ mod tests {
         hist.deletion_gen_under_wal_lock(&wal)
     }
 
+    /// Plant a marker the way a startup hands one over: the file **and** the
+    /// runtime's record of what the file holds.
+    ///
+    /// Writing only the file is a state production cannot reach. Recovery
+    /// reports what it read (`OpenReport::marker_on_disk`) and `open` seeds
+    /// `flushed` from it, so the process never believes the disk is clear
+    /// while bytes sit there. A fixture that skips the second half is testing
+    /// the projection against a lie — and since the skip is symmetric, it
+    /// would simply decline to project at all.
+    fn plant_marker(hist: &LexUserHistory, cp: &Path, breach: DeletionBreach) {
+        deletion_marker::merge_write(cp, breach).unwrap();
+        lock_recover(&hist.claims).flushed = Some(breach);
+    }
+
     fn marker(cp: &Path) -> Option<DeletionBreach> {
         deletion_marker::read(cp)
     }
@@ -1540,6 +1595,15 @@ mod tests {
         io: Box<dyn crate::user_history::wal::WalIo>,
         deletion_lost: bool,
     ) -> Arc<LexUserHistory> {
+        // The whole startup state, not two thirds of it: a report is owed
+        // because recovery read a marker and left it in place, so the file has
+        // to exist alongside `inherited_owed` and `flushed`. Setting only the
+        // in-memory halves describes a disk that never matched them, and the
+        // projection — which skips when it believes the disk already agrees —
+        // would then decline to write the marker a raise is meant to record.
+        if deletion_lost {
+            deletion_marker::merge_write(cp, DeletionBreach::Lost).unwrap();
+        }
         let wal = HistoryWal::with_io(cp, io);
         Arc::new(LexUserHistory {
             inner: Arc::new(RwLock::new(UserHistory::new())),
@@ -1561,13 +1625,20 @@ mod tests {
                 quarantined_paths: Vec::new(),
                 replayed_deletion: false,
                 compaction_recommended: false,
+                // Paired with `deletion_lost`, because recovery cannot produce
+                // one without the other: the report is owed *because* a marker
+                // was read and deliberately left in place. A fixture that
+                // reported the loss while claiming a clear disk would have the
+                // projection skip the removal it exists to perform, and the ack
+                // would settle against nothing.
+                marker_on_disk: deletion_lost.then_some(DeletionBreach::Lost),
                 deletion_lost,
                 deletion_pending_checkpoint: false,
             },
             durability_ledger: AtomicU64::new(0),
             claims: Mutex::new(MarkerClaims {
                 session: None,
-                flushed: None,
+                flushed: deletion_lost.then_some(DeletionBreach::Lost),
             }),
             inherited_owed: AtomicBool::new(deletion_lost),
         })
@@ -2305,6 +2376,8 @@ mod tests {
             })
             .unwrap()
         };
+        // Written before the open, so it reaches the runtime the production
+        // way — through recovery, which reports what it read.
         deletion_marker::merge_write(&cp, DeletionBreach::Unflushed { seq }).unwrap();
 
         let reopened = open_hist(&cp);
@@ -2425,7 +2498,12 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let io = FaultyIo::default();
         let hist = hist_with_io_reporting(&cp, io.boxed(), true);
+        // Replace the marker the helper left with something the engine cannot
+        // clear. Reachable: recovery reads a non-regular path conservatively as
+        // `Lost` and leaves it, so the report is owed against a record no
+        // unlink will retire.
         let marker_path = deletion_marker::marker_path(&cp);
+        std::fs::remove_file(&marker_path).unwrap();
         std::fs::create_dir(&marker_path).unwrap();
         std::fs::write(marker_path.join("restored"), b"not ours").unwrap();
 
@@ -2453,7 +2531,7 @@ mod tests {
         let cp = dir.path().join("history.lxud");
         let io = FaultyIo::default();
         let hist = hist_with_io_reporting(&cp, io.boxed(), true);
-        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
         block_checkpoint_write(&cp);
 
         // This session loses a deletion of its own, then the disk recovers.
@@ -2559,7 +2637,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let hist = hist_with_io(&cp, FaultyIo::default().boxed());
-        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
         assert!(!hist.deletion_report_owed(), "nothing is owed to the user");
         assert!(!hist.has_unpersisted_deletion(), "and no claim is standing");
 
@@ -2593,7 +2671,7 @@ mod tests {
         // the file alone would be a state production cannot reach — the
         // session would hold no claim at all — and the projection would then
         // be right to unlink it.
-        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
         hist.inherited_owed.store(true, Ordering::SeqCst);
 
         hist.apply_records(&[committed("きょう", "今日")]);
@@ -2618,7 +2696,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cp = dir.path().join("history.lxud");
         let hist = open_hist(&cp);
-        deletion_marker::merge_write(&cp, DeletionBreach::Lost).unwrap();
+        plant_marker(&hist, &cp, DeletionBreach::Lost);
 
         hist.clear_impl().unwrap();
 

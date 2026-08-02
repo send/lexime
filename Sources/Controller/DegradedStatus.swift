@@ -16,8 +16,10 @@ import Foundation
 /// `.historyDeletionLost` is a durability failure too, but it is a *past* one,
 /// so no amount of the disk recovering retracts it and it latches like the rest
 /// of startup. It has exactly one retraction, and it is not the disk healing:
-/// wiping the whole history makes the claim false rather than stale, so
-/// `EngineContainer.historyWasCleared()` drops that row alone.
+/// wiping the whole history makes the claim false rather than stale. Both that
+/// and the user's acknowledgement retract it through
+/// `EngineControlService.retractRowIfSettled()`, which asks the engine whether
+/// the report is still owed instead of inferring it from which action ran.
 ///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch

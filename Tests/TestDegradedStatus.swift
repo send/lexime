@@ -104,13 +104,22 @@ func testDegradedStatus() {
             .allSatisfy { !$0.acknowledgeable },
         "a quarantine latches but has no durable record a click could retire")
 
-    // S5 (#312). A full wipe retracts the latched row: the engine has already
-    // unlinked the marker, and the row asks the user to delete an entry that no
-    // longer exists.
+    // S5 (#312). A wipe retracts the latched row — the row asks the user to
+    // delete an entry that no longer exists — and nothing else.
+    //
+    // Against `retractDeletionLostRow` directly, which is what production
+    // reaches. It used to go through a `historyWasCleared()` wrapper that no
+    // production path ever called: the wipe runs
+    // `EngineControlService.clearHistory`'s `defer { retractRowIfSettled() }`,
+    // and the interesting half is that gate — it asks the engine whether the
+    // report is still owed rather than inferring it from which action ran, so
+    // a wipe that throws before its commit point, or one whose unlink failed,
+    // keeps the row. Pinning the wrapper vouched for the unconditional shape
+    // that gate replaced.
     let container = EngineContainer(
         engine: nil, dictionary: nil, history: nil, userDict: nil,
         initFailures: [.historyDeletionLost(detail: "x"), .historyDataLoss(detail: "y")])
-    container.historyWasCleared()
+    container.retractDeletionLostRow()
     assertEqual(container.initFailures.count, 1, "only the lost-deletion row is retracted")
     assertTrue(
         container.initFailures.contains {

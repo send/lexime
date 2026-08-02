@@ -68,8 +68,22 @@ final class DefaultEngineControlService: EngineControlService {
     }
 
     func acknowledgeHistoryReport() {
-        container.history?.ackOpenReport()
-        retractRowIfSettled()
+        // Off the main thread, because acking is what finally unlinks the
+        // marker: two `remove_file`s and possibly a `remove_dir`, on the one
+        // path that only ever runs when the volume is already misbehaving.
+        // `try_lock` inside `ack_open_report` keeps it off the wal mutex but
+        // says nothing about the syscalls themselves, and this is reached from
+        // a menu click on the main thread.
+        //
+        // Nothing is lost by deferring it: the row is re-derived every time
+        // `menu()` is built, so it disappears on the next open regardless of
+        // whether the ack finished before this call returned. Retracting back
+        // on main keeps `initFailures` single-threaded.
+        guard let history = container.history else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            history.ackOpenReport()
+            DispatchQueue.main.async { self?.retractRowIfSettled() }
+        }
     }
 
     func deletionReportOwed() -> Bool {

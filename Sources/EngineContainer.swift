@@ -48,22 +48,16 @@ final class EngineContainer {
         return failures
     }
 
-    /// Drop the lost-deletion row after a full history wipe.
-    ///
-    /// The only retraction of a latched row, and it is not an exception to the
-    /// latching rule so much as the rule's own terms: the row says a deletion
-    /// may not have taken and asks the user to delete the entry again. A wipe
-    /// removes every entry, so the claim is not merely stale, it is false —
-    /// and the engine has already unlinked the marker behind it. Without this
-    /// the menu keeps telling the user to go delete something, against a
-    /// history provably holding nothing, until they restart.
-    func historyWasCleared() {
-        retractDeletionLostRow()
-    }
-
-    /// Drop the lost-deletion row, whether because a wipe made it false or
-    /// because the user acknowledged it. The only latched row with a
+    /// Drop the lost-deletion row, whether because a wipe made the claim false
+    /// or because the user acknowledged it. The only latched row with a
     /// retraction, and both of its retractions are user actions.
+    ///
+    /// Both callers reach it through `EngineControlService.retractRowIfSettled`,
+    /// which gates on the engine's own `deletionReportOwed()` rather than on
+    /// control flow — so this stays a pure render-cache edit with no policy in
+    /// it. (A `historyWasCleared()` wrapper used to sit in front of the wipe
+    /// path; it never acquired a caller once the service took over, and the
+    /// test that named it was pinning the wrapper instead of the gate.)
     func retractDeletionLostRow() {
         initFailures.removeAll {
             if case .historyDeletionLost = $0 { return true }

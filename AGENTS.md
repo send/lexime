@@ -199,6 +199,14 @@ what a generic reviewer misses:
   uniquely-named tmp would break the marker-plus-orphan pair below, and
   anything able to write in that directory can overwrite the destination
   outright with no window to hit;
+  a startup retraction whose unlink fails hands the debt to
+  `compaction_recommended`, so the runtime's projection retries it promptly
+  instead of a thousand frames later; the runtime seeds `MarkerClaims::flushed`
+  from `OpenReport::marker_on_disk` rather than assuming a clear disk, since
+  `None` is a positive claim that a failed promotion contradicts by leaving a
+  *suppressible* `Unflushed` under a memory claim of `Lost`, and `flushed` is
+  an observation rather than a claim, so a wipe folds `session` and leaves it
+  standing;
   an empty loaded history and an empty durable set together settle a `Lost`
   claim — either half alone was wrong once, and requiring both also removes
   any need to tell an encoded `Lost` from the fallback a malformed marker
@@ -232,9 +240,12 @@ what a generic reviewer misses:
   silent); `clear`
   removes the marker **unconditionally and separately**, since a previous
   session's marker moves no counter in this one and the cover would early-return
-  past it when the ledger is untouched; and the acknowledgement happens where the **row is rendered**, not at
-  load, because `bootstrap()` runs on IMKit probe launches that never show a
-  menu and would consume the report on the user's behalf.
+  past it when the ledger is untouched; and the acknowledgement happens on a
+  **click of the row**, neither at load nor at menu-build time — `bootstrap()`
+  runs on IMKit probe launches that never show a menu, and IMKit also builds
+  the menu without displaying it (measured: the record was consumed four
+  seconds after an untouched relaunch), so only a person clicking is evidence
+  the report was delivered.
   One class stays open by construction and is documented rather than fixed:
   the marker lives in the checkpoint's directory, so a failure of that whole
   directory (read-only volume, EACCES, parent removed) takes the marker with
