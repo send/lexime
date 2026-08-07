@@ -575,7 +575,15 @@ pub fn open_recovering(
                     checkpoint_path,
                     deletion_marker::DeletionBreach::Lost,
                 ) {
-                    Ok(persisted) => deletion_marker::MarkerState::Holds(persisted),
+                    // The writer's belief verbatim. It is `Unknown` when the
+                    // bytes are flushed but the directory entry naming them is
+                    // not — the same "suppressible witness under a memory claim
+                    // of `Lost`" hazard the `Err` arm below is about, reached
+                    // through a power loss rolling the name back instead of
+                    // through the write failing outright. Wrapping the value in
+                    // `Holds` here is what hid it: the caller decided what the
+                    // disk held from the fact that the call returned.
+                    Ok(belief) => belief,
                     Err(e) => {
                         warn!("failed to promote the unpersisted-deletion claim: {e}");
                         deletion_marker::MarkerState::Holds(breach)

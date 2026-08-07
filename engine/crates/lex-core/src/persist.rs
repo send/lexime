@@ -69,8 +69,15 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// rename can become durable before the file contents, manufacturing a corrupt
 /// file on power loss. The parent-dir fsync only makes the rename itself
 /// durable; per the LXUD design (§6) it is deliberately best-effort and
-/// log-only — APFS journals renames, and the worst case of an unsynced rename
-/// is rolling back to the previous file, never corruption. The tmp name
+/// log-only **for this entry point** — APFS journals renames, and the worst
+/// case of an unsynced rename is rolling back to the previous file, never
+/// corruption. That is the right trade for a store whose file holds a complete
+/// older state (the checkpoint, the user dictionary): a rollback costs recency,
+/// which the next write re-establishes. It is the wrong trade for a store whose
+/// previous content is a *weaker claim* — the deletion marker, where rolling
+/// back turns `Lost` into a suppressible `Unflushed`, or into no file at all.
+/// Those callers take [`write_atomic_staged`], which reports whether the name
+/// became durable instead of collapsing it into `Ok`. The tmp name
 /// appends `.tmp` to the full file name ([`suffixed`]); `with_extension` would
 /// strip the store's extension and leave a stray sibling `<stem>.tmp`.
 ///
@@ -92,7 +99,35 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 /// this directory can overwrite the destination outright at any moment, with
 /// no window to hit.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_atomic_staged(path, bytes).map_err(|e| e.into_io())
+    // Both outcomes are `Ok` here on purpose — see the trade above. Written as
+    // an explicit discard rather than `.map(|_| ())` so that adding a third
+    // outcome has to be answered for this caller too.
+    match write_atomic_staged(path, bytes) {
+        Ok(AtomicWrite::Durable | AtomicWrite::NameUnconfirmed) => Ok(()),
+        Err(e) => Err(e.into_io()),
+    }
+}
+
+/// How far a *successful* [`write_atomic_staged`] got — the success-side twin
+/// of [`AtomicWriteFailure`], and it exists for the same reason.
+///
+/// That type's doc already states the rule: the stage a write reached "is not
+/// something a caller can infer … so the writer says which it was". The
+/// success path used to break it, collapsing both of these into `Ok(())` with
+/// a log line. The two are not interchangeable for every store: the bytes are
+/// durable in both, but in the second the *name* pointing at them is not, so a
+/// power loss can restore whatever the path held before.
+pub(crate) enum AtomicWrite {
+    /// Bytes flushed, and the directory entry naming them is flushed too.
+    Durable,
+    /// Bytes flushed and renamed, but the parent directory entry was not
+    /// synced. A power loss can roll the *name* back to its previous target —
+    /// including to no entry at all, when this write created it.
+    ///
+    /// Harmless where the previous target is a complete older state. Not
+    /// harmless where it is a weaker claim: a caller that treats this as landed
+    /// may stop guarding the very thing the write was recording.
+    NameUnconfirmed,
 }
 
 /// How far [`write_atomic`] got before failing.
@@ -119,7 +154,10 @@ impl AtomicWriteFailure {
     }
 }
 
-pub(crate) fn write_atomic_staged(path: &Path, bytes: &[u8]) -> Result<(), AtomicWriteFailure> {
+pub(crate) fn write_atomic_staged(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<AtomicWrite, AtomicWriteFailure> {
     use AtomicWriteFailure::{FlushedNotRenamed, NotDurable};
     let tmp = tmp_path(path);
     ensure_parent_dir(path).map_err(NotDurable)?;
@@ -132,10 +170,10 @@ pub(crate) fn write_atomic_staged(path: &Path, bytes: &[u8]) -> Result<(), Atomi
         // may not be: `create_regular` added a directory entry that nothing has
         // flushed yet. A caller that treats the orphan as a landed claim is
         // relying on the next `read` finding it, so the entry has to survive a
-        // power loss too. Here the parent-dir fsync is load-bearing rather than
-        // the best-effort it is on the success path (where the worst case is
-        // rolling back to the previous file); if it fails, nothing about this
-        // write is dependable and the caller must not build on it.
+        // power loss too. Here the parent-dir fsync decides the outcome outright
+        // rather than grading it as the success path below does: with no rename
+        // to fall back on, a directory that was not synced leaves nothing about
+        // this write dependable, and the caller must not build on it.
         //
         // Confirmed undetectable by measurement: no deterministic test can
         // tell a synced directory entry from an unsynced one without
@@ -148,9 +186,10 @@ pub(crate) fn write_atomic_staged(path: &Path, bytes: &[u8]) -> Result<(), Atomi
         });
     }
     if !sync_parent_dir(path) {
-        warn!("parent dir sync failed; rename durability unconfirmed (best-effort, by design)");
+        warn!("parent dir sync failed; rename durability unconfirmed");
+        return Ok(AtomicWrite::NameUnconfirmed);
     }
-    Ok(())
+    Ok(AtomicWrite::Durable)
 }
 
 /// The temporary path [`write_atomic`] writes through.

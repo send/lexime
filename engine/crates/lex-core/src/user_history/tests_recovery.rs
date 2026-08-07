@@ -2285,7 +2285,12 @@ fn t10_a_flushed_orphan_counts_as_a_landed_claim() {
 
     let landed = deletion_marker::merge_write(&f.cp, DeletionBreach::Lost)
         .expect("a flushed orphan is a landed claim, not a failure");
-    assert_eq!(landed, DeletionBreach::Lost);
+    assert_eq!(
+        landed,
+        deletion_marker::MarkerState::Holds(DeletionBreach::Lost),
+        "and it is a *named* claim: this branch is only reached with the \
+         parent-dir fsync already confirmed, so `read` will find the orphan"
+    );
     assert_eq!(
         marker_claim(&f.cp),
         Some(DeletionBreach::Lost),

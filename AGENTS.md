@@ -221,6 +221,20 @@ what a generic reviewer misses:
   bytes back — a `write_all` that completed before `sync_all` failed leaves an
   image that compares equal without being durable, and calling that landed is
   the power-loss hole the sidecar exists to close);
+  the **success** side says which stage it reached too (`Durable` /
+  `NameUnconfirmed`), because collapsing it into `Ok` reopened that same hole
+  from the other end: a rename whose parent-dir fsync failed is durable bytes
+  under a name that can roll back, and for this store the previous name is a
+  *weaker claim* — a just-promoted `Lost` falling back to a suppressible
+  `Unflushed{seq}`, or a first write vanishing entirely — while the process
+  had already recorded `Holds(Lost)` and let appends past the freeze. The
+  belief the writer hands back is `Unknown`, and everything else follows from
+  the machinery already there rather than from a new rule: no desired state is
+  satisfied, so every commit re-projects, and `flushed != Holds(Lost)` keeps
+  appends frozen until the promotion is durably named. Best-effort stays
+  correct for the checkpoint and the user dict, whose previous content is a
+  complete older state, and for the marker's *removal*, whose rollback
+  over-reports — the one direction this format may fail in;
   a stronger record on disk **satisfies** a weaker desired one (the merge
   lattice, not equality): `merge_write` absorbs a requested `Unflushed` back
   into a surviving `Lost`, so exact equality made the desired state

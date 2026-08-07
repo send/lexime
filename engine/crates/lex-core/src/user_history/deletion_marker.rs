@@ -355,13 +355,42 @@ fn read_at(path: &Path) -> Option<(Vec<u8>, bool)> {
 /// cover the scenario #312 is named for (a process restart keeps the page
 /// cache), but it would reopen a power-loss window in the *report* about a
 /// deletion whose own power-loss window §6 sets to zero.
-pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<DeletionBreach> {
+/// What a completed write lets this process believe the path now holds.
+///
+/// The mirror of [`MarkerObservation::state`] on the write side, and it exists
+/// for the same reason: a claim and the knowledge of it are different facts.
+/// `Durable` names bytes. `NameUnconfirmed` does not — the bytes are flushed
+/// but the directory entry pointing at them is not, so a power loss can restore
+/// whatever the path held before the write. For this file that is a *weaker*
+/// claim (a promoted `Lost` falling back to a suppressible `Unflushed`, or to
+/// no marker at all), which is the one direction the format may never fail in.
+///
+/// `Unknown` rather than a new variant, because it is the same belief already
+/// spelled there: this process cannot name what the path holds. Everything the
+/// caller needs follows from that and is not re-derived here — `satisfies` is
+/// false, so every commit re-projects until a write confirms, and the freeze
+/// predicate in `apply_records` (`flushed != Holds(Lost)`) keeps appends off
+/// the WAL until the promotion is durably named.
+///
+/// Confirmed undetectable by measurement, like its sibling in `persist`: no
+/// deterministic test can fail a directory fsync without simulating power loss.
+/// The mapping below is testable and is what `test_an_unconfirmed_name_is_not_a
+/// _belief` pins; the syscall failing is carried by the argument.
+fn belief(outcome: persist::AtomicWrite, merged: DeletionBreach) -> MarkerState {
+    match outcome {
+        persist::AtomicWrite::Durable => MarkerState::Holds(merged),
+        persist::AtomicWrite::NameUnconfirmed => MarkerState::Unknown,
+    }
+}
+
+pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result<MarkerState> {
     // The claim only — whether the existing bytes were readable does not
     // change what has to be written, and merging is one-directional so an
     // unreadable existing marker (conservatively `Lost`) can only strengthen.
     let merged = read(checkpoint_path).map_or(breach, |existing| existing.breach.merge(breach));
     let image = merged.encode();
-    if let Err(e) = persist::write_atomic_staged(&marker_path(checkpoint_path), &image) {
+    match persist::write_atomic_staged(&marker_path(checkpoint_path), &image) {
+        Ok(outcome) => Ok(belief(outcome, merged)),
         // The logical marker is the canonical file **and** its orphan tmp —
         // `read` merges them and `remove` clears both — and that rule holds
         // here too: `write_atomic` flushes the tmp before renaming, so a
@@ -377,14 +406,18 @@ pub fn merge_write(checkpoint_path: &Path, breach: DeletionBreach) -> io::Result
         // cache before `sync_all` failed, since both compare equal — and
         // calling the second durable is exactly the window this file exists to
         // close.
-        match e {
-            persist::AtomicWriteFailure::FlushedNotRenamed(e) => {
-                warn!("marker rename failed ({e}); the flushed orphan carries the claim");
-            }
-            persist::AtomicWriteFailure::NotDurable(e) => return Err(e),
+        //
+        // `Holds`, not `Unknown`, and that is not the success path's rule being
+        // contradicted: this branch is only reached when `sync_parent_dir`
+        // *succeeded*, so the orphan's own directory entry is durable and the
+        // next `read` will find it and merge it. The claim is named; only the
+        // canonical file's name is not, and `read` does not need it.
+        Err(persist::AtomicWriteFailure::FlushedNotRenamed(e)) => {
+            warn!("marker rename failed ({e}); the flushed orphan carries the claim");
+            Ok(MarkerState::Holds(merged))
         }
+        Err(persist::AtomicWriteFailure::NotDurable(e)) => Err(e),
     }
-    Ok(merged)
 }
 
 /// Remove the marker, reporting whether the record is now gone.
@@ -439,4 +472,45 @@ fn remove_one(path: &Path) -> bool {
         path.display()
     );
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persist::AtomicWrite;
+
+    #[test]
+    fn test_an_unconfirmed_name_is_not_a_belief() {
+        // The whole of the fix, in the one place it is measurable. The syscall
+        // that produces `NameUnconfirmed` cannot be failed deterministically —
+        // a directory fsync only fails under conditions a test cannot stage —
+        // so what a test can pin is that the *outcome* is not laundered into a
+        // positive belief on its way to `flushed`.
+        //
+        // Direction matters, not just inequality: `Holds` would make
+        // `satisfies` true, the projection skip, and the freeze lift, so a
+        // power loss rolling the directory entry back to the weaker claim the
+        // promotion replaced would go unnoticed and unretried.
+        assert_eq!(
+            belief(AtomicWrite::Durable, DeletionBreach::Lost),
+            MarkerState::Holds(DeletionBreach::Lost),
+            "a durably named write is the one thing that may name bytes"
+        );
+        assert_eq!(
+            belief(AtomicWrite::NameUnconfirmed, DeletionBreach::Lost),
+            MarkerState::Unknown,
+            "flushed bytes under an unflushed name are not a claim this \
+             process can say the disk holds"
+        );
+        // The witness half too: `Unflushed` is the claim a rollback would
+        // *restore*, so writing one must not be the case that gets the
+        // exemption for being weaker.
+        assert_eq!(
+            belief(
+                AtomicWrite::NameUnconfirmed,
+                DeletionBreach::Unflushed { seq: 7 }
+            ),
+            MarkerState::Unknown,
+        );
+    }
 }

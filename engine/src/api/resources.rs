@@ -703,14 +703,23 @@ impl LexUserHistory {
         }
         match desired {
             Some(claim) => match deletion_marker::merge_write(wal.checkpoint_path(), claim) {
-                Ok(persisted) => {
-                    // What landed, not what was asked for: the write merges, so
-                    // a request of `Unflushed` over a surviving `Lost` leaves
-                    // `Lost` on disk. Recording the request would be a belief
-                    // the disk never held, and the next reconcile would find it
-                    // already satisfied and skip.
-                    lock_recover(&self.claims).flushed = MarkerState::Holds(persisted);
-                    true
+                Ok(belief) => {
+                    // The writer's belief, not one synthesized from "it
+                    // returned Ok". Two facts are folded in and neither is
+                    // recoverable here. *What* landed, because the write merges
+                    // — a request of `Unflushed` over a surviving `Lost` leaves
+                    // `Lost` on disk, and recording the request would be a
+                    // belief the disk never held, so the next reconcile would
+                    // find it satisfied and skip. And *whether* the name for it
+                    // is durable, because a rename whose parent-dir fsync
+                    // failed can roll this path back to what it held before —
+                    // for a promotion, the weaker claim the promotion existed
+                    // to replace. That comes back as `Unknown`, which no
+                    // desired state satisfies, so the projection keeps
+                    // re-asserting and the freeze below keeps appends off the
+                    // WAL until the claim is durably named.
+                    lock_recover(&self.claims).flushed = belief;
+                    matches!(belief, MarkerState::Holds(_))
                 }
                 Err(e) => {
                     // The belief is now *unknown*, not simply stale. A write
