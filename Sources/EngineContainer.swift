@@ -22,6 +22,49 @@ final class EngineContainer {
         initFailures.append(failure)
     }
 
+    /// The history failures a recovery report produces, as a pure function of
+    /// the two independent facts it can carry.
+    ///
+    /// Extracted so the one property that matters here is testable: a lost
+    /// deletion and a quarantine are independent facts about the same startup,
+    /// so the lost-deletion case must not live inside the mutually exclusive
+    /// branch chain that reports the quarantine — routing it through there
+    /// would let `dataLossSuspected` mask it. Asserting that over
+    /// `DegradedStatus.rows` cannot work: that function maps whatever list it
+    /// is handed, so it would only be testing `Array.map`.
+    static func historyFailures(
+        deletionLost: Bool,
+        dataLossSuspected: Bool,
+        detail: String,
+        deletionDetail: String
+    ) -> [EngineInitFailure] {
+        var failures: [EngineInitFailure] = []
+        if deletionLost {
+            failures.append(.historyDeletionLost(detail: deletionDetail))
+        }
+        if dataLossSuspected {
+            failures.append(.historyDataLoss(detail: detail))
+        }
+        return failures
+    }
+
+    /// Drop the lost-deletion row, whether because a wipe made the claim false
+    /// or because the user acknowledged it. The only latched row with a
+    /// retraction, and both of its retractions are user actions.
+    ///
+    /// Both callers reach it through `EngineControlService.retractRowIfSettled`,
+    /// which gates on the engine's own `deletionReportOwed()` rather than on
+    /// control flow — so this stays a pure render-cache edit with no policy in
+    /// it. (A `historyWasCleared()` wrapper used to sit in front of the wipe
+    /// path; it never acquired a caller once the service took over, and the
+    /// test that named it was pinning the wrapper instead of the gate.)
+    func retractDeletionLostRow() {
+        initFailures.removeAll {
+            if case .historyDeletionLost = $0 { return true }
+            return false
+        }
+    }
+
     init(
         engine: LexEngine?,
         dictionary: LexDictionary?,
@@ -118,6 +161,13 @@ final class EngineContainer {
             // return first. (migrationFailed cannot co-occur with
             // migratedFromV1, being its negation; it is appended uniformly
             // rather than special-cased.)
+            // Built lazily: interpolating a UniFFI enum goes through Swift's
+            // reflection runtime, and on a clean launch this would be the first
+            // such call in the process — paying its one-time warmup in front of
+            // the IME becoming responsive, for a string nothing then uses.
+            func stateDetail() -> String {
+                "checkpoint: \(report.checkpointState), wal: \(report.walState)"
+            }
             var degraded = ""
             if report.migrationFailed {
                 degraded += " migration=failed(v1 kept)"
@@ -125,24 +175,56 @@ final class EngineContainer {
             if report.appendsFrozen {
                 degraded += " appends=frozen(memory-only until compaction)"
             }
+            // Appended outside the branch chain below, not inside it: the
+            // chain is mutually exclusive, and a lost deletion co-occurs
+            // freely with a quarantine (independent facts about the same
+            // startup). Routing it through the chain would hide it behind
+            // dataLossSuspected — which is also why it is a case of its own
+            // and not folded into .historyDataLoss: that one means "past
+            // learning was lost", this one means the opposite, data that
+            // survived a deletion the user asked for (#312).
+            var deletionDetail = ""
+            if report.deletionLost {
+                degraded += " deletion=lost(prior session, entry may be back)"
+                deletionDetail = stateDetail() + degraded
+                NSLog(
+                    "Lexime: A deletion from a previous session was not persisted (%@)",
+                    deletionDetail)
+            }
+            var quarantineDetail = ""
             if report.dataLossSuspected {
-                var detail =
-                    "checkpoint: \(report.checkpointState), wal: \(report.walState)"
+                quarantineDetail = stateDetail()
                 if !report.quarantinedPaths.isEmpty {
-                    detail += ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
+                    quarantineDetail +=
+                        ", quarantined: \(report.quarantinedPaths.joined(separator: ", "))"
                 }
-                detail += degraded
-                NSLog("Lexime: User history recovered with data loss (%@)", detail)
-                failures.append(.historyDataLoss(detail: detail))
+                quarantineDetail += degraded
+                NSLog("Lexime: User history recovered with data loss (%@)", quarantineDetail)
             } else if report.migratedFromV1 {
                 NSLog(
                     "Lexime: User history migrated from v1 (\(report.framesReplayed) frames)\(degraded)"
                 )
-            } else if !report.clean {
+            } else if !report.clean && !report.deletionLost {
+                // deletionLost logged its own line above, carrying the same
+                // `degraded` fragment — without this clause a lost deletion on
+                // an otherwise healthy start says it twice.
                 NSLog(
                     "Lexime: User history recovery events: checkpoint=\(report.checkpointState) wal=\(report.walState)\(degraded)"
                 )
             }
+            failures.append(
+                contentsOf: EngineContainer.historyFailures(
+                    deletionLost: report.deletionLost,
+                    dataLossSuspected: report.dataLossSuspected,
+                    detail: quarantineDetail,
+                    deletionDetail: deletionDetail))
+            // No ack here. `bootstrap()` runs on every process launch,
+            // including the short-lived IMKit probe launches this controller
+            // already designs around — none of which ever render a menu. Acking
+            // at load would consume the report on the user's behalf and put
+            // #295's gap back one layer up. Nor does `menu()` ack: IMKit
+            // builds the menu without displaying it, so construction is not
+            // delivery either. The row's click handler is what acknowledges.
             history = h
         } catch {
             NSLog("Lexime: Failed to open user history at %@: %@", historyPath, "\(error)")

@@ -129,7 +129,12 @@ what a generic reviewer misses:
   re-derive either row from `is_frozen()` re-litigate this. (c) The deletion raise **does not branch on the error variant**
   — `SyncFailed` and `Io` both raise. §8 ※1's silent power-loss window is the
   *Committed* window; the Tombstone window is zero by §6, so a failed flush is
-  a real breach. (d) The cover is tied to a **durable checkpoint save**, not
+  a real breach. The *marker* that carries the raise across a restart (#312)
+  does distinguish them, and that is not a contradiction: within a session
+  neither half is durable, so both are reported the same; across a restart
+  `SyncFailed`'s frame is replayable, so reporting it after replay applied the
+  deletion would be a latching alarm about data that is gone. Which is why the
+  marker records a seq for that half and nothing for `Io`. (d) The cover is tied to a **durable checkpoint save**, not
   to the WAL truncation that follows: truncation is the physical scrub of
   superseded frames, and gating on it leaves a permanent warning whenever
   frames land mid-run (`FollowUp`) or the truncate fails on an otherwise
@@ -148,8 +153,17 @@ what a generic reviewer misses:
   "are there rows", not on the engine being degraded — because the main #295
   scenario is a clean launch followed by a later failure. Findings proposing to
   collapse the list, treat `SyncFailed` as benign, gate the cover on
-  truncation, or merge the issues into `initFailures` re-litigate these — do
-  not raise them. The "no commit-side ledger" clause that used to sit in this
+  truncation, or merge these two issues into `initFailures` re-litigate these
+  — do not raise them. The dividing line is **retraction, not provenance**: a
+  durability fact the *disk* can retract belongs on this list, and one no
+  amount of recovery can retract belongs with the latching startup failures.
+  `EngineInitFailure.historyDeletionLost` (#312) is the second kind — the
+  deletion is already lost and only the user deleting again resolves it (two
+  user actions retire the *row*: acknowledging it, and a wipe that makes the
+  claim false; neither is the disk healing)
+  — so it is not a breach of this entry, and proposals to move it onto the
+  runtime list (or to fold the runtime rows into it) contradict the same rule
+  from the other side. The "no commit-side ledger" clause that used to sit in this
   list is **withdrawn**; see (b).
   Deliberately **out of scope**, for two different reasons — do not merge them.
   (i) a persistent `spawn_compact` thread-spawn failure leaves `scrub_pending`
@@ -157,13 +171,197 @@ what a generic reviewer misses:
   scrub compaction's `save()` fails raises nothing (#311), so deleted strings
   sit in the old checkpoint and past Committed frames for the session. Both are
   deferred *physical scrubs*: the deletion itself is durable and startup heals
-  it. (iii) is **not** like them — the ledger is process-local, so on the `Io`
+  it. (iii) was **not** like them — the ledger is process-local, so on the `Io`
   half, where no frame reached the WAL and no checkpoint landed, the deletion is
-  not durable, startup does not heal it, and the report is gone on the very
-  restart where the entry resurrects (#312). **#295 is therefore only
-  half-closed**, with #312 as the remainder; it wants an on-disk marker, which
-  is new persisted state and so its own PR. Do not cite this entry to suppress
-  that. Separately, #313 records a
+  not durable, startup does not heal it, and the report was gone on the very
+  restart where the entry resurrects. **#312 closed it** (and with it #295) via
+  the `.deletion-pending` sidecar. Its settled shape, all of it reached by
+  review rather than by first draft:
+  the checkpoint header's reserved bytes are unusable, because the raise
+  condition *is* a failed checkpoint write (and an in-place header rewrite
+  would recompute a CRC outside tmp+rename, risking the whole history to report
+  one deletion); only `NotFound` is clean, so every malformed or unreadable
+  marker reports and no CRC is needed — and that is enforced by decoding as a
+  **round trip against the writer** (only what `encode` emits is accepted)
+  rather than by validating fields, which missed four shapes in a row; the
+  reader also refuses to *open* anything that is not a regular file, since a
+  FIFO at that path would block the IME's startup thread forever, and `rename`
+  replaces a symlink, a FIFO or an unwritable file at the path rather than
+  writing through it, which also keeps a failed promotion from leaving a
+  witness that re-based seq numbers could satisfy — but `rename` guards only
+  the destination, so both the tmp `write_atomic` writes through and the
+  marker the reader opens go through one resolution
+  (`O_NOFOLLOW | O_NONBLOCK` plus an `fstat` on the obtained descriptor),
+  closing by construction the symlink that would truncate a file this crate
+  does not own and the readerless FIFO that would hang startup or the
+  key-processing thread; a check-then-open would leave the two resolutions a
+  substitution can race, which is why the reader stopped doing that;
+  `rename` promoting a *name* rather than the flushed descriptor stays open
+  and is stated rather than papered over — POSIX has no fd-based rename, a
+  uniquely-named tmp would break the marker-plus-orphan pair below, and
+  anything able to write in that directory can overwrite the destination
+  outright with no window to hit;
+  promotion of an `Unflushed{seq}` witness to `Lost` is **mandatory, not an
+  optimization** — a seq is a position within one WAL file, not an epoch, and
+  the witness test `seq > applied_seq` is an *inequality over a high water
+  mark*, so once that file is replaced any later frame above the witness
+  answers it "applied" whether or not the tombstone ever existed in the new
+  lineage; a **seq floor** was tried here and removed, because skipping the one
+  number the claim names changes nothing about an inequality (gaps are legal),
+  and the entry that claimed it gave "epoch discipline" was wrong: a floor on a
+  position creates no identity. While a report is owed and the disk does not
+  yet say `Lost`, appends **freeze** — the state that would answer the witness
+  must not advance until the lineage-independent form has landed;
+  a claim counts as landed when the **logical** marker holds it — the canonical
+  file *or* its flushed orphan tmp — because `write_atomic` syncs before it
+  renames, so a rename that fails has still made the bytes durable where the
+  next `read` merges them; treating that as failure froze appends on every
+  commit forever against a record that already said what was wanted (which
+  stage failed comes from `write_atomic_staged`, never from comparing the
+  bytes back — a `write_all` that completed before `sync_all` failed leaves an
+  image that compares equal without being durable, and calling that landed is
+  the power-loss hole the sidecar exists to close);
+  the **success** side says which stage it reached too (`Durable` /
+  `NameUnconfirmed`), because collapsing it into `Ok` reopened that same hole
+  from the other end: a rename whose parent-dir fsync failed is durable bytes
+  under a name that can roll back, and for this store the previous name is a
+  *weaker claim* — a just-promoted `Lost` falling back to a suppressible
+  `Unflushed{seq}`, or a first write vanishing entirely — while the process
+  had already recorded `Holds(Lost)` and let appends past the freeze. The
+  belief the writer hands back is `Unknown`, and everything else follows from
+  the machinery already there rather than from a new rule: no desired state is
+  satisfied, so every commit re-projects, and `flushed != Holds(Lost)` keeps
+  appends frozen until the promotion is durably named. Best-effort stays
+  correct for the checkpoint and the user dict, whose previous content is a
+  complete older state, and for the marker's *removal*, whose rollback
+  over-reports — the one direction this format may fail in;
+  a stronger record on disk **satisfies** a weaker desired one (the merge
+  lattice, not equality): `merge_write` absorbs a requested `Unflushed` back
+  into a surviving `Lost`, so exact equality made the desired state
+  unreachable and every commit paid another key-thread full sync forever;
+  `merge_write` returns the value it **persisted**, not the one requested, and
+  the belief records that — the write merges, so asking for `Unflushed` over a
+  surviving `Lost` leaves `Lost`, and a caller repeating its own request would
+  hold a belief the disk never had and skip the next reconcile as already
+  satisfied;
+  what the disk holds is a **three**-valued belief (`MarkerState`:
+  absent / holds-these-bytes / unknown), because a file nobody could read is
+  neither of the first two — collapsing it into absence let a failed unlink of
+  an unreadable marker look settled, and `Unknown` never satisfies a desired
+  state so the retry cannot be skipped;
+  an owed report whose disk does not yet say `Lost` **freezes appends** — the
+  one case where a sidecar may stop learning — whether the marker was
+  unreadable or holds a decoded `Unflushed` the promotion could not replace,
+  because either may name a sequence a later frame would answer and nothing
+  about numbering can prevent that; `frozen` already means "appending to this
+  file is not safe" (exempt: a disk that already says `Lost`, unsatisfiable by
+  any sequence, and a claim this session raised about the file it is still
+  appending to);
+  a write reports **which stage failed**, and the caller never infers it: bytes
+  read back cannot distinguish a flushed image from one that only reached the
+  page cache before `sync_all` failed, so `write_atomic_staged` says whether
+  the failure was pre-durability or the rename alone;
+  a failed write or removal sets the belief to `Unknown` rather than leaving
+  the old value — a short write can leave a truncated orphan the previous value
+  does not describe, and a stale `Absent` would satisfy a desired `None` and
+  skip the cleanup;
+  sequence exhaustion is refused **where the number is issued**, never carried
+  by `frozen`: a witness at the representable ceiling would otherwise make `+1`
+  panic across the UniFFI constructor in debug and hand out seq 0 in release,
+  and representing it as a freeze is wrong in kind — a compaction clears a
+  freeze by rewriting the file, and rewriting a file creates no numbers, so the
+  heal put the wrap straight back (adoption saturates instead, and `u64::MAX`
+  is refused rather than spent since assigning it leaves no successor);
+  a marker's *claim* and the *observation* of it are separate — anything
+  unreadable claims `Lost` by the fail-safe rule but confirms nothing, so only
+  a `confirmed` read reaches `marker_on_disk`, and `deletion_pending_checkpoint`
+  seeds the `session` claim as well as the ledger so the two cannot disagree
+  about what is outstanding;
+  **every commit reconciles the marker** — in `apply_records`, under the wal
+  mutex, before the appends — and that, not any per-event retry, is what makes
+  the disk agree with the projection; a record reconciled only at chosen events
+  is a cache with invalidation, which is why six review rounds each found a
+  different event with no retry behind it (ack, wipe, the compaction's cover,
+  recovery's removal, recovery's promotion, that compaction itself), and it is
+  affordable on the key path only because a matching `flushed` makes it a
+  memory comparison; before the appends because the harm is a WAL advancing
+  past an un-promoted witness;
+  **no compaction runs while a v1 checkpoint awaits its migration commit**
+  (`OpenReport::v1_checkpoint_retained`), and the refusal lives in
+  `run_compact_impl` — the single site that performs the write — not at any
+  scheduler: a compaction is not the migration (it writes a v2 checkpoint over
+  the v1 file with none of the commit's steps), and there are five schedulers
+  with nothing stopping a sixth, so gating them one at a time took three review
+  rounds and still left the scrub branch reaching it. The startup hint and both
+  schedulers do suppress, but only to avoid creating a worker that would refuse
+  — while the veto holds the threshold never clears, so a degraded session would
+  otherwise spawn an OS thread per commit from the key path. The veto is a
+  runtime cell seeded from the report and **released by `clear`'s commit point**,
+  because it is a fact about the bytes on that path and not about what startup
+  saw: a wipe writes an empty v2 checkpoint over the same file, superseding the
+  un-migrated copy on purpose, and a veto keyed on the startup observation would
+  outlive the bytes it protects and refuse the heal `clear` itself posts for a
+  failed physical step — a frozen WAL and a half-finished wipe with no retry, on
+  a flow that deliberately does not restart. The
+  legacy-WAL variant is exempt because there the compaction *is* the heal;
+  a startup retraction whose unlink fails hands the debt to
+  `compaction_recommended` for promptness alone
+  instead of a thousand frames later; the runtime seeds `MarkerClaims::flushed`
+  from `OpenReport::marker_on_disk` rather than assuming a clear disk, since
+  `None` is a positive claim that a failed promotion contradicts by leaving a
+  *suppressible* `Unflushed` under a memory claim of `Lost`, and `flushed` is
+  an observation rather than a claim, so a wipe folds `session` and leaves it
+  standing;
+  an empty loaded history and an empty durable set together settle a `Lost`
+  claim — either half alone was wrong once, and requiring both also removes
+  any need to tell an encoded `Lost` from the fallback a malformed marker
+  decodes to; the startup
+  counterpart of `clear` covering the ledger from its empty checkpoint, scoped
+  to `Lost` because `Unflushed` is about durability rather than presence and
+  replay can empty memory while the checkpoint still holds the entry; writes **merge** rather than replace,
+  `Io` absorbing, and go through the shared `write_atomic`; the tmp/rename gap
+  that once argued for a hand-rolled in-place write is closed by `read` merging
+  the orphan tmp, which can only strengthen a claim — writing by hand instead
+  cost three rounds of re-deriving durability details the shared primitive
+  already encodes (symlink replacement, unlink-failure checking, the new dir
+  entry's fsync); a claim
+  whose write failed is held in memory so the next raise re-asserts it; startup
+  **never retracts**, because a witness satisfied by replay was only satisfied
+  out of the page cache — it hands the claim to the runtime ledger for a durable
+  checkpoint to settle — and a witness that is *not* satisfied is promoted to
+  unconditional, because a WAL quarantine re-bases seq numbering and an
+  unrelated later frame would otherwise settle it; the compaction retraction
+  shares the wal guard with the ledger cover, because the window between a CAS
+  and a separate unlink cannot be pinned by a deterministic test — but it does
+  **not** retract an inherited report that nothing has delivered yet, since a
+  checkpoint written this session persists the *resurrected* entry and so
+  settles nothing about a previous session's claim; the logical marker is the canonical
+  file *and* the atomic write's orphan tmp — `read` merges the second, so
+  removal must clear both or a `Lost` orphan rebuilds the unclearable latch —
+  removal reports whether it is actually clear and an acknowledgement settles
+  only when it is (an empty
+  directory left there is a placeholder and gets cleared; a non-empty one is
+  someone else's and does not, which the return value makes visible rather than
+  silent); `clear`
+  removes the marker **unconditionally and separately**, since a previous
+  session's marker moves no counter in this one and the cover would early-return
+  past it when the ledger is untouched; and the acknowledgement happens on a
+  **click of the row**, neither at load nor at menu-build time — `bootstrap()`
+  runs on IMKit probe launches that never show a menu, and IMKit also builds
+  the menu without displaying it (measured: the record was consumed four
+  seconds after an untouched relaunch), so only a person clicking is evidence
+  the report was delivered.
+  One class stays open by construction and is documented rather than fixed:
+  the marker lives in the checkpoint's directory, so a failure of that whole
+  directory (read-only volume, EACCES, parent removed) takes the marker with
+  it. Findings proposing a header flag, a CRC, a plain overwrite, a tmp+rename
+  write, a cover outside the wal mutex, a *replay-evidence* retraction at
+  startup, an ack at load or at menu-build time, or folding `clear`'s wipe into
+  the cover re-litigate these — do not raise them. (Retraction against a
+  durable checkpoint at startup **is implemented**, not rejected, and so is the
+  single owed-predicate that decides whether the status row stays. Findings
+  about either are in scope — this list must never suppress review of the
+  mechanism it describes.) Separately, #313 records a
   pre-existing privacy race: `apply_records` appends to the commit log outside
   the wal mutex, so a commit in flight can re-create `commit-log.jsonl` after
   `clear` unlinked it. Findings re-raising any of these should point at the
@@ -186,12 +384,17 @@ what a generic reviewer misses:
   for writing inside the wal critical section on every commit and a compaction
   holds for `cover_durable_residue`, so a merged ledger would put a main-thread
   menu poll behind history I/O, where the ledger's single atomic load blocks
-  on nothing. Reason (2) is the harder blocker. (2) **lex-core cannot see the `SyncFailed` raise.**
-  `apply_batch`'s witness is `(WalRecord, Option<u64>)` and a `SyncFailed`
-  tombstone carries `Some(seq)`, indistinguishable from a healthy one — by
-  design, since the residue deliberately excludes `SyncFailed` (its frame is
-  replayable). Merging would mean widening that witness to a three-state
-  durability value across a settled PR1 surface to serve a reporting concern.
+  on nothing. Reason (2) is the harder blocker. (2) **`apply_batch`'s witness must not widen.**
+  It is `(WalRecord, Option<u64>)`, and a `SyncFailed` tombstone carries
+  `Some(seq)`, indistinguishable from a healthy one — by design, since the
+  residue deliberately excludes `SyncFailed` (its frame is replayable).
+  Merging would mean widening that witness to a three-state durability value
+  across a settled PR1 surface to serve a reporting concern. (#312 put the
+  ledger's *on-disk projection* in lex-core, `user_history/deletion_marker.rs`,
+  so "lex-core never sees this distinction" is no longer the phrasing — lex-core
+  owns the file family and the format. What it still does not see is the raise
+  event: the engine classifies the failure and calls in. The blocker is the
+  witness, not the crate.)
   The two ledgers answer different questions: the residue asks "may the
   durable set still hold this key" (gating the no-op skip), the ledger asks
   "did this deletion reach disk at all" (reporting). Findings proposing to

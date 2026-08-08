@@ -12,6 +12,19 @@
 //! migration writes). Offline tooling must keep using the strict, side-
 //! effect-free [`UserHistory::open`] / [`super::wal::open_with_wal`]: an
 //! audit tool renaming a live IME's files would be an incident.
+//!
+//! It also runs **before the history is shared**: the `HistoryWal` it returns
+//! has not entered its mutex yet and no session can reach it. That is the
+//! standing exemption for the one write it makes to the unpersisted-deletion
+//! marker, which everywhere else in the engine happens only under the wal mutex
+//! (the mutex is what makes a raise and a cover unable to interleave). A future
+//! path that re-opens a *live* history would break the exemption, not merely
+//! bend it. This function removes the marker on two grounds and no others: a
+//! *durable checkpoint* on disk already covers the witness — including the one
+//! the migration path writes itself — or the `Lost` claim is vacuous, both the
+//! durable set and the loaded state being empty, so no entry exists for the
+//! deletion to have failed against. Replay reaching the witness is neither: it
+//! proves the frame was readable, not flushed.
 
 use std::fs;
 use std::io;
@@ -21,6 +34,7 @@ use tracing::{info, warn};
 
 use crate::persist;
 
+use super::deletion_marker;
 use super::persistence::{load_checkpoint, CheckpointLoaded};
 use super::wal::{
     classify_wal, legacy_valid_prefix, scan_legacy, scan_v2, wal_path_for, HistoryWal, WalFormat,
@@ -116,6 +130,91 @@ pub struct OpenReport {
     /// Startup-compaction hint (§5.1-6): recovery results should be
     /// checkpointed early so the next startup is clean. Consumed in PR2.
     pub compaction_recommended: bool,
+    /// A **v1 checkpoint is still on disk** waiting for its migration commit to
+    /// be retried, and no legacy WAL was consumed.
+    ///
+    /// While this holds, no compaction may run at all: a compaction is not the
+    /// migration — it writes a v2 checkpoint over the v1 file with none of the
+    /// commit's steps (no `.v1.bak`, no `Migrated`) — so it would destroy the
+    /// v1 bytes on the one path where they are the only copy.
+    ///
+    /// A *field* rather than a guard at each scheduler, because guarding
+    /// schedulers is inherently incomplete: there are five of them (the
+    /// startup hint, the scrub branch, the threshold, `clear`'s heal, and
+    /// `FollowUp`), nothing stops a sixth, and three review rounds went into
+    /// gating them one at a time. `run_compact_impl` refuses instead, which is
+    /// the single place that performs the write.
+    ///
+    /// What this field states is what recovery *observed*, so the runtime seeds
+    /// a cell from it rather than reading it as the live answer: a `clear`
+    /// writes an empty v2 checkpoint over the same path and supersedes the v1
+    /// bytes mid-session. See `HistoryResource::v1_checkpoint_retained`.
+    ///
+    /// The legacy-WAL variant is excluded because there the compaction **is**
+    /// the intended heal: that path freezes the WAL, and the compaction which
+    /// thaws it writes the v2 checkpoint as a side effect, completing the
+    /// conversion.
+    pub v1_checkpoint_retained: bool,
+    /// A previous session could not persist a deletion the user asked for,
+    /// and nothing since has covered it (#312) — so the state just loaded may
+    /// still hold the entry that deletion was meant to remove.
+    ///
+    /// Its own field for the same reason `migration_failed` is: on this path
+    /// `checkpoint_state` is *truthfully* `Loaded` — the checkpoint read
+    /// perfectly, it just contains something that should be gone — so no
+    /// existing enum can carry the fact without a state per combination. It
+    /// deliberately stays out of `data_loss_suspected()`, whose user-facing
+    /// wording is "some past learning was lost": this is the opposite loss,
+    /// data that survived when it should not have.
+    ///
+    /// Feeds `compaction_recommended` **when the disk does not already say
+    /// `Lost`** — a reversal of the note that used to sit here, kept as a
+    /// record of why.
+    ///
+    /// That note said a compaction "would checkpoint the resurrected entry and
+    /// cover the ledger — i.e. tell the user everything is fine". All three
+    /// premises are false now, and the last was false when it was written:
+    ///
+    /// - it cannot cover the ledger — nothing raised it this session, so the
+    ///   cover early-returns, which the note's own parenthetical conceded;
+    /// - it cannot tell the user anything is fine — the row is driven by
+    ///   `inherited_owed` and the latched `EngineInitFailure`, and a
+    ///   compaction touches neither;
+    /// - re-checkpointing the resurrected entry changes nothing. The entry is
+    ///   already in the durable checkpoint. That is *why* it resurrected.
+    ///
+    /// What a compaction does do is project, and with the inherited claim
+    /// standing the projection writes `Lost`. That is the point: recovery's
+    /// promotion is best-effort, and when it fails the disk keeps the
+    /// *suppressible* `Unflushed{seq}` under a memory claim of `Lost`. A
+    /// healthy session raises nothing, so nothing re-projects until a
+    /// threshold compaction a thousand frames away — and ordinary commits
+    /// advance the WAL past the witness in the meantime, so a restart before
+    /// then reads the witness as replayed and suppresses a report that is
+    /// still owed. Scheduling the compaction is what makes the promotion
+    /// actually happen.
+    pub deletion_lost: bool,
+    /// What the marker file holds once this function is done with it, as
+    /// observed rather than assumed.
+    ///
+    /// The runtime seeds `MarkerClaims::flushed` from this. That field means
+    /// "what the disk holds, as far as we know", and starting it at `None` was
+    /// a claim recovery is in a position to contradict: a retraction whose
+    /// unlink failed, or a promotion whose write failed, both leave bytes
+    /// behind that the process would then believe were gone. The promotion
+    /// case is the sharp one — the disk keeps the *suppressible*
+    /// `Unflushed{seq}` while memory holds `Lost`, so a later checkpoint can
+    /// satisfy the stale witness and silently retract the very report the
+    /// promotion exists to make unconditional.
+    ///
+    /// Internal; not surfaced over UniFFI.
+    pub marker_on_disk: deletion_marker::MarkerState,
+    /// A previous session's deletion *was* applied by this startup's replay,
+    /// but out of the page cache — the flush that failed never happened, so
+    /// power loss still undoes it. Not a report: a live durability problem the
+    /// engine seeds its runtime ledger from, so the first durable checkpoint
+    /// retracts it. Internal; not surfaced over UniFFI.
+    pub deletion_pending_checkpoint: bool,
 }
 
 impl OpenReport {
@@ -137,6 +236,7 @@ impl OpenReport {
             && !self.migrated_from_v1
             && !self.migration_failed
             && !self.appends_frozen
+            && !self.deletion_lost
     }
 }
 
@@ -156,6 +256,10 @@ pub fn open_recovering(
         appends_frozen: false,
         replayed_deletion: false,
         compaction_recommended: false,
+        v1_checkpoint_retained: false,
+        marker_on_disk: deletion_marker::MarkerState::Absent,
+        deletion_lost: false,
+        deletion_pending_checkpoint: false,
     };
 
     // --- 1. checkpoint ---
@@ -178,7 +282,29 @@ pub fn open_recovering(
     let v1_checkpoint_present = migrate;
 
     // --- 2. WAL ---
+    // The checkpoint's own coverage, before replay moves `applied_seq`. The
+    // marker below needs the two apart: a witness the *checkpoint* covers is
+    // durably persisted, while one only *replay* reaches is still riding the
+    // page cache.
+    let checkpoint_applied_seq = history.applied_seq();
+    // …and whether it holds anything, before replay can change the answer.
+    let checkpoint_empty = history.is_empty();
     let mut wal = HistoryWal::new(checkpoint_path);
+    // Read once, here; §3b reuses the value, and nothing between writes the
+    // file.
+    //
+    // A sequence *floor* used to be installed from an outstanding
+    // `Unflushed{seq}` here, on the theory that a rebase must not re-issue the
+    // number the claim names. That was a mis-model and is gone: the witness
+    // test is an **inequality** (`seq > applied_seq`), so any later frame above
+    // the witness satisfies it — gaps are legal and `applied_seq` is a high
+    // water mark. Skipping one number changes nothing. The seq is a *position
+    // within one WAL file*, not an epoch, and it stops meaning anything the
+    // moment that file is replaced; only promotion to `Lost` survives a
+    // lineage change, which is why promotion is mandatory rather than an
+    // optimization, and why a report that is owed with the promotion unlanded
+    // freezes appends (see `apply_records`).
+    let marker = deletion_marker::read(checkpoint_path);
     let mut legacy_wal_consumed = false;
     match fs::read(&wal_path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -347,6 +473,142 @@ pub fn open_recovering(
         report.migration_failed = !report.migrated_from_v1;
     }
 
+    // --- 3b. unpersisted-deletion marker (#312) ---
+    // Evaluated here, after the migration commit, because the question it asks
+    // is "does the checkpoint that is durable **when this function returns**
+    // cover the witness" — and on the migration path this function writes that
+    // checkpoint itself. Asking before the commit answered against a v1 file
+    // that predates the deletion, so a migration whose save had just persisted
+    // the deletion still handed the engine a live durability warning and left
+    // the marker for an asynchronous compaction to clean up. One evaluation
+    // point against one durable state, rather than a settle-again special case
+    // in the migration branch.
+    //
+    // `durable_applied_seq` is what is on disk now: the checkpoint this startup
+    // wrote if the migration committed (it was serialized from `history`, so it
+    // covers everything memory holds), otherwise the one that was loaded.
+    let (durable_applied_seq, durable_empty) = if report.migrated_from_v1 {
+        (history.applied_seq(), history.is_empty())
+    } else {
+        (checkpoint_applied_seq, checkpoint_empty)
+    };
+    // A retraction this startup decided but could not carry out. The verdict
+    // is permanent — the entries the claim spoke of are gone, and later
+    // learning is not them — but the only place to record it is the file we
+    // just failed to unlink, so the debt has to be handed to the runtime
+    // instead. Recovery is the last marker site outside the single projection
+    // writer (`apply_marker`), and this is the hole that left: the runtime's
+    // projection does retry a stale file, but only when a compaction runs, and
+    // the next one is a thousand frames away. A restart before then reloads
+    // the marker against a history that replay has made non-empty, and reports
+    // a loss this startup already refuted. Scheduling the compaction *now* is
+    // what makes the retry prompt, through the channel other recovery results
+    // already use rather than a mechanism of its own.
+    let mut marker_retraction_stuck = false;
+    if let Some(observed) = marker {
+        let breach = observed.breach;
+        if breach == deletion_marker::DeletionBreach::Lost && durable_empty && history.is_empty() {
+            // `Lost` says an entry survived the deletion. Refuting that takes
+            // **both** halves, and each alone was wrong once:
+            //
+            // - the durable set alone — a checkpoint emptied by `clear` — says
+            //   nothing when replay brings entries back from the WAL;
+            // - the loaded state alone lets a replayed tombstone empty memory
+            //   while the checkpoint still holds the entry, and `decode` maps
+            //   *malformed* input to `Lost` too, so a garbled `Unflushed`
+            //   would be retracted as a refuted presence claim and a power
+            //   loss would restore the entry with nothing reported.
+            //
+            // Together they say what the claim actually needs: no entry on
+            // disk, and none replayed back. That also removes any need to tell
+            // a decoded `Lost` from a fallback one — neither is refutable
+            // while the checkpoint still holds something.
+            info!("an unpersisted-deletion marker outlived the entries it referred to");
+            marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
+            if marker_retraction_stuck {
+                // `state()`, not the claim: an unlink that failed on a file
+                // nobody could read leaves the disk *unknown*, and recording
+                // that as absence let the projection skip the retry.
+                report.marker_on_disk = observed.state();
+            }
+        } else if !breach.outstanding(durable_applied_seq) {
+            // A durable checkpoint contains the deletion's effect, so it is
+            // persisted. Either a crash landed between a successful `save()`
+            // and the unlink that follows it, or the migration above just wrote
+            // the covering checkpoint. Retracting is sound because the evidence
+            // is a checkpoint on disk.
+            info!("an unpersisted-deletion marker is covered by a durable checkpoint");
+            marker_retraction_stuck = !deletion_marker::remove(checkpoint_path);
+            if marker_retraction_stuck {
+                report.marker_on_disk = observed.state();
+            }
+        } else if breach.outstanding(history.applied_seq()) {
+            // The frame is provably not in the state we just loaded, so the
+            // deletion did not take and nothing will make it take. Promote the
+            // claim to unconditional: seq numbering is *re-based* whenever a
+            // WAL is quarantined or reinitialized (`adopt_empty` restarts at
+            // the checkpoint's applied_seq + 1), so an unrelated later frame
+            // could otherwise satisfy this witness and settle a report that is
+            // still owed. Having answered the question once, the answer stops
+            // depending on a comparison a reset can invalidate.
+            warn!("a deletion from a previous session was never persisted ({breach:?})");
+            report.deletion_lost = true;
+            // Best-effort, and the runtime is told which way it went. A
+            // promotion that fails leaves the *suppressible* witness on disk
+            // under a memory claim of `Lost`, so the next checkpoint to reach
+            // that seq would retract a report that is still owed. Handing the
+            // observed value out means the runtime's first projection sees
+            // disk != desired and re-asserts, rather than believing a write
+            // that never landed.
+            // `confirmed` gates the whole thing: a marker that could not be
+            // read comes back as `Lost` by the fail-safe rule, and recording
+            // that fallback as an observation would have the runtime believe
+            // the disk holds `Lost` when it may hold a live `Unflushed`
+            // witness. `flushed` would then match, every reconcile would skip,
+            // and the witness would sit there until something satisfied it.
+            report.marker_on_disk = if !observed.confirmed {
+                deletion_marker::MarkerState::Unknown
+            } else if breach == deletion_marker::DeletionBreach::Lost {
+                deletion_marker::MarkerState::Holds(breach)
+            } else {
+                match deletion_marker::merge_write(
+                    checkpoint_path,
+                    deletion_marker::DeletionBreach::Lost,
+                ) {
+                    // The writer's belief verbatim. It is `Unknown` when the
+                    // bytes are flushed but the directory entry naming them is
+                    // not — the same "suppressible witness under a memory claim
+                    // of `Lost`" hazard the `Err` arm below is about, reached
+                    // through a power loss rolling the name back instead of
+                    // through the write failing outright. Wrapping the value in
+                    // `Holds` here is what hid it: the caller decided what the
+                    // disk held from the fact that the call returned.
+                    Ok(belief) => belief,
+                    Err(e) => {
+                        warn!("failed to promote the unpersisted-deletion claim: {e}");
+                        deletion_marker::MarkerState::Holds(breach)
+                    }
+                }
+            };
+        } else {
+            // Replay applied the deletion and no durable checkpoint covers it,
+            // so nothing is owed to the user — but replay read that frame out
+            // of the page cache, which is not the flush that failed: until a
+            // checkpoint covers it, power loss still undoes the deletion.
+            // Retracting here would be retract-then-persist, the inverse of the
+            // discipline every other write on this path follows. Hand the claim
+            // to the runtime ledger instead — it is a live durability problem
+            // now, and the first durable checkpoint both settles it and unlinks
+            // the file.
+            info!("an unflushed deletion replayed; it stands until a checkpoint covers it");
+            report.deletion_pending_checkpoint = true;
+            report.marker_on_disk = deletion_marker::MarkerState::Holds(breach);
+            // Reachable only with a decoded `Unflushed` — an unreadable marker
+            // resolves to `Lost`, which is always outstanding and never lands
+            // here — so this observation is confirmed by construction.
+        }
+    }
+
     // Whatever branch froze the WAL — or left it frozen — this session's
     // appends are memory-only until a compaction heals the file. Derived
     // once, here, so a future freeze site cannot report a clean startup by
@@ -387,13 +649,57 @@ pub fn open_recovering(
     // re-attempts properly. The legacy-WAL variant still heals, via
     // `appends_frozen` below: there the WAL is frozen, which is a real
     // degradation the compaction genuinely fixes.
-    report.compaction_recommended = report.migrated_from_v1
+    // The two marker feeders below are **promptness, not correctness**. What
+    // guarantees the disk eventually agrees with the projection is that every
+    // commit reconciles it (`apply_records`, under the wal mutex, before the
+    // appends) — a free memory comparison when they already agree. These only
+    // spare a user whose startup was degraded from waiting until their next
+    // keystroke, and losing one costs nothing but latency. Keeping that
+    // division explicit matters: six review rounds were spent adding retry
+    // triggers one event at a time, and the answer was never another trigger.
+    let marker_prompt = marker_retraction_stuck
+            // A report is owed but the disk does not yet say so
+            // unconditionally: the promotion above failed. Scheduled so the
+            // runtime's projection re-asserts `Lost` promptly, because nothing
+            // else will — see `deletion_lost`'s doc for why the old "never
+            // schedule here" rule was wrong. Skipped when the disk already
+            // holds `Lost`, since then the projection and the file agree and a
+            // compaction buys nothing.
+        || (report.deletion_lost
+            && report.marker_on_disk
+                != deletion_marker::MarkerState::Holds(deletion_marker::DeletionBreach::Lost));
+    report.compaction_recommended = marker_prompt
+        || report.migrated_from_v1
         || report.data_loss_suspected()
         || (report.checkpoint_state == CheckpointState::Missing && report.frames_replayed > 0)
         || report.frames_skipped > 0
         || report.replayed_deletion
         || wal.needs_compact()
         || report.appends_frozen;
+
+    // …and then vetoed outright when a v1 checkpoint is still on disk waiting
+    // for its commit to be retried. A compaction is **not** the migration — it
+    // writes a v2 checkpoint over the v1 file with none of the commit's steps
+    // (no `.v1.bak`, no `Migrated`) — so running one here destroys the v1 bytes
+    // on exactly the path where they are the only copy. That is the hazard
+    // `migration_failed`'s own doc states, and it is a property of *running a
+    // compaction at all*, not of any one feeder: gating the marker feeders
+    // alone left `replayed_deletion` scheduling the same worker, which a
+    // replayed `Unflushed` witness necessarily sets.
+    //
+    // The legacy-WAL variant is exempt because there the compaction *is* the
+    // intended heal: that path freezes the WAL, and the compaction which thaws
+    // it writes the v2 checkpoint as a side effect, completing the conversion.
+    // Without a legacy WAL there is nothing to heal and everything to lose, so
+    // the next launch retries the commit properly.
+    report.v1_checkpoint_retained = report.migration_failed && !legacy_wal_consumed;
+    if report.v1_checkpoint_retained {
+        // Not the guard — `run_compact_impl` refuses on the cell this seeds,
+        // and that is what makes this safe. This only avoids spawning a worker
+        // that would immediately give up; the schedulers do the same for the
+        // requests that arise after startup.
+        report.compaction_recommended = false;
+    }
 
     // --- 5. quarantine rotation + v1-backup GC ---
     persist::rotate_quarantined(checkpoint_path, QUARANTINE_KEEP);
@@ -432,10 +738,19 @@ pub fn v1_backup_path(checkpoint_path: &Path) -> PathBuf {
 /// Remove recovery artifacts (`.v1.bak`, `.corrupt-*`, stray `.tmp`) for
 /// this history family. `clear()` calls this: a privacy wipe must not leave
 /// rescued bytes behind.
+///
+/// Deliberately **not** the sweep for the unpersisted-deletion marker, even
+/// though that is a family member too: this returns on its first non-NotFound
+/// error and only reaches the `.corrupt-*` files afterwards, so letting a
+/// stubborn 16-byte sidecar that holds no user text stand in front of files
+/// that hold plenty would be the wrong trade. `clear_impl` removes the marker
+/// itself. (The same fail-fast shape means a stubborn `.v1.bak` can already
+/// block the quarantine sweep, which does hold user text — a pre-existing
+/// weakness of this helper, not one the marker introduces.)
 pub fn remove_recovery_artifacts(checkpoint_path: &Path) -> io::Result<()> {
     for path in [
         v1_backup_path(checkpoint_path),
-        persist::suffixed(checkpoint_path, ".tmp"),
+        persist::tmp_path(checkpoint_path),
         // The v1 writer used `with_extension("tmp")` (`user_history.tmp`):
         // a pre-upgrade crash before rename can leave a full serialized
         // history copy under that name.

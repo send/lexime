@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
+use super::deletion_marker::{self, DeletionBreach};
 use super::recovery::{
     open_recovering, remove_recovery_artifacts, v1_backup_path, CheckpointState, WalState,
 };
@@ -1532,4 +1533,1030 @@ fn remove_recovery_artifacts_wipes_backup_and_quarantine() {
     assert_eq!(quarantine_count(&f), 0);
     assert!(!f.cp.with_file_name("user_history.lxud.tmp").exists());
     assert!(!f.cp.with_file_name("user_history.tmp").exists());
+}
+
+// ---------------------------------------------------------------------------
+// T10: the unpersisted-deletion marker (#312). The runtime ledger is
+// process-local, so before this the `Io` half went unreported on exactly the
+// restart where the entry comes back.
+//
+// The axis is independent of the checkpoint × WAL matrix above: the marker
+// says something about a *previous* session, not about the files just read.
+// ---------------------------------------------------------------------------
+
+/// The tmp `write_atomic` writes the marker through, derived from the same
+/// definition the writer calls — a separately-spelled name would stop
+/// obstructing anything the moment the convention moved, and the tests below
+/// would pass vacuously (`persist::tmp_path`'s own note).
+/// The claim the marker path holds. Most tests are about *what is claimed*;
+/// the separate `confirmed` half of the observation only matters to the two
+/// that assert on it directly.
+fn marker_claim(cp: &Path) -> Option<DeletionBreach> {
+    deletion_marker::read(cp).map(|o| o.breach)
+}
+
+fn marker_tmp(f: &Fx) -> PathBuf {
+    crate::persist::tmp_path(&deletion_marker::marker_path(&f.cp))
+}
+
+fn write_marker(f: &Fx, breach: DeletionBreach) {
+    deletion_marker::merge_write(&f.cp, breach).unwrap();
+}
+
+/// The on-disk encoding of a breach, obtained through the writer so the test
+/// never re-spells the format.
+fn encoded_marker(breach: DeletionBreach) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = dir.path().join("scratch.lxud");
+    deletion_marker::merge_write(&cp, breach).unwrap();
+    fs::read(deletion_marker::marker_path(&cp)).unwrap()
+}
+
+fn marker_bytes(f: &Fx, bytes: &[u8]) {
+    fs::write(deletion_marker::marker_path(&f.cp), bytes).unwrap();
+}
+
+fn open_report_of(f: &Fx) -> super::recovery::OpenReport {
+    let (_, _, report) = open_recovering(&f.cp).unwrap();
+    report
+}
+
+fn applied_seq_of(f: &Fx) -> u64 {
+    let (h, _, _) = open_recovering(&f.cp).unwrap();
+    h.applied_seq()
+}
+
+#[test]
+fn t10_no_marker_is_clean() {
+    let f = fx();
+    build_v2_state(&f, false);
+    let report = open_report_of(&f);
+    assert!(!report.deletion_lost);
+    assert!(report.is_clean(), "a plain start must stay clean");
+}
+
+#[test]
+fn t10_lost_marker_reports_and_survives_the_open() {
+    let f = fx();
+    build_v2_state(&f, false);
+    write_marker(&f, DeletionBreach::Lost);
+
+    let report = open_report_of(&f);
+    assert!(report.deletion_lost, "a lost deletion must be reported");
+    assert!(!report.is_clean());
+    // Not folded into the data-loss channel: that one means past learning was
+    // lost, this means data survived a deletion.
+    assert!(!report.data_loss_suspected());
+    // Nothing to schedule: the disk already holds `Lost`, so the projection and
+    // the file agree. Not because a compaction would wrongly reassure — it
+    // cannot. `inherited_owed` sits outside the session ledger, so a cover
+    // cannot settle it, and the projection re-asserts `Lost` after every one.
+    // A checkpoint written now persists the resurrected entry and says nothing
+    // about the previous session's undelivered report.
+    assert!(!report.compaction_recommended);
+    // Consumption is `ack_open_report`, not the open: the report has to
+    // outlive the gap between being built and being delivered.
+    assert!(
+        deletion_marker::marker_path(&f.cp).exists(),
+        "open must not consume the only durable trace"
+    );
+}
+
+#[test]
+fn t10_unflushed_witness_pins_the_boundary() {
+    // The suppression rule is `witness <= applied_seq`, and the boundary is the
+    // whole meaning: seq == applied_seq is the frame that *did* replay. A test
+    // that only probed values far from the boundary would survive turning `<=`
+    // into `<`.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    assert!(applied > 0, "fixture must reach a non-zero applied_seq");
+
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied });
+    let report = open_report_of(&f);
+    assert!(
+        !report.deletion_lost,
+        "a frame the loaded state already includes was applied — nothing is owed"
+    );
+    // Applied, but out of the page cache: the flush that failed never happened,
+    // so this is a live durability problem, not a settled one. Retracting here
+    // would be retract-then-persist.
+    assert!(report.deletion_pending_checkpoint);
+    assert!(
+        deletion_marker::marker_path(&f.cp).exists(),
+        "only a durable checkpoint may retract; recovery writes none"
+    );
+
+    let f2 = fx();
+    build_v2_state(&f2, false);
+    write_marker(&f2, DeletionBreach::Unflushed { seq: applied + 1 });
+    let report = open_report_of(&f2);
+    assert!(
+        report.deletion_lost,
+        "a frame beyond the loaded state never took effect — report it"
+    );
+    assert!(!report.deletion_pending_checkpoint);
+    // Promoted to unconditional: seq numbering is re-based by a WAL reset, so
+    // leaving a witness behind would let an unrelated later frame settle a
+    // report that is still owed.
+    assert_eq!(
+        marker_claim(&f2.cp),
+        Some(DeletionBreach::Lost),
+        "an answered witness must stop depending on a comparison a reset can invalidate"
+    );
+}
+
+#[test]
+fn t10_a_witness_the_checkpoint_covers_is_retracted_outright() {
+    // The residue of a crash between a successful `save()` and the unlink that
+    // follows it: the deletion IS durable, so the marker is stale. Telling the
+    // two apart takes the checkpoint's own applied_seq — the post-replay value
+    // answers "the checkpoint covered it" and "replay reached it" with the same
+    // number, and only the first is durable. Conflating them showed a live
+    // durability warning for a deletion that was already persisted.
+    let f = fx();
+    build_v2_state(&f, false);
+    let covered = {
+        let (h, _, _) = open_recovering(&f.cp).unwrap();
+        let settled = h.clone();
+        settled.save(&f.cp).unwrap();
+        settled.applied_seq()
+    };
+    assert!(covered > 0);
+    write_marker(&f, DeletionBreach::Unflushed { seq: covered });
+
+    let report = open_report_of(&f);
+    assert!(!report.deletion_lost);
+    assert!(
+        !report.deletion_pending_checkpoint,
+        "a checkpoint-covered deletion is not a live durability problem"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        None,
+        "and its marker is stale, not owed"
+    );
+}
+
+#[test]
+fn t10_a_reported_witness_cannot_be_settled_by_a_rebased_seq() {
+    // The concrete shape of the promotion above. A WAL quarantine re-bases
+    // numbering (`adopt_empty` restarts at the checkpoint's applied_seq + 1),
+    // so without the promotion a later, unrelated frame reaching the same seq
+    // would satisfy the old witness and silently drop the report.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 5 });
+
+    assert!(open_report_of(&f).deletion_lost);
+    // Numbering advances past the old witness on wholly unrelated work. The
+    // checkpoint must still hold entries: an *empty* durable set settles the
+    // claim outright (there is nothing left for a deletion to have failed
+    // against), which is a different rule and would mask this one.
+    let mut h = UserHistory::new();
+    h.record_at(&seg(B), T0);
+    h.advance_applied_seq(applied + 99);
+    h.save(&f.cp).unwrap();
+
+    assert!(
+        open_report_of(&f).deletion_lost,
+        "the report must not be settled by seqs the witness never referred to"
+    );
+}
+
+#[test]
+fn t10_an_empty_history_settles_the_marker() {
+    // A claim that some entry survived a deletion is *false*, not stale, when
+    // no entry was loaded at all — the same reasoning `clear` uses when it
+    // covers the ledger from its empty checkpoint. Without this, a wipe that
+    // could not unlink the marker warned on the next launch about a history
+    // that provably holds nothing.
+    let f = fx();
+    let empty = UserHistory::new();
+    empty.save(&f.cp).unwrap();
+    write_marker(&f, DeletionBreach::Lost);
+
+    let report = open_report_of(&f);
+    assert!(
+        !report.deletion_lost,
+        "there is no entry for the deletion to have failed against"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        None,
+        "and the record goes with the claim"
+    );
+}
+
+#[test]
+fn t10_a_replayed_tombstone_does_not_settle_a_claim_the_checkpoint_outlives() {
+    // The refutation of `Lost` takes both halves — an empty durable set AND an
+    // empty loaded state — and this is the case that needs the first one. A
+    // tombstone replaying out of the WAL empties memory while the checkpoint
+    // still holds the entry, so a rule keyed on the loaded state alone would
+    // retract here; the entry is still on disk, and a power loss before the
+    // next checkpoint brings it back with nothing ever reported.
+    //
+    // Malformed bytes on purpose: `decode` maps every unreadable shape to
+    // `Lost` (fail-safe), so this claim may well have been a witness about
+    // durability rather than a presence claim at all. Nothing here can tell,
+    // which is precisely why emptiness must not be allowed to refute it.
+    let f = fx();
+    let mut h = UserHistory::new();
+    let mut wal = HistoryWal::new(&f.cp);
+    for pair in [A, B] {
+        let seq = wal.append(&seg(pair), T0).unwrap();
+        h.record_at(&seg(pair), T0);
+        h.advance_applied_seq(seq);
+    }
+    h.save(&f.cp).unwrap();
+    wal.truncate_wal().unwrap();
+    for pair in [A, B] {
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(pair),
+            timestamp: T0 + 1,
+        })
+        .unwrap();
+    }
+
+    fs::write(deletion_marker::marker_path(&f.cp), b"not a marker").unwrap();
+
+    let (loaded, _, report) = open_recovering(&f.cp).unwrap();
+    // The premise: memory is empty, and the checkpoint on disk is not.
+    assert_contents(&loaded, &[], &[A, B]);
+    assert!(
+        !UserHistory::open(&f.cp).unwrap().is_empty(),
+        "fixture must keep the entries in the durable checkpoint"
+    );
+    assert!(
+        report.deletion_lost,
+        "an entry the checkpoint still holds can resurrect — the claim stands"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        Some(DeletionBreach::Lost),
+        "and the record stands with it, for the next start"
+    );
+}
+
+#[test]
+fn t10_a_retraction_that_cannot_unlink_schedules_a_compaction() {
+    // The verdict is permanent — nothing survived the deletion — but the only
+    // durable place to record it is the file that would not unlink, so the
+    // debt has to reach the runtime some other way. Without this, the next
+    // compaction is a thousand frames off; a restart before then reloads the
+    // same marker against a history replay has made non-empty and reports a
+    // loss this startup already refuted.
+    let f = fx();
+    let empty = UserHistory::new();
+    empty.save(&f.cp).unwrap();
+    // A directory with something in it: `remove` clears an *empty* one as a
+    // placeholder but never walks a populated tree on the startup thread, so
+    // this is the reachable shape of a retraction that cannot complete.
+    let path = deletion_marker::marker_path(&f.cp);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("left-by-something-else"), b"x").unwrap();
+
+    let report = open_report_of(&f);
+    assert!(
+        !report.deletion_lost,
+        "the claim is still refuted — the unlink failing does not revive it"
+    );
+    assert!(
+        report.compaction_recommended,
+        "and the retry has to be scheduled, since the file still says otherwise"
+    );
+    assert!(path.exists(), "fixture must actually block the removal");
+}
+
+#[test]
+fn t10_malformed_markers_all_report() {
+    // Fail-safe by construction: only NotFound is clean. Every malformed
+    // shape resolves to the strongest claim, which is why the format carries
+    // no CRC — corruption can only push it toward reporting.
+    //
+    // The 12-byte case is the one that matters structurally: a parser that
+    // checked the magic but not the length would slice bytes[8..16] on it and
+    // panic out through `#[uniffi::constructor]`.
+    let mut good = Vec::new();
+    good.extend_from_slice(b"LXDM");
+    good.push(1);
+    good.push(1);
+    good.extend_from_slice(&[0, 0]);
+    good.extend_from_slice(&7u64.to_le_bytes());
+
+    for (name, bytes) in [
+        ("empty", vec![]),
+        ("three bytes", vec![b'L', b'X', b'D']),
+        ("twelve bytes", good[..12].to_vec()),
+        ("bad magic", {
+            let mut b = good.clone();
+            b[0] = b'X';
+            b
+        }),
+        ("unknown version", {
+            let mut b = good.clone();
+            b[4] = 9;
+            b
+        }),
+        // The one shape that would resolve toward *suppression*: a
+        // well-formed 16-byte prefix followed by anything else. Reading
+        // exactly LEN would decode it as a valid witness, and this witness is
+        // one the fixture's replay satisfies — so the "malformed always
+        // reports" rule, and the absent CRC that rests on it, would both be
+        // false. Seq 1 is load-bearing here: a witness beyond `applied_seq`
+        // reports either way and would prove nothing.
+        // Bytes the writer cannot emit. Each of these was found separately as
+        // its own bug before `decode` became a round-trip against `encode`;
+        // the last two nobody had named at all.
+        ("unknown flags", {
+            let mut b = good.clone();
+            b[5] = 0x03;
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
+            b
+        }),
+        ("non-zero reserved", {
+            let mut b = good.clone();
+            b[6] = 1;
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
+            b
+        }),
+        ("seq without the witness flag", {
+            let mut b = good.clone();
+            b[5] = 0;
+            b
+        }),
+        // The shape that resolved to *silence* rather than to a suppressible
+        // witness: seq 0 is below every applied_seq, so recovery read it as
+        // "the checkpoint already covers this", removed the marker, and
+        // reported nothing. The writer cannot produce it — WAL numbering
+        // starts at 1 — so it is malformed like the rest.
+        ("witness of zero", {
+            let mut b = good.clone();
+            b[8..16].copy_from_slice(&0u64.to_le_bytes());
+            b
+        }),
+        ("valid prefix, extra bytes", {
+            let mut b = good.clone();
+            b[8..16].copy_from_slice(&1u64.to_le_bytes());
+            b.extend_from_slice(b"trailing");
+            b
+        }),
+    ] {
+        let f = fx();
+        build_v2_state(&f, false);
+        marker_bytes(&f, &bytes);
+        assert!(
+            open_report_of(&f).deletion_lost,
+            "{name}: an unreadable marker must report, not suppress"
+        );
+        assert!(
+            deletion_marker::marker_path(&f.cp).exists(),
+            "{name}: and it must not be silently retracted as checkpoint-covered"
+        );
+    }
+}
+
+#[test]
+fn t10_unreadable_marker_reports_without_failing_the_open() {
+    // A directory at the marker path makes the read fail. It must not
+    // propagate: `open_recovering`'s only Err is an environmental failure, and
+    // Swift turns that into "learning disabled" — stopping learning outright
+    // because a 16-byte sidecar is unreadable is the worst possible default.
+    let f = fx();
+    build_v2_state(&f, false);
+    fs::create_dir(deletion_marker::marker_path(&f.cp)).unwrap();
+
+    assert!(
+        open_report_of(&f).deletion_lost,
+        "unreadable resolves to reporting"
+    );
+}
+
+#[test]
+fn t10_removal_reports_whether_the_path_is_actually_clear() {
+    // Every retraction clears the marker by unlinking, so a removal that
+    // fails must say so — otherwise the caller drops the status row while the
+    // record stands, and the warning returns on the next launch with the
+    // retry gone.
+    //
+    // A directory at the path is removed only when empty. A non-empty one is
+    // not the engine's to delete (a restore put it there, and walking it would
+    // block the thread the menu runs on), so the honest outcome is `false`.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+
+    assert!(deletion_marker::remove(&f.cp), "absent counts as clear");
+
+    fs::create_dir(&path).unwrap();
+    assert!(
+        deletion_marker::remove(&f.cp),
+        "an empty placeholder is ours to clear"
+    );
+    assert!(!path.exists());
+
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("restored"), b"someone else's bytes").unwrap();
+    assert!(
+        !deletion_marker::remove(&f.cp),
+        "a non-empty directory is not ours to delete, and saying so is the point"
+    );
+    assert!(
+        path.join("restored").exists(),
+        "and its contents must survive"
+    );
+    // The report is then still owed, which the reader agrees with.
+    assert_eq!(marker_claim(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_removal_covers_the_orphan_tmp_too() {
+    // The logical marker is the pair. `read` merges the atomic write's orphan
+    // so a crash between its flush and the rename can only strengthen a claim
+    // — which means removing only the canonical file leaves the claim alive.
+    // A `Lost` orphan would then re-report on every launch with nothing able
+    // to clear it: the unclearable latch, rebuilt out of the fix for hiding.
+    let f = fx();
+    build_v2_state(&f, false);
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+    write_marker(&f, DeletionBreach::Lost);
+    fs::write(&tmp, encoded_marker(DeletionBreach::Lost)).unwrap();
+
+    assert!(deletion_marker::remove(&f.cp));
+    assert!(!tmp.exists(), "the orphan is part of what had to go");
+    assert_eq!(marker_claim(&f.cp), None);
+    assert!(!open_report_of(&f).deletion_lost);
+}
+
+#[test]
+fn t10_removal_reports_false_when_only_the_orphan_resists() {
+    // And the outcome is honest about either half: a claim the caller cannot
+    // clear must not be reported as cleared just because the other file went.
+    let f = fx();
+    build_v2_state(&f, false);
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+    write_marker(&f, DeletionBreach::Lost);
+    fs::create_dir(&tmp).unwrap();
+    fs::write(tmp.join("restored"), b"not ours").unwrap();
+
+    assert!(
+        !deletion_marker::remove(&f.cp),
+        "an orphan that resists leaves the record standing"
+    );
+    assert!(
+        !deletion_marker::marker_path(&f.cp).exists(),
+        "the half that could go, went"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        Some(DeletionBreach::Lost),
+        "and the surviving orphan still carries the claim"
+    );
+}
+
+#[test]
+fn t10_a_resisting_marker_does_not_spare_the_orphan() {
+    // The other order, which is the one that distinguishes `&` from `&&`: if
+    // the canonical file refuses first, a short-circuit would never attempt
+    // the orphan and would leave a claim alive that could have been cleared.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let tmp =
+        f.cp.with_file_name("user_history.lxud.deletion-pending.tmp");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("restored"), b"not ours").unwrap();
+    fs::write(&tmp, encoded_marker(DeletionBreach::Lost)).unwrap();
+
+    assert!(!deletion_marker::remove(&f.cp), "the marker resisted");
+    assert!(
+        !tmp.exists(),
+        "but the orphan was still attempted — a refusal must not spare the other half"
+    );
+}
+
+#[test]
+fn t10_a_fifo_at_the_marker_path_does_not_block_the_open() {
+    // A read-only `File::open` on a FIFO blocks until a writer appears, and
+    // this runs synchronously inside the IME's startup. Left unguarded, a
+    // sidecar nobody can read would stop the input method from ever becoming
+    // available — so the open itself carries `O_NOFOLLOW | O_NONBLOCK` and the
+    // descriptor it returns is what gets `fstat`-checked. Deliberately not a
+    // file-type check *before* the open: that is two resolutions of one name,
+    // and the paragraph below records why the race between them was the whole
+    // point of the fix.
+    let f = fx();
+    build_v2_state(&f, false);
+    let path = deletion_marker::marker_path(&f.cp);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+
+    // Note the failure mode: without the guard this does not fail, it HANGS —
+    // which is exactly the defect (a startup that never completes). A mutation
+    // check on the guard therefore shows up as a timeout, not a red test.
+    //
+    // What this test canNOT see is *how* the guard is built. It passed equally
+    // against the earlier `symlink_metadata`-then-open form, whose two
+    // resolutions of the same name let a FIFO substituted in between reach the
+    // blocking open anyway. Nothing deterministic distinguishes the two — the
+    // window is a couple of syscalls wide — so the property is carried by
+    // construction instead: `read_at` goes through `persist::open_regular`,
+    // which resolves the name once and validates the descriptor it got, and
+    // there is no longer a path-based check for a substitution to race.
+    assert_eq!(marker_claim(&f.cp), Some(DeletionBreach::Lost));
+    assert!(open_report_of(&f).deletion_lost);
+}
+
+#[test]
+fn t10_a_symlink_at_the_marker_tmp_is_not_written_through() {
+    // The write half of the same hazard the reader guards against. `rename`
+    // protects the marker's own path — it replaces a symlink rather than
+    // following it — but the tmp `write_atomic` writes through is opened by
+    // name, and `File::create` resolves a symlink there and truncates whatever
+    // it points at. The victim is a file this crate does not own, and the
+    // marker's writer runs on the key-processing thread.
+    let f = fx();
+    let victim = f.cp.parent().unwrap().join("someone-elses-file");
+    fs::write(&victim, b"not ours to truncate").unwrap();
+    std::os::unix::fs::symlink(&victim, marker_tmp(&f)).unwrap();
+
+    assert!(
+        deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).is_err(),
+        "a diverted write must fail rather than land somewhere else"
+    );
+    assert_eq!(
+        fs::read(&victim).unwrap(),
+        b"not ours to truncate",
+        "and the symlink's target must be untouched"
+    );
+}
+
+#[test]
+fn t10_a_fifo_at_the_marker_tmp_does_not_block_the_writer() {
+    // Same shape as the reader's FIFO guard, on the writer: opening a FIFO
+    // write-only waits for a reader, and this call sits on the key-processing
+    // thread under the wal mutex — every keystroke behind it. As with the
+    // reader's test the unguarded failure is a HANG, not a red assertion, so a
+    // mutation check on `create_regular` shows up as a timeout.
+    let f = fx();
+    let tmp = marker_tmp(&f);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&tmp)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+
+    assert!(
+        deletion_marker::merge_write(&f.cp, DeletionBreach::Lost).is_err(),
+        "the writer must refuse the FIFO instead of waiting on a reader"
+    );
+}
+
+#[test]
+fn t10_a_promotion_that_failed_schedules_its_own_retry() {
+    // The promotion is best-effort, and when it fails the disk keeps the
+    // *suppressible* `Unflushed{seq}` while memory holds `Lost`. A healthy
+    // session raises nothing, so nothing re-projects until a threshold
+    // compaction a thousand frames off — and ordinary commits advance the WAL
+    // past the witness meanwhile, so a restart before then reads the witness
+    // as replayed and suppresses a report that is still owed.
+    //
+    // Scheduling the compaction is what makes the promotion actually happen.
+    // This reverses a settled note that said a compaction here would "tell the
+    // user everything is fine": it cannot cover the ledger (nothing raised it,
+    // so the cover early-returns) and it cannot touch the row (driven by the
+    // latched failure and the owed predicate) — all it does is project, which
+    // with the claim standing writes `Lost`.
+    let f = fx();
+    build_v2_state(&f, false);
+    let applied = applied_seq_of(&f);
+    write_marker(&f, DeletionBreach::Unflushed { seq: applied + 1 });
+    // Block the *write* without disturbing the read: a read-only parent stops
+    // `create_regular` from making the tmp (EACCES) while the canonical marker
+    // still reads fine. Planting an obstacle at the tmp path itself does not
+    // work — `read` merges the orphan tmp, and an unreadable one resolves to
+    // `Lost`, which changes the very branch under test.
+    use std::os::unix::fs::PermissionsExt;
+    let parent = f.cp.parent().unwrap().to_path_buf();
+    let original = fs::metadata(&parent).unwrap().permissions();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let report = open_report_of(&f);
+    fs::set_permissions(&parent, original).unwrap();
+    assert!(report.deletion_lost, "the report is owed");
+    assert_eq!(
+        marker_claim(&f.cp),
+        Some(DeletionBreach::Unflushed { seq: applied + 1 }),
+        "fixture must actually block the promotion, leaving the witness"
+    );
+    assert!(
+        report.compaction_recommended,
+        "a promotion that did not land has to be retried, or a later replay settles the witness"
+    );
+
+    // And the converse: a promotion that landed owes the disk nothing.
+    let g = fx();
+    build_v2_state(&g, false);
+    write_marker(&g, DeletionBreach::Unflushed { seq: applied + 1 });
+    let report = open_report_of(&g);
+    assert!(report.deletion_lost);
+    assert_eq!(marker_claim(&g.cp), Some(DeletionBreach::Lost));
+    assert!(
+        !report.compaction_recommended,
+        "nothing is owed once the disk holds the unconditional claim"
+    );
+}
+
+#[test]
+fn t10_an_unreadable_marker_is_never_recorded_as_an_observation() {
+    // `read` resolves anything unreadable to `Lost` by the fail-safe rule, but
+    // that is a *claim*, not knowledge of what the bytes say. Recording it as
+    // an observation seeds the runtime's `flushed` with `Lost`, every later
+    // reconcile then finds the disk already in agreement and skips, and a live
+    // `Unflushed` witness sits there with nothing left to promote it.
+    let f = fx();
+    build_v2_state(&f, false);
+    write_marker(&f, DeletionBreach::Unflushed { seq: 999 });
+    // Unreadable, not absent: the file is a regular file whose bytes cannot be
+    // read, which is what makes the conservative `Lost` a guess.
+    use std::os::unix::fs::PermissionsExt;
+    let path = deletion_marker::marker_path(&f.cp);
+    let original = fs::metadata(&path).unwrap().permissions();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let observed = deletion_marker::read(&f.cp).expect("the file is there");
+    assert_eq!(
+        observed.breach,
+        DeletionBreach::Lost,
+        "unreadable still claims the strongest thing"
+    );
+    assert!(
+        !observed.confirmed,
+        "but nothing was observed, so it must not be recorded as one"
+    );
+
+    let report = open_report_of(&f);
+    fs::set_permissions(&path, original).unwrap();
+    assert!(report.deletion_lost, "and it is reported");
+    assert_eq!(
+        report.marker_on_disk,
+        deletion_marker::MarkerState::Unknown,
+        "unknown, not absent: the runtime must neither be told the disk holds \
+         Lost when nobody read it, nor that the path is clear when a file is \
+         sitting there — the second is what let a failed unlink look settled"
+    );
+}
+
+#[test]
+fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
+    // `applied_seq` comes from a *file*, so a corrupt checkpoint can name
+    // anything a `u64` can hold. Adding one panics in debug, across the UniFFI
+    // constructor, and wraps to zero in release: the next tombstone would be
+    // written with seq 0, recovery would reject it as non-monotonic, and the
+    // deletion would resurrect. So adoption saturates and the refusal lives at
+    // the point a number is *issued* — deliberately not a `frozen` flag, which
+    // a compaction is entitled to clear by rewriting the file, and rewriting a
+    // file creates no numbers.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    // From the *checkpoint*, which is the remaining file-derived input now
+    // that the sequence floor is gone: a corrupt one can name any value.
+    h.advance_applied_seq(u64::MAX);
+    h.save(&f.cp).unwrap();
+
+    let (_, mut wal, _) = open_recovering(&f.cp).unwrap();
+    assert_eq!(
+        wal.next_seq_for_tests(),
+        u64::MAX,
+        "saturated, not wrapped — and this value is the exhausted state, not a \
+         spendable last number"
+    );
+
+    // The ceiling value is refused rather than spent — assigning it would
+    // leave no representable successor, and one number out of 2^64 is a
+    // cheaper price than a second "exhausted but for one" state.
+    let err = wal
+        .append_record(&WalRecord::Committed {
+            segments: seg(B),
+            timestamp: T0,
+        })
+        .expect_err("the append must refuse rather than wrap");
+    assert!(matches!(err, super::wal::AppendError::Io(_)));
+
+    // The refusal is at the point the number is issued, so nothing can clear
+    // it. Representing exhaustion as a *freeze* failed exactly here: a
+    // compaction heals a freeze by rewriting the file, and rewriting a file
+    // creates no sequence numbers, so the next append wrapped to zero.
+    wal.truncate_wal().ok();
+    assert!(
+        wal.append_record(&WalRecord::Committed {
+            segments: seg(D),
+            timestamp: T0,
+        })
+        .is_err(),
+        "a heal must not resurrect a number that does not exist"
+    );
+}
+
+#[test]
+fn t10_a_flushed_orphan_counts_as_a_landed_claim() {
+    // The logical marker is the canonical file *and* its orphan tmp — `read`
+    // merges them, `remove` clears both — so a rename that fails after the tmp
+    // was flushed has still landed the claim. Reporting failure there made it
+    // look unlanded forever: appends froze on every commit, each compaction
+    // thawed them, and the next keystroke froze again, against a record on
+    // disk that already said what was wanted.
+    let f = fx();
+    build_v2_state(&f, false);
+    // A non-empty directory at the canonical name: `create_regular` still
+    // makes the tmp, the flush succeeds, and only the rename fails.
+    let path = deletion_marker::marker_path(&f.cp);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("left-by-something-else"), b"x").unwrap();
+
+    let landed = deletion_marker::merge_write(&f.cp, DeletionBreach::Lost)
+        .expect("a flushed orphan is a landed claim, not a failure");
+    assert_eq!(
+        landed,
+        deletion_marker::MarkerState::Holds(DeletionBreach::Lost),
+        "and it is a *named* claim: this branch is only reached with the \
+         parent-dir fsync already confirmed, so `read` will find the orphan"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        Some(DeletionBreach::Lost),
+        "and the next read finds it, which is why it counts"
+    );
+    assert!(
+        open_report_of(&f).deletion_lost,
+        "so the report survives the restart it exists for"
+    );
+}
+
+#[test]
+fn t10_a_failed_migration_suppresses_the_marker_compaction() {
+    // A compaction is not the migration: it writes a v2 checkpoint over the v1
+    // file with none of the commit's steps — no `.v1.bak`, no `Migrated`. So
+    // scheduling one while the commit is failing destroys the v1 bytes on
+    // exactly the path where they are the only copy. The marker feeders are
+    // promptness alone (ordinary commits reconcile regardless), which makes
+    // suppressing them here free.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
+    // The witness **with its WAL frame**, not just the marker: replaying that
+    // tombstone sets `replayed_deletion`, which is a feeder of its own. The
+    // first version of this test planted the marker alone and so exercised
+    // only the feeders the fix had gated — it passed while the hazard was
+    // still reachable through the other one. The veto has to sit on the
+    // recommendation, and this fixture is what proves it does.
+    let seq = {
+        let mut wal = HistoryWal::new(&f.cp);
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(A),
+            timestamp: T0 + 1,
+        })
+        .unwrap()
+    };
+    write_marker(&f, DeletionBreach::Unflushed { seq });
+    use std::os::unix::fs::PermissionsExt;
+    let dir = f.cp.parent().unwrap().to_path_buf();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    // Root / CAP_DAC_OVERRIDE (containerized CI) ignores directory
+    // permissions, so the failure cannot be injected — skip rather than
+    // assert one that will not happen.
+    if fs::write(dir.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: directory permissions are not enforced here");
+        return;
+    }
+    let result = open_recovering(&f.cp);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let report = result.unwrap().2;
+    assert!(report.migration_failed, "fixture must block the commit");
+    assert!(
+        report.replayed_deletion,
+        "the replayed tombstone must arm the feeder the veto has to cover"
+    );
+    assert!(
+        !report.compaction_recommended,
+        "no compaction may run over a retained v1 checkpoint"
+    );
+}
+
+#[test]
+fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
+    // The migration commit writes a durable v2 checkpoint serialized from the
+    // replayed state — which, when replay applied a tombstone, is a checkpoint
+    // that *contains* the deletion. That is coverage, so the marker is settled
+    // and nothing is handed to the runtime ledger.
+    //
+    // Evaluating the marker before the commit answered against the v1 file,
+    // which predates the deletion: the engine then seeded a live durability
+    // warning for an already-persisted deletion and left the marker for an
+    // asynchronous compaction that might never run.
+    //
+    // The fixture is the state the migration path documents as reachable: a
+    // previous startup's commit failed, so later commits appended v2 frames
+    // beside the still-v1 checkpoint.
+    let f = fx();
+    let mut h = UserHistory::new();
+    h.record_at(&seg(A), T0);
+    fs::write(&f.cp, v1_checkpoint_bytes(&h)).unwrap();
+    let seq = {
+        let mut wal = HistoryWal::new(&f.cp);
+        wal.append_record(&WalRecord::Tombstone {
+            segments: seg(A),
+            timestamp: T0 + 1,
+        })
+        .unwrap()
+    };
+    write_marker(&f, DeletionBreach::Unflushed { seq });
+
+    let report = open_report_of(&f);
+    assert!(report.migrated_from_v1, "fixture must actually migrate");
+    assert!(
+        !report.deletion_lost,
+        "the deletion took, so nothing is owed"
+    );
+    assert!(
+        !report.deletion_pending_checkpoint,
+        "the migration's own checkpoint is the durable coverage"
+    );
+    assert_eq!(
+        marker_claim(&f.cp),
+        None,
+        "and it settles the marker rather than leaving it to a compaction"
+    );
+
+    // The deletion really is gone from the checkpoint that was just written.
+    let (reloaded, _, _) = open_recovering(&f.cp).unwrap();
+    assert_contents(&reloaded, &[], &[A]);
+}
+
+#[test]
+fn t10_a_migration_does_not_settle_an_unconditional_claim() {
+    // A `Lost` claim is unconditional, so the checkpoint the migration writes
+    // — which does contain the resurrected entry, replay having applied no
+    // tombstone here — settles nothing. It has to come out the other side.
+    //
+    // The sibling test above is the complement: when replay *did* apply the
+    // tombstone, that same commit is genuine coverage. What separates them is
+    // the claim, not the migration, which is why an earlier version of this
+    // test asserting "a migration checkpoint is never coverage" stated a rule
+    // its own neighbour disproves.
+    let f = fx();
+    write_v1_state(&f);
+    write_marker(&f, DeletionBreach::Lost);
+
+    let report = open_report_of(&f);
+    assert!(report.migrated_from_v1, "fixture must actually migrate");
+    assert!(
+        report.deletion_lost,
+        "an unconditional claim is owed no matter what was written"
+    );
+    assert!(
+        deletion_marker::marker_path(&f.cp).exists(),
+        "and its record stays until someone is told"
+    );
+}
+
+#[test]
+fn t10_witness_beyond_a_repaired_tail_still_reports() {
+    // E5/E16: the tombstone's frame was on disk but is gone now — cut away by
+    // tail repair, or carried off with a quarantined WAL. `applied_seq` never
+    // reaches the witness, so the deletion never took effect. This is the
+    // power-loss half of `Unflushed`, and the only reason the witness is a
+    // seq rather than a bool.
+    let f = fx();
+    build_v2_state(&f, false);
+    let full = applied_seq_of(&f);
+
+    let f2 = fx();
+    build_v2_state(&f2, false);
+    cut_tail(&f2.wal, 4);
+    write_marker(&f2, DeletionBreach::Unflushed { seq: full });
+
+    let report = open_report_of(&f2);
+    assert_eq!(report.wal_state, WalState::TailRepaired);
+    assert!(
+        report.deletion_lost,
+        "a witness the repaired file can no longer reach must report"
+    );
+}
+
+#[test]
+fn t10_marker_coexists_with_a_quarantine() {
+    // Independent facts about one startup: the checkpoint was corrupt *and* a
+    // previous deletion never persisted. Neither may mask the other.
+    let f = fx();
+    build_v2_state(&f, false);
+    corrupt_cp(&f.cp);
+    write_marker(&f, DeletionBreach::Lost);
+
+    let report = open_report_of(&f);
+    assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
+    assert!(report.data_loss_suspected());
+    assert!(report.deletion_lost);
+}
+
+#[test]
+fn t10_strict_open_ignores_the_marker() {
+    // The offline path must stay side-effect-free: an audit tool consuming a
+    // live IME's marker would delete the report the user never saw.
+    let f = fx();
+    build_v2_state(&f, false);
+    write_marker(&f, DeletionBreach::Lost);
+
+    UserHistory::open(&f.cp).unwrap();
+    assert!(deletion_marker::marker_path(&f.cp).exists());
+}
+
+#[test]
+fn t10_marker_is_not_a_quarantine_file() {
+    // Rotation matches `<name>*` containing ".corrupt-". The marker shares the
+    // family prefix, so a widened match would start rotating (and eventually
+    // deleting) the report.
+    //
+    // Calls the production predicate, not a local re-spelling of it. The first
+    // version of this test re-implemented the `.corrupt-` filter in the test
+    // helper and therefore could not observe the real one changing at all — a
+    // mutation widening `quarantined_files` left it green.
+    let f = fx();
+    build_v2_state(&f, false);
+    write_marker(&f, DeletionBreach::Lost);
+    // Enough real quarantine files to push rotation past its keep limit, so a
+    // predicate that matched the marker would actually delete it.
+    for i in 0..5 {
+        fs::write(
+            f.cp.with_file_name(format!("user_history.lxud.corrupt-{i}")),
+            b"x",
+        )
+        .unwrap();
+    }
+
+    let listed = crate::persist::quarantined_files(&f.cp);
+    let marker = deletion_marker::marker_path(&f.cp);
+    assert!(
+        !listed.contains(&marker),
+        "the marker must not be listed as a quarantine artifact: {listed:?}"
+    );
+    crate::persist::rotate_quarantined(&f.cp, 3);
+    assert!(marker.exists(), "rotation must not reach the marker");
+    assert_eq!(marker_claim(&f.cp), Some(DeletionBreach::Lost));
+}
+
+#[test]
+fn t10_decode_accepts_only_what_encode_emits() {
+    // The property the round-trip form buys, stated directly: whatever the
+    // writer can produce reads back as itself, and nothing else is trusted.
+    // Field-by-field validation cannot be checked this way, which is why it
+    // was wrong four times.
+    for breach in [
+        DeletionBreach::Lost,
+        DeletionBreach::Unflushed { seq: 1 },
+        DeletionBreach::Unflushed { seq: u64::MAX },
+    ] {
+        let f = fx();
+        build_v2_state(&f, false);
+        write_marker(&f, breach);
+        assert_eq!(
+            marker_claim(&f.cp),
+            Some(breach),
+            "{breach:?} must survive a round trip"
+        );
+    }
+}
+
+#[test]
+fn t10_merge_never_weakens_an_outstanding_claim() {
+    // The rule the whole file depends on: a plain overwrite would let an
+    // `Unflushed` land on top of a `Lost` and hand the next startup a witness
+    // it can suppress — losing precisely the report #312 is about. Both
+    // orders, because the batch loop can produce either.
+    let lost = DeletionBreach::Lost;
+    let a = DeletionBreach::Unflushed { seq: 5 };
+    let b = DeletionBreach::Unflushed { seq: 9 };
+    assert_eq!(lost.merge(a), lost);
+    assert_eq!(a.merge(lost), lost);
+    assert_eq!(a.merge(b), b, "two unflushed frames keep the higher seq");
+    assert_eq!(b.merge(a), b);
+
+    // And through the file, which is where the ordering actually matters.
+    let f = fx();
+    build_v2_state(&f, false);
+    write_marker(&f, DeletionBreach::Unflushed { seq: 5 });
+    write_marker(&f, DeletionBreach::Lost);
+    write_marker(&f, DeletionBreach::Unflushed { seq: 9 });
+    assert_eq!(marker_claim(&f.cp), Some(DeletionBreach::Lost));
 }

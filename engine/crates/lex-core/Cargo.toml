@@ -28,9 +28,17 @@ anyhow = { version = "1", optional = true }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
-# Direct fcntl(F_BARRIERFSYNC) for the WAL write barrier: std's sync_data
-# maps to F_FULLFSYNC on Apple targets (~4ms vs ~0.3ms on M-series).
+[target.'cfg(unix)'.dependencies]
+# Two uses, one Apple-only and one every-unix, which is why this is `cfg(unix)`
+# and not `cfg(target_vendor = "apple")`:
+#
+# - `fcntl(F_BARRIERFSYNC)` for the WAL write barrier, Apple-gated at its call
+#   site: std's `sync_data` maps to F_FULLFSYNC there (~4ms vs ~0.3ms on
+#   M-series).
+# - `O_NOFOLLOW | O_NONBLOCK` in `persist::regular_only`, which every unix
+#   target needs. Leaving this table Apple-only made that code build on the
+#   macOS host and fail to resolve `libc` on Linux CI — a break a macOS-only
+#   local gate cannot see.
 libc = "0.2"
 
 [build-dependencies]

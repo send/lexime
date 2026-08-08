@@ -188,15 +188,23 @@ class LeximeInputController: IMKInputController {
         // Re-derived on every open, so a runtime issue that has since healed
         // stops being shown. See DegradedStatus for why the polled issues are
         // not merged into the container's latched initFailures.
+        let control = AppContext.shared.makeEngineControlService()
         let rows = DegradedStatus.rows(
             initFailures: AppContext.shared.engineContainer.initFailures,
-            runtimeIssues: AppContext.shared.makeEngineControlService()
-                .historyDurabilityIssues())
+            runtimeIssues: control.historyDurabilityIssues())
         if !rows.isEmpty {
             for row in rows {
-                // No action/target: IMKit renders these as disabled status rows.
-                let item = NSMenuItem(title: row, action: nil, keyEquivalent: "")
-                item.isEnabled = false
+                // Status rows are disabled — except the one whose durable
+                // record a click retires. Building the menu is not delivery:
+                // IMKit calls this method on its own, so acknowledging here
+                // would consume the #312 report on a launch that displayed
+                // nothing (measured: four seconds after an untouched relaunch).
+                let item = NSMenuItem(
+                    title: row.title,
+                    action: row.acknowledgeable ? #selector(acknowledgeDeletionReport) : nil,
+                    keyEquivalent: "")
+                item.target = row.acknowledgeable ? self : nil
+                item.isEnabled = row.acknowledgeable
                 menu.addItem(item)
             }
             menu.addItem(.separator())
@@ -210,6 +218,17 @@ class LeximeInputController: IMKInputController {
         settingsItem.target = self
         menu.addItem(settingsItem)
         return menu
+    }
+
+    /// The user clicked the lost-deletion row, which is the only evidence
+    /// this process can have that the report reached a person.
+    ///
+    /// The row's fate is the engine's to decide — it declines to retire the
+    /// record while a compaction holds the wal mutex, or while this session
+    /// has an unpersisted deletion of its own, and in both cases the marker
+    /// stays and the row must too.
+    @objc private func acknowledgeDeletionReport() {
+        AppContext.shared.makeEngineControlService().acknowledgeHistoryReport()
     }
 
     @objc private func showSettings() {

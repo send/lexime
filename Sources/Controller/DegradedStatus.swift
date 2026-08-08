@@ -6,11 +6,28 @@ import Foundation
 /// the point:
 ///
 /// - `EngineInitFailure` latches. It records what went wrong while the engine
-///   was starting, and nothing during the session retracts it.
+///   was starting, and nothing the *disk* does during the session retracts it.
+///   One row has an exception, and it is a user action rather than a recovery:
+///   `.historyDeletionLost` is retired by acknowledging it or by a wipe (see
+///   below).
 /// - `LexHistoryDurabilityIssue` is polled and clearable. A frozen WAL thaws
 ///   when a compaction restores appendable form; an unpersisted deletion is
 ///   covered by the next durable checkpoint. Folding these into `initFailures`
 ///   would make a recovered disk keep warning forever.
+///
+/// The dividing line is retraction, not where the fact came from:
+/// `.historyDeletionLost` is a durability failure too, but it is a *past* one,
+/// so no amount of the disk recovering retracts it and it latches like the rest
+/// of startup. Two things retire it, and neither is the disk healing:
+///
+/// - **a full wipe**, which makes the claim false rather than stale — there is
+///   no longer an entry the deletion could have failed against;
+/// - **the user acknowledging it**, which leaves the claim true but delivered.
+///
+/// Both reach `EngineControlService.retractRowIfSettled()`, which asks the
+/// engine whether the report is still owed rather than inferring it from which
+/// action ran — so a wipe that fails before its commit point, or an
+/// acknowledgement whose unlink fails, keeps the row.
 ///
 /// The other half of that separation is that a runtime issue must show even
 /// when startup was clean — the main #295 scenario is a healthy launch
@@ -19,13 +36,35 @@ import Foundation
 /// display nothing in exactly the case this exists for.
 enum DegradedStatus {
 
-    /// Titles for the disabled status rows, init failures first.
-    /// Empty when there is nothing to report.
+    /// One status row.
+    struct Row: Equatable {
+        let title: String
+        /// Whether clicking the row acknowledges a durable record behind it.
+        ///
+        /// True for exactly one row. Every other row is derived — it either
+        /// re-derives from live state on each menu open, or latches in memory
+        /// and dies with the process — so there is nothing for a click to
+        /// settle. The lost-deletion row is backed by a file that outlives the
+        /// process, and only a person can say they have seen it: IMKit calls
+        /// `menu()` on its own, without displaying anything, so "the menu was
+        /// built" is not evidence of delivery. Verified on-device — the record
+        /// was consumed four seconds after a relaunch nobody touched.
+        let acknowledgeable: Bool
+    }
+
+    /// Status rows, init failures first. Empty when there is nothing to report.
     static func rows(
         initFailures: [EngineInitFailure],
         runtimeIssues: [LexHistoryDurabilityIssue]
-    ) -> [String] {
-        initFailures.map(title(for:)) + runtimeIssues.map(title(for:))
+    ) -> [Row] {
+        initFailures.map { failure in
+            Row(title: title(for: failure), acknowledgeable: isAcknowledgeable(failure))
+        } + runtimeIssues.map { Row(title: title(for: $0), acknowledgeable: false) }
+    }
+
+    static func isAcknowledgeable(_ failure: EngineInitFailure) -> Bool {
+        if case .historyDeletionLost = failure { return true }
+        return false
     }
 
     static func title(for failure: EngineInitFailure) -> String {
@@ -54,6 +93,16 @@ enum DegradedStatus {
             return NSLocalizedString(
                 "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）",
                 comment: "Degraded status: user history partially lost, learning continues")
+        case .historyDeletionLost:
+            // Says 「前回」 and tells the user what to do, where the runtime row
+            // below says only that a save is failing right now. Without that
+            // split the two read as near-duplicates, and on a disk that is
+            // still failing they appear together — the steady state, not a
+            // corner. This is the one that has already happened: the entry is
+            // back, and only the user can finish the job.
+            return NSLocalizedString(
+                "⚠️ 前回のセッションの削除が保存されていません（削除した内容が復元されている可能性があります。確認して再度削除してください）",
+                comment: "Degraded status: a deletion from a previous session never reached disk")
         case .customSettings:
             return NSLocalizedString(
                 "⚠️ 設定ファイルの読み込みに失敗（デフォルト設定で動作中）",

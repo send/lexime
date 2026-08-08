@@ -3,6 +3,7 @@
 //! Records confirmed conversions and uses frequency × recency scoring to
 //! promote learned candidates in subsequent sessions.
 
+pub mod deletion_marker;
 mod persistence;
 pub mod recovery;
 #[cfg(test)]
@@ -570,6 +571,16 @@ impl UserHistory {
         results
     }
 
+    /// Whether this history holds nothing at all.
+    ///
+    /// Used by recovery to settle an unpersisted-deletion marker: a claim that
+    /// some entry survived a deletion is false, not merely stale, when there
+    /// is no entry. Mirrors the reasoning `clear` uses when it covers the
+    /// ledger from its empty checkpoint.
+    pub fn is_empty(&self) -> bool {
+        self.unigrams.is_empty() && self.bigrams.is_empty()
+    }
+
     /// Iterate all unigram records as (reading, surface, entry).
     /// Used by offline tooling (`lextool history-audit`) to mine the history.
     pub fn unigrams(&self) -> impl Iterator<Item = (&str, &str, &HistoryEntry)> {
@@ -700,4 +711,22 @@ impl UserHistory {
     pub fn cover_durable_residue(&mut self, snapshot: &UserHistory) {
         self.durable_residue.cover(&snapshot.durable_residue);
     }
+}
+
+/// Test support: the temporary path a durable checkpoint write goes through.
+///
+/// Exported so a fault-injection test in a dependent crate can put a directory
+/// here and fail the checkpoint write — and only that write — leaving the rest
+/// of the family (notably the unpersisted-deletion marker) writable and the
+/// existing checkpoint readable, which is what a restart-crossing test needs.
+///
+/// It forwards to the definition `write_atomic` itself calls. Re-spelling the
+/// convention here would have made the obstacle independent of the path the
+/// writer actually uses, so a change inside `write_atomic` would leave the
+/// injector planting a directory nobody visits and the tests passing
+/// vacuously. No production caller; `persist` is crate-private, so this is the
+/// seam. A proper injectable writer for checkpoints — the shape `WalIo` gives
+/// the WAL — would retire both this and the older parent-as-a-file trick.
+pub fn checkpoint_tmp_path(checkpoint_path: &std::path::Path) -> std::path::PathBuf {
+    crate::persist::tmp_path(checkpoint_path)
 }

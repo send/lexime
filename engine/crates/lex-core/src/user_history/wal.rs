@@ -482,8 +482,25 @@ impl HistoryWal {
         let payload = bincode::serialize(record).map_err(io::Error::other)?;
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| io::Error::other("WAL entry too large (>4 GiB)"))?;
+        // Checked here, where the number is *issued*, rather than carried by a
+        // flag. `u64::MAX` itself is refused rather than spent: assigning it
+        // would leave no representable successor, and giving up one number out
+        // of 2^64 costs nothing next to carrying a second exhausted-but-one
+        // state. Exhaustion was briefly represented with `frozen`, which is
+        // wrong in kind: `frozen` means "this file is not in appendable v2
+        // form" and a compaction legitimately clears it by rewriting the file
+        // — but rewriting a file does not create more sequence numbers, so the
+        // heal would clear the freeze and leave the next append to wrap. The
+        // check belongs where it cannot be cleared.
         let seq = self.next_seq;
-        self.next_seq += 1;
+        self.next_seq = match self.next_seq.checked_add(1) {
+            Some(next) => next,
+            None => {
+                return Err(AppendError::Io(io::Error::other(
+                    "WAL sequence space exhausted",
+                )))
+            }
+        };
 
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&seq.to_le_bytes());
@@ -611,7 +628,19 @@ impl HistoryWal {
         self.entry_count = valid_frames;
         self.wal_bytes = file_bytes.max(WAL_HEADER_LEN as u64);
         self.last_appended_seq = max_seq;
-        self.next_seq = max_seq.max(applied_seq) + 1;
+        // Saturating, not `+ 1`: both inputs come from *files*, and a corrupt
+        // checkpoint holding `applied_seq == u64::MAX` would make `+ 1` panic
+        // in debug — across the UniFFI constructor — and wrap to zero in
+        // release, handing the next tombstone seq 0 for replay to reject as
+        // non-monotonic.
+        //
+        // Saturating is safe *because* the refusal lives at the assignment
+        // point: `next_seq == u64::MAX` is the exhausted state, and
+        // `append_record` refuses it rather than wrapping. Representing
+        // exhaustion as a freeze instead was wrong in kind — a compaction
+        // clears a freeze by rewriting the file, and rewriting a file creates
+        // no numbers, so the heal put the wrap straight back.
+        self.next_seq = max_seq.max(applied_seq).saturating_add(1);
         // Existing frames may include an unbarriered tail from before the
         // restart (their power-loss durability is unknown even though they
         // were readable). Seed the counter so the first new append issues a
@@ -626,6 +655,12 @@ impl HistoryWal {
 
     pub(super) fn adopt_empty(&mut self, applied_seq: u64) {
         self.adopt_scan(0, WAL_HEADER_LEN as u64, 0, applied_seq);
+    }
+
+    /// The number the next append would take. Test seam for the floor.
+    #[cfg(test)]
+    pub(super) fn next_seq_for_tests(&self) -> u64 {
+        self.next_seq
     }
 
     /// Mark the on-disk file as not being in appendable v2 form (see the

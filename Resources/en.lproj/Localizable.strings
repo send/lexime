@@ -15,6 +15,7 @@
 "⚠️ 学習履歴の一部を復旧できませんでした（学習は継続中）" = "⚠️ Some learning history could not be recovered (learning continues)";
 "⚠️ 削除した学習内容を保存できませんでした（削除が取り消される可能性があります）" = "⚠️ A deleted entry could not be saved (the deletion may be undone)";
 "⚠️ 新しい学習内容を保存できていません（再起動すると失われます）" = "⚠️ Recent learning is not being saved (it will be lost on restart)";
+"⚠️ 前回のセッションの削除が保存されていません（削除した内容が復元されている可能性があります。確認して再度削除してください）" = "⚠️ A deletion from a previous session was not saved (the deleted entry may be back; please check and delete it again)";
 
 /* Settings Window */
 "Lexime 設定" = "Lexime Settings";
