@@ -543,6 +543,11 @@ run = "cd engine && cargo bench -p lex-core"
 [tasks.lint-toolchain]
 description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if missing"
 hide = true
+# After the screen, as are `lint` and `fmt` through it: `cargo clippy` and
+# `cargo fmt` are not built into cargo, so an alias of the same name (in a
+# repository cargo config, which the screen refuses) would run instead, and
+# could build.
+depends = ["screen"]
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
 # offline failure) in front of every `mise run test`. (The screen `test` also

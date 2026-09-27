@@ -662,13 +662,13 @@ macOS で動作する最小限の IME を構築。
 | `conn` | 接続行列のコンパイル |
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `test-read-pin` | pin 読み取り (`scripts/read-pin.sh` + ラッパー 3 本) のテスト + mise の全インストールが pin に従うかの検査 |
-| `test-task-screen` | `scripts/check-task-screen.py` とそのテスト。mise 自身のタスクグラフ（`mise tasks ls --json`、file task 含む）で、build しないと明記された task 以外がすべて `screen` に依存すること、`task.skip` / `task.skip_depends` で screen が飛ばされないこと、`screen` task 自体が `sources` / `outputs` を持たないこと、claude.yml の bot の `--allowedTools` が screen 済み task の完全一致 `mise run` と読み取り専用の `gh pr view/diff/checks` だけのカンマ区切りであることを検査。claude.yml の他の部分（別 step・action の他 input・env の置き場所）と repo 内の他の Claude Code 設定は読まない（行単位の読み取りは未知の書き方で fail-open するため。レビュー対象） |
+| `test-task-screen` | `scripts/check-task-screen.py` とそのテスト。mise 自身のタスクグラフ（`mise tasks ls --json`、file task 含む）で、build しないと明記された task 以外がすべて `screen` に依存すること、`task.skip` / `task.skip_depends` で screen が飛ばされないこと、`screen` task 自体の定義が変わっていないこと（`sources` / `outputs` / `env` 等なし）、repo の mise 設定が cargo backend の tool（`cargo install` で Cargo.lock 外の crate をビルドする）を使わないこと、claude.yml の bot の `--allowedTools` が screen 済み task の完全一致 `mise run` と読み取り専用の `gh pr view/diff/checks` だけのカンマ区切りであることを検査。claude.yml の他の部分（別 step・action の他 input・env の置き場所）と repo 内の他の Claude Code 設定は読まない（行単位の読み取りは未知の書き方で fail-open するため。レビュー対象）。守るのは「screen なしで task・ルール・tool を足す」通常の編集の漏れで、screen を回避するための編集（Tera・env 上書き・`scripts/screen.sh` 自体の変更等）ではない |
 | `test-check-sources` | screen の source 検査 (`scripts/check-sources.sh`) のテスト。実 cargo ツリー (file:// の git 依存) で、Cargo.lock のキーをインデント・クォートしても git 依存が拒否され、repo 内 cargo config が `include` 経由も含め拒否されるか |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `screen` | `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。build する全 task が直接または depends 経由でこれに依存し、失敗すれば走らない（`test-task-screen` が検査）。1 invocation に 1 回、Cargo.lock が origin/main と一致なら ~0.7s。ローカルでは変更エントリの問い合わせは公開日キャッシュで初回のみ（GitHub Actions と `SCREEN_POLICY_REF` 下では不使用。`scripts/check-quarantine.sh`）。@claude bot の build が通る screen はこれだけ（理由は mise.toml の `[tasks.screen]`）。bot では baseline / allowlist / quarantine の差分基準を main から読む（`SCREEN_POLICY_REF`）ので、build.rs crate や quarantine 例外を足す PR は main にマージされるまで bot の lint / test が落ちる |
 | `test` | screen + lint + `cargo test --workspace --all-features --locked` |
 | `lint` | screen の後に `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
-| `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
+| `fmt` | screen の後に engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | screen の後に `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（CI の audit job もこの task を実行する） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |

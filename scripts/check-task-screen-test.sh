@@ -103,6 +103,23 @@ d=$(fixture)
 edit "$d/mise.toml" 'run = "bash scripts/screen.sh"' $'sources = ["engine/Cargo.lock"]\noutputs = ["build/.screened"]\nrun = "bash scripts/screen.sh"'
 expect "screen made skippable" "the \`screen\` task must be exactly" "$d"
 
+d=$(fixture)
+edit "$d/mise.toml" 'run = "bash scripts/screen.sh"' $'env = { SCREEN_POLICY_REF = false }\nrun = "bash scripts/screen.sh"'
+expect "screen given its own env" "the \`screen\` task must be exactly" "$d"
+
+d=$(fixture)
+edit "$d/mise.toml" 'depends = ["screen", "lint-toolchain"]' 'depends = [{ task = "screen", env = { QUARANTINE_DAYS = "1" } }, "lint-toolchain"]'
+expect "a depends entry with its own env" "unrecognized depends entry" "$d"
+
+# mise's cargo backend compiles with cargo install, before any task runs.
+d=$(fixture)
+printf '\n[tasks.newtool]\ndepends = ["screen"]\ntools = { "cargo:ripgrep" = "14.1.1" }\nrun = "rg --version"\n' >>"$d/mise.toml"
+expect "a task tool from cargo" "task newtool uses the tool cargo:ripgrep" "$d"
+
+d=$(fixture)
+printf '\n[tools]\n"cargo:ripgrep" = "14.1.1"\n' >>"$d/mise.toml"
+expect "a repository tool from cargo" "sets the tool cargo:ripgrep" "$d"
+
 # --- mise settings ---
 d=$(fixture)
 printf '\n[settings]\ntask.skip_depends = true\n' >>"$d/mise.toml"
@@ -147,6 +164,7 @@ a tab before a rule|Bash(gh pr checks:*)"|Bash(gh pr checks:*),	Bash(cargo build
 a stray parenthesis|Bash(gh pr checks:*)"|Bash(gh pr checks:*)),Bash(cargo build:*)"
 a second list, other spelling|Bash(gh pr checks:*)"|Bash(gh pr checks:*)" --allowed-tools "Bash(cargo build)"
 an unquoted list|Bash(gh pr checks:*)"|Bash(gh pr checks:*)" --allowedTools Bash(cargo)
+a value after the list|Bash(gh pr checks:*)"|Bash(gh pr checks:*)" "Bash(cargo build:*)"
 CASES
 
 if [[ $fails -gt 0 ]]; then

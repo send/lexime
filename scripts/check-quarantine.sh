@@ -129,7 +129,7 @@ trap 'rm -f "$tmpfile"' EXIT
 # GITHUB_ACTIONS for every step, so no workflow edit turns the cache back on
 # there. Also off under SCREEN_POLICY_REF, the setting for any job like that.
 cache=""
-if [ -z "${SCREEN_POLICY_REF:-}" ] && [ -z "${GITHUB_ACTIONS:-}" ]; then
+if [ -z "${SCREEN_POLICY_REF:-}" ] && [ -z "${GITHUB_ACTIONS+set}" ]; then
     cache_dir="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
     if [ -n "$cache_dir" ] && mkdir -p "$cache_dir/lexime" 2>/dev/null; then
         cache="$cache_dir/lexime/crates-io-published"

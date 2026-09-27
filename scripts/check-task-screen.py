@@ -22,8 +22,13 @@
 # MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml); locally it checks whatever your
 # mise loads.
 #
-# Not covered: what a task's run script does. A NO_BUILD task that starts
-# building, or a script that calls `mise run --skip-deps`, is for review.
+# Scope: this catches a task, rule or tool added without the screen, which
+# is what a normal edit gets wrong. It is not a defense against an edit made
+# to get around the screen: that could as well edit scripts/screen.sh, and
+# mise.toml has many ways to do it that no graph shows (Tera in `depends`
+# rendered differently in another job, env overriding the screen's inputs,
+# daemons, [env] code run at load, cargo aliases set through env). Those, and
+# what a NO_BUILD task's run script does, are for review.
 import json
 import os
 import re
@@ -35,8 +40,6 @@ from fnmatch import fnmatchcase
 # its run script; keep the reason next to it.
 NO_BUILD = {
     "screen": "the screen itself (cargo metadata only)",
-    "lint-toolchain": "rustup toolchain install",
-    "fmt": "cargo fmt formats; it compiles nothing",
     "clean": "cargo clean",
     "dict-clean": "rm",
     "reload": "pkill",
@@ -49,8 +52,10 @@ NO_BUILD = {
     "test-task-screen": "this check and its tests",
 }
 
-# The screen task itself, exactly: with `sources`/`outputs` mise could skip
-# it as up to date while every closure still names it.
+# The screen task itself: its run, and none of the fields that would change
+# how it runs (with `sources`/`outputs` mise could skip it as up to date
+# while every closure still names it; `dir`, `file`, `shell`, `env`, `tools`
+# change what runs or what it sees).
 SCREEN_RUN = ["bash scripts/screen.sh"]
 
 CLAUDE_YML = ".github/workflows/claude.yml"
@@ -102,10 +107,11 @@ def refs(entries):
     for e in entries or []:
         if isinstance(e, str):
             pat = (e.split() or [""])[0]
-        elif isinstance(e, dict) and isinstance(e.get("task"), str):
+        elif isinstance(e, dict) and isinstance(e.get("task"), str) and set(e) == {"task"}:
             pat = e["task"].split()[0]
         else:
-            # A shape this check does not know: fail rather than skip it.
+            # A shape this check does not know, or a dependency given its
+            # own env or args: fail rather than skip it.
             err("unrecognized depends entry %r" % (e,))
             continue
         hit = [n for n in tasks if fnmatchcase(n, pat)]
@@ -134,8 +140,21 @@ screened = {n for n in tasks if "screen" in closure(n)}
 screen = tasks.get("screen")
 if screen is None:
     err("no `screen` task")
-elif screen.get("run") != SCREEN_RUN or screen.get("sources") or screen.get("outputs"):
-    err("the `screen` task must be exactly run = %r, with no sources or outputs" % SCREEN_RUN[0])
+elif (screen.get("run") != SCREEN_RUN or os.path.realpath(screen.get("dir") or "") != root
+      or any(screen.get(k) for k in ("sources", "outputs", "file", "shell", "env", "tools", "depends"))):
+    err("the `screen` task must be exactly run = %r, in the repository root, with no "
+        "sources, outputs, file, shell, env, tools or depends" % SCREEN_RUN[0])
+# mise's cargo backend installs a tool with `cargo install`: it compiles a
+# crate that is not in Cargo.lock, before any task runs, so no screen sees it.
+for n in sorted(tasks):
+    for tool in tasks[n].get("tools") or {}:
+        if tool.startswith("cargo:"):
+            err("task %s uses the tool %s, which mise builds with cargo install, unscreened" % (n, tool))
+for tool, versions in mise_json("ls", "--current", "--json").items():
+    for v in versions:
+        path = os.path.realpath((v.get("source") or {}).get("path") or "/")
+        if tool.startswith("cargo:") and path.startswith(root + os.sep):
+            err("%s sets the tool %s, which mise builds with cargo install, unscreened" % (path, tool))
 for n in sorted(set(NO_BUILD) - set(tasks)):
     err("%s is listed in NO_BUILD but is not a task" % n)
 
@@ -162,7 +181,9 @@ for n in sorted(set(tasks) - screened - set(NO_BUILD)):
 with open(CLAUDE_YML) as f:
     yml = f.read()
 mentions = re.findall(r"allowed[-_ ]?tools", yml, re.I)
-lists = re.findall(r'--allowedTools "(%s(?:,%s)*)"' % (BOT_RULE, BOT_RULE), yml)
+# Nothing after the list on its line: the flag takes every value that
+# follows it. (A value on a line folded onto this one is for review.)
+lists = re.findall(r'--allowedTools "(%s(?:,%s)*)"[ \t]*$' % (BOT_RULE, BOT_RULE), yml, re.M)
 if not mentions or len(lists) != len(mentions):
     err("%s: every allowedTools mention must be --allowedTools \"<rules>\" with only "
         "comma-separated %s rules (%d mentions, %d such lists)"
