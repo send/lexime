@@ -10,10 +10,14 @@ set -euo pipefail
 # would pass them unexamined. (engine/deny.toml's [sources] says the same,
 # but cargo-deny runs only in the audit job, alongside the builds.)
 #
-# Source replacement in a cargo config would fetch "crates.io" packages from
-# somewhere else while Cargo.lock still names crates.io, so it is refused
-# too. Only the configs inside the repository: cargo runs from engine/, and
-# the ones it reads above the checkout are the runner's, not the tree's.
+# A cargo config inside the repository can also move where dependencies come
+# from while Cargo.lock still names crates.io: `source` replacement, `patch`,
+# `paths` overrides, and `include`, which pulls any of those in from another
+# file. So its top-level keys are held to an allowlist of ones that do not
+# touch dependency resolution, and anything else — including keys a later
+# cargo adds — is refused. Only the configs inside the repository: cargo runs
+# from engine/, and the ones it reads above the checkout are the runner's,
+# not the tree's.
 #
 # Both files are parsed as TOML, as cargo parses them: a line pattern misses
 # spellings TOML treats as the same key (indentation, quoted keys, dotted
@@ -30,6 +34,10 @@ except ImportError:
 
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 lock, configs = sys.argv[1], sys.argv[2:]
+# Cargo config tables that leave dependency sources alone. Extend it only
+# with keys that cannot change which code a dependency resolves to.
+CONFIG_KEYS = {"alias", "build", "cargo-new", "doc", "env", "future-incompat-report",
+               "http", "net", "profile", "resolver", "target", "term"}
 
 
 def sources(node):
@@ -62,8 +70,10 @@ for path in configs:
             config = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         sys.exit(f"sources: {path} does not parse as TOML ({e}); refusing it")
-    if "source" in config:
-        sys.exit(f"sources: {path} replaces a cargo source")
+    refused = sorted(set(config) - CONFIG_KEYS)
+    if refused:
+        sys.exit(f"sources: {path} sets {', '.join(refused)}, which can change "
+                 "where dependencies come from (see scripts/check-sources.sh)")
 
 print("sources: crates.io only")
 PY

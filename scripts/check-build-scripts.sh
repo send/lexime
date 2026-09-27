@@ -11,7 +11,7 @@ BASELINE="engine/build-script-baseline.txt"
 # silently repair the lockfile that check is supposed to verify.
 # --all-features: CI builds with --all-features, so a build.rs behind an
 # optional feature must be visible to this screen too.
-current=$(cargo metadata --locked --all-features --manifest-path engine/Cargo.toml --format-version 1 | python3 -c "
+current=$(cd engine && cargo metadata --locked --all-features --format-version 1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for pkg in data['packages']:

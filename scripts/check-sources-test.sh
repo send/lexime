@@ -55,6 +55,14 @@ fixture() {
 # expect <name> <want exit: 0 or fail> <want line on stdout+stderr> <dir>
 expect() {
   local name=$1 want=$2 line=$3 dir=$4 rc=0
+  # $(fixture ...) is an argument, so set -e does not catch its failure; an
+  # empty dir would otherwise run the case wherever this script stands.
+  if [[ ! -d $dir ]]; then
+    echo "FAIL $name"
+    echo "     no fixture directory"
+    fails=$((fails + 1))
+    return
+  fi
   (cd "$dir" && bash "$check") >"$tmp/out" 2>&1 || rc=$?
   if { [[ $want == 0 && $rc -eq 0 ]] || [[ $want == fail && $rc -ne 0 ]]; } &&
     grep -qF -- "$line" "$tmp/out"; then
@@ -108,22 +116,33 @@ expect "missing Cargo.lock" fail "Cargo.lock" "$missing"
 
 # --- cargo configs: every spelling of a [source] table is refused ---
 for cfg in engine/.cargo/config.toml .cargo/config.toml .cargo/config engine/.cargo/config; do
-  expect "$cfg: [source.crates-io]" fail "sources: $cfg replaces a cargo source" \
+  expect "$cfg: [source.crates-io]" fail "sources: $cfg sets source," \
     "$(fixture '' "$cfg" $'[source.crates-io]\nreplace-with = "mirror"\n')"
 done
 C=engine/.cargo/config.toml
-expect "quoted table (#345)" fail "sources: $C replaces a cargo source" \
+expect "quoted table (#345)" fail "sources: $C sets source," \
   "$(fixture '' "$C" $'["source".crates-io]\nreplace-with = "mirror"\n')"
-expect "indented table header" fail "sources: $C replaces a cargo source" \
+expect "indented table header" fail "sources: $C sets source," \
   "$(fixture '' "$C" $'  [source.crates-io]\n  replace-with = "mirror"\n')"
-expect "dotted key" fail "sources: $C replaces a cargo source" \
+expect "dotted key" fail "sources: $C sets source," \
   "$(fixture '' "$C" $'source.crates-io.replace-with = "mirror"\n')"
-expect "inline table" fail "sources: $C replaces a cargo source" \
+expect "inline table" fail "sources: $C sets source," \
   "$(fixture '' "$C" $'source = { crates-io = { replace-with = "mirror" } }\n')"
 expect "config that does not parse" fail "does not parse as TOML" \
   "$(fixture '' "$C" $'[source\n')"
 expect "config without [source] passes" 0 "sources: crates.io only" \
-  "$(fixture '' "$C" $'[build]\nrustflags = []\n')"
+  "$(fixture '' "$C" $'[build]\nrustflags = []\n[alias]\nt = "test"\n')"
+
+# --- other keys that move dependencies: refused by the allowlist ---
+inc=$(fixture '' "$C" $'include = ["mirror.toml"]\n')
+printf '[source.crates-io]\nreplace-with = "v"\n[source.v]\ndirectory = "vendor"\n' >"$inc/engine/.cargo/mirror.toml"
+expect "include of a file that replaces a source" fail "sets include," "$inc"
+expect "config [patch] with a git crate" fail "sets patch," \
+  "$(fixture '' "$C" $'[patch.crates-io]\nfoo = { git = "https://example.com/foo" }\n')"
+expect "paths override" fail "sets paths," "$(fixture '' "$C" $'paths = ["../foo"]\n')"
+expect "registries table" fail "sets registries," \
+  "$(fixture '' "$C" $'[registries.evil]\nindex = "sparse+https://evil.example/"\n')"
+expect "unknown key" fail "sets some-future-key," "$(fixture '' "$C" $'some-future-key = 1\n')"
 
 if [[ $fails -gt 0 ]]; then
   echo "check-sources-test: $fails failed"
