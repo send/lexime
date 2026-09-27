@@ -30,9 +30,10 @@
 #   note      (optional) - Explanation of the test case or known issue
 #   issue     (optional) - Related GitHub issue number (e.g. "#123")
 #   pr        (optional) - Related GitHub PR number (e.g. "#146")
-#   window_top1 (optional) - The production candidate list's #1 when it
-#                          legitimately differs from `expected` (history
-#                          promoting learned kana to index 0)
+#   window_top1 (optional) - History corpus only: the production candidate
+#                          list's #1 when it legitimately differs from
+#                          `expected` (history promoting learned kana to
+#                          index 0). Rejected in a corpus without [[history]]
 #   width_issue (optional) - Issue for a known width disagreement: reported,
 #                          but the case does not fail on it
 #
@@ -1128,7 +1129,7 @@ expected = "しておいたほうが"
 category = "regression"
 tags = ["candidate-window"]
 pr = "#350"
-note = "#350 で KanjiVariant の reading-scan を削除した後も、分節境界フェーズで しておいた方が が頁 1 に出ること"
+note = "あったほうが と同じ扱い: 方が が理想だが top-1 の ほうが は許容。理想形 しておいた方が が頁 1 に残ること (#350 で KanjiVariant の reading-scan を削除した後も分節境界フェーズで生成される) を window で守る"
 
 [cases.window]
 n = 9

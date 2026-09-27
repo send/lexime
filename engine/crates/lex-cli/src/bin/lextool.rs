@@ -175,7 +175,9 @@ enum Command {
         /// Compare against a baseline written by --emit-baseline
         #[arg(long)]
         baseline: Option<String>,
-        /// Write a baseline (line index, timestamp, rank — no content)
+        /// Write a baseline (line index, timestamp, rank — no reading or
+        /// surface). The timestamps still record when you corrected the IME:
+        /// keep the file local, do not attach it to a PR or issue
         #[arg(long)]
         emit_baseline: Option<String>,
         /// Print each selection's reading and surface to stderr (local only;
@@ -564,6 +566,16 @@ fn main() {
             // Validate window checks before running anything: a malformed
             // expectation must not read as a conversion failure.
             for case in &cases {
+                // window_top1 exists for learned kana promoted to #1; without
+                // corpus history it would be an unlinked width exemption.
+                if case.window_top1.is_some() && corpus.history.is_empty() {
+                    eprintln!(
+                        "window_top1 for {} is only meaningful in a corpus with [[history]]; \
+                         use width_issue for a known width disagreement",
+                        case.reading
+                    );
+                    process::exit(1);
+                }
                 if let Some(ref issue) = case.width_issue {
                     if !is_issue_ref(issue) {
                         eprintln!(

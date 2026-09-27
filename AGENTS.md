@@ -19,9 +19,10 @@ what a generic reviewer misses:
   accuracy corpora (`mise run accuracy` / `mise run accuracy-history`) in the
   PR description (CLAUDE.md § 変換精度テスト). Flag cost/weight changes that
   lack that evidence.
-- **Corpus discipline**: an accuracy-corpus `skip` without an issue link is a
-  violation (理由なし skip 禁止); a new history-corpus case without a
-  `baseline` (expected result with no history) is a real defect, not a nit.
+- **Corpus discipline**: an accuracy-corpus `skip` (or `width_issue`) without
+  an issue link is a violation (理由なし skip 禁止); a new history-corpus case
+  without a `baseline` (expected result with no history), or a history-corpus
+  `[cases.window]` without `[cases.window.baseline]`, is a real defect, not a nit.
 - **FFI boundary (UniFFI)**: the Rust engine (`engine/`) reaches the Swift
   frontend (`Sources/`) via UniFFI. Watch for panics that could cross the
   boundary, blocking calls on the IMKit main thread, and callback
