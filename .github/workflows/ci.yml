@@ -38,8 +38,8 @@ jobs:
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
-              # mise.toml defines the gates themselves ([tasks.lint] is the
-              # local twin of this workflow's lint job). Without this, an edit
+              # mise.toml defines the gates themselves (this workflow's lint
+              # job runs [tasks.lint] as-is). Without this, an edit
               # weakening a gate would skip the very jobs that would catch it.
               - 'mise.toml'
               # The lint toolchain pin and its reader. A PR that only bumps
@@ -113,32 +113,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned, not `stable` — see engine/lint-toolchain.txt. The assignment is
-      # on its own line so a failing read fails the step (`echo "…$(cmd)"`
-      # would not).
+      # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
+      # installs the pin and runs on it by itself; CI reads it only for the
+      # cache key below. The assignment is on its own line so a failing read
+      # fails the step (`echo "…$(cmd)"` would not).
       - name: Read the pinned lint toolchain
         id: toolchain
         run: |
           version=$(bash scripts/lint-toolchain.sh)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.toolchain.outputs.version }}
-          components: clippy, rustfmt
-
+      # The pin is spelled into shared-key because rust-cache's own hash cannot
+      # see it: that hash covers the toolchains installed when the cache
+      # restores, and the pin is installed afterwards, by `mise run lint`.
+      # Without it a pin bump would keep restoring the old compiler's
+      # artifacts, and as that key already exists nothing newer would be saved.
+      # (It must be shared-key: rust-cache ignores `key` when shared-key is set.)
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine -> target
-          shared-key: lint
+          shared-key: lint-${{ steps.toolchain.outputs.version }}
 
-      - run: cd engine && cargo fmt --all --check
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
 
-      # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
-      # leaving benches in no gate at all — `cargo test` skips `[[bench]]`
-      # targets too (they default to `test = false`; `harness` is not the
-      # lever). That is how #299 rotted unnoticed.
-      - run: cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The lint commands and the toolchain install live only in mise.toml.
+      - run: mise run lint
 
   msrv:
     needs: [changes, screen]
@@ -157,7 +158,7 @@ jobs:
       # other job builds on stable. Default features only — the optional
       # `neural` feature pulls candle, whose MSRV is tracked separately, and
       # default targets only — do NOT propagate the `lint` job's --all-targets
-      # here, or criterion / proptest and bench source come under the MSRV
+      # (mise.toml [tasks.lint]) here, or criterion / proptest and bench source come under the MSRV
       # constraint and a dev-dep bump turns CI red over code that never ships.
       - uses: dtolnay/rust-toolchain@1.88.0
 

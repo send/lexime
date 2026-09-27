@@ -498,26 +498,43 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`.
+# offline failure) in front of every `mise run test`. The probe disables
+# rustup's auto-install: without that, `cargo +<missing>` installs the default
+# profile itself, silently (the output is discarded), and the install below —
+# the path CI's lint job takes on every fresh runner — never runs. The variable
+# needs rustup >= 1.28.1; an older rustup ignores it and auto-installs as
+# before, which still lands the pin with clippy and rustfmt, just not minimal.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 tc=$(bash scripts/lint-toolchain.sh)
+export RUSTUP_AUTO_INSTALL=0
 if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --version >/dev/null 2>&1; then
   rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt
 fi
 """
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy on the pinned lint toolchain (same as CI)"
+description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["lint-toolchain"]
-# --all-targets is load-bearing — see the lint job in .github/workflows/ci.yml
-# for why (benches are in no other gate). Keep the two in step. #299.
+# The lint commands CI runs are defined here only: CI's lint job runs this
+# task rather than cargo lines of its own. One hand copy remains — CLAUDE.md's
+# raw-cargo fallback for environments without mise — so a flag change here
+# should be mirrored there.
+#
+# --all-targets is load-bearing: clippy otherwise checks only lib+bins,
+# leaving benches in no gate at all — `cargo test` skips `[[bench]]` targets
+# too (they default to `test = false`; `harness` is not the lever). That is
+# how #299 rotted unnoticed.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 tc=$(bash scripts/lint-toolchain.sh)
 cd engine
+# So a CI log shows which clippy ran, not only that one did. Assigned on its
+# own line so a failure stops the task (`echo "…$(cmd)"` would not).
+clippy=$(cargo +"$tc" clippy --version)
+echo "lint: $clippy"
 cargo +"$tc" fmt --all --check
 cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
 """
