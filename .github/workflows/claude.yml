@@ -69,9 +69,9 @@ jobs:
       # holds a secret and an agent shell runs after this step:
       #   - version and sha256 are spelled out here, as nothing from the
       #     checkout may run before the Claude step. CI holds them to the pin:
-      #     the read-pin job fails when `version:` is not `min_version` in
-      #     mise.toml, the lint job when `sha256:` is not the linux-x64
-      #     bin/mise it just installed at that version.
+      #     ci.yml's read-pin job fails when `version:` is not `min_version` in
+      #     mise.toml, or `sha256:` is not the linux-x64 bin/mise it installs
+      #     at that version.
       #   - cache: false — setup-mise sets it too, but here it is load-bearing:
       #     a restored mise dir puts its shims/ on PATH ahead of that shell,
       #     and sha256 covers bin/mise only.

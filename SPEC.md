@@ -694,7 +694,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | `scripts/screen.sh`（quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。検査の追加はスクリプト側に（呼び出し元はスクリプト冒頭に列挙） |
-| `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うことも検査） |
+| `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うこと、claude.yml の sha256 が pin の linux-x64 バイナリのものであることも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（上表の `lint` task） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
@@ -707,7 +707,7 @@ macOS で動作する最小限の IME を構築。
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版は `read-pin` ジョブが、sha256 は `lint` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 

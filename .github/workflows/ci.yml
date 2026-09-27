@@ -113,18 +113,37 @@ jobs:
   # Tests the pin reader and its wrappers (scripts/read-pin-test.sh), including
   # that mozc-pin.sh prints what the pre-#332 one-liner did (the accuracy job's
   # cache key). Also checks that every mise install is held to the pin — see
-  # the mise sections of the script. Plain bash and no cargo, so no `screen`.
-  # Unconditional on purpose, like `screen`: a path filter would be one more hand-kept list of
-  # what the test reads, and a path missing from it only skips the job. Every
-  # path in it would also sit in `core` or `corpus`, so a check that each input
-  # is in some filter (#302) could not catch the omission. The job costs a
-  # few seconds.
+  # the mise sections of the script, and the sha256 step below. Plain bash
+  # and no cargo, so no `screen`. Unconditional on purpose, like `screen`: a
+  # path filter would be one more hand-kept list of what the job reads, and a
+  # path missing from it only skips the job. Every path in it would also sit in
+  # `core` or `corpus`, so a check that each input is in some filter (#302)
+  # could not catch the omission — and claude.yml, which the sha256 step
+  # reads, sits in none. The job costs a few seconds plus one mise download.
   read-pin:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - run: bash scripts/read-pin-test.sh
+
+      # claude.yml installs mise by sha256 without running anything from the
+      # checkout, so the hash cannot be read from the pin. Installing the pin
+      # here fetches the same linux-x64 binary that hash names, so a PR that
+      # moves either the pin or the hash alone fails here, not at the bot's
+      # next run. Not in read-pin-test.sh: locally that would hash a macOS mise.
+      - uses: ./.github/actions/setup-mise
+
+      - name: claude.yml's mise sha256 is the pinned binary's
+        run: |
+          want=$(sed -nE 's/^[[:space:]]+sha256:[[:space:]]*([0-9a-f]{64}).*$/\1/p' .github/workflows/claude.yml)
+          got=$(sha256sum "$(command -v mise)" | cut -d' ' -f1)
+          echo "claude.yml: $want"
+          echo "installed:  $got"
+          [[ -n $want && $want == "$got" ]] || {
+            echo "::error file=.github/workflows/claude.yml::sha256 is not the linux-x64 bin/mise of the pinned release"
+            exit 1
+          }
 
   lint:
     needs: [changes, screen]
@@ -159,22 +178,6 @@ jobs:
           shared-key: lint-${{ steps.toolchain.outputs.version }}
 
       - uses: ./.github/actions/setup-mise
-
-      # claude.yml installs mise by sha256 without running anything from the
-      # checkout, so the hash cannot be read from the pin. This job has just
-      # installed the pinned release's linux-x64 binary, the one that hash
-      # names; a bump that leaves the hash behind fails here, not at the bot's
-      # next run. Here because a bump edits mise.toml, which `core` covers.
-      - name: claude.yml's mise sha256 is the pinned binary's
-        run: |
-          want=$(sed -nE 's/^[[:space:]]+sha256:[[:space:]]*([0-9a-f]{64}).*$/\1/p' .github/workflows/claude.yml)
-          got=$(sha256sum "$(command -v mise)" | cut -d' ' -f1)
-          echo "claude.yml: $want"
-          echo "installed:  $got"
-          [[ -n $want && $want == "$got" ]] || {
-            echo "::error file=.github/workflows/claude.yml::sha256 is not the linux-x64 bin/mise of the pinned release"
-            exit 1
-          }
 
       # The lint commands and the toolchain install live only in mise.toml.
       - run: mise run lint
