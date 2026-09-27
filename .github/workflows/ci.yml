@@ -42,6 +42,11 @@ jobs:
               # local twin of this workflow's lint job). Without this, an edit
               # weakening a gate would skip the very jobs that would catch it.
               - 'mise.toml'
+              # The lint toolchain pin and its reader. A PR that only bumps
+              # the pin must still run lint — that run is the whole point of
+              # the bump procedure.
+              - 'engine/lint-toolchain.txt'
+              - 'scripts/lint-toolchain.sh'
             session:
               - 'engine/crates/lex-session/**'
             # Root `lex_engine` package. examples/ and uniffi-bindgen.rs are
@@ -108,14 +113,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `stable` — see engine/lint-toolchain.txt. The assignment is
+      # on its own line so a failing read fails the step (`echo "…$(cmd)"`
+      # would not).
+      - name: Read the pinned lint toolchain
+        id: toolchain
+        run: |
+          version=$(bash scripts/lint-toolchain.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.version }}
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine -> target
-          shared-key: engine
+          shared-key: lint
 
       - run: cd engine && cargo fmt --all --check
 

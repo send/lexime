@@ -1,0 +1,26 @@
+# Rust toolchain the `lint` gate (rustfmt check + clippy -D warnings) runs on.
+#
+# Pinned because clippy on floating `stable` gains lints with each release, and
+# under `-D warnings` a new lint that fires on existing code fails every PR
+# that runs `lint` at once, for a reason unrelated to the PR (a882420, #328).
+# With the pin, new lints arrive only when this line moves.
+#
+# Read by scripts/lint-toolchain.sh for both consumers: the CI `lint` job and
+# `mise run lint`. The local gate and CI therefore run the same clippy.
+#
+# Only `lint` is pinned. The build and test jobs stay on stable, since they do
+# not run with -D warnings. MSRV has its own pin (`rust-version` in
+# engine/Cargo.toml and the msrv job in .github/workflows/ci.yml).
+#
+# When: nothing bumps this automatically. Bump when you want a newer clippy —
+# at the latest when `cargo clippy` on your local stable shows lints the pinned
+# one does not, since the local gate and CI then disagree with plain cargo.
+#
+# Bump procedure (do all of this in ONE PR):
+#   1. Replace the version below with the new stable X.Y.Z.
+#   2. Run `mise run lint`, and fix whatever the new lints flag in the same PR.
+#   3. If a fix reaches for an API newer than the MSRV, confirm it with
+#      `cargo +<msrv> check --workspace --locked` (see the msrv job).
+#
+# Format: the first line that is a bare X.Y.Z is the pinned version.
+1.98.1

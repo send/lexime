@@ -663,7 +663,8 @@ macOS で動作する最小限の IME を構築。
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `test` | lint + `cargo test --workspace --all-features` |
-| `lint` | `cargo fmt --check` + `cargo clippy --all-targets` |
+| `lint` | `cargo fmt --check` + `cargo clippy --all-targets`（`engine/lint-toolchain.txt` で固定した toolchain。CI の lint job と同じ） |
+| `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
@@ -692,7 +693,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
-| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets` |
+| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets`（toolchain は `engine/lint-toolchain.txt` で固定） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |

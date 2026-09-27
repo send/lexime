@@ -20,7 +20,7 @@ user-invocable: true
 ### Stage 1 — Format
 
 ```sh
-cd engine && cargo fmt --all
+mise run fmt   # lint が --check に使うのと同じ固定 rustfmt で整形する
 ```
 
 ### Stage 2 — Verify
@@ -28,8 +28,10 @@ cd engine && cargo fmt --all
 **順序規則: screen-before-build**。依存変更 (CI で screen + audit が走る変更) がある場合、build を伴う cargo (clippy / test / check) より**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
 
 ```sh
-cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
+mise run test   # = lint (fmt --check + clippy -D warnings、CI と同じ固定 toolchain) + cargo test --workspace --all-features
 ```
+
+この worktree **自身の target** で走らせる。他 worktree の `CARGO_TARGET_DIR` を借りると clippy が誤って clean を返す (PR #327 で CI の lint だけが落ちた)
 
 条件付き追加 (diff に該当パスがあれば必須):
 
