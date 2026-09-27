@@ -74,15 +74,14 @@ jobs:
               - 'Info.plist'
               # Defines which files `compile-swift` gates and `build`
               # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — `core` names only the two
+              # covered by any other filter — `core` names only the
               # supply-chain scripts.
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
 
-  # Supply-chain screening. Runs scripts/screen.sh (quarantine / build.rs
-  # baseline; the one definition lint-canary.yml and `mise run audit` also
-  # call) BEFORE any job that invokes cargo on the PR's dependency graph: cargo
+  # Supply-chain screening. Runs scripts/screen.sh (the one definition of the
+  # screen) BEFORE any job that invokes cargo on the PR's dependency graph: cargo
   # compiles and executes dependency build scripts, so every cargo-invoking
   # job below `needs: screen` (test-* inherit it through lint). Unconditional
   # (no `if`) on purpose — a path-filtered screen would have to hand-maintain
@@ -103,7 +102,7 @@ jobs:
       # out-of-sync Cargo.lock before the --locked screen below could reject
       # it. This job only runs metadata (no build), so the cache buys little.
 
-      - name: Supply-chain screen (quarantine + build.rs baseline)
+      - name: Supply-chain screen
         run: bash scripts/screen.sh
 
   lint:

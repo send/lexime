@@ -12,7 +12,5 @@
 # no base to diff against and checks every dependency, at 1 request/s.
 set -euo pipefail
 
-dir=$(dirname "$0")
-
-bash "$dir/check-quarantine.sh"
-bash "$dir/check-build-scripts.sh"
+bash scripts/check-quarantine.sh
+bash scripts/check-build-scripts.sh

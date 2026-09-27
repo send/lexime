@@ -692,7 +692,7 @@ macOS で動作する最小限の IME を構築。
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
-| `screen` | ubuntu-latest | 常時 | `scripts/screen.sh`（quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。`canary` と `mise run audit` も同じスクリプトを呼ぶので、検査の追加はスクリプト側に |
+| `screen` | ubuntu-latest | 常時 | `scripts/screen.sh`（quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。検査の追加はスクリプト側に（呼び出し元はスクリプト冒頭に列挙） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（`cargo fmt --check` + `cargo clippy --all-targets`。toolchain は `engine/lint-toolchain.txt` で固定） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |

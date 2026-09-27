@@ -560,8 +560,7 @@ run = [
   # screening first: cargo check executes build scripts, so the build.rs /
   # quarantine screen must run before anything that builds. In CI it is the
   # `screen` job that gates all cargo-invoking jobs; locally there is no job
-  # DAG, so it runs here, first. The same script as CI's, so the two cannot
-  # drift.
+  # DAG, so it runs here, first.
   "bash scripts/screen.sh",
   "cd engine && cargo check --locked",
   "cd engine && cargo deny check",

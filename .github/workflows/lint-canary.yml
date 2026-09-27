@@ -47,7 +47,7 @@ jobs:
       # build scripts, so the screen comes first. A step rather than a job,
       # since nothing else here runs cargo. On main it re-passes trivially,
       # but workflow_dispatch can target any branch.
-      - name: Supply-chain screen (quarantine + build.rs baseline)
+      - name: Supply-chain screen
         run: bash scripts/screen.sh
 
       # No rust-cache. A weekly run leaves the entry at the 7-day eviction
