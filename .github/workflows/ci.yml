@@ -114,38 +114,31 @@ jobs:
       - uses: actions/checkout@v4
 
       # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
-      # selects the pin by itself (`cargo +<pin>`), so installing it here is
-      # not what makes clippy run on it. It is for the cache: dtolnay makes the
-      # pin the rustup default, and Swatinem/rust-cache keys on the default
-      # toolchain's `rustc -vV`. Left to the mise task, the pin would be
-      # installed after the cache restore and beside the runner's stable, so
-      # the key would name stable while clippy builds on the pin — a pin bump
-      # would not change the key. The assignment is on its own line so a
-      # failing read fails the step (`echo "…$(cmd)"` would not).
+      # installs the pin and runs on it by itself; CI reads it only for the
+      # cache key below. The assignment is on its own line so a failing read
+      # fails the step (`echo "…$(cmd)"` would not).
       - name: Read the pinned lint toolchain
         id: toolchain
         run: |
           version=$(bash scripts/lint-toolchain.sh)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.toolchain.outputs.version }}
-          components: clippy, rustfmt
-
+      # The pin is spelled into shared-key because rust-cache's own hash cannot
+      # see it: that hash covers the toolchains installed when the cache
+      # restores, and the pin is installed afterwards, by `mise run lint`.
+      # Without it a pin bump would keep restoring the old compiler's
+      # artifacts, and as that key already exists nothing newer would be saved.
+      # (It must be shared-key: rust-cache ignores `key` when shared-key is set.)
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine -> target
-          shared-key: lint
+          shared-key: lint-${{ steps.toolchain.outputs.version }}
 
       - uses: jdx/mise-action@v2
         with:
           install: false
 
-      # The fmt/clippy command lines live only in mise.toml's [tasks.lint], so
-      # CI and the local gate cannot drift apart on a flag (--all-targets is
-      # load-bearing — see there, #299). Its `lint-toolchain` dependency finds
-      # the pin already installed by the dtolnay step and does nothing.
+      # The lint commands and the toolchain install live only in mise.toml.
       - run: mise run lint
 
   msrv:

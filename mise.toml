@@ -498,9 +498,7 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`. In CI's lint job the pin
-# is already installed (as the rustup default, for the cache key — see there),
-# so this does nothing.
+# offline failure) in front of every `mise run test`.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -511,7 +509,7 @@ fi
 """
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy on the pinned lint toolchain (same as CI)"
+description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["lint-toolchain"]
 # The only definition of the lint commands: CI's lint job runs this task
 # rather than cargo lines of its own.
