@@ -17,5 +17,9 @@
 #   3. Fix or skip (+ issue link) any newly failing corpus cases in the
 #      same PR, so main never lands with a red accuracy gate.
 #
-# Format: the first non-comment, non-empty line is the pinned commit SHA.
+# Read by scripts/mozc-pin.sh for both consumers: `mise run fetch-dict-mozc`
+# and the CI accuracy job's snapshot cache key.
+#
+# Format: the first line that is a bare 40-hex SHA (either case; read as
+# lowercase) is the pinned commit.
 7c1e06d39d6a8446e15a324700c48dcb00846039

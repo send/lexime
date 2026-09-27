@@ -441,14 +441,17 @@ what a generic reviewer misses:
   issued it (#319, measured on device): IMKit binds each controller to one
   client, so a late callback can only come from this controller's own client
   and a `sender` check can never fire; the late arrivals observed land after
-  the settle has taken the session to Idle, where `commit()` emits nothing
-  (pinned by `commit_after_settle_emits_nothing`). Findings proposing an
-  activation generation, a `sender` check or an `isActivated` gate re-litigate
-  it — SPEC § 不変条件 has the evidence, the precondition (a commit arriving on
-  a later run-loop turn, not re-entrantly mid-teardown) and the residuals. One
-  of them is real but unobserved: a host that trails its commit *and*
+  the settle has taken the session to Idle, where the `isComposing` guard in
+  `SessionCoordinator.commit(client:)` returns before the engine. Findings
+  proposing an activation generation, a `sender` check or an `isActivated`
+  gate re-litigate it, and so do findings that restore the skipped Idle epoch
+  bump or move the guard back to the callers. SPEC § 不変条件 has the
+  evidence, the precondition (a commit arriving on a later run-loop turn, not
+  re-entrantly mid-teardown), why nothing depends on that epoch bump, and the
+  residual: real but unobserved, a host that trails its commit *and*
   re-activates fast with an immediate keystroke would commit the new
-  composition. It is recorded, not fenced, because nothing can tell it apart.
+  composition (the guard passes — the session is composing again). It is
+  recorded, not fenced, because nothing can tell it apart.
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
