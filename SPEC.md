@@ -657,6 +657,7 @@ macOS で動作する最小限の IME を構築。
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy --all-targets`（`engine/lint-toolchain.txt` で固定した toolchain。CI の lint job と同じ） |
+| `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
