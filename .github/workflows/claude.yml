@@ -92,7 +92,9 @@ jobs:
       #   tools tag mode adds get a 403 at push, as contents is read-only.
       # - Tool rules go in claude_args: v1 has no `allowed_tools` input. The
       #   action adds its read, comment, CI and git tools, and acceptEdits
-      #   lets it edit files in the workspace; any other command is denied.
+      #   lets it edit files in the workspace; no other command is allowed.
+      #   That is not a sandbox: `cargo test` / `mise run` execute workspace
+      #   code, so treat the bot as able to run anything with its tokens.
       #   `gh pr` is read-only here — pull-requests: write would otherwise
       #   let it close, edit or approve PRs. No `cd engine && …` forms:
       #   each side of `&&` is matched on its own, so the plain cargo rules
