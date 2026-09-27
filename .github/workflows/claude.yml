@@ -63,15 +63,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      # mise so the bot lints and formats through mise.toml's [tasks.lint] /
-      # [tasks.fmt] on the pinned toolchain, like CI's lint job, rather than on
-      # floating stable with a hand-copied flag list. Stricter than ci.yml's
-      # mise-action because this job holds a secret and runs before
-      # claude-code-action: the action and the mise binary are pinned by hash;
-      # cache: false so the binary always comes from that pinned download; and
-      # github_token: '' because the action otherwise exports GITHUB_TOKEN to
-      # every later step, the bot's shell included. install: false as in
-      # ci.yml — mise.toml declares no [tools].
+      # So the bot lints and formats through mise.toml's [tasks.lint] /
+      # [tasks.fmt], as CI's lint job does. Stricter than ci.yml because this
+      # job holds a secret and an agent shell runs after this step:
+      #   - cache: false — a restored mise dir puts its shims/ on PATH ahead of
+      #     that shell, and sha256 covers bin/mise only.
+      #   - github_token: '' — the action otherwise exports GITHUB_TOKEN to
+      #     every later step. It then warns "No GITHUB_TOKEN provided" each
+      #     run; expected, as nothing here fetches tools (install: false).
+      # To bump: pick a mise release at least 7 days old, and take sha256 of
+      # mise/bin/mise from its linux-x64 tarball, checked against the
+      # release's SHASUMS256.txt.
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
           version: 2026.9.11
