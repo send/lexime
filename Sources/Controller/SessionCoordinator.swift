@@ -95,7 +95,20 @@ final class SessionCoordinator {
         return resp.consumed
     }
 
+    /// Commit on the host's request (`commitComposition`, the roman `setValue`).
+    ///
+    /// With nothing composing there is nothing to commit, and going further
+    /// would only re-arm `lastClient`. IMKit can deliver `commitComposition`
+    /// after `deactivateServer` has cleared it (#319), which would leave a
+    /// torn-down coordinator holding a client for `applyAsyncResponse` to write
+    /// to. Idle is also stable here: only a key on this thread leaves it, and
+    /// an async response is accepted only while composing.
+    ///
+    /// The engine's Idle `commit()` would also advance the epoch. Nothing
+    /// relies on that: in-flight async work was already invalidated when the
+    /// session left composing, and none is issued while Idle.
     func commit(client: IMKTextInput) {
+        guard session.isComposing() else { return }
         lastClient = client
         deliver(session.commit(), to: client)
     }

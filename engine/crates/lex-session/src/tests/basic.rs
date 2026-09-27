@@ -850,10 +850,12 @@ fn settle_unconfirmed_on_idle_is_a_no_op() {
 fn commit_after_settle_emits_nothing() {
     // #319: IMKit can deliver `commitComposition` after `deactivateServer`
     // (measured: 0.7–4.4ms later, same controller). It is left unfenced
-    // because the settle has already reached Idle and a commit there does
-    // nothing — this pins the "does nothing". Were it to emit even a
-    // `.hideCandidates`, the trailing callback would hide the shared panel
-    // now owned by whichever controller just gained focus.
+    // because the settle has already reached Idle. The Swift coordinator's
+    // `isComposing` guard keeps that call from reaching the engine; this pins
+    // that the engine does nothing either, for any frontend without the guard.
+    // Were it to emit even a `.hideCandidates`, the trailing callback would
+    // hide the shared panel now owned by whichever controller just gained
+    // focus.
     let dict = make_test_dict();
     // History is wired in so the no-training assertion below can fail:
     // `record_history` returns early on a session without one.
@@ -890,8 +892,8 @@ fn commit_after_settle_emits_nothing() {
         session.take_history_records().is_empty(),
         "a late callback is not acceptance and must not train"
     );
-    // Not an effect anyone relies on, but a Swift-side `isComposing` guard in
-    // front of `commit()` would remove it — this makes that a visible choice.
+    // Not an effect anyone relies on. The Swift coordinator's `isComposing`
+    // guard skips it on purpose (SPEC § 不変条件, #319); this pins the engine.
     assert!(
         session.epoch() > epoch_before,
         "an Idle commit still advances the epoch"
