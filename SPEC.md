@@ -680,7 +680,7 @@ macOS で動作する最小限の IME を構築。
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
 | `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
 | `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
-| `replay-commit-log` | コミットログの手動選択（rank>0）を現在のエンジンで再生し、選択された候補の頁 1 在否・順位・1 位とのコスト差を件数だけで集計。`--emit-baseline` / `--baseline` で変更前後の消失・降格を比較（baseline は行番号・時刻・順位のみ）。個人の入力内容は `--verbose` の stderr にしか出さない |
+| `replay-commit-log` | コミットログの手動選択（rank>0）を現在のエンジンで再生し、選択された候補の頁 1 在否・順位・1 位とのコスト差を件数だけで集計。`--emit-baseline` / `--baseline` で変更前後の消失・降格を比較（baseline は行番号・時刻・順位のみ）。再生は標準モードの候補列に対して行う（予測モードでの選択も標準モードの列で数える）。読めない行（追記途中の末尾など）は件数だけ数えて飛ばす。個人の入力内容は `--verbose` の stderr にしか出さない |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |

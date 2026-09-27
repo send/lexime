@@ -193,16 +193,14 @@ enum Command {
 struct SnapshotEntry {
     reading: String,
     surfaces: Vec<String>,
-    /// What `surfaces` holds. Absent in files written before `--candidates`
-    /// existed, which recorded N-best paths.
-    #[serde(default)]
+    /// What `surfaces` holds. Snapshots are regenerable dev artifacts, so a
+    /// file written before this field existed is regenerated, not defaulted.
     kind: SnapshotKind,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum SnapshotKind {
-    #[default]
     Nbest,
     Candidates,
 }
@@ -566,8 +564,19 @@ fn main() {
             // Validate window checks before running anything: a malformed
             // expectation must not read as a conversion failure.
             for case in &cases {
+                if let Some(ref issue) = case.width_issue {
+                    if !is_issue_ref(issue) {
+                        eprintln!(
+                            "width_issue for {} must be an issue link like \"#123\", got {:?}",
+                            case.reading, issue
+                        );
+                        process::exit(1);
+                    }
+                }
                 if let Some(ref w) = case.window {
-                    if let Err(e) = w.validate(hist.is_some()) {
+                    // The no-history window is required where the corpus seeds
+                    // its own history, not when --history is merely supplied.
+                    if let Err(e) = w.validate(!corpus.history.is_empty()) {
                         eprintln!("Invalid [cases.window] for {}: {}", case.reading, e);
                         process::exit(1);
                     }
@@ -718,20 +727,14 @@ fn main() {
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
-            let file = fs::File::create(&output_file).unwrap_or_else(|e| {
-                eprintln!("Failed to create output file {}: {}", output_file, e);
+            let entries: Vec<SnapshotEntry> = readings
+                .iter()
+                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind))
+                .collect();
+            write_jsonl(&output_file, &entries).unwrap_or_else(|e| {
+                eprintln!("Failed to write snapshot: {}", e);
                 process::exit(1);
             });
-            let mut writer = BufWriter::new(file);
-
-            for reading in &readings {
-                let entry = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
-                let line = serde_json::to_string(&entry).expect("JSON serialization failed");
-                writeln!(writer, "{}", line).unwrap_or_else(|e| {
-                    eprintln!("Failed to write: {}", e);
-                    process::exit(1);
-                });
-            }
 
             eprintln!(
                 "Snapshot written: {} readings -> {}",
@@ -961,19 +964,12 @@ fn main() {
             let readings = read_readings(&input_file);
 
             // Load baseline
-            let baseline_content = fs::read_to_string(&baseline_file).unwrap_or_else(|e| {
-                eprintln!("Failed to read baseline file {}: {}", baseline_file, e);
+            let entries: Vec<SnapshotEntry> = read_jsonl(&baseline_file).unwrap_or_else(|e| {
+                eprintln!("Failed to load baseline: {}", e);
                 process::exit(1);
             });
             let mut baseline: HashMap<String, SnapshotEntry> = HashMap::new();
-            for line in baseline_content.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let entry: SnapshotEntry = serde_json::from_str(line).unwrap_or_else(|e| {
-                    eprintln!("Failed to parse baseline JSONL: {}", e);
-                    process::exit(1);
-                });
+            for entry in entries {
                 if entry.kind != kind {
                     eprintln!(
                         "Baseline holds {:?} snapshots but {:?} was requested (toggle --candidates)",
@@ -1126,6 +1122,10 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
         row(&label, n);
     }
     row("no N-best path", r.gap_no_path);
+    if r.malformed_lines > 0 {
+        println!();
+        println!("  Unreadable log lines skipped: {}", r.malformed_lines);
+    }
     if let Some(d) = diff {
         println!();
         println!("=== Against baseline ===");
@@ -1133,6 +1133,7 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
             ("Lost", d.lost),
             ("Demoted off page", d.demoted_off_page),
             ("Demoted in page", d.demoted_in_page),
+            ("Demoted below page", d.demoted_below_page),
             ("Improved", d.improved),
             ("Unchanged", d.unchanged),
             ("Only in current", d.only_current),
@@ -1257,9 +1258,14 @@ fn eval_case(
     } else {
         None
     };
+    let stale_exemption = case.width_issue.as_ref().filter(|_| width.is_empty());
     let details: Vec<String> = window
         .into_iter()
         .chain(width.into_iter().map(|w| format!("{width_tag}: {w}")))
+        .chain(
+            stale_exemption
+                .map(|issue| format!("width_issue {issue}: all widths agree now — remove it")),
+        )
         .collect();
     match failure {
         Some(f) => fail(f, actual, baseline_actual, details),
@@ -1286,6 +1292,12 @@ fn width_disagreements(w: &rank_ops::Top1Widths, expected: &str, list_top: &str)
         ));
     }
     out
+}
+
+/// `#123` — the form every skip-like exemption must link (CLAUDE.md).
+fn is_issue_ref(s: &str) -> bool {
+    s.strip_prefix('#')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn pct(part: usize, whole: usize) -> f64 {

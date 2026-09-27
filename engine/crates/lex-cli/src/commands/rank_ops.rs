@@ -40,7 +40,8 @@ pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
 /// `MAX_CANDIDATES`; both are 20.)
 ///
 /// Callers slice the result with `take(n)`; passing a smaller limit would
-/// change which predictions are fetched for short readings.
+/// change which predictions are fetched for short readings. This is the
+/// Standard conversion mode's list; Predictive mode builds a different one.
 pub fn production_candidates(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
@@ -206,20 +207,41 @@ struct CommitLine {
     rank: usize,
 }
 
-/// rank>0 lines of the commit log with their 0-based line index.
-fn read_selections(path: &Path) -> Result<Vec<(usize, CommitLine)>, String> {
+/// The rank>0 lines of a commit log, with their 0-based line index.
+struct Selections {
+    lines: Vec<(usize, CommitLine)>,
+    /// Lines that are not valid UTF-8 JSON of the expected shape — e.g. a
+    /// torn last line while the IME is appending. Counted, never echoed.
+    malformed: usize,
+}
+
+fn read_selections(path: &Path) -> Result<Selections, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    let mut out = Vec::new();
-    for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| format!("read error at line {}: {e}", i + 1))?;
+    let mut reader = BufReader::new(file);
+    let mut out = Selections {
+        lines: Vec::new(),
+        malformed: 0,
+    };
+    let mut buf = Vec::new();
+    for i in 0.. {
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| format!("read error at line {}: {e}", i + 1))?;
+        if n == 0 {
+            break;
+        }
+        let Ok(line) = std::str::from_utf8(&buf) else {
+            out.malformed += 1;
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
-        // The error must not echo the line: it is personal content.
-        let rec: CommitLine = serde_json::from_str(&line)
-            .map_err(|_| format!("malformed commit-log line {}", i + 1))?;
-        if rec.rank > 0 {
-            out.push((i, rec));
+        match serde_json::from_str::<CommitLine>(line) {
+            Ok(rec) if rec.rank > 0 => out.lines.push((i, rec)),
+            Ok(_) => {}
+            Err(_) => out.malformed += 1,
         }
     }
     Ok(out)
@@ -264,6 +286,8 @@ pub struct ReplayReport {
     pub gap_hist: Vec<usize>,
     /// Selections with no N-best path (lookup / prediction / injection only).
     pub gap_no_path: usize,
+    /// Log lines skipped as unreadable (see `Selections::malformed`).
+    pub malformed_lines: usize,
 }
 
 /// Movement against a baseline, joined on `(i, t)`.
@@ -275,6 +299,8 @@ pub struct BaselineDiff {
     pub demoted_off_page: usize,
     /// Moved down but still on the first page.
     pub demoted_in_page: usize,
+    /// Off the first page before, and moved further down.
+    pub demoted_below_page: usize,
     /// Moved up, or absent before and present now.
     pub improved: usize,
     pub unchanged: usize,
@@ -294,6 +320,7 @@ struct ReadingView {
 
 /// Replay every rank>0 selection in `log`. Returns the counts and one
 /// baseline line per selection (for `--emit-baseline` / `--baseline`).
+/// A log with no rank>0 selection is a valid, all-zero measurement.
 /// `verbose` prints per-selection content to stderr (local inspection only).
 pub fn replay(
     dict: &dyn Dictionary,
@@ -302,10 +329,10 @@ pub fn replay(
     log: &Path,
     verbose: bool,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
-    let selections = read_selections(log)?;
-    if selections.is_empty() {
-        return Err(format!("no rank>0 selections in {}", log.display()));
-    }
+    let Selections {
+        lines: selections,
+        malformed,
+    } = read_selections(log)?;
     let nbest = settings().candidates.nbest;
 
     let mut rank_hist = vec![0; PAGE_SIZE];
@@ -366,6 +393,7 @@ pub fn replay(
         rank_hist,
         gap_hist,
         gap_no_path,
+        malformed_lines: malformed,
     };
     Ok((report, lines))
 }
@@ -396,7 +424,8 @@ pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> Baselin
             (None, None) => d.unchanged += 1,
             (Some(b), Some(r)) if r == b => d.unchanged += 1,
             (Some(b), Some(r)) if r < b => d.improved += 1,
-            (Some(b), Some(r)) if b < PAGE_SIZE && r >= PAGE_SIZE => d.demoted_off_page += 1,
+            (Some(b), Some(_)) if b >= PAGE_SIZE => d.demoted_below_page += 1,
+            (Some(_), Some(r)) if r >= PAGE_SIZE => d.demoted_off_page += 1,
             (Some(_), Some(_)) => d.demoted_in_page += 1,
         }
     }
@@ -513,13 +542,14 @@ absent = ["x"]"#
     #[test]
     fn baseline_diff_classifies_moves() {
         let before = [
-            line(0, 10, Some(1)), // lost
-            line(1, 11, Some(2)), // off page
-            line(2, 12, Some(1)), // down in page
-            line(3, 13, Some(5)), // up
-            line(4, 14, None),    // appears
-            line(5, 15, Some(3)), // same
-            line(6, 16, Some(1)), // gone from log
+            line(0, 10, Some(1)),  // lost
+            line(1, 11, Some(2)),  // off page
+            line(2, 12, Some(1)),  // down in page
+            line(3, 13, Some(5)),  // up
+            line(4, 14, None),     // appears
+            line(5, 15, Some(3)),  // same
+            line(6, 16, Some(1)),  // gone from log
+            line(7, 17, Some(12)), // further below page 1
         ];
         let after = [
             line(0, 10, None),
@@ -528,6 +558,7 @@ absent = ["x"]"#
             line(3, 13, Some(2)),
             line(4, 14, Some(7)),
             line(5, 15, Some(3)),
+            line(7, 17, Some(15)),
             line(9, 99, Some(1)), // new line
         ];
         assert_eq!(
@@ -536,6 +567,7 @@ absent = ["x"]"#
                 lost: 1,
                 demoted_off_page: 1,
                 demoted_in_page: 1,
+                demoted_below_page: 1,
                 improved: 2,
                 unchanged: 1,
                 only_current: 1,
@@ -554,30 +586,52 @@ absent = ["x"]"#
     }
 
     #[test]
-    fn commit_log_parse_errors_do_not_echo_content() {
+    fn unreadable_commit_log_lines_are_counted_not_fatal() {
         let dir = std::env::temp_dir().join(format!("lexcli-replay-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("commit-log.jsonl");
-        fs::write(
-            &path,
-            "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n\
-             {\"t\":2,\"reading\":\"い\",\"surface\":\"胃\",\"rank\":2,\"top1\":\"い\"}\n\
-             not json with ひみつ\n",
-        )
-        .unwrap();
-        let err = read_selections(&path).err().expect("malformed line");
-        assert!(!err.contains("ひみつ"), "{err}");
-        assert!(err.contains("line 3"), "{err}");
+        let mut content = Vec::new();
+        content.extend_from_slice(
+            "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n".as_bytes(),
+        );
+        content.extend_from_slice(
+            "{\"t\":2,\"reading\":\"い\",\"surface\":\"胃\",\"rank\":2,\"auto\":true}\n".as_bytes(),
+        );
+        content.extend_from_slice(b"not json\n");
+        // A torn multibyte character, as a crash mid-append would leave.
+        content.extend_from_slice(b"{\"t\":3,\"reading\":\"\xe3\x81");
+        fs::write(&path, &content).unwrap();
 
+        let sels = read_selections(&path).unwrap();
+        assert_eq!(sels.malformed, 2);
+        assert_eq!(sels.lines.len(), 1, "only rank>0 lines are replayed");
+        assert_eq!((sels.lines[0].0, sels.lines[0].1.t), (1, 2));
+
+        // No rank>0 line at all is an empty measurement, not an error.
         fs::write(
             &path,
-            "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n\
-             {\"t\":2,\"reading\":\"い\",\"surface\":\"胃\",\"rank\":2,\"auto\":true}\n",
+            "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n",
         )
         .unwrap();
         let sels = read_selections(&path).unwrap();
-        assert_eq!(sels.len(), 1, "only rank>0 lines are replayed");
-        assert_eq!((sels[0].0, sels[0].1.t), (1, 2));
+        assert!(sels.lines.is_empty());
+        assert_eq!(sels.malformed, 0);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PAGE_SIZE mirrors the Swift constant that owns it. Fail closed: if the
+    /// declaration moves or changes shape, this test fails and PAGE_SIZE is
+    /// re-checked by hand.
+    #[test]
+    fn page_size_matches_swift_candidate_window() {
+        let swift =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../Sources/CandidateManager.swift");
+        let src = fs::read_to_string(&swift).expect("read Sources/CandidateManager.swift");
+        let decl = format!("static let maxDisplay = {PAGE_SIZE}\n");
+        assert!(
+            src.contains(&decl),
+            "CandidateManager.maxDisplay no longer reads `{}`; update PAGE_SIZE",
+            decl.trim()
+        );
     }
 }
