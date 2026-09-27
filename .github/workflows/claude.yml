@@ -5,8 +5,10 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  # Not `edited`: every edit of an issue that mentions @claude would start
+  # another paid run.
   issues:
-    types: [opened, edited]
+    types: [opened]
   pull_request_review:
     types: [submitted]
 
@@ -89,9 +91,12 @@ jobs:
       #   gives this token to Claude's shell for `gh`. The git commit/push
       #   tools tag mode adds get a 403 at push, as contents is read-only.
       # - Tool rules go in claude_args: v1 has no `allowed_tools` input. The
-      #   action adds its read, comment, CI and git tools; anything listed
-      #   nowhere is denied. `gh pr` is read-only here — pull-requests: write
-      #   would otherwise let it close, edit or approve PRs.
+      #   action adds its read, comment, CI and git tools, and acceptEdits
+      #   lets it edit files in the workspace; any other command is denied.
+      #   `gh pr` is read-only here — pull-requests: write would otherwise
+      #   let it close, edit or approve PRs. No `cd engine && …` forms:
+      #   each side of `&&` is matched on its own, so the plain cargo rules
+      #   already cover them, and a rule spelling out `&&` never matches.
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
       # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
@@ -105,4 +110,4 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: >-
-            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
+            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
