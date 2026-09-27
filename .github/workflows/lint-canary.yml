@@ -1,0 +1,103 @@
+name: Lint canary
+
+# Runs the lint gate on floating `stable` instead of the pin in
+# engine/lint-toolchain.txt. A signal, not a gate: it never runs on
+# pull_request or push. The verdicts are in scripts/lint-canary.sh, and the
+# tracking issue they drive is in scripts/lint-canary-report.sh.
+#
+# GitHub disables scheduled workflows in a public repo after 60 days with no
+# repository activity (it emails a warning first). If the canary goes quiet,
+# check that it is still enabled before concluding the pin is current.
+on:
+  schedule:
+    # Mondays 03:17 UTC. Stable releases land on Thursdays every 6 weeks, so
+    # a new clippy is reported within 4 days.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    outputs:
+      state: ${{ steps.canary.outputs.state }}
+      stable: ${{ steps.canary.outputs.stable }}
+      pin: ${{ steps.canary.outputs.pin }}
+      lints: ${{ steps.canary.outputs.lints }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
+
+      # Not the runner image's preinstalled stable, which can lag a release by
+      # days: this step installs the newest stable, which is what the canary is
+      # for.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # The same screen as ci.yml's `screen` job, and for the same reason:
+      # cargo executes dependency build scripts, so the quarantine / build.rs
+      # checks come first. Steps rather than a job, since nothing else here
+      # runs cargo. On main they re-pass trivially, but workflow_dispatch can
+      # target any branch.
+      - name: Quarantine check (7-day)
+        run: bash scripts/check-quarantine.sh
+
+      - name: build.rs baseline check
+        run: bash scripts/check-build-scripts.sh
+
+      # No rust-cache. A weekly run leaves the entry at the 7-day eviction
+      # window, and the key changes with every stable release anyway.
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+
+      - name: Lint on stable
+        id: canary
+        run: bash scripts/lint-canary.sh stable
+
+  # Split from `canary` so the job that executes dependency build scripts never
+  # holds a token that can write issues. `canary` fails only on `error` (or
+  # when it dies before a verdict), which leaves no issue and just a red run.
+  # The `if` has no status function, so the implicit success() applies and the
+  # outputs read here always come from a job that succeeded. `behind` turns the
+  # run red in this job, after the issue is up to date. Only main reports: a
+  # dispatch on a pin-bump branch would otherwise see `current` and close the
+  # issue before the bump merges. A literal, because a `schedule` event's
+  # payload carries no `repository.default_branch`.
+  report:
+    needs: canary
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      contains(fromJSON('["current", "free-bump", "behind"]'), needs.canary.outputs.state)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STATE: ${{ needs.canary.outputs.state }}
+          STABLE: ${{ needs.canary.outputs.stable }}
+          PIN: ${{ needs.canary.outputs.pin }}
+          LINTS: ${{ needs.canary.outputs.lints }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/lint-canary-report.sh
+
+      - name: Fail the run when stable is behind
+        if: needs.canary.outputs.state == 'behind'
+        run: |
+          echo "::error::stable fails the lint gate; see the tracking issue"
+          exit 1
