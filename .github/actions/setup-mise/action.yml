@@ -1,0 +1,44 @@
+name: Set up mise (pinned)
+description: >-
+  Install the mise version pinned by `min_version` in mise.toml. Every ci.yml /
+  lint-canary.yml job that runs mise uses this rather than jdx/mise-action
+  directly, so none can float on the latest release. (claude.yml pins inline;
+  see mise.toml.) Needs actions/checkout first.
+
+runs:
+  using: composite
+  steps:
+    # The assignment is on its own line so a failing read fails the step
+    # (`echo "…$(cmd)"` would not), which also keeps an empty `version:` —
+    # meaning "latest" to mise-action — from ever being passed.
+    - name: Read the pinned mise version
+      id: pin
+      shell: bash
+      run: |
+        version=$(bash scripts/mise-version.sh)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    # install: false — the jobs' mise tasks install what they need themselves.
+    # cache: false — mise-action saves its cache only after an install, so
+    # with install off every restore would be a miss.
+    # The same commit claude.yml pins (read-pin-test.sh checks both), so every
+    # mise install goes through one version of the action too.
+    - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      with:
+        version: ${{ steps.pin.outputs.version }}
+        install: false
+        cache: false
+
+    # mise's own min_version check is only a floor, so hold the install to the
+    # pin exactly. This line is also what a bump PR reads in each job's log.
+    - name: Check the installed mise is the pin
+      shell: bash
+      env:
+        PIN: ${{ steps.pin.outputs.version }}
+      run: |
+        got=$(mise --version)
+        echo "mise $got (pin $PIN)"
+        [[ $got == "$PIN "* ]] || {
+          echo "::error::installed mise is $got, not the pin $PIN"
+          exit 1
+        }
