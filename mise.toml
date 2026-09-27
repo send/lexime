@@ -78,8 +78,7 @@ outputs = ["engine/data/mozc-raw/.stamp"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-# Same reader as the CI accuracy job's cache key. It refuses a pin file with no
-# SHA line, and the separate assignment lets set -e stop the task there.
+# Same reader as the CI accuracy job's cache key; it refuses a pin with no SHA.
 sha=$(bash scripts/mozc-pin.sh)
 cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc --sha "$sha" data/mozc-raw
 """
