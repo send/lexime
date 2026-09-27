@@ -516,9 +516,26 @@ if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --versi
 fi
 """
 
+[tasks.screen]
+description = "Run the supply-chain screen (scripts/screen.sh) — lint and test depend on it"
+# `lint` and `test` build (clippy and cargo test compile and run dependency
+# build scripts and proc macros), so they depend on this task, and mise does
+# not start them when it fails. That dependency is the only screen the @claude
+# bot's builds get (.github/workflows/claude.yml): the bot builds whatever tree
+# is checked out when each command runs — the action switches to the PR branch
+# after every earlier step, and Claude can edit Cargo.lock between commands —
+# so the screen has to run inside the command, not before the job's agent
+# step. A task that builds and that the bot's rules allow must depend on this.
+# `fmt` does not build. CI's other cargo jobs are gated by its `screen` job
+# instead, so there the screen in `lint` is a second pass.
+#
+# Needs origin/main, as scripts/screen.sh says, or each run checks every
+# dependency against crates.io at 1 request/s.
+run = "bash scripts/screen.sh"
+
 [tasks.lint]
 description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
-depends = ["lint-toolchain"]
+depends = ["screen", "lint-toolchain"]
 # The lint commands are defined here only: CI's lint job and the @claude bot
 # (.github/workflows/claude.yml) run this task rather than cargo lines of
 # their own. CLAUDE.md summarizes the gate but does not copy the command line.
@@ -573,7 +590,9 @@ run = [
 
 [tasks.test]
 description = "Run lint + workspace tests"
-depends = ["lint"]
+# `screen` directly, not only through `lint`, so that dropping lint from here
+# cannot leave cargo test unscreened. mise runs it once per invocation.
+depends = ["screen", "lint"]
 run = "cd engine && cargo test --workspace --all-features"
 
 [tasks.clean]

@@ -129,7 +129,12 @@ jobs:
       needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 because `mise run lint` screens first ([tasks.screen]),
+      # and scripts/screen.sh needs origin/main or it checks every dependency
+      # at 1 request/s. The screen job above has already passed this tree.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
       # installs the pin and runs on it by itself; CI reads it only for the
