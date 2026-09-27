@@ -16,7 +16,8 @@ final class SessionCoordinator {
     /// Tracks the currently displayed marked text so composedString stays in sync.
     private(set) var currentDisplay: String?
 
-    /// Client captured by the most recent handleKey. Used when an async callback
+    /// Client captured by the most recent handleKey (or a `commit(client:)`
+    /// that found a composition). Used when an async callback
     /// arrives between keystrokes and we need an IMKTextInput to apply events against.
     private weak var lastClient: IMKTextInput?
 
