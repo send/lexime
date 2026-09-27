@@ -491,17 +491,15 @@ depends = ["screen", "dict", "conn"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-# Replay against the engine configuration the log came from: the app layers
-# user_dict over the system dictionary and loads settings.toml when it exists.
-# (A missing user_dict opens empty.) History is left out on purpose: it was
-# learned from these same selections, so it would rank them up by
-# construction; add --history to measure the learned engine. For a
-# system-only measurement, run lextool directly.
+# Replay under the configuration the app runs with (--app-dir: its
+# user_dict and settings.toml, with the app's fallbacks when one is missing,
+# unreadable or invalid). History is left out on purpose: it was learned
+# from these same selections, so it would rank them up by construction; add
+# --history to measure the learned engine. For a system-only measurement,
+# run lextool directly.
 lexime="$HOME/Library/Application Support/Lexime"
-extra=(--user-dict "$lexime/user_dict.lxuw")
-if [ -f "$lexime/settings.toml" ]; then extra+=(--settings "$lexime/settings.toml"); fi
 cd engine && cargo run --release -p lex-cli --bin lextool -- replay-commit-log \
-  data/lexime.dict data/lexime.conn "$lexime/commit-log.jsonl" "${extra[@]}" "$@"
+  data/lexime.dict data/lexime.conn "$lexime/commit-log.jsonl" --app-dir "$lexime" "$@"
 """
 
 [tasks.trace-log]

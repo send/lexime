@@ -13,7 +13,6 @@ use lex_core::converter::tune;
 use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
-use lex_core::user_dict::UserDictionary;
 use lex_core::user_history::UserHistory;
 
 #[derive(Parser)]
@@ -178,10 +177,14 @@ enum Command {
         /// Path to user history file (optional; default is no history)
         #[arg(long)]
         history: Option<String>,
-        /// Path to user_dict.lxuw, layered over the system dictionary as the
-        /// app does (optional; default is system dictionary only)
+        /// The app's data directory: replay under the configuration the app
+        /// runs with — its user_dict.lxuw layered over the system dictionary
+        /// and its settings.toml — including the app's fallbacks when a file
+        /// is missing, unreadable or invalid (warned here, as the app reports
+        /// them). Without it: system dictionary and embedded settings
+        /// (not with --settings)
         #[arg(long)]
-        user_dict: Option<String>,
+        app_dir: Option<String>,
         /// Compare against a baseline written by --emit-baseline. Lines join
         /// on (line index, timestamp in seconds): a log cleared and rewritten
         /// is told apart unless its line at the same index lands in the same
@@ -468,19 +471,80 @@ fn run_snapshot(
     }
 }
 
+/// The app's load policy for the files in its data directory
+/// (`AppContext` / `EngineContainer`), mirrored for `replay-commit-log
+/// --app-dir`: a missing file is not used; an unreadable or invalid one is
+/// not used either, and the app keeps running and reports it — here, a
+/// warning. Nothing is written: the app quarantines a corrupt user
+/// dictionary, a measurement tool never touches user data.
+mod app_config {
+    use std::fs;
+    use std::io::ErrorKind;
+    use std::path::Path;
+
+    use lex_core::user_dict::UserDictionary;
+
+    fn warn(what: &Path, e: impl std::fmt::Display, fallback: &str) {
+        eprintln!(
+            "replay-commit-log: warning: {}: {e}; {fallback}, as the app does",
+            what.display()
+        );
+    }
+
+    /// `settings.toml`, if present and valid; otherwise the embedded settings.
+    pub fn settings(dir: &Path) {
+        let path = dir.join("settings.toml");
+        if !path.exists() {
+            return;
+        }
+        let loaded = fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|toml| lex_core::settings::init_custom(toml).map_err(|e| e.to_string()));
+        if let Err(e) = loaded {
+            warn(&path, e, "replaying with the embedded settings");
+        }
+    }
+
+    /// `user_dict.lxuw` (empty when missing or corrupt), or `None` when it
+    /// cannot be read (the app then runs on the system dictionary alone).
+    pub fn user_dict(dir: &Path) -> Option<UserDictionary> {
+        let path = dir.join("user_dict.lxuw");
+        match UserDictionary::open(&path) {
+            Ok(ud) => Some(ud),
+            Err(e) if e.kind() == ErrorKind::InvalidData => {
+                warn(&path, e, "replaying with an empty user dictionary");
+                Some(UserDictionary::new())
+            }
+            Err(e) => {
+                warn(&path, e, "replaying with the system dictionary only");
+                None
+            }
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     // Before any subcommand runs: settings() fixes on its first read, and a
     // custom TOML set after that would be ignored without an error.
+    let app_dir = match &cli.command {
+        Command::ReplayCommitLog { app_dir, .. } => app_dir.as_deref(),
+        _ => None,
+    };
+    if cli.settings.is_some() && app_dir.is_some() {
+        eprintln!("--settings and --app-dir both name a settings file; pass one");
+        process::exit(2);
+    }
     if let Some(path) = &cli.settings {
-        let toml = fs::read_to_string(path).unwrap_or_else(|e| {
+        let loaded = fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|toml| lex_core::settings::init_custom(toml).map_err(|e| e.to_string()));
+        if let Err(e) = loaded {
             eprintln!("--settings {path}: {e}");
             process::exit(1);
-        });
-        lex_core::settings::init_custom(toml).unwrap_or_else(|e| {
-            eprintln!("--settings {path}: {e}");
-            process::exit(1);
-        });
+        }
+    } else if let Some(dir) = app_dir {
+        app_config::settings(Path::new(dir));
     }
 
     match cli.command {
@@ -1094,7 +1158,7 @@ fn main() {
             conn_file,
             log_file,
             history,
-            user_dict,
+            app_dir,
             baseline,
             emit_baseline,
             verbose,
@@ -1107,24 +1171,11 @@ fn main() {
             let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
             // Same layering as LexDictionary::open_with_user_dict.
-            let dict: Box<dyn Dictionary> = match &user_dict {
-                Some(path) => {
-                    // A corrupt file is what the app replaces with an empty
-                    // dictionary (it also quarantines the file; a measurement
-                    // tool never touches user data). Unreadable is an error.
-                    let ud = match UserDictionary::open(Path::new(path)) {
-                        Ok(ud) => ud,
-                        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                            eprintln!(
-                                "replay-commit-log: warning: {path} is corrupt ({e}); \
-                                 replaying with an empty user dictionary, as the app runs"
-                            );
-                            UserDictionary::new()
-                        }
-                        Err(e) => die(format!("{path}: {e}")),
-                    };
-                    Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)]))
-                }
+            let dict: Box<dyn Dictionary> = match app_dir
+                .as_deref()
+                .and_then(|d| app_config::user_dict(Path::new(d)))
+            {
+                Some(ud) => Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)])),
                 None => Box::new(trie),
             };
             let (report, lines) =
