@@ -188,8 +188,8 @@ impl Rewriter for PartialHiraganaRewriter {
     }
 }
 
-/// For each top-N Viterbi path, generate variants where individual hiragana
-/// segments are replaced with kanji alternatives from the lattice.
+/// For the 5 cheapest multi-segment paths, generate variants where individual
+/// hiragana segments are replaced with kanji alternatives from the lattice.
 ///
 /// This is the reverse of `PartialHiraganaRewriter`: instead of softening
 /// kanji → hiragana, it surfaces kanji alternatives that the Viterbi
@@ -207,8 +207,10 @@ impl Rewriter for KanjiVariantRewriter<'_> {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
         let mut new_paths = Vec::new();
 
-        // Multi-segment paths only: kanji are substituted only at existing
-        // segment boundaries, never at arbitrary offsets inside a kana run.
+        // Multi-segment paths only. A kanji span always starts at an existing
+        // segment start (a 3+ char segment is split once, at +2, and its
+        // remainder must be a lattice kana node); single-segment kana runs
+        // are never scanned for kanji at arbitrary offsets.
         for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
             let mut char_pos = 0usize;
             for seg_idx in 0..path.segments.len() {

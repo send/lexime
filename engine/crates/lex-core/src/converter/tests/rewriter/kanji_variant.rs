@@ -349,3 +349,32 @@ fn test_kanji_variant_subsplit_only_2char_prefix() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].surface_key(), "方がくが");
 }
+
+#[test]
+fn test_kanji_variant_single_segment_kana_run_yields_nothing() {
+    // A single-segment kana path has no internal boundaries, so no kanji may
+    // be inlined into it — even where the lattice has a kanji node for a
+    // sub-span. Inlining at arbitrary offsets cut through words (お|圧|さか).
+    let lattice = Lattice::from_test_nodes(
+        "しておいたほうが",
+        &[
+            (5, 7, "ほう", "方", 733, 0, 0),
+            (5, 7, "ほう", "法", 2181, 0, 0),
+        ],
+    );
+    let rw = KanjiVariantRewriter { lattice: &lattice };
+
+    let paths = vec![ScoredPath {
+        segments: vec![RichSegment {
+            reading: "しておいたほうが".into(),
+            surface: "しておいたほうが".into(),
+            left_id: 0,
+            right_id: 0,
+            word_cost: 0,
+        }],
+        viterbi_cost: 30000,
+        history_boost: 0,
+    }];
+
+    assert!(rw.generate(&paths, "しておいたほうが").is_empty());
+}
