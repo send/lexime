@@ -17,25 +17,18 @@ if [[ "${1:-}" == "--all" ]]; then
     CHECK_ALL=true
 fi
 
-# Parse Cargo.lock for (name, version) pairs of registry deps
+# Parse Cargo.lock for (name, version) pairs of registry deps. As TOML, the
+# way cargo reads it: a line pattern would skip a package whose keys are
+# spelled differently (indented, quoted) but mean the same to cargo.
 parse_lockfile() {
-    awk '
-        /^\[\[package\]\]/ { name=""; version=""; source="" }
-        /^name = / { gsub(/"/, "", $3); name=$3 }
-        /^version = / { gsub(/"/, "", $3); version=$3 }
-        /^source = "registry\+/ { source="registry" }
-        /^$/ {
-            if (name != "" && version != "" && source == "registry") {
-                print name " " version
-            }
-            name=""; version=""; source=""
-        }
-        END {
-            if (name != "" && version != "" && source == "registry") {
-                print name " " version
-            }
-        }
-    ' "$1"
+    python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    data = tomllib.load(f)
+for pkg in data.get("package", []):
+    if pkg.get("source", "").startswith("registry+"):
+        print(pkg["name"], pkg["version"])
+' "$1"
 }
 
 # Get deps to check (changed only, or all)
