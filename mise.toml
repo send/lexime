@@ -517,10 +517,9 @@ fi
 [tasks.lint]
 description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["lint-toolchain"]
-# The lint commands CI runs are defined here only: CI's lint job runs this
-# task rather than cargo lines of its own. One hand copy remains — CLAUDE.md's
-# raw-cargo fallback for environments without mise — so a flag change here
-# should be mirrored there.
+# The lint commands are defined here only: CI's lint job and the @claude bot
+# (.github/workflows/claude.yml) run this task rather than cargo lines of
+# their own, and CLAUDE.md points here instead of copying the flags.
 #
 # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
 # leaving benches in no gate at all — `cargo test` skips `[[bench]]` targets
