@@ -54,21 +54,12 @@ NO_BUILD = {
 SCREEN_RUN = ["bash scripts/screen.sh"]
 
 CLAUDE_YML = ".github/workflows/claude.yml"
-CLAUDE_ACTION = "anthropics/claude-code-action@"
-# What claude.yml may hold. An allowlist, as each thing outside it is another
-# way to give the bot tools, settings or hooks (the action's `settings`,
-# `plugins`, `additional_permissions`; `--settings` or `--mcp-config` in
-# claude_args; an environment variable mise or Claude Code reads).
-CLAUDE_STEP_KEYS = {"name", "id", "uses", "env", "with"}
-CLAUDE_WITH_KEYS = {"claude_code_oauth_token", "github_token", "claude_args"}
-CLAUDE_ENV = {
-    # mise reads mise.toml alone: no committed .mise.toml or mise.local.toml
-    # can redefine a task, and no other config can set task.skip*.
-    "MISE_OVERRIDE_CONFIG_FILENAMES": "mise.toml",
-    # scripts/screen.sh: policy files read from main. Also what turns off
-    # check-quarantine.sh's publish-date cache, which the bot could write.
-    "SCREEN_POLICY_REF": "origin/main",
-}
+# The shape of the bot's tool list: comma-separated, no spaces, and only
+# these Bash rules (an exact `mise run <task>`: a prefix rule would also admit
+# `mise run lint ::: <any task>`; and the read-only `gh pr` commands). No raw
+# cargo, which would skip the screen, and no other tool; allowing one is a
+# change to this check, in review.
+BOT_RULE = r"Bash\((mise run [a-z0-9-]+|gh pr (view|diff|checks):\*)\)"
 
 errors = []
 
@@ -153,128 +144,35 @@ for n in sorted(set(tasks) - screened - set(NO_BUILD)):
         "add \"screen\" to its depends, or if it does not build, to NO_BUILD in %s"
         % (n, sys.argv[0]))
 
-# --- the @claude bot's workflow --------------------------------------------
-# The bot builds only through the tasks it is allowed, so each must be
-# screened or not build, and nothing else in the workflow may widen that.
-# This is a check of claude.yml's shape against the one it has, read line by
-# line: anything it does not recognize is refused, not skipped.
+# --- the @claude bot's tool list ------------------------------------------
+# The bot builds only through the tasks its --allowedTools list allows, so
+# each must be screened or not build. Every mention of the flag in claude.yml,
+# in any spelling, must be that list in BOT_RULE's shape; anything else
+# fails rather than being read around.
+#
+# Not covered, and for review: the rest of claude.yml (other steps and jobs,
+# the action's other inputs such as `settings`, where SCREEN_POLICY_REF and
+# MISE_OVERRIDE_CONFIG_FILENAMES are set) and other Claude Code configuration
+# in the repository (.claude/ settings, hooks in skills or agents, .mcp.json),
+# nor a flag spelled so no text search finds it (a YAML escape in a quoted
+# value).
+# Each widens what the bot can run, and a line reader of YAML or of Claude
+# Code's formats fails open on spellings it does not know (tried here: an
+# adversarial pass found a dozen that parse, and pass, as something else).
 with open(CLAUDE_YML) as f:
     yml = f.read()
-lines = [(len(l) - len(l.lstrip(" ")), l.strip()) for l in yml.splitlines()]
-lines = [(i, s) for i, s in lines if s and not s.startswith("#")]
-
-
-def mapping(at):
-    """Key/value pairs of the block mapping under line `at` (`key:` alone)."""
-    indent, pairs, child = lines[at][0], [], None
-    for i, s in lines[at + 1:]:
-        if i <= indent:
-            break
-        child = i if child is None else child
-        if i > child:
-            pairs[-1][1].append(s)  # a continuation line of the value above
-            continue
-        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):(.*)", s)
-        if i < child or not m:
-            err("%s: cannot read %r under %r" % (CLAUDE_YML, s, lines[at][1]))
-            break
-        pairs.append((m.group(1), [m.group(2).strip()] if m.group(2).strip() else []))
-    return pairs
-
-
-for word in ("dangerously-skip-permissions", "bypassPermissions", "GITHUB_ENV", "GITHUB_PATH"):
-    if word in yml:
-        err("%s names %s, which can widen what the bot runs" % (CLAUDE_YML, word))
-
-# Every env: block holds only CLAUDE_ENV's entries, all of them together.
-env = {}
-for n, (_, s) in enumerate(lines):
-    if re.match(r"(- )?env:", s):
-        if not re.fullmatch(r"(- )?env:", s):
-            err("%s: an inline env: cannot be checked" % CLAUDE_YML)
-        for key, value in mapping(n):
-            env[key] = " ".join(value)
-            if CLAUDE_ENV.get(key) != env[key]:
-                err("%s sets %s=%s; its env may hold only %r" % (CLAUDE_YML, key, env[key], CLAUDE_ENV))
-for key in sorted(set(CLAUDE_ENV) - set(env)):
-    err("%s does not set %s: %s" % (CLAUDE_YML, key, CLAUDE_ENV[key]))
-if set(re.findall(r"MISE_[A-Z0-9_]*", yml)) - set(CLAUDE_ENV):
-    err("%s names a MISE_* variable other than MISE_OVERRIDE_CONFIG_FILENAMES" % CLAUDE_YML)
-
-# The action's step: its keys, its inputs, and claude_args, which must be one
-# --allowedTools list and nothing else.
-steps = [n for n, (_, s) in enumerate(lines) if re.fullmatch(r"(- )?uses:\s*" + re.escape(CLAUDE_ACTION) + r"\S+(\s.*)?", s)]
-allowed = []
-if len(steps) != 1:
-    err("%s uses %s %d times, not once" % (CLAUDE_YML, CLAUDE_ACTION, len(steps)))
-else:
-    n = steps[0]
-    key_indent = lines[n][0] + (2 if lines[n][1].startswith("- ") else 0)
-    start = n
-    while not lines[start][1].startswith("- "):
-        start -= 1
-    step = []
-    for m, (i, s) in enumerate(lines[start:], start):
-        if m > start and (i < key_indent or (i == key_indent - 2 and s.startswith("- "))):
-            break
-        if m == start or i == key_indent:
-            step.append((m, re.sub(r"^- ", "", s).split(":")[0]))
-    with_at = None
-    for m, key in step:
-        if key not in CLAUDE_STEP_KEYS:
-            err("%s: the Claude step's key %r is not one of %s" % (CLAUDE_YML, key, sorted(CLAUDE_STEP_KEYS)))
-        if key == "with":
-            with_at = m
-    inputs = dict((k, " ".join(v)) for k, v in mapping(with_at)) if with_at is not None else {}
-    for key in sorted(set(inputs) - CLAUDE_WITH_KEYS):
-        err("%s: the Claude step's input %r is not one of %s" % (CLAUDE_YML, key, sorted(CLAUDE_WITH_KEYS)))
-    args = re.fullmatch(r'(?:>-\s*)?--allowedTools "([^"]*)"', inputs.get("claude_args", ""))
-    if not args:
-        err("%s: claude_args must be exactly --allowedTools \"...\"" % CLAUDE_YML)
-    else:
-        # Split on commas and spaces outside parentheses.
-        rules, depth, cur = [], 0, ""
-        for ch in args.group(1) + ",":
-            depth += (ch == "(") - (ch == ")")
-            if depth == 0 and ch in ", ":
-                rules += [cur] if cur else []
-                cur = ""
-            else:
-                cur += ch
-        # Bash rules: exact `mise run <task>` (a prefix rule also admits
-        # `mise run lint ::: <any task>`) or the read-only gh pr commands.
-        # No raw cargo, which would skip the screen.
-        for rule in rules:
-            if not rule.startswith("Bash"):
-                continue
-            m = re.fullmatch(r"Bash\((.*)\)", rule)
-            cmd = m.group(1).strip() if m else ""
-            task = re.fullmatch(r"mise run ([A-Za-z0-9_-]+)", cmd)
-            if task:
-                allowed.append(task.group(1))
-            elif not re.fullmatch(r"gh pr (view|diff|checks)(:\*)?", cmd):
-                err("bot rule %s: only exact `mise run <task>` and `gh pr view/diff/checks` Bash rules are allowed" % rule)
+mentions = re.findall(r"allowed[-_ ]?tools", yml, re.I)
+lists = re.findall(r'--allowedTools "(%s(?:,%s)*)"' % (BOT_RULE, BOT_RULE), yml)
+if not mentions or len(lists) != len(mentions):
+    err("%s: every allowedTools mention must be --allowedTools \"<rules>\" with only "
+        "comma-separated %s rules (%d mentions, %d such lists)"
+        % (CLAUDE_YML, BOT_RULE, len(mentions), len(lists)))
+allowed = [m for lst in lists for m in re.findall(r"Bash\(mise run ([a-z0-9-]+)\)", lst[0])]
 for n in allowed:
     if n not in tasks:
         err("bot rule `mise run %s`: no such task" % n)
     elif n not in screened and n not in NO_BUILD:
         err("bot rule `mise run %s`: the task builds without the screen" % n)
-
-# Claude Code also takes permissions and hooks (shell commands) from the
-# repository: .claude/settings*.json, and `allowed-tools` in skills and
-# commands. None of it is needed, and none of it would be read by the rules
-# above, so a committed one is refused; adding one means changing this
-# check, in review. Committed only: CI and the bot see nothing else, and a
-# local settings.local.json is the developer's own.
-tracked = subprocess.run(["git", "ls-files", "-z", "--", ".claude"], check=True,
-                         stdout=subprocess.PIPE, universal_newlines=True).stdout.split("\0")
-for path in filter(None, tracked):
-    if re.fullmatch(r"\.claude/settings[^/]*\.json", path):
-        err("%s: committed Claude Code settings can grant the bot tools or run hooks" % path)
-    elif path.endswith(".md"):
-        with open(path) as f:
-            if re.search(r"allowed[-_]tools", f.read(), re.I):
-                err("%s names allowed-tools, which grants tools while it is active" % path)
 
 if errors:
     for e in dict.fromkeys(errors):

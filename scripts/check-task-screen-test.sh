@@ -16,18 +16,13 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fails=0
 
-# fixture: a fresh git checkout of the files the check reads (it lists
-# .claude/ through git, as only committed files reach CI and the bot).
+# fixture: a fresh copy of the two files the check reads.
 fixture() {
   local dir
   dir=$(mktemp -d "$tmp/case.XXXXXX")
   mkdir -p "$dir/.github/workflows"
   cp "$repo/mise.toml" "$dir/mise.toml"
   cp "$repo/.github/workflows/claude.yml" "$dir/.github/workflows/claude.yml"
-  mkdir -p "$dir/.claude"
-  cp -R "$repo/.claude/skills" "$dir/.claude/skills"
-  git -C "$dir" init -q
-  git -C "$dir" add -A
   echo "$dir"
 }
 
@@ -120,8 +115,9 @@ expect "[settings] task.skip" "task.skip is ['screen']" "$d"
 d=$(fixture)
 expect "MISE_TASK_SKIP_DEPENDS in the environment" "task.skip_depends is True" "$d" MISE_TASK_SKIP_DEPENDS=1
 
-# --- the bot's workflow ---
+# --- the bot's tool list ---
 yml=.github/workflows/claude.yml
+shape="every allowedTools mention must be"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run bench)'
@@ -133,76 +129,25 @@ edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run newbuild)'
 expect "bot allowed an unscreened task" "bot rule \`mise run newbuild\`: the task builds without the screen" "$d"
 
 d=$(fixture)
-edit "$d/$yml" 'Bash(mise run lint)' 'Bash(mise run lint:*)'
-expect "bot prefix rule" "bot rule Bash(mise run lint:*)" "$d"
+edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run nosuchtask)'
+expect "bot allowed a missing task" "bot rule \`mise run nosuchtask\`: no such task" "$d"
 
-d=$(fixture)
-edit "$d/$yml" 'Bash(mise run lint),' 'Bash(mise run lint),Bash(cargo test -p lex-core),'
-expect "bot raw cargo" "bot rule Bash(cargo test -p lex-core)" "$d"
-
-d=$(fixture)
-edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowed-tools "Bash(cargo build)"'
-expect "second list, other spelling" "claude_args must be exactly --allowedTools" "$d"
-
-d=$(fixture)
-edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowedTools Bash(cargo)'
-expect "unquoted list" "claude_args must be exactly --allowedTools" "$d"
-
-d=$(fixture)
-edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --settings bot.json'
-expect "settings file in claude_args" "claude_args must be exactly --allowedTools" "$d"
-
-d=$(fixture)
-edit "$d/$yml" '          github_token: ${{ github.token }}' $'          github_token: ${{ github.token }}\n          settings: \'{"permissions": {"allow": ["Bash(cargo:*)"]}}\''
-expect "settings input" "input 'settings' is not one of" "$d"
-
-d=$(fixture)
-edit "$d/$yml" '        id: claude' $'        id: claude\n        continue-on-error: true'
-expect "other step key" "key 'continue-on-error' is not one of" "$d"
-
-d=$(fixture)
-edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --dangerously-skip-permissions'
-expect "permissions bypassed" "names dangerously-skip-permissions" "$d"
-
-d=$(fixture)
-edit "$d/$yml" '      - name: Run Claude Code' $'      - run: echo "PATH=$PWD/bin:$PATH" >> "$GITHUB_ENV"\n      - name: Run Claude Code'
-expect "earlier step writes the job env" "names GITHUB_ENV" "$d"
-
-d=$(fixture)
-edit "$d/$yml" 'Bash(gh pr checks:*)' 'Bash(gh pr merge:*)'
-expect "bot gh write rule" "bot rule Bash(gh pr merge:*)" "$d"
-
-d=$(fixture)
-edit "$d/$yml" '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml' '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml,.mise.toml'
-expect "bot mise reads another config" "sets MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml,.mise.toml" "$d"
-
-d=$(fixture)
-edit "$d/$yml" '          SCREEN_POLICY_REF: origin/main' $'          SCREEN_POLICY_REF: origin/main\n          MISE_TASK_SKIP_DEPENDS: 1'
-expect "bot job skips depends" "sets MISE_TASK_SKIP_DEPENDS=1" "$d"
-
-# MISE_ENV loads mise.<env>.toml, which can set task.skip_depends.
-d=$(fixture)
-edit "$d/$yml" '          SCREEN_POLICY_REF: origin/main' $'          SCREEN_POLICY_REF: origin/main\n          MISE_ENV: ci'
-expect "bot job loads another mise config" "sets MISE_ENV=ci" "$d"
-
-# Without it the bot reads policy from its own tree and caches publish dates.
-d=$(fixture)
-edit "$d/$yml" $'        env:\n          SCREEN_POLICY_REF: origin/main\n' ''
-expect "bot job without SCREEN_POLICY_REF" "does not set SCREEN_POLICY_REF: origin/main" "$d"
-
-# --- Claude Code permissions committed to the repository ---
-d=$(fixture)
-printf '{"permissions": {"allow": ["Bash(cargo build:*)"]}}\n' >"$d/.claude/settings.json"
-git -C "$d" add .claude/settings.json
-expect "committed .claude/settings.json" ".claude/settings.json: committed Claude Code settings" "$d"
-
-d=$(fixture)
-printf '{}\n' >"$d/.claude/settings.local.json"
-expect "uncommitted settings.local.json" pass "$d"
-
-d=$(fixture)
-edit "$d/.claude/skills/pre-push/SKILL.md" 'user-invocable: true' $'user-invocable: true\nallowed-tools: Bash(cargo:*)'
-expect "skill granting tools" ".claude/skills/pre-push/SKILL.md names allowed-tools" "$d"
+# Each of these widens the list in a way a looser reader passed.
+while IFS='|' read -r name old new; do
+  d=$(fixture)
+  edit "$d/$yml" "$old" "${new//\\t/$'\t'}"  # \t in the table is a tab
+  expect "bot list: $name" "$shape" "$d"
+done <<'CASES'
+prefix rule|Bash(mise run lint)|Bash(mise run lint:*)
+raw cargo|Bash(mise run lint),|Bash(mise run lint),Bash(cargo test -p lex-core),
+gh write command|Bash(gh pr checks:*)|Bash(gh pr merge:*)
+another tool|Bash(gh pr checks:*)"|Bash(gh pr checks:*),WebFetch"
+an expression|Bash(gh pr checks:*)"|Bash(gh pr checks:*),${{ vars.EXTRA }}"
+a tab before a rule|Bash(gh pr checks:*)"|Bash(gh pr checks:*),	Bash(cargo build:*)"
+a stray parenthesis|Bash(gh pr checks:*)"|Bash(gh pr checks:*)),Bash(cargo build:*)"
+a second list, other spelling|Bash(gh pr checks:*)"|Bash(gh pr checks:*)" --allowed-tools "Bash(cargo build)"
+an unquoted list|Bash(gh pr checks:*)"|Bash(gh pr checks:*)" --allowedTools Bash(cargo)
+CASES
 
 if [[ $fails -gt 0 ]]; then
   echo "check-task-screen-test: $fails failed"

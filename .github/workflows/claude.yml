@@ -105,7 +105,7 @@ jobs:
       #   App's token over OIDC (needs `id-token: write`). The action also
       #   gives this token to Claude's shell for `gh`. The git commit/push
       #   tools tag mode adds get a 403 at push, as contents is read-only.
-      # - Tool rules go in claude_args: v1 has no `allowed_tools` input. The
+      # - Tool rules go in claude_args: v1 has no input of its own for them. The
       #   action adds its read, comment, CI and git tools, and acceptEdits
       #   lets it edit files in the workspace; no other build or gh command
       #   is allowed.
@@ -122,12 +122,12 @@ jobs:
       # can edit Cargo.lock between commands, so it runs inside each command.
       # `mise run fmt` does not build, and stands in for `cargo fmt` for the
       # pinned rustfmt.
-      # CI's task-screen job (scripts/check-task-screen.py) holds this file
-      # to that: a task allowed here must be screened or not build; a Bash
-      # rule must be an exact `mise run <task>` or `gh pr view/diff/checks`;
-      # and this step's keys and inputs, claude_args and every env: block may
-      # hold only what they hold now, since each other one (the action's
-      # `settings`, `--settings`, a mise env variable) is a way to widen them.
+      # CI's task-screen job (scripts/check-task-screen.py) holds the tool
+      # list below to that: only exact `mise run <task>` of a screened (or
+      # non-building) task, and the read-only `gh pr view/diff/checks`. It
+      # does not read the rest of this file: another step, another input
+      # (`settings`, `--settings`), or moving an env: entry widens the bot
+      # just as well, so review those here.
       # SCREEN_POLICY_REF: see scripts/screen.sh. A PR that adds a build.rs
       # crate or a quarantine exception fails the bot's lint/test until merged,
       # as does a branch behind main's baseline until main is merged into it.

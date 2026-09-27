@@ -107,41 +107,33 @@ threshold=$((now - QUARANTINE_DAYS * 86400))
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
 
-# Publish dates already looked up, one "name version checksum unix-time" per
-# line, so a changed entry costs a crates.io request once per machine rather
-# than on every task that builds (and works offline after that). crates.io
-# never lets a version be published twice, so its date is fixed and its age
-# only grows. The checksum is in the key because a deleted crate's name can
-# be taken again: a new upload under the same version has a new checksum,
-# and a lock that names it misses here and is asked about. The date is kept
-# rather than the verdict so a longer QUARANTINE_DAYS still applies, and only
-# for versions that passed, with crates.io's checksum matching the lock's:
-# one still in quarantine, or one the API could not answer for, is asked
-# about again on every run.
-# Outside the repository, and off under SCREEN_POLICY_REF: that marks the
-# one kind of job whose agent builds code it edited between screens (see
-# scripts/screen.sh), and that code could write this file. Elsewhere whoever
-# can write it can edit the allowlist in the tree too, so it grants nothing
-# more.
+# Publish dates already looked up, one "name version unix-time" per line, so
+# a changed entry costs a crates.io request once per machine rather than on
+# every task that builds (and works offline after that). Keyed like the diff
+# above, by name and version: crates.io never lets a version be published
+# twice, so its date is fixed and its age only grows. The date is kept rather
+# than the verdict so a longer QUARANTINE_DAYS still applies, and only for
+# versions that passed: one still in quarantine, or one the API could not
+# answer for, is asked about again on every run.
+#
+# Neither this nor the diff sees a checksum: a deleted crate's name can be
+# taken again and a version re-uploaded, and a lock naming the new upload
+# under a cached (or main's) name and version is not asked about. Reading the
+# checksum means parsing Cargo.lock by line, which a crafted lock can steer
+# (a multi-line string holding a second `checksum =` line), and cargo does not
+# report it; so it is left out rather than trusted.
+#
+# Outside the repository, and local only. Off in GitHub Actions: a CI runner
+# starts with it empty anyway, and in the @claude bot's job, code the agent
+# edited runs between screens and could write it. The runner sets
+# GITHUB_ACTIONS for every step, so no workflow edit turns the cache back on
+# there. Also off under SCREEN_POLICY_REF, the setting for any job like that.
 cache=""
-if [ -z "${SCREEN_POLICY_REF:-}" ]; then
+if [ -z "${SCREEN_POLICY_REF:-}" ] && [ -z "${GITHUB_ACTIONS:-}" ]; then
     cache_dir="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
     if [ -n "$cache_dir" ] && mkdir -p "$cache_dir/lexime" 2>/dev/null; then
         cache="$cache_dir/lexime/crates-io-published"
     fi
-fi
-# The lock's checksum for each registry entry, for the cache key. Read by
-# line: an entry it misses has no checksum, so it neither reads nor writes
-# the cache, and is asked about like any other.
-lock_sums=""
-if [ -n "$cache" ]; then
-    lock_sums=$(awk '
-        /^\[\[package\]\]/ { name=""; version=""; sum="" }
-        /^name = / { gsub(/"/, "", $3); name=$3 }
-        /^version = / { gsub(/"/, "", $3); version=$3 }
-        /^checksum = / { gsub(/"/, "", $3); sum=$3 }
-        name != "" && version != "" && sum != "" { print name, version, sum; name="" }
-    ' "$LOCKFILE") || lock_sums=""
 fi
 
 echo "$deps" | while read -r name version; do
@@ -158,11 +150,9 @@ echo "$deps" | while read -r name version; do
     # zero: bash's `[ -gt ]` errors on a number past its range, and the error
     # would take the `ok` branch below; a leading zero reads as octal.
     created_at=""
-    sum=$(printf '%s\n' "$lock_sums" | awk -v n="$name" -v v="$version" '$1 == n && $2 == v { print $3; exit }')
-    [[ $sum =~ ^[0-9a-f]{64}$ ]] || sum=""
-    if [ -n "$sum" ] && [ -f "$cache" ]; then
-        created_at=$(awk -v n="$name" -v v="$version" -v c="$sum" '
-            NF == 4 && $1 == n && $2 == v && $3 == c && $4 ~ /^[1-9][0-9]*$/ && length($4) <= 11 && $4 + 0 > max + 0 { max = $4 }
+    if [ -n "$cache" ] && [ -f "$cache" ]; then
+        created_at=$(awk -v n="$name" -v v="$version" '
+            NF == 3 && $1 == n && $2 == v && $3 ~ /^[1-9][0-9]*$/ && length($3) <= 11 && $3 + 0 > max + 0 { max = $3 }
             END { if (max != "") print max }
         ' "$cache") || created_at=""
     fi
@@ -180,13 +170,13 @@ echo "$deps" | while read -r name version; do
             continue
         }
 
-        read -r created_at api_sum < <(echo "$response" | python3 -c "
+        created_at=$(echo "$response" | python3 -c "
 import sys, json
 from datetime import datetime
 data = json.load(sys.stdin)
 dt = datetime.fromisoformat(data['version']['created_at'].replace('Z', '+00:00'))
-print(int(dt.timestamp()), data['version'].get('checksum') or '-')
-" 2>/dev/null) && [ -n "$created_at" ] || {
+print(int(dt.timestamp()))
+" 2>/dev/null) || {
             echo "quarantine: FAIL $name@$version — failed to parse publication date (unable to verify age)"
             echo "FAIL" >> "$tmpfile"
             continue
@@ -203,8 +193,8 @@ print(int(dt.timestamp()), data['version'].get('checksum') or '-')
         echo "FAIL" >> "$tmpfile"
     else
         echo "quarantine: ok $name@$version — published $age_days days ago$via"
-        if [ -z "$via" ] && [ -n "$sum" ] && [ "$api_sum" = "$sum" ]; then
-            printf '%s %s %s %s\n' "$name" "$version" "$sum" "$created_at" >> "$cache" 2>/dev/null || true
+        if [ -z "$via" ] && [ -n "$cache" ]; then
+            printf '%s %s %s\n' "$name" "$version" "$created_at" >> "$cache" 2>/dev/null || true
         fi
     fi
 done
