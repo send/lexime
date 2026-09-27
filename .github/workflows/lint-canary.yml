@@ -4,6 +4,10 @@ name: Lint canary
 # engine/lint-toolchain.txt. A signal, not a gate: it never runs on
 # pull_request or push. The verdicts are in scripts/lint-canary.sh, and the
 # tracking issue they drive is in scripts/lint-canary-report.sh.
+#
+# GitHub disables scheduled workflows in a public repo after 60 days with no
+# repository activity (it emails a warning first). If the canary goes quiet,
+# check that it is still enabled before concluding the pin is current.
 on:
   schedule:
     # Mondays 03:17 UTC. Stable releases land on Thursdays every 6 weeks, so
@@ -61,8 +65,10 @@ jobs:
         run: bash scripts/lint-canary.sh stable
 
   # Split from `canary` so the job that executes dependency build scripts never
-  # holds a token that can write issues. `error` (and a canary that died before
-  # a verdict) is left to the red run.
+  # holds a token that can write issues. `canary` fails only on `error` (or
+  # when it dies before a verdict), which leaves no issue and just a red run.
+  # So the outputs read here always come from a job that succeeded, and
+  # `behind` turns the run red in this job, after the issue is up to date.
   report:
     needs: canary
     if: >-
@@ -85,3 +91,9 @@ jobs:
           LINTS: ${{ needs.canary.outputs.lints }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/lint-canary-report.sh
+
+      - name: Fail the run when stable is behind
+        if: needs.canary.outputs.state == 'behind'
+        run: |
+          echo "::error::stable fails the lint gate; see the tracking issue"
+          exit 1

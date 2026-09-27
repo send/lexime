@@ -21,7 +21,8 @@
 #
 # After the lint log, prints state / stable / pin / lints as key=value lines
 # (appended to $GITHUB_OUTPUT when set) and a table to $GITHUB_STEP_SUMMARY.
-# Exits 0 for current / free-bump and 1 for behind / error.
+# Exits 1 only for `error`. `behind` exits 0 so the workflow's canary job
+# succeeds and hands its outputs on; the report job turns the run red instead.
 set -euo pipefail
 
 toolchain=${1:-stable}
@@ -71,7 +72,4 @@ printf 'state=%s\nstable=%s\npin=%s\nlints=%s\n' "$state" "$stable" "$pin" "$lin
   echo "| $stable | $pin | ${lints:-none recognised} |"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-case $state in
-  current | free-bump) exit 0 ;;
-  *) exit 1 ;;
-esac
+[ "$state" != error ]
