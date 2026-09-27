@@ -34,6 +34,7 @@ jobs:
               - 'engine/deny.toml'
               - 'engine/quarantine-allowlist.toml'
               - 'engine/build-script-baseline.txt'
+              - 'scripts/screen.sh'
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
@@ -73,14 +74,14 @@ jobs:
               - 'Info.plist'
               # Defines which files `compile-swift` gates and `build`
               # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — `core` names only the two
-              # supply-chain scripts.
+              # covered by any other filter — the scripts `core` names are the
+              # supply-chain and lint-toolchain ones.
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
 
-  # Supply-chain screening. Runs the quarantine / build.rs baseline checks
-  # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
+  # Supply-chain screening. Runs scripts/screen.sh (the one definition of the
+  # screen) BEFORE any job that invokes cargo on the PR's dependency graph: cargo
   # compiles and executes dependency build scripts, so every cargo-invoking
   # job below `needs: screen` (test-* inherit it through lint). Unconditional
   # (no `if`) on purpose — a path-filtered screen would have to hand-maintain
@@ -101,11 +102,23 @@ jobs:
       # out-of-sync Cargo.lock before the --locked screen below could reject
       # it. This job only runs metadata (no build), so the cache buys little.
 
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
+      - name: Supply-chain screen
+        run: bash scripts/screen.sh
 
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
+  # Tests the pin reader and its wrappers (scripts/read-pin-test.sh), including
+  # that mozc-pin.sh prints what the pre-#332 one-liner did: the accuracy job's
+  # cache key. Plain bash and no cargo, so no `screen`. Unconditional on
+  # purpose, like `screen`: a path filter would be one more hand-kept list of
+  # what the test reads, and a path missing from it only skips the job. Every
+  # path in it would also sit in `core` or `corpus`, so a check that each input
+  # is in some filter (#302) could not catch the omission. The job costs a
+  # few seconds.
+  read-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: bash scripts/read-pin-test.sh
 
   lint:
     needs: [changes, screen]
