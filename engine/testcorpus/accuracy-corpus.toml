@@ -38,9 +38,13 @@
 #   [cases.width_issue] (optional) - A known width disagreement, named
 #                          exactly: issue = "#123" (required) and what the
 #                          disagreeing width shows — one_best = "…" and/or
-#                          list_top = "…". Only that disagreement is reported
-#                          without failing; any other width, a different
-#                          top-1, or the no-history baseline still fails
+#                          list_top = "…" (never the expected value). Only
+#                          that disagreement is reported without failing;
+#                          any other width or a different top-1 fails, and so
+#                          does the exemption once it no longer occurs. The
+#                          no-history baseline is never exempt: a known
+#                          baseline width disagreement is fixed, or the case
+#                          is skipped with its issue
 #
 # Top-1 is checked at three widths and all must equal `expected`: the N-best
 # head (n=1), the synchronous 1-best shown while candidates are pending, and

@@ -110,6 +110,135 @@ pub fn top1_widths(
 }
 
 // ---------------------------------------------------------------------------
+// Width disagreements and their exemptions
+// ---------------------------------------------------------------------------
+
+/// `#123` — the form every skip-like exemption must link (CLAUDE.md).
+pub fn is_issue_ref(s: &str) -> bool {
+    s.strip_prefix('#')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// One width whose top-1 differs from what the case expects.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WidthMismatch {
+    OneBest(String),
+    ListTop { got: String, want: String },
+}
+
+impl std::fmt::Display for WidthMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OneBest(got) => write!(f, "1-best shows {got}"),
+            Self::ListTop { got, want } => write!(f, "candidate #1 is {got} (want {want})"),
+        }
+    }
+}
+
+/// The widths whose top-1 is not `expected` (the list's #1 is held to
+/// `list_top`, which differs only for learned kana, `window_top1`).
+pub fn width_disagreements(w: &Top1Widths, expected: &str, list_top: &str) -> Vec<WidthMismatch> {
+    let mut out = Vec::new();
+    if w.one_best != expected {
+        out.push(WidthMismatch::OneBest(w.one_best.clone()));
+    }
+    if w.list_top() != list_top {
+        out.push(WidthMismatch::ListTop {
+            got: w.list_top().to_string(),
+            want: list_top.to_string(),
+        });
+    }
+    out
+}
+
+/// A known width disagreement, named exactly: the issue tracking it and the
+/// top-1 each disagreeing width shows. Only that disagreement is exempt —
+/// any other width, a different top-1, or the no-history baseline still
+/// fails the case, and so does the exemption once it no longer occurs.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidthIssue {
+    pub issue: String,
+    /// What the synchronous 1-best shows instead of `expected`.
+    #[serde(default)]
+    pub one_best: Option<String>,
+    /// What the production list's #1 is instead of `expected`.
+    #[serde(default)]
+    pub list_top: Option<String>,
+}
+
+/// A case's width disagreements, sorted by what the exemption says of them.
+#[derive(Debug, Default, PartialEq)]
+pub struct WidthVerdict {
+    /// Not exempt: the case fails.
+    pub unexempt: Vec<String>,
+    /// Exempt and observed: reported only.
+    pub known: Vec<String>,
+    /// Exempt but not observed: the case fails until the exemption goes.
+    pub stale: Vec<String>,
+}
+
+impl WidthIssue {
+    /// Reject an exemption that is unlinked, names nothing, or names a
+    /// value the width is supposed to show (it could never match).
+    pub fn validate(&self, expected: &str, list_top: &str) -> Result<(), String> {
+        if !is_issue_ref(&self.issue) {
+            return Err(format!(
+                "must link an issue like \"#123\", got {:?}",
+                self.issue
+            ));
+        }
+        if self.one_best.is_none() && self.list_top.is_none() {
+            return Err("must name the disagreement it covers (one_best and/or list_top)".into());
+        }
+        if self.one_best.as_deref() == Some(expected) {
+            return Err(format!(
+                "one_best {expected:?} is the expected value, not a disagreement"
+            ));
+        }
+        if self.list_top.as_deref() == Some(list_top) {
+            return Err(format!(
+                "list_top {list_top:?} is the expected value, not a disagreement"
+            ));
+        }
+        Ok(())
+    }
+
+    fn covers(&self, m: &WidthMismatch) -> bool {
+        match m {
+            WidthMismatch::OneBest(got) => self.one_best.as_deref() == Some(got),
+            WidthMismatch::ListTop { got, .. } => self.list_top.as_deref() == Some(got),
+        }
+    }
+}
+
+/// Sort `observed` by `issue` (no issue: every disagreement is unexempt).
+pub fn judge_widths(issue: Option<&WidthIssue>, observed: &[WidthMismatch]) -> WidthVerdict {
+    let mut v = WidthVerdict::default();
+    for m in observed {
+        if issue.is_some_and(|w| w.covers(m)) {
+            v.known.push(m.to_string());
+        } else {
+            v.unexempt.push(m.to_string());
+        }
+    }
+    if let Some(w) = issue {
+        let seen = |one_best: bool| {
+            observed
+                .iter()
+                .any(|m| matches!(m, WidthMismatch::OneBest(_)) == one_best && w.covers(m))
+        };
+        if let Some(val) = w.one_best.as_ref().filter(|_| !seen(true)) {
+            v.stale.push(format!("1-best no longer shows {val}"));
+        }
+        if let Some(val) = w.list_top.as_ref().filter(|_| !seen(false)) {
+            v.stale.push(format!("candidate #1 is no longer {val}"));
+        }
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------
 // [cases.window]
 // ---------------------------------------------------------------------------
 
@@ -637,6 +766,65 @@ absent = ["x"]"#
         assert!(sels.lines.is_empty());
         assert_eq!(sels.malformed, 0);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    fn issue(one_best: Option<&str>, list_top: Option<&str>) -> WidthIssue {
+        WidthIssue {
+            issue: "#1".into(),
+            one_best: one_best.map(Into::into),
+            list_top: list_top.map(Into::into),
+        }
+    }
+
+    fn list_top(got: &str) -> WidthMismatch {
+        WidthMismatch::ListTop {
+            got: got.into(),
+            want: "期".into(),
+        }
+    }
+
+    #[test]
+    fn width_exemption_covers_only_the_named_disagreement() {
+        let w = issue(None, Some("二個"));
+        let observed = [list_top("二個"), WidthMismatch::OneBest("他".into())];
+        let v = judge_widths(Some(&w), &observed);
+        assert_eq!(v.known.len(), 1);
+        assert_eq!(v.unexempt, ["1-best shows 他"], "another width still fails");
+        assert!(v.stale.is_empty());
+
+        // A different top-1 at the named width is not the known one.
+        let v = judge_widths(Some(&w), &[list_top("三個")]);
+        assert_eq!(v.unexempt.len(), 1);
+        assert_eq!(v.stale, ["candidate #1 is no longer 二個"]);
+
+        // Without an exemption everything is unexempt.
+        let v = judge_widths(None, &observed);
+        assert_eq!((v.unexempt.len(), v.known.len()), (2, 0));
+    }
+
+    #[test]
+    fn width_exemption_that_no_longer_occurs_is_stale() {
+        let v = judge_widths(
+            Some(&issue(Some("に個"), Some("二個"))),
+            &[list_top("二個")],
+        );
+        assert_eq!(v.stale, ["1-best no longer shows に個"]);
+        let v = judge_widths(Some(&issue(None, Some("二個"))), &[]);
+        assert_eq!(v.stale, ["candidate #1 is no longer 二個"]);
+    }
+
+    #[test]
+    fn width_exemption_validation() {
+        assert!(issue(None, Some("二個")).validate("期", "期").is_ok());
+        assert!(issue(None, None).validate("期", "期").is_err());
+        assert!(
+            issue(Some("期"), None).validate("期", "期").is_err(),
+            "names the expected value"
+        );
+        assert!(issue(None, Some("期")).validate("期", "期").is_err());
+        let mut unlinked = issue(None, Some("二個"));
+        unlinked.issue = "later".into();
+        assert!(unlinked.validate("期", "期").is_err());
     }
 
     /// PAGE_SIZE mirrors the Swift constant that owns it. Fail closed: if the

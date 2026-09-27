@@ -8,7 +8,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use lex_cli::commands::rank_ops::{self, joined_surface, WindowCheck};
+use lex_cli::commands::rank_ops::{self, joined_surface, width_disagreements, WindowCheck};
 use lex_core::converter::tune;
 use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
@@ -19,7 +19,8 @@ use lex_core::user_history::UserHistory;
 #[command(name = "lextool", about = "Lexime conversion diagnostics")]
 struct Cli {
     /// Path to a settings.toml to run under instead of the embedded
-    /// settings, as the app loads it (any subcommand)
+    /// settings (any subcommand). An explicit file: unreadable or invalid
+    /// fails, where the app would fall back. Not with replay --app-dir
     #[arg(long, global = true)]
     settings: Option<String>,
     #[command(subcommand)]
@@ -177,12 +178,13 @@ enum Command {
         /// Path to user history file (optional; default is no history)
         #[arg(long)]
         history: Option<String>,
-        /// The app's data directory: replay under the configuration the app
-        /// runs with — its user_dict.lxuw layered over the system dictionary
-        /// and its settings.toml — including the app's fallbacks when a file
-        /// is missing, unreadable or invalid (warned here, as the app reports
-        /// them). Without it: system dictionary and embedded settings
-        /// (not with --settings)
+        /// The app's data directory (must exist): replay under the
+        /// configuration the app runs with — its user_dict.lxuw layered over
+        /// the system dictionary and its settings.toml — with the app's
+        /// fallbacks: a missing file is not used (as in a fresh install); an
+        /// unreadable or invalid one is not used either, with a warning, as
+        /// the app reports it. Without it: system dictionary and embedded
+        /// settings (not with --settings)
         #[arg(long)]
         app_dir: Option<String>,
         /// Compare against a baseline written by --emit-baseline. Lines join
@@ -279,65 +281,7 @@ struct AccuracyCase {
     window_top1: Option<String>,
     /// Known width disagreement: report it without failing the case.
     #[serde(default)]
-    width_issue: Option<WidthIssue>,
-}
-
-/// A known width disagreement, named exactly: the issue tracking it and the
-/// top-1 each disagreeing width shows. Only that disagreement is exempt —
-/// any other width, a different top-1, or the no-history baseline still
-/// fails the case.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WidthIssue {
-    issue: String,
-    /// What the synchronous 1-best shows instead of `expected`.
-    #[serde(default)]
-    one_best: Option<String>,
-    /// What the production list's #1 is instead of `expected`.
-    #[serde(default)]
-    list_top: Option<String>,
-}
-
-impl WidthIssue {
-    fn covers(&self, m: &WidthMismatch) -> bool {
-        match m {
-            WidthMismatch::OneBest(got) => self.one_best.as_deref() == Some(got),
-            WidthMismatch::ListTop { got, .. } => self.list_top.as_deref() == Some(got),
-        }
-    }
-
-    /// Declared disagreements that did not occur.
-    fn stale(&self, seen: &[WidthMismatch]) -> Vec<String> {
-        let seen_one_best = seen
-            .iter()
-            .any(|m| matches!(m, WidthMismatch::OneBest(_)) && self.covers(m));
-        let seen_list_top = seen
-            .iter()
-            .any(|m| matches!(m, WidthMismatch::ListTop { .. }) && self.covers(m));
-        let mut out = Vec::new();
-        if let Some(v) = self.one_best.as_ref().filter(|_| !seen_one_best) {
-            out.push(format!("1-best no longer shows {v}"));
-        }
-        if let Some(v) = self.list_top.as_ref().filter(|_| !seen_list_top) {
-            out.push(format!("candidate #1 is no longer {v}"));
-        }
-        out
-    }
-}
-
-/// One width whose top-1 differs from what the case expects.
-enum WidthMismatch {
-    OneBest(String),
-    ListTop { got: String, want: String },
-}
-
-impl std::fmt::Display for WidthMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OneBest(got) => write!(f, "1-best shows {got}"),
-            Self::ListTop { got, want } => write!(f, "candidate #1 is {got} (want {want})"),
-        }
-    }
+    width_issue: Option<rank_ops::WidthIssue>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -542,12 +486,16 @@ fn run_snapshot(
     }
 }
 
-/// The app's load policy for the files in its data directory
-/// (`AppContext` / `EngineContainer`), mirrored for `replay-commit-log
-/// --app-dir`: a missing file is not used; an unreadable or invalid one is
-/// not used either, and the app keeps running and reports it — here, a
-/// warning. Nothing is written: the app quarantines a corrupt user
-/// dictionary, a measurement tool never touches user data.
+/// The app's load policy for the files in its data directory, mirrored for
+/// `replay-commit-log --app-dir`: a missing file is not used; an unreadable
+/// or invalid one is not used either, and the app keeps running and reports
+/// it — here, a warning. Nothing is written: the app quarantines a corrupt
+/// user dictionary, a measurement tool never touches user data.
+///
+/// Mirrors Sources/AppContext.swift (settings.toml, loaded only when it
+/// exists; a load error leaves the embedded settings) and
+/// Sources/EngineContainer.swift `load` (user dictionary: corrupt → empty,
+/// unreadable → system dictionary only). Change them together.
 mod app_config {
     use std::fs;
     use std::io::ErrorKind;
@@ -615,7 +563,12 @@ fn main() {
             process::exit(1);
         }
     } else if let Some(dir) = app_dir {
-        app_config::settings(Path::new(dir));
+        let dir = Path::new(dir);
+        if !dir.is_dir() {
+            eprintln!("--app-dir {}: not a directory", dir.display());
+            process::exit(1);
+        }
+        app_config::settings(dir);
     }
 
     match cli.command {
@@ -747,19 +700,9 @@ fn main() {
                     }
                 }
                 if let Some(ref w) = case.width_issue {
-                    if !is_issue_ref(&w.issue) {
-                        eprintln!(
-                            "width_issue for {} must be an issue link like \"#123\", got {:?}",
-                            case.reading, w.issue
-                        );
-                        process::exit(1);
-                    }
-                    if w.one_best.is_none() && w.list_top.is_none() {
-                        eprintln!(
-                            "width_issue for {} must name the disagreement it covers \
-                             (one_best and/or list_top)",
-                            case.reading
-                        );
+                    let list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
+                    if let Err(e) = w.validate(&case.expected, list_top) {
+                        eprintln!("width_issue for {}: {e}", case.reading);
                         process::exit(1);
                     }
                 }
@@ -1415,15 +1358,11 @@ fn eval_case(
 
     let want_list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
     let observed = width_disagreements(&widths, &case.expected, want_list_top);
-    let (known, mut width): (Vec<String>, Vec<String>) = {
-        let (k, u): (Vec<&WidthMismatch>, Vec<&WidthMismatch>) = observed
-            .iter()
-            .partition(|m| case.width_issue.as_ref().is_some_and(|w| w.covers(m)));
-        (
-            k.iter().map(|m| m.to_string()).collect(),
-            u.iter().map(|m| m.to_string()).collect(),
-        )
-    };
+    let rank_ops::WidthVerdict {
+        unexempt: mut width,
+        known,
+        stale,
+    } = rank_ops::judge_widths(case.width_issue.as_ref(), &observed);
     // The no-history baseline is never exempt: an exemption names a
     // disagreement under the case's own history.
     if let (Some(want), Some(w)) = (&case.baseline, &plain) {
@@ -1451,15 +1390,12 @@ fn eval_case(
 
     let failure = if !window.is_empty() {
         Some(Failure::Window)
-    } else if !width.is_empty() {
+    } else if !width.is_empty() || !stale.is_empty() {
         Some(Failure::Width)
     } else {
         None
     };
-    let (issue, stale) = match &case.width_issue {
-        Some(w) => (w.issue.as_str(), w.stale(&observed)),
-        None => ("", Vec::new()),
-    };
+    let issue = case.width_issue.as_ref().map_or("", |w| w.issue.as_str());
     let details: Vec<String> = window
         .into_iter()
         .chain(width.into_iter().map(|w| format!("width: {w}")))
@@ -1471,7 +1407,7 @@ fn eval_case(
         .chain(
             stale
                 .into_iter()
-                .map(|s| format!("width_issue {issue}: {s} — update it")),
+                .map(|s| format!("width_issue {issue}: {s} — update or remove it")),
         )
         .collect();
     match failure {
@@ -1487,30 +1423,6 @@ fn eval_case(
 }
 
 /// Widths other than the n=1 head that disagree with the expected top-1.
-fn width_disagreements(
-    w: &rank_ops::Top1Widths,
-    expected: &str,
-    list_top: &str,
-) -> Vec<WidthMismatch> {
-    let mut out = Vec::new();
-    if w.one_best != expected {
-        out.push(WidthMismatch::OneBest(w.one_best.clone()));
-    }
-    if w.list_top() != list_top {
-        out.push(WidthMismatch::ListTop {
-            got: w.list_top().to_string(),
-            want: list_top.to_string(),
-        });
-    }
-    out
-}
-
-/// `#123` — the form every skip-like exemption must link (CLAUDE.md).
-fn is_issue_ref(s: &str) -> bool {
-    s.strip_prefix('#')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
 fn pct(part: usize, whole: usize) -> f64 {
     if whole == 0 {
         0.0
