@@ -207,10 +207,8 @@ impl Rewriter for KanjiVariantRewriter<'_> {
     fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
         let mut new_paths = Vec::new();
 
-        // Segment-based replacement on multi-segment paths only. A kanji span
-        // is substituted only where the source path has a segment boundary;
-        // scanning a single-segment kana path for kanji at arbitrary offsets
-        // cut through words (お|圧|さか, う|就く|しい) and was removed.
+        // Multi-segment paths only: kanji are substituted only at existing
+        // segment boundaries, never at arbitrary offsets inside a kana run.
         for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
             let mut char_pos = 0usize;
             for seg_idx in 0..path.segments.len() {
