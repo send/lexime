@@ -519,10 +519,9 @@ fi
 [tasks.lint]
 description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["lint-toolchain"]
-# The lint commands CI runs are defined here only: CI's lint job runs this
-# task rather than cargo lines of its own. One hand copy remains — CLAUDE.md's
-# raw-cargo fallback for environments without mise — so a flag change here
-# should be mirrored there.
+# The lint commands are defined here only: CI's lint job and the @claude bot
+# (.github/workflows/claude.yml) run this task rather than cargo lines of
+# their own. CLAUDE.md summarizes the gate but does not copy the command line.
 #
 # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
 # leaving benches in no gate at all — `cargo test` skips `[[bench]]` targets
@@ -553,6 +552,10 @@ tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 cargo +"$tc" fmt --all
 """
+
+[tasks.test-read-pin]
+description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's read-pin job does)"
+run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
 description = "Run supply chain checks (scripts/screen.sh, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"

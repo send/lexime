@@ -74,8 +74,8 @@ jobs:
               - 'Info.plist'
               # Defines which files `compile-swift` gates and `build`
               # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — the scripts `core` names are
-              # the supply-chain and pin scripts, none of them Swift inputs.
+              # covered by any other filter — the scripts `core` names are the
+              # supply-chain and lint-toolchain ones.
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
@@ -104,6 +104,21 @@ jobs:
 
       - name: Supply-chain screen
         run: bash scripts/screen.sh
+
+  # Tests the pin reader and its wrappers (scripts/read-pin-test.sh), including
+  # that mozc-pin.sh prints what the pre-#332 one-liner did: the accuracy job's
+  # cache key. Plain bash and no cargo, so no `screen`. Unconditional on
+  # purpose, like `screen`: a path filter would be one more hand-kept list of
+  # what the test reads, and a path missing from it only skips the job. Every
+  # path in it would also sit in `core` or `corpus`, so a check that each input
+  # is in some filter (#302) could not catch the omission. The job costs a
+  # few seconds.
+  read-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: bash scripts/read-pin-test.sh
 
   lint:
     needs: [changes, screen]
