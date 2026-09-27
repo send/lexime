@@ -21,10 +21,24 @@ runs:
     # install: false — the jobs' mise tasks install what they need themselves.
     # cache: false — mise-action saves its cache only after an install, so
     # with install off every restore would be a miss.
-    # The same commit claude.yml pins, so every mise install goes through one
-    # version of the action too.
+    # The same commit claude.yml pins (read-pin-test.sh checks both), so every
+    # mise install goes through one version of the action too.
     - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       with:
         version: ${{ steps.pin.outputs.version }}
         install: false
         cache: false
+
+    # mise's own min_version check is only a floor, so hold the install to the
+    # pin exactly. This line is also what a bump PR reads in each job's log.
+    - name: Check the installed mise is the pin
+      shell: bash
+      env:
+        PIN: ${{ steps.pin.outputs.version }}
+      run: |
+        got=$(mise --version)
+        echo "mise $got (pin $PIN)"
+        [[ $got == "$PIN "* ]] || {
+          echo "::error::installed mise is $got, not the pin $PIN"
+          exit 1
+        }

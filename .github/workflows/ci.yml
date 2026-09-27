@@ -113,9 +113,10 @@ jobs:
         run: bash scripts/check-build-scripts.sh
 
   # Tests the pin reader and its wrappers (scripts/read-pin-test.sh), including
-  # that mozc-pin.sh prints what the pre-#332 one-liner did: the accuracy job's
-  # cache key, and that claude.yml's inline mise version is mise.toml's pin. Plain bash and no cargo, so no `screen`. Unconditional on
-  # purpose, like `screen`: a path filter would be one more hand-kept list of
+  # that mozc-pin.sh prints what the pre-#332 one-liner did (the accuracy job's
+  # cache key). Also checks that every mise install is held to the pin — see
+  # the mise sections of the script. Plain bash and no cargo, so no `screen`.
+  # Unconditional on purpose, like `screen`: a path filter would be one more hand-kept list of
   # what the test reads, and a path missing from it only skips the job. Every
   # path in it would also sit in `core` or `corpus`, so a check that each input
   # is in some filter (#302) could not catch the omission. The job costs a
@@ -160,6 +161,22 @@ jobs:
           shared-key: lint-${{ steps.toolchain.outputs.version }}
 
       - uses: ./.github/actions/setup-mise
+
+      # claude.yml installs mise by sha256 without running anything from the
+      # checkout, so the hash cannot be read from the pin. This job has just
+      # installed the pinned release's linux-x64 binary, the one that hash
+      # names; a bump that leaves the hash behind fails here, not at the bot's
+      # next run. Here because a bump edits mise.toml, which `core` covers.
+      - name: claude.yml's mise sha256 is the pinned binary's
+        run: |
+          want=$(sed -nE 's/^[[:space:]]+sha256:[[:space:]]*([0-9a-f]{64}).*$/\1/p' .github/workflows/claude.yml)
+          got=$(sha256sum "$(command -v mise)" | cut -d' ' -f1)
+          echo "claude.yml: $want"
+          echo "installed:  $got"
+          [[ -n $want && $want == "$got" ]] || {
+            echo "::error file=.github/workflows/claude.yml::sha256 is not the linux-x64 bin/mise of the pinned release"
+            exit 1
+          }
 
       # The lint commands and the toolchain install live only in mise.toml.
       - run: mise run lint

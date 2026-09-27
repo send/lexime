@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests for scripts/read-pin.sh and its three wrappers (mozc-pin.sh,
-# lint-toolchain.sh, mise-version.sh), and a check that claude.yml installs the
-# pinned mise. Run by CI's read-pin job and `mise run test-read-pin`.
+# lint-toolchain.sh, mise-version.sh), and checks that every mise install is
+# held to the pin (min_version's placement, claude.yml's inline version, the
+# jdx/mise-action call sites). Run by CI's read-pin job and
+# `mise run test-read-pin`.
 #
 # The Mozc cases also compare against the inline one-liner read-pin.sh replaced
 # (#332), whose output was the accuracy job's snapshot cache key and the SHA
@@ -180,6 +182,34 @@ if [[ -n $current && $claude == "$current" ]]; then
   echo "ok   mise: claude.yml version is min_version"
 else
   fail "mise: claude.yml version is min_version" "want: $current" "got:  $claude"
+fi
+
+# --- mise.toml: min_version is top-level -------------------------------------
+# Below a [table] header mise reads it as that table's key and drops the local
+# floor, while read-pin.sh (which does not parse TOML) would still find it.
+mv_line=$(grep -nE '^[[:space:]]*min_version[[:space:]]*=' mise.toml | head -n1 | cut -d: -f1)
+table_line=$(grep -nE '^[[:space:]]*\[' mise.toml | head -n1 | cut -d: -f1)
+if [[ -n $mv_line && (-z $table_line || $mv_line -lt $table_line) ]]; then
+  echo "ok   mise: min_version is above the first table"
+else
+  fail "mise: min_version is above the first table" "min_version line: $mv_line" "first table line: $table_line"
+fi
+
+# --- jdx/mise-action: only the two pinned installs --------------------------
+# Without `version:` the action installs the latest mise, so a job using it
+# directly would float. Only setup-mise and claude.yml may, at one commit.
+uses=$(grep -rlE "uses:[[:space:]]*[\"']?jdx/mise-action" .github | sort)
+want=$(printf '%s\n' .github/actions/setup-mise/action.yml .github/workflows/claude.yml)
+if [[ $uses == "$want" ]]; then
+  echo "ok   mise-action: used only by setup-mise and claude.yml"
+else
+  fail "mise-action: used only by setup-mise and claude.yml" "got: $(echo $uses)"
+fi
+refs=$(grep -rhoE 'jdx/mise-action@[^[:space:]"'"'"']+' .github | sort -u)
+if [[ $refs =~ ^jdx/mise-action@[0-9a-f]{40}$ ]]; then
+  echo "ok   mise-action: one commit SHA"
+else
+  fail "mise-action: one commit SHA" "got: $(echo $refs)"
 fi
 
 if ((fails)); then

@@ -661,7 +661,7 @@ macOS で動作する最小限の IME を構築。
 | `dict-clean` | コンパイル済み辞書の削除（次回ビルドで再コンパイル） |
 | `conn` | 接続行列のコンパイル |
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
-| `test-read-pin` | pin 読み取り (`scripts/read-pin.sh` + ラッパー 3 本) のテスト + claude.yml の mise 版が pin と一致するかの検査 |
+| `test-read-pin` | pin 読み取り (`scripts/read-pin.sh` + ラッパー 3 本) のテスト + mise の全インストールが pin に従うかの検査 |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
@@ -694,7 +694,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
-| `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、claude.yml の mise 版が `mise.toml` の `min_version` と一致することも検査） |
+| `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うことも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（上表の `lint` task） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
@@ -707,7 +707,7 @@ macOS で動作する最小限の IME を構築。
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、`read-pin` ジョブが一致を検査する。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版は `read-pin` ジョブが、sha256 は `lint` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 
