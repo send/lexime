@@ -63,9 +63,36 @@ jobs:
         with:
           fetch-depth: 1
 
+      # So the bot lints and formats through mise.toml's [tasks.lint] /
+      # [tasks.fmt], as CI's lint job does. Stricter than ci.yml because this
+      # job holds a secret and an agent shell runs after this step:
+      #   - cache: false — a restored mise dir puts its shims/ on PATH ahead of
+      #     that shell, and sha256 covers bin/mise only.
+      #   - github_token: '' — the action otherwise exports GITHUB_TOKEN to
+      #     every later step. It then warns "No GITHUB_TOKEN provided" each
+      #     run; expected, as nothing here fetches tools (install: false).
+      # `version:` is `min_version` in mise.toml, spelled out here because
+      # nothing from the checkout runs before the Claude step; CI's read-pin
+      # job fails when they differ. To bump, follow mise.toml's procedure, and
+      # take sha256 of mise/bin/mise from the release's linux-x64 tarball,
+      # checked against its SHASUMS256.txt.
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          version: 2026.9.11
+          sha256: 6e39ee1ffa926a1f64814efbf1d26c3f617255e2a6ba6152e3c8a5135fa5a35f # mise/bin/mise, linux-x64
+          install: false
+          cache: false
+          github_token: ''
+
+      # The mise rules are exact matches, not `:*` prefixes: a prefix would
+      # also admit `mise run lint ::: <any task>` (mise runs every task after
+      # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
+      # stable they can disagree with the pinned toolchain CI lints with.
+      # `cargo test` / `cargo check` stay for targeted runs, which the exact
+      # `mise run test` rule cannot take, and CI's test jobs run on stable too.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Bash(cargo fmt:*),Bash(cargo clippy:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo fmt:*),Bash(cd engine && cargo clippy:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr:*)"
+          allowed_tools: "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr:*)"

@@ -5,9 +5,13 @@
 # sequence anywhere in a run block, prose included. Count in the read loop.
 
 # The mise version this file is run on. It is one value with two roles:
-#   - CI installs exactly this version. Every job that uses mise sets it up
-#     through .github/actions/setup-mise, which reads this line via
-#     scripts/mise-version.sh and passes it to jdx/mise-action's `version:`.
+#   - CI installs exactly this version. Every ci.yml / lint-canary.yml job
+#     that uses mise sets it up through .github/actions/setup-mise, which reads
+#     this line via scripts/mise-version.sh and passes it to jdx/mise-action's
+#     `version:`. The @claude bot (.github/workflows/claude.yml) spells it
+#     inline next to the binary's sha256, since it runs nothing from the
+#     checkout before its secret-holding step; CI's read-pin job fails when
+#     that copy differs from this line.
 #   - Locally it is a floor: mise refuses to load this file on an older mise
 #     ("mise version X is required"). Update mise the way you installed it.
 #
@@ -25,8 +29,11 @@
 #      least 7 days ago — the same quarantine scripts/check-quarantine.sh
 #      applies to crates, since CI runs this binary on the repo.
 #   2. Replace the version below, and update your local mise to at least it.
-#   3. Run `mise run test` locally; the PR runs every other gate.
-#   4. Confirm in the PR's CI logs that each mise job (lint, accuracy, swift)
+#   3. In .github/workflows/claude.yml set the same `version:` and its
+#      `sha256:` (how is in the comment there).
+#   4. Run `mise run test` and `mise run test-read-pin` locally; the PR runs
+#      every other gate.
+#   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, swift)
 #      prints the new version under "Running mise --version".
 #
 # Format: exactly `min_version = "YYYY.M.P"` on its own line, with no trailing
@@ -550,10 +557,9 @@ fi
 [tasks.lint]
 description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["lint-toolchain"]
-# The lint commands CI runs are defined here only: CI's lint job runs this
-# task rather than cargo lines of its own. One hand copy remains — CLAUDE.md's
-# raw-cargo fallback for environments without mise — so a flag change here
-# should be mirrored there.
+# The lint commands are defined here only: CI's lint job and the @claude bot
+# (.github/workflows/claude.yml) run this task rather than cargo lines of
+# their own. CLAUDE.md summarizes the gate but does not copy the command line.
 #
 # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
 # leaving benches in no gate at all — `cargo test` skips `[[bench]]` targets
@@ -584,6 +590,10 @@ tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 cargo +"$tc" fmt --all
 """
+
+[tasks.test-read-pin]
+description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's read-pin job does)"
+run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
 description = "Run supply chain checks (quarantine, build.rs, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
