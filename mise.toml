@@ -491,9 +491,12 @@ depends = ["screen", "dict", "conn"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-# Replay against the engine the log came from: the app layers user_dict over
-# the system dictionary and loads settings.toml when it exists. (A missing
-# user_dict opens empty.) For a system-only measurement, run lextool directly.
+# Replay against the engine configuration the log came from: the app layers
+# user_dict over the system dictionary and loads settings.toml when it exists.
+# (A missing user_dict opens empty.) History is left out on purpose: it was
+# learned from these same selections, so it would rank them up by
+# construction; add --history to measure the learned engine. For a
+# system-only measurement, run lextool directly.
 lexime="$HOME/Library/Application Support/Lexime"
 extra=(--user-dict "$lexime/user_dict.lxuw")
 if [ -f "$lexime/settings.toml" ]; then extra+=(--settings "$lexime/settings.toml"); fi

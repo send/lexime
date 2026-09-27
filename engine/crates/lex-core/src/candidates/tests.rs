@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use crate::dict::{DictEntry, TrieDictionary};
 use crate::user_history::UserHistory;
 
-use super::{generate_candidates, generate_prediction_candidates, punctuation_alternatives};
+use super::{
+    generate_candidates, generate_candidates_priced, generate_prediction_candidates,
+    punctuation_alternatives,
+};
 
 fn make_dict() -> TrieDictionary {
     let entries = vec![
@@ -236,5 +239,47 @@ fn test_kana_not_promoted_without_history() {
             kana_pos > 0,
             "kana should not be at position 0 without history"
         );
+    }
+}
+
+/// The priced list is the shipped list, and each cost belongs to the path at
+/// the same index (one run, so no second population to drift from).
+#[test]
+fn test_priced_candidates_are_the_production_list() {
+    let dict = make_dict();
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "京".into())]);
+    for history in [None, Some(&h)] {
+        for reading in ["きょう", "きょうは", "。", ""] {
+            let plain = generate_candidates(&dict, None, history, reading, 20);
+            let priced = generate_candidates_priced(&dict, None, history, reading, 20);
+            assert_eq!(priced.response.surfaces, plain.surfaces, "{reading}");
+            let keys =
+                |paths: &[Vec<crate::converter::ConvertedSegment>]| -> Vec<Vec<(String, String)>> {
+                    paths
+                        .iter()
+                        .map(|p| {
+                            p.iter()
+                                .map(|s| (s.reading.clone(), s.surface.clone()))
+                                .collect()
+                        })
+                        .collect()
+                };
+            assert_eq!(
+                keys(&priced.response.paths),
+                keys(&plain.paths),
+                "{reading}"
+            );
+            if punctuation_alternatives(reading).is_some() || reading.is_empty() {
+                assert!(priced.path_costs.is_empty(), "{reading}");
+            } else {
+                assert_eq!(
+                    priced.path_costs.len(),
+                    priced.response.paths.len(),
+                    "{reading}"
+                );
+                assert!(!priced.path_costs.is_empty(), "{reading}");
+            }
+        }
     }
 }

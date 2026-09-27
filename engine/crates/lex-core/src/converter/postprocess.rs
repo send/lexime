@@ -8,7 +8,7 @@ use super::lattice::Lattice;
 use super::reranker;
 use super::resegment;
 use super::rewriter;
-use super::viterbi::{ConvertedSegment, RichSegment, ScoredPath};
+use super::viterbi::{RichSegment, ScoredPath};
 
 // ---------------------------------------------------------------------------
 // Observer trait — allows explain to capture intermediate cost snapshots
@@ -61,7 +61,7 @@ pub(super) fn postprocess(
     history: Option<&UserHistory>,
     kana: &str,
     n: usize,
-) -> Vec<Vec<ConvertedSegment>> {
+) -> Vec<ScoredPath> {
     let ctx = PostprocessContext {
         lattice,
         conn,
@@ -72,9 +72,6 @@ pub(super) fn postprocess(
         now: crate::user_history::now_epoch(),
     };
     postprocess_observed(paths, &ctx, &mut NoopObserver)
-        .into_iter()
-        .map(|p| p.into_segments())
-        .collect()
 }
 
 /// Post-processing pipeline with an observer for diagnostic hooks.

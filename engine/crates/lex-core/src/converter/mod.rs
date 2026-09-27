@@ -64,6 +64,7 @@ impl ConversionContext<'_> {
         self.convert_lattice_impl(lattice, 1, oversample)
             .into_iter()
             .next()
+            .map(ScoredPath::into_segments)
             .unwrap_or_default()
     }
 
@@ -73,6 +74,19 @@ impl ConversionContext<'_> {
         lattice: &Lattice,
         n: usize,
     ) -> Vec<Vec<ConvertedSegment>> {
+        self.convert_nbest_scored_from_lattice(lattice, n)
+            .into_iter()
+            .map(ScoredPath::into_segments)
+            .collect()
+    }
+
+    /// N-best paths with their final cost (after rerank, history and the
+    /// rewriters), for callers that need the price the list was ordered by.
+    pub(crate) fn convert_nbest_scored_from_lattice(
+        &self,
+        lattice: &Lattice,
+        n: usize,
+    ) -> Vec<ScoredPath> {
         self.convert_lattice_impl(lattice, n, nbest_oversample(n, self.history.is_some()))
     }
 
@@ -82,7 +96,7 @@ impl ConversionContext<'_> {
         lattice: &Lattice,
         n: usize,
         oversample: usize,
-    ) -> Vec<Vec<ConvertedSegment>> {
+    ) -> Vec<ScoredPath> {
         if lattice.input.is_empty() || n == 0 {
             return Vec::new();
         }

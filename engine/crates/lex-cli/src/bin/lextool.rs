@@ -19,6 +19,10 @@ use lex_core::user_history::UserHistory;
 #[derive(Parser)]
 #[command(name = "lextool", about = "Lexime conversion diagnostics")]
 struct Cli {
+    /// Path to a settings.toml to run under instead of the embedded
+    /// settings, as the app loads it (any subcommand)
+    #[arg(long, global = true)]
+    settings: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -178,10 +182,6 @@ enum Command {
         /// app does (optional; default is system dictionary only)
         #[arg(long)]
         user_dict: Option<String>,
-        /// Path to settings.toml, loaded before any conversion as the app
-        /// does (optional; default is the embedded settings)
-        #[arg(long)]
-        settings: Option<String>,
         /// Compare against a baseline written by --emit-baseline
         #[arg(long)]
         baseline: Option<String>,
@@ -467,6 +467,18 @@ fn run_snapshot(
 
 fn main() {
     let cli = Cli::parse();
+    // Before any subcommand runs: settings() fixes on its first read, and a
+    // custom TOML set after that would be ignored without an error.
+    if let Some(path) = &cli.settings {
+        let toml = fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("--settings {path}: {e}");
+            process::exit(1);
+        });
+        lex_core::settings::init_custom(toml).unwrap_or_else(|e| {
+            eprintln!("--settings {path}: {e}");
+            process::exit(1);
+        });
+    }
 
     match cli.command {
         Command::Explain {
@@ -1080,7 +1092,6 @@ fn main() {
             log_file,
             history,
             user_dict,
-            settings,
             baseline,
             emit_baseline,
             verbose,
@@ -1090,13 +1101,6 @@ fn main() {
                 eprintln!("replay-commit-log: {}", e);
                 process::exit(1);
             };
-            // Before open_resources or anything else reads settings(): the
-            // singleton fixes on first read.
-            if let Some(path) = &settings {
-                let toml = fs::read_to_string(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
-                lex_core::settings::init_custom(toml)
-                    .unwrap_or_else(|e| die(format!("{path}: {e}")));
-            }
             let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
             // Same layering as LexDictionary::open_with_user_dict.

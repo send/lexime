@@ -8,7 +8,9 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
+use super::{
+    generate_punctuation_candidates, punctuation_alternatives, CandidateResponse, PricedCandidates,
+};
 
 /// Generate candidates for normal (non-punctuation) input.
 pub(super) fn generate_normal_candidates(
@@ -19,6 +21,19 @@ pub(super) fn generate_normal_candidates(
     max_results: usize,
     lattice: &Lattice,
 ) -> CandidateResponse {
+    generate_normal_priced(dict, conn, history, reading, max_results, lattice).response
+}
+
+/// [`generate_normal_candidates`] with the final cost of each N-best path,
+/// taken from the same pipeline run that ordered the list.
+pub(super) fn generate_normal_priced(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+    lattice: &Lattice,
+) -> PricedCandidates {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
@@ -32,15 +47,16 @@ pub(super) fn generate_normal_candidates(
         conn,
         history,
     };
-    let paths = ctx.convert_nbest_from_lattice(lattice, nbest);
+    let scored = ctx.convert_nbest_scored_from_lattice(lattice, nbest);
+    let path_costs: Vec<i64> = scored.iter().map(|p| p.viterbi_cost).collect();
 
-    let mut nbest_paths = Vec::new();
-    for path in &paths {
+    let mut nbest_paths = Vec::with_capacity(scored.len());
+    for path in scored.into_iter().map(|p| p.into_segments()) {
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
         if !joined.is_empty() && seen.insert(joined.clone()) {
             surfaces.push(joined);
         }
-        nbest_paths.push(path.clone());
+        nbest_paths.push(path);
     }
 
     // 1.5. Inject history-learned surfaces not in N-best.
@@ -130,9 +146,12 @@ pub(super) fn generate_normal_candidates(
         }
     }
 
-    CandidateResponse {
-        surfaces,
-        paths: nbest_paths,
+    PricedCandidates {
+        response: CandidateResponse {
+            surfaces,
+            paths: nbest_paths,
+        },
+        path_costs,
     }
 }
 

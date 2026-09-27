@@ -15,9 +15,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use lex_core::candidates::{generate_candidates, CandidateResponse};
+use lex_core::candidates::{generate_candidates_priced, CandidateResponse, PricedCandidates};
 use lex_core::converter::{
-    convert_nbest, convert_nbest_with_history, explain, ConversionContext, ConvertedSegment,
+    convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment,
 };
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
@@ -48,7 +48,18 @@ pub fn production_candidates(
     history: Option<&UserHistory>,
     reading: &str,
 ) -> CandidateResponse {
-    generate_candidates(
+    production_candidates_priced(dict, conn, history, reading).response
+}
+
+/// [`production_candidates`] with each N-best path's final cost, from the
+/// same run — so a cost is always the price of the path the list shows.
+pub fn production_candidates_priced(
+    dict: &dyn Dictionary,
+    conn: &ConnectionMatrix,
+    history: Option<&UserHistory>,
+    reading: &str,
+) -> PricedCandidates {
+    generate_candidates_priced(
         dict,
         Some(conn),
         history,
@@ -314,7 +325,8 @@ pub struct BaselineDiff {
 struct ReadingView {
     /// The production candidate list.
     surfaces: Vec<String>,
-    /// N-best paths as (surface, final cost), cheapest first.
+    /// The list's N-best paths as (surface, final cost), cheapest first —
+    /// from the same run as `surfaces`.
     costs: Vec<(String, i64)>,
 }
 
@@ -333,7 +345,6 @@ pub fn replay(
         lines: selections,
         malformed,
     } = read_selections(log)?;
-    let nbest = settings().candidates.nbest;
 
     let mut rank_hist = vec![0; PAGE_SIZE];
     let mut gap_hist = vec![0; GAP_BIN_UPPER.len() + 1];
@@ -343,16 +354,21 @@ pub fn replay(
 
     for (i, sel) in &selections {
         let ReadingView { surfaces, costs } =
-            cache
-                .entry(sel.reading.as_str())
-                .or_insert_with(|| ReadingView {
-                    surfaces: production_candidates(dict, conn, history, &sel.reading).surfaces,
-                    costs: explain::explain(dict, Some(conn), history, &sel.reading, nbest)
+            cache.entry(sel.reading.as_str()).or_insert_with(|| {
+                let PricedCandidates {
+                    response,
+                    path_costs,
+                } = production_candidates_priced(dict, conn, history, &sel.reading);
+                ReadingView {
+                    costs: response
                         .paths
                         .iter()
-                        .map(|p| (p.surface(), p.final_cost))
+                        .map(|p| joined_surface(p))
+                        .zip(path_costs)
                         .collect(),
-                });
+                    surfaces: response.surfaces,
+                }
+            });
         let rank = surfaces.iter().position(|s| *s == sel.surface);
         let gap = costs.first().and_then(|(_, top)| {
             costs
