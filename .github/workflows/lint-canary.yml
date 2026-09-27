@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# As in ci.yml: mise reads only mise.toml, so no other committed mise config
+# can redefine the lint task this workflow runs.
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
+
 concurrency:
   group: lint-canary
   cancel-in-progress: false

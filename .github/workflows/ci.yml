@@ -8,6 +8,14 @@ on:
 permissions:
   contents: read
 
+# mise reads only mise.toml. By default it also merges .mise.toml,
+# mise.local.toml and others, which override its tasks: a committed one could
+# redefine a gate task (lint, audit-deps, ...) without touching the `core`
+# filter's 'mise.toml' entry, so the jobs would neither be triggered by the
+# change nor run the gate as mise.toml defines it.
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
+
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -40,8 +48,9 @@ jobs:
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
-              # job runs [tasks.lint] as-is). Without this, an edit
-              # weakening a gate would skip the very jobs that would catch it.
+              # and audit jobs run [tasks.lint] / [tasks.audit-deps] as-is).
+              # Without this, an edit weakening a gate would skip the very jobs
+              # that would catch it.
               - 'mise.toml'
               # The lint toolchain pin and its readers (lint-toolchain.sh
               # execs read-pin.sh). A PR that only bumps the pin must still
@@ -381,19 +390,12 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet,cargo-machete
 
+      - uses: ./.github/actions/setup-mise
+
       # Screening (quarantine / build.rs baseline) lives in the `screen` job,
-      # which gates this and every other cargo-invoking job.
-      - name: Verify Cargo.lock is in sync
-        run: cd engine && cargo check --locked
-
-      - name: cargo deny (advisories, licenses, sources, bans)
-        run: cd engine && cargo deny check
-
-      - name: cargo vet (audit tracking)
-        run: cd engine && cargo vet check
-
-      - name: Unused dependencies
-        run: cd engine && cargo machete
+      # which gates this and every other cargo-invoking job. The checks live
+      # only in mise.toml ([tasks.audit-deps]).
+      - run: mise run audit-deps
 
   swift:
     needs: [changes, screen]

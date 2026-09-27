@@ -666,7 +666,8 @@ macOS で動作する最小限の IME を構築。
 | `test` | lint + `cargo test --workspace --all-features` |
 | `lint` | `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
 | `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
-| `audit` | `scripts/screen.sh`（quarantine / build.rs スクリーニング）+ `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
+| `audit` | `scripts/screen.sh`（quarantine / build.rs スクリーニング）→ `audit-deps` の順（screen-first） |
+| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（hidden。`audit` と CI の audit job が実行する） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
@@ -702,12 +703,12 @@ macOS で動作する最小限の IME を構築。
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
 | `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定） |
-| `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
+| `audit` | ubuntu-latest | core 変更時 | `mise run audit-deps`（上表の `audit-deps` task） |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。両ワークフローは `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 
@@ -716,7 +717,7 @@ mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canar
 | `canary` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` の `screen` と同じ `scripts/screen.sh` を先に通してから、浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。このジョブが赤 = 判定前に壊れたか、stable が pin より新しくないのに lint が落ちた（pin の古さのシグナルではない） |
 | `report` | ubuntu-latest | `canary` が判定を出した時（main のみ） | 追跡 issue「lint pin is behind stable」を 1 件だけ維持: behind / free bump なら open・更新、pin が追いついたら close（`issues: write` はこのジョブだけ）。behind（stable が pin より新しく lint が落ちる）なら issue 更新後にこのジョブが赤 |
 
-> これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
+> これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks --hidden` で一覧できる。hidden task は `audit-deps` のように他 task / CI から呼ばれる部品）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
 ## 未決事項
 

@@ -33,8 +33,9 @@
 #      `sha256:` (how is in the comment there).
 #   4. Run `mise run test` and `mise run test-read-pin` locally; the PR runs
 #      every other gate.
-#   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, swift)
-#      prints the new version under "Check the installed mise is the pin".
+#   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, audit,
+#      swift) prints the new version under "Check the installed mise is the
+#      pin".
 #
 # Format: exactly `min_version = "YYYY.M.P"` on its own line, with no trailing
 # comment or table form; scripts/mise-version.sh refuses anything else. Keep it
@@ -596,17 +597,32 @@ description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's
 run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
-description = "Run supply chain checks (scripts/screen.sh, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
+description = "Run supply chain checks (scripts/screen.sh, then audit-deps) — mirrors the CI screen + audit jobs"
 run = [
   # screening first: cargo check executes build scripts, so the build.rs /
   # quarantine screen must run before anything that builds. In CI it is the
   # `screen` job that gates all cargo-invoking jobs; locally there is no job
-  # DAG, so it runs here, first.
+  # DAG, so it runs here, first. A run-list entry, not `depends`, so the order
+  # is sequential and a failed screen stops the task.
   "bash scripts/screen.sh",
-  "cd engine && cargo check --locked",
-  "cd engine && cargo deny check",
-  "cd engine && cargo vet check",
-  "cd engine && cargo machete",
+  { task = "audit-deps" },
+]
+
+[tasks.audit-deps]
+description = "Run the post-screen dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"
+# The one definition of these checks: CI's audit job and `audit` above run
+# this task rather than cargo lines of their own. Add a check here, not to a
+# caller (a check needing a new cargo tool also goes in that job's
+# install-action list). Hidden because it builds unscreened: locally, run it
+# via `audit` (screen first, see above). A run list, not a script, so the log
+# echoes each command and shows which check failed; it stops at the first.
+hide = true
+dir = "{{config_root}}/engine"
+run = [
+  "cargo check --locked",
+  "cargo deny check",
+  "cargo vet check",
+  "cargo machete",
 ]
 
 [tasks.test]
