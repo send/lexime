@@ -165,6 +165,7 @@ func testSessionCoordinator() {
     // commit(client:) forwards to session.commit + applies events
     do {
         let session = FakeLexSession()
+        session.isComposingValue = true
         session.commitResponses = [
             LexKeyResponse(consumed: true, events: [.commit(text: "あ")])
         ]
@@ -264,6 +265,7 @@ func testSessionCoordinator() {
     // commit(client:) also advances the epoch watermark.
     do {
         let session = FakeLexSession()
+        session.isComposingValue = true
         session.commitResponses = [
             LexKeyResponse(consumed: true, epoch: 7, events: [])
         ]
@@ -280,6 +282,29 @@ func testSessionCoordinator() {
                 events: [.showCandidates(surfaces: ["古"], selected: 0)]))
             assertTrue(manager.candidates.isEmpty,
                        "async response older than commit must be dropped")
+        }
+    }
+
+    // commit(client:) on an Idle session does nothing (#319). IMKit can deliver
+    // `commitComposition` after `deactivateServer`; reaching the engine there
+    // would re-arm `lastClient` on a torn-down coordinator. A fresh coordinator
+    // is in the state teardown leaves (Idle, no `lastClient`). Observed through
+    // what `lastClient` is for: a later async response must find no client.
+    do {
+        let session = FakeLexSession()
+        let (coordinator, manager) = makeCoordinator(session: session)
+        let client = FakeIMKClient()
+
+        withExtendedLifetime(client) {
+            coordinator.commit(client: client)
+            assertEqual(session.commitCalls, 0, "Idle commit does not reach the engine")
+
+            // Above every epoch in play, so only a missing client can stop it.
+            coordinator.applyAsyncResponse(LexKeyResponse(
+                consumed: true, epoch: 9,
+                events: [.showCandidates(surfaces: ["遅延"], selected: 0)]))
+            assertTrue(manager.candidates.isEmpty,
+                       "Idle commit does not re-arm lastClient")
         }
     }
 
