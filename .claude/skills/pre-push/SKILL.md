@@ -20,7 +20,7 @@ user-invocable: true
 ### Stage 1 — Format
 
 ```sh
-cd engine && cargo fmt --all
+mise run fmt   # lint が --check に使うのと同じ固定 rustfmt で整形する
 ```
 
 ### Stage 2 — Verify
