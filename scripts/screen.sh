@@ -25,8 +25,11 @@ set -euo pipefail
 # or other-registry dependency would pass them unexamined. The same policy as
 # engine/deny.toml's [sources], which cargo-deny enforces only in the audit
 # job, alongside the builds rather than before them.
-other=$(grep '^source = ' engine/Cargo.lock \
-    | grep -vxF 'source = "registry+https://github.com/rust-lang/crates.io-index"' \
+# A missing or unreadable Cargo.lock (grep exit 2) stops here; exit 1, no
+# source lines at all, is fine.
+sources=$(grep '^source = ' engine/Cargo.lock || [ $? -eq 1 ])
+other=$(printf '%s\n' "$sources" \
+    | grep -vxF -e 'source = "registry+https://github.com/rust-lang/crates.io-index"' -e '' \
     | sort -u || true)
 if [ -n "$other" ]; then
     echo "sources: Cargo.lock has dependencies from outside crates.io:"
