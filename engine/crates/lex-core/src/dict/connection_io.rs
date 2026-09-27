@@ -217,10 +217,10 @@ impl ConnectionMatrix {
     /// Parse from compiled V3 binary format into an owned representation.
     pub fn from_bytes(data: &[u8]) -> Result<Self, DictError> {
         let (num_ids, fw_min, fw_max, roles, hdr_size) = Self::validate_header(data)?;
-        let costs: Vec<i16> = data[hdr_size..]
-            .chunks_exact(2)
-            .map(|chunk| i16::from_ne_bytes([chunk[0], chunk[1]]))
-            .collect();
+        // `validate_header` fixes the length at `num_ids² × 2`, so the
+        // remainder `as_chunks` also returns is always empty.
+        let (pairs, _) = data[hdr_size..].as_chunks::<2>();
+        let costs: Vec<i16> = pairs.iter().copied().map(i16::from_ne_bytes).collect();
         Ok(Self::new_owned(num_ids, fw_min, fw_max, roles, costs))
     }
 
