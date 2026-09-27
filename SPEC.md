@@ -703,7 +703,7 @@ macOS で動作する最小限の IME を構築。
 | `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
 
-Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
+Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
 > この表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/ci.yml` と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
