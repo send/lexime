@@ -685,7 +685,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
-| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets`（toolchain は `engine/lint-toolchain.txt` で固定。`stable` 追従だと新 lint が全 PR を一斉に落とす） |
+| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets`（toolchain は `engine/lint-toolchain.txt` で固定） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |

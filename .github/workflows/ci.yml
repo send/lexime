@@ -113,11 +113,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned, not `stable`: a new clippy release can add a lint that fires on
-      # existing code, and under -D warnings that fails every PR at once. The
-      # version lives in engine/lint-toolchain.txt, shared with `mise run lint`
-      # so the local gate runs the same clippy. The assignment is on its own
-      # line so a failing read fails the step (`echo "…$(cmd)"` would not).
+      # Pinned, not `stable` — see engine/lint-toolchain.txt. The assignment is
+      # on its own line so a failing read fails the step (`echo "…$(cmd)"`
+      # would not).
       - name: Read the pinned lint toolchain
         id: toolchain
         run: |
@@ -132,7 +130,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: engine -> target
-          shared-key: engine
+          shared-key: lint
 
       - run: cd engine && cargo fmt --all --check
 

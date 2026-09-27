@@ -31,7 +31,7 @@ cd engine && cargo fmt --all
 mise run test   # = lint (fmt --check + clippy -D warnings、CI と同じ固定 toolchain) + cargo test --workspace --all-features
 ```
 
-この worktree **自身の target** で走らせる。他 worktree の `CARGO_TARGET_DIR` を借りると clippy が誤って clean を返す (PR #327 で CI の lint だけが落ちた)。lint の toolchain は `engine/lint-toolchain.txt` で固定されているので、ローカルの stable と CI がずれて片方だけ落ちることはない
+この worktree **自身の target** で走らせる。他 worktree の `CARGO_TARGET_DIR` を借りると clippy が誤って clean を返す (PR #327 で CI の lint だけが落ちた)
 
 条件付き追加 (diff に該当パスがあれば必須):
 
