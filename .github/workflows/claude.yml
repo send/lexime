@@ -84,11 +84,10 @@ jobs:
 
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
-      # `:::`) and `mise run test-swift`, and these tasks take no arguments.
-      # Raw `cargo fmt` / `cargo clippy` are deliberately absent — on stable
-      # they can disagree with the pinned toolchain CI lints with. `cargo test`
-      # / `cargo check` stay for targeted runs: `mise run test` takes no
-      # arguments, and CI's test jobs run on stable too.
+      # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
+      # stable they can disagree with the pinned toolchain CI lints with.
+      # `cargo test` / `cargo check` stay for targeted runs, which the exact
+      # `mise run test` rule cannot take, and CI's test jobs run on stable too.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1
