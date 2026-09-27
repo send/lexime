@@ -21,7 +21,7 @@ pub(super) fn generate_normal_candidates(
     max_results: usize,
     lattice: &Lattice,
 ) -> CandidateResponse {
-    generate_normal_priced(dict, conn, history, reading, max_results, lattice).response
+    generate_normal(dict, conn, history, reading, max_results, lattice, None)
 }
 
 /// [`generate_normal_candidates`] with the final cost of each N-best path,
@@ -34,6 +34,34 @@ pub(super) fn generate_normal_priced(
     max_results: usize,
     lattice: &Lattice,
 ) -> PricedCandidates {
+    let mut path_costs = Vec::new();
+    let response = generate_normal(
+        dict,
+        conn,
+        history,
+        reading,
+        max_results,
+        lattice,
+        Some(&mut path_costs),
+    );
+    PricedCandidates {
+        response,
+        path_costs,
+    }
+}
+
+/// The one Standard-mode generator. `path_costs`, when given, receives each
+/// N-best path's final cost (diagnostics); the IME passes `None` and pays
+/// nothing for it.
+fn generate_normal(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+    lattice: &Lattice,
+    path_costs: Option<&mut Vec<i64>>,
+) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
@@ -48,7 +76,9 @@ pub(super) fn generate_normal_priced(
         history,
     };
     let scored = ctx.convert_nbest_scored_from_lattice(lattice, nbest);
-    let path_costs: Vec<i64> = scored.iter().map(|p| p.viterbi_cost).collect();
+    if let Some(costs) = path_costs {
+        costs.extend(scored.iter().map(|p| p.viterbi_cost));
+    }
 
     let mut nbest_paths = Vec::with_capacity(scored.len());
     for path in scored.into_iter().map(|p| p.into_segments()) {
@@ -146,12 +176,9 @@ pub(super) fn generate_normal_priced(
         }
     }
 
-    PricedCandidates {
-        response: CandidateResponse {
-            surfaces,
-            paths: nbest_paths,
-        },
-        path_costs,
+    CandidateResponse {
+        surfaces,
+        paths: nbest_paths,
     }
 }
 
