@@ -28,6 +28,9 @@ Lexime /lɛksɪm/ — 軽量な日本語入力システム（IME）
 
 ```sh
 # 辞書データの取得・コンパイル + アプリのビルド
+# (ビルドの前に依存 crate の supply-chain screen が走る。git clone した
+# チェックアウトでは数秒、origin/main の無いチェックアウトでは全依存の
+# 公開日を crates.io に問い合わせるので数分かかる)
 mise run build
 
 # ~/Library/Input Methods にインストール

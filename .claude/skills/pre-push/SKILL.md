@@ -25,7 +25,7 @@ mise run fmt   # lint が --check に使うのと同じ固定 rustfmt で整形�
 
 ### Stage 2 — Verify
 
-**順序規則: screen-before-build**。`mise run lint` / `mise run test` は自前で先に screen を通す (mise.toml の `[tasks.screen]`)。それ以外の build を伴う cargo (msrv の `cargo check`、accuracy / swift の task) は、依存変更 (CI で screen + audit が走る変更) がある場合**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
+**順序規則: screen-before-build**。build する mise task はすべて自前で先に screen を通す (mise.toml の `[tasks.screen]` に `depends` で依存。`mise run test-task-screen` が機械検査) ので、下の verify / 条件付き追加の mise task はどの順で回してもよい。screen を通らないのは **mise を経由しない素の cargo** だけ (msrv の `cargo +<toolchain> check`、手打ちの `cargo test -p` 等) — 依存変更 (CI で screen + audit が走る変更) がある場合はそれより**先に** mise task (`mise run test` など) を回す。cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
 
 ```sh
 mise run test   # = screen → lint (CI と同じ固定 toolchain) → workspace tests。定義は mise.toml の [tasks.test] / [tasks.lint]
@@ -43,7 +43,8 @@ mise run test   # = screen → lint (CI と同じ固定 toolchain) → workspace
 | accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・reranker・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
 | swift | `mise run compile-swift && mise run test-swift` |
 | read-pin | `mise run test-read-pin` (CI では無条件 job — diff を問わず毎回走らせる) |
-| screen + audit | `mise run test-check-sources && mise run audit` (CI の screen job の source check テスト、続けて screen + audit job を screen-first 順で。`audit-deps` 単独は screen を飛ばすので不可) |
+| task-screen | `mise run test-task-screen` (CI では無条件 job — diff を問わず毎回走らせる) |
+| screen + audit | `mise run test-check-sources && mise run audit` (CI の screen job の source check テスト、続けて screen + audit job。`audit` は自前で先に screen を通す) |
 | msrv | `cd engine && cargo +<toolchain> check --workspace --locked` (`<toolchain>` は ci.yml の msrv job が指定する toolchain 値をそのまま使う — 正規化・別ソース参照をしない。未導入なら `rustup toolchain install <toolchain>`) |
 | CodeQL / Analyze | ローカル等価なし — CI に委ねる |
 

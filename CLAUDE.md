@@ -24,7 +24,8 @@
 ## ビルド・テスト
 
 ```bash
-# Rust lint + test。先に supply-chain screen (scripts/screen.sh) を通す — Cargo.lock が origin/main と違えば (origin/main が無ければ全依存を) crates.io に問い合わせるのでオフラインでは落ちる。lint (fmt --check + clippy -D warnings) は CI と同じ固定 toolchain
+# build する mise task はすべて先に supply-chain screen (scripts/screen.sh) を通す (mise run test-task-screen が検査) — Cargo.lock が origin/main と違えば、その変更エントリを (origin/main が無ければ全依存を) crates.io に問い合わせるので、初見のエントリがあるとオフラインでは落ちる。screen を通らない素の cargo は依存変更の後に mise task より先に走らせない。
+# Rust lint + test。lint (fmt --check + clippy -D warnings) は CI と同じ固定 toolchain
 # (engine/lint-toolchain.txt) で走る。コマンドとフラグの定義は mise.toml の [tasks.lint] だけ。
 # --all-targets は必須: bench はこれ以外のゲートに載らない — #299
 # 素の cargo fmt / clippy で代用しない — stable は固定版とずれ得る。整形は mise run fmt。

@@ -662,14 +662,14 @@ macOS で動作する最小限の IME を構築。
 | `conn` | 接続行列のコンパイル |
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `test-read-pin` | pin 読み取り (`scripts/read-pin.sh` + ラッパー 3 本) のテスト + mise の全インストールが pin に従うかの検査 |
+| `test-task-screen` | `scripts/check-task-screen.py` とそのテスト。mise 自身のタスクグラフ（`mise tasks ls --json`、file task 含む）で、build しないと明記された task 以外がすべて `screen` に依存すること、`task.skip` / `task.skip_depends` で screen が飛ばされないこと、`screen` task 自体の定義が変わっていないこと（`sources` / `outputs` / `env` 等なし）、repo の mise 設定が cargo backend の tool（`cargo install` で Cargo.lock 外の crate をビルドする）を使わないこと、claude.yml の bot の `--allowedTools` が screen 済み task の完全一致 `mise run` と読み取り専用の `gh pr view/diff/checks` だけのカンマ区切りであることを検査。claude.yml の他の部分（別 step・action の他 input・env の置き場所）と repo 内の他の Claude Code 設定は読まない（行単位の読み取りは未知の書き方で fail-open するため。レビュー対象）。守るのは「screen なしで task・ルール・tool を足す」通常の編集の漏れで、screen を回避するための編集（Tera・env 上書き・`scripts/screen.sh` 自体の変更等）ではない |
 | `test-check-sources` | screen の source 検査 (`scripts/check-sources.sh`) のテスト。実 cargo ツリー (file:// の git 依存) で、Cargo.lock のキーをインデント・クォートしても git 依存が拒否され、repo 内 cargo config が `include` 経由も含め拒否されるか |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
-| `screen` | `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。`lint` / `test` / `audit` はこれに依存し、失敗すれば走らない。@claude bot の build が通る screen はこれだけ（理由は mise.toml の `[tasks.screen]`）。bot では baseline / allowlist / quarantine の差分基準を main から読む（`SCREEN_POLICY_REF`）ので、build.rs crate や quarantine 例外を足す PR は main にマージされるまで bot の lint / test が落ちる |
+| `screen` | `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。build する全 task が直接または depends 経由でこれに依存し、失敗すれば走らない（`test-task-screen` が検査）。1 invocation に 1 回、Cargo.lock が origin/main と一致なら ~0.7s。ローカルでは変更エントリの問い合わせは公開日キャッシュで初回のみ（GitHub Actions と `SCREEN_POLICY_REF` 下では不使用。`scripts/check-quarantine.sh`）。@claude bot の build が通る screen はこれだけ（理由は mise.toml の `[tasks.screen]`）。bot では baseline / allowlist / quarantine の差分基準を main から読む（`SCREEN_POLICY_REF`）ので、build.rs crate や quarantine 例外を足す PR は main にマージされるまで bot の lint / test が落ちる |
 | `test` | screen + lint + `cargo test --workspace --all-features --locked` |
 | `lint` | screen の後に `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
-| `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
-| `audit` | `screen` → `audit-deps` の順（screen-first） |
-| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（hidden。`audit` と CI の audit job が実行する） |
+| `fmt` | screen の後に engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
+| `audit` | screen の後に `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（CI の audit job もこの task を実行する） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
@@ -697,6 +697,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | `scripts/check-sources-test.sh` の後に `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。検査の追加はスクリプト側に（呼び出し元はスクリプト冒頭に列挙） |
+| `task-screen` | ubuntu-latest | 常時 | `scripts/check-task-screen-test.sh`（上表の `test-task-screen`。build する全 mise task が `screen` に依存し、bot がそれ以外の build を許されていないこと） |
 | `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うこと、claude.yml の sha256 が pin の linux-x64 バイナリのものであることも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（上表の `lint` task） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
@@ -704,13 +705,13 @@ macOS で動作する最小限の IME を構築。
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
-| `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定） |
-| `audit` | ubuntu-latest | core 変更時 | `mise run audit-deps`（上表の `audit-deps` task） |
-| `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
+| `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定。各 task が screen を再度通すので全履歴 checkout） |
+| `audit` | ubuntu-latest | core 変更時 | `mise run audit`（上表の `audit` task。screen を再度通すので全履歴 checkout） |
+| `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift`（`uniffi-gen` 経由で screen を再度通すので全履歴 checkout） |
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。`claude.yml` を含む 3 ワークフローとも `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift` / `read-pin` / `task-screen`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。`claude.yml` を含む 3 ワークフローとも `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 
@@ -719,7 +720,7 @@ mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift`、lint-canary 
 | `canary` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` の `screen` と同じ `scripts/screen.sh` を先に通してから、浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。このジョブが赤 = 判定前に壊れたか、stable が pin より新しくないのに lint が落ちた（pin の古さのシグナルではない） |
 | `report` | ubuntu-latest | `canary` が判定を出した時（main のみ） | 追跡 issue「lint pin is behind stable」を 1 件だけ維持: behind / free bump なら open・更新、pin が追いついたら close（`issues: write` はこのジョブだけ）。behind（stable が pin より新しく lint が落ちる）なら issue 更新後にこのジョブが赤 |
 
-> これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks --hidden` で一覧できる。hidden task は `audit-deps` のように他 task / CI から呼ばれる部品）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
+> これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks --hidden` で一覧できる。hidden task は `lint-toolchain` のように他 task から呼ばれる部品）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
 ## 未決事項
 

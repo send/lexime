@@ -10,7 +10,7 @@ permissions:
 
 # mise reads only mise.toml. By default it also merges .mise.toml,
 # mise.local.toml and others, which override its tasks: a committed one could
-# redefine a gate task (lint, audit-deps, ...) without touching the `core`
+# redefine a gate task (lint, audit, ...) without touching the `core`
 # filter's 'mise.toml' entry, so the jobs would neither be triggered by the
 # change nor run the gate as mise.toml defines it.
 env:
@@ -49,7 +49,7 @@ jobs:
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
-              # and audit jobs run [tasks.lint] / [tasks.audit-deps] as-is).
+              # and audit jobs run [tasks.lint] / [tasks.audit] as-is).
               # Without this, an edit weakening a gate would skip the very jobs
               # that would catch it.
               - 'mise.toml'
@@ -159,6 +159,19 @@ jobs:
             echo "::error file=.github/workflows/claude.yml::sha256 is not the linux-x64 bin/mise of the pinned release"
             exit 1
           }
+
+  # Every mise task that builds depends on `screen`, and the @claude bot is
+  # allowed no other build (scripts/check-task-screen.py; its tests run
+  # first). Unconditional like read-pin, for the same reason: it reads
+  # mise.toml and claude.yml, and claude.yml sits in no filter. No cargo.
+  task-screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-mise
+
+      - run: bash scripts/check-task-screen-test.sh
 
   lint:
     needs: [changes, screen]
@@ -309,7 +322,10 @@ jobs:
   # re-downloads it — so a stale cache entry can never poison the dict.
   # No `lint` dependency: a corpus-only change must not be skipped just
   # because the Rust lint job didn't run. `screen` IS required — this job
-  # builds dictool, which executes dependency build scripts.
+  # builds dictool, which executes dependency build scripts. Each `mise run`
+  # below screens again ([tasks.screen]), as every task that builds does; as
+  # in `lint`, the `screen` job is the pass that counts, since rust-cache's
+  # unlocked `cargo metadata` runs before them.
   accuracy:
     needs: [changes, screen]
     if: >-
@@ -319,6 +335,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -388,6 +406,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -403,10 +423,10 @@ jobs:
 
       - uses: ./.github/actions/setup-mise
 
-      # Screening (quarantine / build.rs baseline) lives in the `screen` job,
-      # which gates this and every other cargo-invoking job. The checks live
-      # only in mise.toml ([tasks.audit-deps]).
-      - run: mise run audit-deps
+      # The checks live only in mise.toml ([tasks.audit]). It screens again
+      # first; as in `lint`, the `screen` job is the pass that counts, since
+      # rust-cache's unlocked `cargo metadata` runs before it.
+      - run: mise run audit
 
   swift:
     needs: [changes, screen]
@@ -417,7 +437,12 @@ jobs:
       needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
+      # Both tasks below screen first (through uniffi-gen), like every task
+      # that builds; as in `lint`, the `screen` job is the pass that counts,
+      # since rust-cache's unlocked `cargo metadata` runs before them.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
         with:

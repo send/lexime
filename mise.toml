@@ -31,11 +31,12 @@
 #   2. Replace the version below, and update your local mise to at least it.
 #   3. In .github/workflows/claude.yml set the same `version:` and its
 #      `sha256:` (how is in the comment there).
-#   4. Run `mise run test` and `mise run test-read-pin` locally; the PR runs
-#      every other gate.
+#   4. Run `mise run test`, `mise run test-read-pin` and `mise run
+#      test-task-screen` locally (the last reads mise's own JSON output,
+#      whose shape a release can change); the PR runs every other gate.
 #   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, audit,
-#      swift) prints the new version under "Check the installed mise is the
-#      pin".
+#      swift, read-pin, task-screen) prints the new version under "Check the
+#      installed mise is the pin".
 #
 # Format: exactly `min_version = "YYYY.M.P"` on its own line, with no trailing
 # comment or table form; scripts/mise-version.sh refuses anything else. Keep it
@@ -57,6 +58,7 @@ MACOS_MIN = "13.0"
 
 [tasks.engine-lib]
 description = "Build universal static library (x86_64 + aarch64)"
+depends = ["screen"]
 sources = ["engine/src/**/*.rs", "engine/crates/**/*.rs", "engine/crates/**/*.toml", "engine/Cargo.toml", "engine/Cargo.lock"]
 outputs = ["build/liblex_engine.a"]
 run = """
@@ -75,7 +77,7 @@ lipo -create \
 
 [tasks.uniffi-gen]
 description = "Generate UniFFI Swift bindings from cdylib"
-depends = ["engine-lib"]
+depends = ["screen", "engine-lib"]
 sources = [
   "engine/src/**/*.rs",
   "engine/uniffi-bindgen.rs",
@@ -105,6 +107,7 @@ ls -la generated/
 # (latest master) snapshot for a bump, run dictool fetch without --sha.
 [tasks.fetch-dict-mozc]
 description = "Download Mozc dictionary data (pinned to engine/data/mozc-pin.txt)"
+depends = ["screen"]
 sources = [
   "engine/crates/lex-cli/src/bin/dictool.rs",
   "engine/crates/lex-cli/src/dict_source/mod.rs",
@@ -124,7 +127,7 @@ cd engine && cargo run -p lex-cli --bin dictool -- fetch --source mozc --sha "$s
 
 [tasks.dict-mozc]
 description = "Compile binary dictionary from Mozc"
-depends = ["fetch-dict-mozc"]
+depends = ["screen", "fetch-dict-mozc"]
 sources = [
   "engine/data/mozc-raw/.stamp",
   "engine/data/mozc-raw/id.def",
@@ -144,7 +147,7 @@ target/release/dictool compile --source mozc --id-def data/mozc-raw/id.def data/
 
 [tasks.conn]
 description = "Compile Mozc connection cost matrix"
-depends = ["fetch-dict-mozc"]
+depends = ["screen", "fetch-dict-mozc"]
 sources = [
   "engine/data/mozc-raw/connection_single_column.txt",
   "engine/data/mozc-raw/id.def",
@@ -166,6 +169,7 @@ target/release/dictool compile-conn \
 
 [tasks.fetch-dict-symbols]
 description = "Materialize bundled symbols TSV (Greek letters + math symbols)"
+depends = ["screen"]
 sources = [
   "engine/crates/lex-cli/src/bin/dictool.rs",
   "engine/crates/lex-cli/src/dict_source/mod.rs",
@@ -177,6 +181,7 @@ run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source symbols
 
 [tasks.fetch-dict-extras]
 description = "Materialize bundled curated domain TSVs (IT, food, geography, ...)"
+depends = ["screen"]
 sources = [
   "engine/crates/lex-cli/src/bin/dictool.rs",
   "engine/crates/lex-cli/src/dict_source/mod.rs",
@@ -188,7 +193,7 @@ run = "cd engine && cargo run -p lex-cli --bin dictool -- fetch --source extras 
 
 [tasks.dict]
 description = "Build merged dictionary (Mozc + bundled symbols + curated extras)"
-depends = ["fetch-dict-mozc", "fetch-dict-symbols", "fetch-dict-extras"]
+depends = ["screen", "fetch-dict-mozc", "fetch-dict-symbols", "fetch-dict-extras"]
 sources = [
   "engine/data/mozc-raw/.stamp",
   "engine/data/mozc-raw/id.def",
@@ -429,6 +434,7 @@ echo "compiled $(printf '%s\\n' "$SWIFT_SOURCES" | wc -l | tr -d ' ') files unde
 
 [tasks.explain]
 description = "Explain conversion pipeline for a reading"
+depends = ["screen"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- explain \
   data/lexime.dict "$@" --conn data/lexime.conn
@@ -436,7 +442,7 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- explain \
 
 [tasks.snapshot]
 description = "Generate conversion snapshot"
-depends = ["dict", "conn"]
+depends = ["screen", "dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
   data/lexime.dict data/lexime.conn \
@@ -445,7 +451,7 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
 
 [tasks.accuracy]
 description = "Run conversion accuracy tests"
-depends = ["dict", "conn"]
+depends = ["screen", "dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
   data/lexime.dict data/lexime.conn \
@@ -454,7 +460,7 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
 
 [tasks.accuracy-history]
 description = "Run accuracy tests with history"
-depends = ["dict", "conn"]
+depends = ["screen", "dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
   data/lexime.dict data/lexime.conn \
@@ -463,7 +469,7 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- accuracy \
 
 [tasks.diff-snapshot]
 description = "Compare current output against baseline snapshot"
-depends = ["dict", "conn"]
+depends = ["screen", "dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- diff-snapshot \
   data/lexime.dict data/lexime.conn \
@@ -472,7 +478,7 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- diff-snapshot \
 
 [tasks.history-audit]
 description = "Audit user history against raw engine top-1"
-depends = ["dict", "conn"]
+depends = ["screen", "dict", "conn"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin lextool -- history-audit \
   data/lexime.dict data/lexime.conn \
@@ -501,7 +507,7 @@ echo "Downloaded to data/zenz-v3.1-Q5_K_M.gguf"
 
 [tasks.neural-score]
 description = "Run neural scoring benchmark"
-depends = ["fetch-model", "dict", "conn"]
+depends = ["screen", "fetch-model", "dict", "conn"]
 run = """
 cd engine && cargo run -p lex-cli --features neural --bin dictool -- neural-score \
   data/lexime.dict data/lexime.conn \
@@ -511,6 +517,7 @@ cd engine && cargo run -p lex-cli --features neural --bin dictool -- neural-scor
 
 [tasks.romaji-export]
 description = "Export default romaji mappings to ~/Library/Application Support/Lexime/romaji.toml"
+depends = ["screen"]
 run = """
 dir="$HOME/Library/Application Support/Lexime"
 mkdir -p "$dir"
@@ -520,6 +527,7 @@ echo "Exported to $dir/romaji.toml"
 
 [tasks.settings-export]
 description = "Export default settings to ~/Library/Application Support/Lexime/settings.toml"
+depends = ["screen"]
 run = """
 dir="$HOME/Library/Application Support/Lexime"
 mkdir -p "$dir"
@@ -529,15 +537,22 @@ echo "Exported to $dir/settings.toml"
 
 [tasks.bench]
 description = "Run criterion benchmarks"
+depends = ["screen"]
 run = "cd engine && cargo bench -p lex-core"
 
 [tasks.lint-toolchain]
 description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if missing"
 hide = true
+# After the screen, as are `lint` and `fmt` through it: `cargo clippy` and
+# `cargo fmt` are not built into cargo, so an alias of the same name (in a
+# repository cargo config, which the screen refuses) would run instead, and
+# could build.
+depends = ["screen"]
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
 # offline failure) in front of every `mise run test`. (The screen `test` also
-# depends on makes requests of its own, but only when Cargo.lock has changed.) The probe disables
+# depends on makes requests of its own, but only for Cargo.lock entries that
+# differ from origin/main and it has not already seen pass.) The probe disables
 # rustup's auto-install: without that, `cargo +<missing>` installs the default
 # profile itself, silently (the output is discarded), and the install below —
 # the path CI's lint job takes on every fresh runner — never runs. The variable
@@ -557,24 +572,28 @@ fi
 """
 
 [tasks.screen]
-description = "Run the supply-chain screen (scripts/screen.sh) — lint, test and audit depend on it"
-# The screen goes before anything that builds (scripts/screen.sh). A task that
-# builds lists this in `depends`: mise does not start it when the screen
-# fails, and runs the screen once per invocation however many tasks share it.
-# `lint`, `test` and `audit` do. That is the only screen the @claude bot's
-# builds get; why it has to be here and not in a workflow step is in
-# .github/workflows/claude.yml. Together with `--locked` builds and the policy
-# files read from main (SCREEN_POLICY_REF), it guards against unvetted
-# dependencies, not against the bot itself: it can edit this file or the
-# scripts, and workspace code runs in these tasks. Nor does it cover the lock
-# changing while one invocation runs: the screen checks it once, before
-# clippy and cargo test start.
+description = "Run the supply-chain screen (scripts/screen.sh) — every task that builds depends on it"
+# The screen goes before anything that builds (scripts/screen.sh). mise does
+# not start a task whose dependency failed, and runs the screen once per
+# invocation however many tasks share it. A task whose own run calls cargo
+# lists "screen" in `depends` itself, even when a dependency already brings
+# it in, so it stays screened if that dependency goes; a task that only uses
+# what others built (build, test-swift, ...) gets it through them.
+# scripts/check-task-screen.py (CI's task-screen job) holds every task to
+# having it in its closure, bar the ones it lists as not building, and holds
+# the @claude bot's allowlist to screened tasks.
 #
-# The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
-# on it yet. CI gates them with its `screen` job; locally they run
-# unscreened, as they did before this task. The bot is allowed none of them,
-# and a task has to depend on this before the bot may run it. `fmt` does not
-# build.
+# So a local `mise run dict` / `accuracy` / `explain` screens on every run:
+# ~0.7s while Cargo.lock matches origin/main, more for changed entries not
+# yet seen (the publish-date cache in scripts/check-quarantine.sh).
+#
+# For the bot this is the only screen its builds get; why it has to be here
+# and not in a workflow step is in .github/workflows/claude.yml. Together with
+# `--locked` builds and the policy files read from main (SCREEN_POLICY_REF),
+# it guards against unvetted dependencies, not against the bot itself: it can
+# edit this file or the scripts, and workspace code runs in these tasks. Nor
+# does it cover the lock changing while one invocation runs: the screen checks
+# it once, before the first build starts.
 run = "bash scripts/screen.sh"
 
 [tasks.lint]
@@ -618,26 +637,26 @@ cargo +"$tc" fmt --all
 description = "Test the screen's source check scripts/check-sources.sh (as CI's screen job does)"
 run = "bash scripts/check-sources-test.sh"
 
+[tasks.test-task-screen]
+description = "Check that every task that builds depends on screen, and test that check (as CI's task-screen job does)"
+run = "bash scripts/check-task-screen-test.sh"
+
 [tasks.test-read-pin]
 description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's read-pin job does)"
 run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
-description = "Run supply chain checks (the screen task, then audit-deps) — mirrors the CI screen + audit jobs"
-# audit-deps builds (cargo check runs build scripts), so the screen goes
-# first. In CI the `screen` job does that; locally this dependency does.
+description = "Screen, then the dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"
+# The one definition of these checks: CI's audit job runs this task rather
+# than cargo lines of its own. Add a check here, not to a caller (a check
+# needing a new cargo tool also goes in that job's install-action list).
+# `cargo check` runs build scripts, so the screen goes first, as for every
+# task that builds. (It was once a hidden audit-deps task that CI ran
+# unscreened, "reached only via audit" — but nothing held a caller to that,
+# and a task listing it beside "screen" would have run the two at once.)
+# A run list, not a script, so the log echoes each command and shows which
+# check failed; it stops at the first.
 depends = ["screen"]
-run = [{ task = "audit-deps" }]
-
-[tasks.audit-deps]
-description = "Run the post-screen dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"
-# The one definition of these checks: CI's audit job and `audit` above run
-# this task rather than cargo lines of their own. Add a check here, not to a
-# caller (a check needing a new cargo tool also goes in that job's
-# install-action list). Hidden because it builds unscreened: locally, run it
-# via `audit` (screen first, see above). A run list, not a script, so the log
-# echoes each command and shows which check failed; it stops at the first.
-hide = true
 dir = "{{config_root}}/engine"
 run = [
   "cargo check --locked",
