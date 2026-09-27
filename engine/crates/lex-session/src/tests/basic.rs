@@ -852,7 +852,7 @@ fn commit_after_settle_emits_nothing() {
     // (measured: 0.7–4.4ms later, same controller). It is left unfenced
     // because the settle has already reached Idle. The Swift coordinator's
     // `isComposing` guard keeps that call from reaching the engine; this pins
-    // that the engine does nothing either, for any frontend without the guard.
+    // that the engine emits nothing either, for any frontend without the guard.
     // Were it to emit even a `.hideCandidates`, the trailing callback would
     // hide the shared panel now owned by whichever controller just gained
     // focus.
@@ -892,7 +892,9 @@ fn commit_after_settle_emits_nothing() {
         session.take_history_records().is_empty(),
         "a late callback is not acceptance and must not train"
     );
-    // Not an effect anyone relies on (SPEC § 不変条件, #319).
+    // Not an effect anyone relies on (SPEC § 不変条件, #319) — the Swift guard
+    // skips it. Pinned so that a change to what an Idle `commit()` does to the
+    // epoch is a visible choice, not a side effect of editing `end_composition`.
     assert!(
         session.epoch() > epoch_before,
         "an Idle commit still advances the epoch"
