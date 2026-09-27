@@ -118,6 +118,9 @@ impl InputSession {
         self.epoch
     }
 
+    /// Whether `commit()` / `settle_unconfirmed()` have anything to end. The
+    /// Swift coordinator skips `commit()` when this is false (#319), so a new
+    /// state that those must end has to be covered here.
     pub fn is_composing(&self) -> bool {
         matches!(
             self.state,
