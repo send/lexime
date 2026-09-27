@@ -139,32 +139,48 @@ ParallelBeam   → 90M + 26M 並列 (thread::scope)
 
 ---
 
-# Lexime ロードマップ (2026-02-12)
+# Lexime ロードマップ (2026-02-12, updated 2026-03-03)
 
 ## 大前提: レイテンシ最優先
 短文変換で体感遅延は許容しない。速度を犠牲にする改善は長文限定で検討。
 
-## Phase 1: Rewriter パイプライン
-- 数値変換 (いちまん→10000/一万)、日付、カタカナ候補等
-- 各 rewriter は数μs。辞書品質に依存しない改善
-- Viterbi 後の候補追加なのでコアに影響なし
+## Phase 1: Rewriter パイプライン ✅ 完了
+- NumericRewriter: ひらがな数字→漢数字/半角/全角 (最大 ~10^16)
+- KatakanaRewriter: 全文カタカナ候補
+- HiraganaVariantRewriter: 漢字セグメント→ひらがな置換
+- PartialHiraganaRewriter: Top-5 パスの個別セグメント単位でひらがな置換
+- KanjiVariantRewriter: ひらがなセグメント(2文字)→漢字代替案
+- run_rewriters() で順次実行、重複排除
 
 ## Phase 1.5: 学習を reranker に移動 ✅ 完了
 - Viterbi は `DefaultCostFunction` (辞書+接続行列のみ、boost なし)
 - 学習は `history_rerank()` で N-best パスに post-hoc 適用
 - `LearnedCostFunction` は削除済み
 
-## Phase 2: POS 文節分割 + structure_cost フィルタ
-- POS ルールテーブルで分割点を補正 (ルックアップのみ、高速)
-- structure_cost (遷移コスト集約) で断片化候補を早期排除
+## Phase 2: POS 文節分割 + structure_cost フィルタ ✅ ほぼ完了
+- structure_cost: 遷移コスト集約 + ハードフィルタ + ソフトペナルティ (Mozc インスパイア)
+- group_segments(): POS role ベースの形態素→句グループ化 (接尾辞/関数語マージ、接頭辞処理)
+- resegment(): ラティスノードを使った代替分割案生成 (最大10パス)
+- per-segment penalties: 非自立漢字、代名詞ボーナス、て形漢字、人名、単漢字内容語
+- length_variance: 3セグメント以上のパスで不均等分割にペナルティ
+- 残: POS ルールテーブルによる分割点補正 (segmenter.def 相当) は未実装
 
-## Phase 3: 辞書サブプロジェクト分離
+## Phase 2.5: スニペット機能 ✅ 完了
+- SnippetStore: HashMap ベース、prefix_search、TOML 設定
+- VariableResolver: $varname / ${varname} 展開、未定義変数検証
+
+## Phase 3: 辞書サブプロジェクト分離 + IT/業務辞書
 - engine/ と dict/ を分離。関心事が異なる:
   - engine = アルゴリズム (Viterbi, reranker, FFI)
   - dict = データパイプライン (ソース取得, マージ, コスト推定)
 - dictool を dict/ 側に移動
 - engine は辞書バイナリの読み込みだけ持つ
 - コーパスベースのコスト再推定はここで
+- **IT/業務辞書の構築**: Mozc 辞書に欠けている語彙を体系的に収集・補完
+  - 動機: 「突合」(とつごう) のような IT/業務用語が Mozc にない。場当たり的なユーザー辞書登録では限界がある
+  - 候補ソース: IT 用語集、ビジネス文書コーパス、Wikipedia 技術記事、既存 OSS 辞書 (mozcdic-ut 等)
+  - フォーマット: Mozc TSV 互換 → 既存の dictool compile パイプラインに乗せる
+  - POS ID・コストの推定方法を要検討（既存 Mozc エントリの類似語から推定 etc.）
 
 ## Phase 4: 長文向けニューラルリランキング (条件付き発動)
 - 短文: Viterbi のみ (即応答)
@@ -172,6 +188,7 @@ ParallelBeam   → 90M + 26M 並列 (thread::scope)
 - 長文ほど bigram では文脈不足、ニューラルの恩恵大
 - 50-100ms の追加レイテンシは長文なら許容範囲
 - 参考: azooKey/Zenzai (~70MB GGUF, Swift macOS IME で実績)
+- 参考: karukan の Adaptive Strategy (レイテンシベースのモデル切替)
 
 ## 学習強化の方向性 (Phase 1.5 の土台の上で)
 - **訂正学習**: 候補変更 = 元候補への負のフィードバック
