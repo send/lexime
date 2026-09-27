@@ -1,12 +1,12 @@
 ---
 name: lexime-review
-description: lexime project-specific pre-push design review (5-agent parallel). Checks 辞書ソースオブトゥルース / 測定・コーパス規律 / 構造的正しさ / UniFFI 境界 / プロジェクト文脈 beyond what generic /code-review + /review cover. Run BEFORE git push as /pre-push Stage 6 — the final design gate; post-push Codex is a single-shot second opinion, not a safety loop.
+description: lexime project-specific pre-push design review (5-agent parallel). Checks 辞書ソースオブトゥルース / 測定・コーパス規律 / 構造的正しさ / UniFFI 境界 / プロジェクト文脈 beyond what generic /code-review covers. Run BEFORE git push as /pre-push Stage 5 — the final design gate; post-push Codex is a single-shot second opinion, not a safety loop.
 user-invocable: true
 ---
 
 # lexime-review — pre-push diff design review
 
-`/code-review` (correctness bugs) と `/review` (一般 PR review) **の上に重ねる** lexime 専門 design review。`/pre-push` の最終段。post-push の Codex は single-shot second opinion なので、設計の取り切りはここが主担。
+`/code-review` (correctness bugs + 一般 PR review) **の上に重ねる** lexime 専門 design review。`/pre-push` の最終段。post-push の Codex は single-shot second opinion なので、設計の取り切りはここが主担。
 
 - **Axis SSoT**: `./axes.md` (5 軸定義 + severity calibration、`/lexime-plan-review` と共有)
 - 対象 diff = `git diff origin/main...HEAD` (best-effort fetch 後。PR の見え方と同じ 3-dot)
