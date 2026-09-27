@@ -855,7 +855,10 @@ fn commit_after_settle_emits_nothing() {
     // `.hideCandidates`, the trailing callback would hide the shared panel
     // now owned by whichever controller just gained focus.
     let dict = make_test_dict();
-    let mut session = InputSession::new(dict.clone(), None, None);
+    // History is wired in so the no-training assertion below can fail:
+    // `record_history` returns early on a session without one.
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
 
     let shown = type_string_returning_marked(&mut session, "kyou");
     session.settle_unconfirmed(&shown);
