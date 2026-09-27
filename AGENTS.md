@@ -445,7 +445,10 @@ what a generic reviewer misses:
   (pinned by `commit_after_settle_emits_nothing`). Findings proposing an
   activation generation, a `sender` check or an `isActivated` gate re-litigate
   it — SPEC § 不変条件 has the evidence, the precondition (a commit arriving on
-  a later run-loop turn, not re-entrantly mid-teardown) and the one residual.
+  a later run-loop turn, not re-entrantly mid-teardown) and the residuals. One
+  of them is real but unobserved: a host that trails its commit *and*
+  re-activates fast with an immediate keystroke would commit the new
+  composition. It is recorded, not fenced, because nothing can tell it apart.
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
