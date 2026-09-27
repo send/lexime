@@ -7,14 +7,19 @@
 #
 # Read by scripts/lint-toolchain.sh for both consumers: the CI `lint` job and
 # `mise run lint`. The local gate and CI therefore run the same clippy.
+# LINT_TOOLCHAIN=<toolchain> overrides the pin for the mise lint tasks. Only
+# the canary below sets it.
 #
 # Only `lint` is pinned. The build and test jobs stay on stable, since they do
 # not run with -D warnings. MSRV has its own pin (`rust-version` in
 # engine/Cargo.toml and the msrv job in .github/workflows/ci.yml).
 #
-# When: nothing bumps this automatically. Bump when you want a newer clippy —
-# at the latest when `cargo clippy` on your local stable shows lints the pinned
-# one does not, since the local gate and CI then disagree with plain cargo.
+# When: the weekly lint canary (.github/workflows/lint-canary.yml) runs the
+# same gate on floating stable. While stable is ahead of this pin it keeps one
+# issue, "lint pin is behind stable", open. The issue says either "behind" (the
+# canary run is red, and the issue lists the new lint names) or "free bump"
+# (stable passes as-is). Either one is the cue to bump. The canary closes the
+# issue once the pin catches up. Nothing bumps the pin automatically.
 #
 # Bump procedure (do all of this in ONE PR):
 #   1. Replace the version below with the new stable X.Y.Z.

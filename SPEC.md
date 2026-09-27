@@ -705,7 +705,15 @@ macOS で動作する最小限の IME を構築。
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-> この表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/ci.yml` と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
+`.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
+
+| ジョブ | 環境 | 条件 | 内容 |
+|---|---|---|---|
+| `screen` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` と同じ quarantine + build.rs ベースライン検査 |
+| `canary` | ubuntu-latest | `screen` 通過後 | 浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。新しい lint が出れば赤 |
+| `report` | ubuntu-latest | `canary` が判定を出した時 | 追跡 issue「lint pin is behind stable」を 1 件だけ維持: behind / free bump なら open・更新、pin が追いついたら close（`issues: write` はこのジョブだけ） |
+
+> これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
 ## 未決事項
 

@@ -502,7 +502,7 @@ hide = true
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --version >/dev/null 2>&1; then
   rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt
 fi
@@ -516,7 +516,7 @@ depends = ["lint-toolchain"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 cargo +"$tc" fmt --all --check
 cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
@@ -530,7 +530,7 @@ depends = ["lint-toolchain"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 cargo +"$tc" fmt --all
 """
