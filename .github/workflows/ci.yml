@@ -74,8 +74,8 @@ jobs:
               - 'Info.plist'
               # Defines which files `compile-swift` gates and `build`
               # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — `core` names only the
-              # supply-chain scripts.
+              # covered by any other filter — the scripts `core` names are
+              # the supply-chain and pin scripts, none of them Swift inputs.
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
