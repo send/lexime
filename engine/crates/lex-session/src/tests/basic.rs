@@ -892,8 +892,7 @@ fn commit_after_settle_emits_nothing() {
         session.take_history_records().is_empty(),
         "a late callback is not acceptance and must not train"
     );
-    // Not an effect anyone relies on. The Swift coordinator's `isComposing`
-    // guard skips it on purpose (SPEC § 不変条件, #319); this pins the engine.
+    // Not an effect anyone relies on (SPEC § 不変条件, #319).
     assert!(
         session.epoch() > epoch_before,
         "an Idle commit still advances the epoch"

@@ -441,17 +441,13 @@ what a generic reviewer misses:
   issued it (#319, measured on device): IMKit binds each controller to one
   client, so a late callback can only come from this controller's own client
   and a `sender` check can never fire; the late arrivals observed land after
-  the settle has taken the session to Idle, where `SessionCoordinator.commit(client:)`
-  returns before reaching the engine (its `isComposing` guard, which also keeps
-  it from re-arming `lastClient` on a torn-down coordinator) and the engine's
-  Idle `commit()` would emit nothing anyway (pinned by
-  `commit_after_settle_emits_nothing`). The guard skips the Idle epoch bump on
-  purpose: nothing depends on it. Findings proposing an activation generation,
-  a `sender` check or an `isActivated` gate re-litigate it, and so do findings
-  that restore the Idle bump or move the `isComposing` check back to the
-  callers. SPEC § 不変条件 has the evidence, the precondition (a commit arriving
-  on a later run-loop turn, not re-entrantly mid-teardown) and why the epoch
-  bump is not needed.
+  the settle has taken the session to Idle, where the `isComposing` guard in
+  `SessionCoordinator.commit(client:)` returns before the engine. Findings
+  proposing an activation generation, a `sender` check or an `isActivated`
+  gate re-litigate it, and so do findings that restore the skipped Idle epoch
+  bump or move the guard back to the callers. SPEC § 不変条件 has the
+  evidence, the precondition (a commit arriving on a later run-loop turn, not
+  re-entrantly mid-teardown) and why nothing depends on that epoch bump.
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still

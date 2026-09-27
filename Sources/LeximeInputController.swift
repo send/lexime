@@ -328,8 +328,8 @@ class LeximeInputController: IMKInputController {
         let modeID = value as? String ?? ""
 
         if modeID == LeximeInputSourceID.roman {
-            if let coordinator, let client = sender as? IMKTextInput {
-                coordinator.commit(client: client)
+            if let client = sender as? IMKTextInput {
+                coordinator?.commit(client: client)
             }
             coordinator?.setAbcPassthrough(enabled: true)
             super.setValue(value, forTag: tag, client: sender)

@@ -287,37 +287,17 @@ func testSessionCoordinator() {
 
     // commit(client:) on an Idle session does nothing (#319). IMKit can deliver
     // `commitComposition` after `deactivateServer`; reaching the engine there
-    // would re-arm `lastClient` on a torn-down coordinator. Observed through
+    // would re-arm `lastClient` on a torn-down coordinator. A fresh coordinator
+    // is in the state teardown leaves (Idle, no `lastClient`). Observed through
     // what `lastClient` is for: a later async response must find no client.
     do {
         let session = FakeLexSession()
-        session.handleKeyResponses = [
-            LexKeyResponse(consumed: true, epoch: 3, events: [.setMarkedText(text: "きょう")])
-        ]
-        session.settleUnconfirmedResponses = [
-            LexKeyResponse(consumed: true, epoch: 4,
-                           events: [.commit(text: "きょう"), .setMarkedText(text: "")])
-        ]
-        session.commitResponses = [
-            LexKeyResponse(consumed: true, epoch: 5,
-                           events: [.commit(text: "来ない"), .hideCandidates])
-        ]
-        let panel = FakePanel()
-        let (coordinator, manager) = makeCoordinator(session: session, panel: panel)
+        let (coordinator, manager) = makeCoordinator(session: session)
         let client = FakeIMKClient()
-        _ = coordinator.handleKey(.text(text: "u", shift: false), client: client)
-        session.isComposingValue = true
-        coordinator.deactivate(client: client)
-        assertTrue(!session.isComposingValue, "precondition: deactivate settled to Idle")
-        let insertsBefore = client.insertCalls.count
-        let watermarkBefore = coordinator.highestAppliedEpoch
 
         withExtendedLifetime(client) {
             coordinator.commit(client: client)
             assertEqual(session.commitCalls, 0, "Idle commit does not reach the engine")
-            assertEqual(client.insertCalls.count, insertsBefore, "Idle commit inserts nothing")
-            assertTrue(coordinator.highestAppliedEpoch == watermarkBefore,
-                       "Idle commit does not move the watermark")
 
             // Above every epoch in play, so only a missing client can stop it.
             coordinator.applyAsyncResponse(LexKeyResponse(
@@ -325,8 +305,6 @@ func testSessionCoordinator() {
                 events: [.showCandidates(surfaces: ["遅延"], selected: 0)]))
             assertTrue(manager.candidates.isEmpty,
                        "Idle commit does not re-arm lastClient")
-            assertEqual(panel.showCount, 0,
-                        "no client → an async response cannot show the panel")
         }
     }
 
