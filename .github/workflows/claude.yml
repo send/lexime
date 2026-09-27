@@ -68,9 +68,9 @@ jobs:
       # job holds a secret and an agent shell runs after this step:
       #   - cache: false — a restored mise dir puts its shims/ on PATH ahead of
       #     that shell, and sha256 covers bin/mise only.
-      #   - github_token: '' — the action otherwise exports GITHUB_TOKEN to
-      #     every later step. It then warns "No GITHUB_TOKEN provided" each
-      #     run; expected, as nothing here fetches tools (install: false).
+      #   - github_token: '' — mise fetches nothing here (install: false), so
+      #     it gets no token; the Claude step passes its own. The action then
+      #     warns "No GITHUB_TOKEN provided" each run; expected.
       # To bump: pick a mise release at least 7 days old, and take sha256 of
       # mise/bin/mise from its linux-x64 tarball, checked against the
       # release's SHASUMS256.txt.
@@ -82,6 +82,15 @@ jobs:
           cache: false
           github_token: ''
 
+      # github_token: this job's own token, so the bot holds exactly the
+      # permissions above (it can comment, it cannot push). Without it the
+      # action asks for the Claude GitHub App's token over OIDC, which needs
+      # `id-token: write` and failed on every run (#336). The action hands
+      # this token to Claude's shell as GITHUB_TOKEN / GH_TOKEN for `gh pr`.
+      #
+      # Tool rules go in claude_args: v1 has no `allowed_tools` input and
+      # ignored it with only a warning (#336). The action adds its own
+      # read-only and comment tools; anything listed nowhere is denied.
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
       # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
@@ -93,4 +102,6 @@ jobs:
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr:*)"
+          github_token: ${{ github.token }}
+          claude_args: >-
+            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr:*)"
