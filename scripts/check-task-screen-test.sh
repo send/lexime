@@ -59,10 +59,13 @@ run_env=(env MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
 expect "this repository" pass "$repo"
 
 # Fixtures see no global mise config or skip settings from the caller, so a
-# case fails only for its own change.
+# case fails only for its own change. Their mise state goes under $tmp too:
+# mise records every config it loads in its state dir (tracked-configs), and
+# in the caller's that left ~30 links per run to fixtures deleted on exit.
 : >"$tmp/global.toml"
 run_env=(env -u MISE_TASK_SKIP -u MISE_TASK_SKIP_DEPENDS
   MISE_GLOBAL_CONFIG_FILE="$tmp/global.toml"
+  MISE_STATE_DIR="$tmp/state"
   MISE_TRUSTED_CONFIG_PATHS="$tmp"
   MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
 
