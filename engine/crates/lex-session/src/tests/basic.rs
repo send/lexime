@@ -865,24 +865,35 @@ fn commit_after_settle_emits_nothing() {
     assert!(!session.is_composing(), "precondition: settle reached Idle");
     session.take_history_records();
 
-    let resp = session.commit();
+    let epoch_before = session.epoch();
 
-    assert!(resp.commit.is_none(), "nothing to insert");
+    // Destructured without `..`: a field added to the response must be
+    // accounted for here before this compiles, rather than slipping past.
+    let crate::types::KeyResponse {
+        consumed: _,
+        commit,
+        marked,
+        candidates,
+        async_request,
+        side_effects: crate::types::SideEffects { switch_to_abc },
+    } = session.commit();
+
+    assert!(commit.is_none(), "nothing to insert");
+    assert!(marked.is_none(), "the host's marked text is left alone");
     assert!(
-        resp.marked.is_none(),
-        "the host's marked text is left alone"
-    );
-    assert!(
-        matches!(resp.candidates, CandidateAction::Keep),
+        matches!(candidates, CandidateAction::Keep),
         "the shared candidate panel is left alone"
     );
-    assert!(
-        resp.async_request.is_none(),
-        "no candidate work is scheduled"
-    );
-    assert!(!resp.side_effects.switch_to_abc, "no input-source change");
+    assert!(async_request.is_none(), "no candidate work is scheduled");
+    assert!(!switch_to_abc, "no input-source change");
     assert!(
         session.take_history_records().is_empty(),
         "a late callback is not acceptance and must not train"
+    );
+    // Not an effect anyone relies on, but a Swift-side `isComposing` guard in
+    // front of `commit()` would remove it — this makes that a visible choice.
+    assert!(
+        session.epoch() > epoch_before,
+        "an Idle commit still advances the epoch"
     );
 }

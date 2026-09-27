@@ -437,6 +437,15 @@ what a generic reviewer misses:
   legitimately nils the display on `.commit` while the session keeps composing,
   so a per-write check false-fires, the same reason the Rust side checks per
   *response*. Findings re-proposing exactly these re-litigate them.
+  `commitComposition` is deliberately **not fenced** to the activation that
+  issued it (#319, measured on device): IMKit binds each controller to one
+  client, so a late callback can only come from this controller's own client
+  and a `sender` check can never fire; the late arrivals observed land after
+  the settle has taken the session to Idle, where `commit()` emits nothing
+  (pinned by `commit_after_settle_emits_nothing`). Findings proposing an
+  activation generation, a `sender` check or an `isActivated` gate re-litigate
+  it — SPEC § 不変条件 has the evidence, the precondition (a commit arriving on
+  a later run-loop turn, not re-entrantly mid-teardown) and the one residual.
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still

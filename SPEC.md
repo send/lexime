@@ -257,8 +257,9 @@ proptest の invariant 3 / 3b で固定している。
   - **遅れて届く `commitComposition` は fence しない**（#319、2026-09-27 実測）: `commitComposition` は、それを発行した activation と対応づけられていない（IMKit は callback に世代を載せないので、世代カウンタには照合相手が無い）。それでも fence しないのは、fence が発火し得る状況が無いため:
     - **controller とクライアントは 1:1**: lifecycle callback で `sender` ≠ `self.client()` だったのは 499 件中 0 件（`init` は除く — そこに渡る `client:` は `self.client()` とは別のオブジェクトだった）。同一クライアントの再 activation でも controller・クライアントオブジェクトは使い回されるので、`sender` の照合は構造上常に真になる。`uniqueClientIdentifierString()` は同じオブジェクトでも呼ぶたびに別の UUID を返すので識別子にならない
     - **遅れて届く形は 2 つで、どちらもこの settle により何も確定しない**（Idle の `commit()` は event を 1 つも出さず学習もしない — `commit_after_settle_emits_nothing` が固定。epoch だけは進む）: ①`deactivateServer` の 0.7〜4.4ms 後に同じ controller に届く commit — session は settle 済みで Idle ②Electron / WezTerm が離れる直前のクライアントを一瞬だけ再 activation する `activateServer → commitComposition → deactivateServer`（activate から commit まで 1.4〜11.4ms）— 打鍵 0、composing なし
-    - **害が出るには、同じ controller への打鍵がその間に挟まる必要がある**。activation していない controller への打鍵は 235 件中 0 件、手でフォーカスを戻すまでの時間は最短でも 382ms で、遅れより約 2 桁長い。「activation 中でなければ捨てる」案も、弾けるのは元から何も確定しない ① だけで ② は通すので採らない
-    - `setValue` の roman 経路も同じ 1:1 に従い、commit の前に `isComposing` を見るので settle 済みの controller では何もしない（英数キーは `handle()` が `.switchToDirectInput` として消費するため、この経路は計測では踏んでいない）
+    - **害が出るには、同じ controller への打鍵がその間に挟まる必要がある**。activation していない controller への打鍵は 235 件中 0 件、手でフォーカスを戻すまでの時間は最短でも 382ms で、① の遅れ（最大 4.4ms）より約 2 桁長い。「activation 中でなければ捨てる」案も、弾けるのは元から何も確定しない ① だけで ② は通すので採らない
+    - `setValue` の roman 経路も同じ 1:1 に従い、settle 済みの controller で何も起きない理由も同じ engine 側の規則（Idle の `commit()` は何も出さない）。Swift 側の `isComposing` 判定がそれに加えて省くのは `lastClient` の張り直しと epoch の前進だけ（英数キーは `handle()` が `.switchToDirectInput` として消費するため、この経路は計測では踏んでいない）
+    - **前提**: 以上は後続の run loop で届く callback の話で、計測された遅れはすべてこの形だった。teardown が遅延中（`pendingTeardown`）に `insertText` の中から `commitComposition` が同期的に再入すると、session はまだ composing なので自発的な commit として選択サーフェスを確定・学習する。この再入は観測されていない
     - 残る瑕疵: ① は deactivate 済みの coordinator の `lastClient` を張り直す。session は Idle で打鍵も来ず、settle が epoch watermark を上げているので現状は無害
 
 - **表示と確定の不一致（未解決、#309 で追跡）**: マークドテキストは読みを表示する一方、`commit` は選択サーフェスに解決する（§各状態でのキー操作 の composing 表: Space/↑↓ で navigate するまで表示は かな のまま）。この不一致は**両系統のホストで見えるが、見え方が違う**:
