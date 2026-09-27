@@ -17,6 +17,12 @@ file=$1 what=$2 ere=$3 key=${4:-}
 
 pat=$ere
 if [[ -n $key ]]; then
+  # A bare TOML key has no regex metacharacters, so it can go into the ERE as
+  # is. Anything else (a dotted or quoted key) is refused, not half-matched.
+  [[ $key =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "read-pin: <key> must be a bare TOML key, got '$key'" >&2
+    exit 2
+  }
   pat="${key}[[:space:]]*=[[:space:]]*\"(${ere})\""
 fi
 
