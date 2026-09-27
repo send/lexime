@@ -555,7 +555,7 @@ cargo +"$tc" fmt --all
 """
 
 [tasks.audit]
-description = "Run supply chain checks (quarantine, build.rs, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
+description = "Run supply chain checks (scripts/screen.sh, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
 run = [
   # screening first: cargo check executes build scripts, so the build.rs /
   # quarantine screen must run before anything that builds. In CI it is the
