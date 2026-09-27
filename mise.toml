@@ -489,9 +489,16 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- history-audit \
 description = "Replay rank>0 selections from the commit log (counts only)"
 depends = ["screen", "dict", "conn"]
 run = """
+#!/usr/bin/env bash
+set -euo pipefail
+# Replay against the engine the log came from: the app layers user_dict over
+# the system dictionary and loads settings.toml when it exists. (A missing
+# user_dict opens empty.) For a system-only measurement, run lextool directly.
+lexime="$HOME/Library/Application Support/Lexime"
+extra=(--user-dict "$lexime/user_dict.lxuw")
+if [ -f "$lexime/settings.toml" ]; then extra+=(--settings "$lexime/settings.toml"); fi
 cd engine && cargo run --release -p lex-cli --bin lextool -- replay-commit-log \
-  data/lexime.dict data/lexime.conn \
-  "$HOME/Library/Application Support/Lexime/commit-log.jsonl" "$@"
+  data/lexime.dict data/lexime.conn "$lexime/commit-log.jsonl" "${extra[@]}" "$@"
 """
 
 [tasks.trace-log]

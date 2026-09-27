@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,8 @@ use lex_cli::commands::rank_ops::{self, joined_surface, WindowCheck};
 use lex_core::converter::tune;
 use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::TrieDictionary;
+use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
+use lex_core::user_dict::UserDictionary;
 use lex_core::user_history::UserHistory;
 
 #[derive(Parser)]
@@ -172,6 +174,14 @@ enum Command {
         /// Path to user history file (optional; default is no history)
         #[arg(long)]
         history: Option<String>,
+        /// Path to user_dict.lxuw, layered over the system dictionary as the
+        /// app does (optional; default is system dictionary only)
+        #[arg(long)]
+        user_dict: Option<String>,
+        /// Path to settings.toml, loaded before any conversion as the app
+        /// does (optional; default is the embedded settings)
+        #[arg(long)]
+        settings: Option<String>,
         /// Compare against a baseline written by --emit-baseline
         #[arg(long)]
         baseline: Option<String>,
@@ -1069,19 +1079,37 @@ fn main() {
             conn_file,
             log_file,
             history,
+            user_dict,
+            settings,
             baseline,
             emit_baseline,
             verbose,
             json,
         } => {
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
-            let conn = conn.expect("connection matrix is required for replay-commit-log");
             let die = |e: String| -> ! {
                 eprintln!("replay-commit-log: {}", e);
                 process::exit(1);
             };
+            // Before open_resources or anything else reads settings(): the
+            // singleton fixes on first read.
+            if let Some(path) = &settings {
+                let toml = fs::read_to_string(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                lex_core::settings::init_custom(toml)
+                    .unwrap_or_else(|e| die(format!("{path}: {e}")));
+            }
+            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let conn = conn.expect("connection matrix is required for replay-commit-log");
+            // Same layering as LexDictionary::open_with_user_dict.
+            let dict: Box<dyn Dictionary> = match &user_dict {
+                Some(path) => {
+                    let ud = UserDictionary::open(Path::new(path))
+                        .unwrap_or_else(|e| die(format!("{path}: {e}")));
+                    Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)]))
+                }
+                None => Box::new(trie),
+            };
             let (report, lines) =
-                rank_ops::replay(&dict, &conn, hist.as_ref(), Path::new(&log_file), verbose)
+                rank_ops::replay(&*dict, &conn, hist.as_ref(), Path::new(&log_file), verbose)
                     .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
