@@ -575,7 +575,7 @@ description = "Run the supply-chain screen (scripts/screen.sh) — lint, test an
 run = "bash scripts/screen.sh"
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
+description = "Screen, then run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
 depends = ["screen", "lint-toolchain"]
 # The lint commands are defined here only: CI's lint job and the @claude bot
 # (.github/workflows/claude.yml) run this task rather than cargo lines of
@@ -640,7 +640,7 @@ run = [
 ]
 
 [tasks.test]
-description = "Run lint + workspace tests"
+description = "Run the screen, lint and workspace tests"
 # `screen` in its own right, since cargo test builds too; mise runs it once
 # per invocation.
 depends = ["screen", "lint"]
