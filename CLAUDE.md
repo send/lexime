@@ -24,8 +24,9 @@
 ## ビルド・テスト
 
 ```bash
-# Rust lint + test (--all-targets は必須: bench はこれ以外のゲートに載らない — #299)
-cd engine && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
+# Rust lint + test。lint (fmt --check + clippy -D warnings) は CI と同じ固定 toolchain
+# (engine/lint-toolchain.txt) で走る。--all-targets は必須: bench はこれ以外のゲートに載らない — #299
+mise run test
 
 # アプリビルド・インストール
 mise run build && mise run install && mise run reload

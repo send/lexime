@@ -494,13 +494,21 @@ description = "Run criterion benchmarks"
 run = "cd engine && cargo bench -p lex-core"
 
 [tasks.lint]
-description = "Run cargo fmt --check and clippy"
-run = [
-  "cd engine && cargo fmt --all --check",
-  # --all-targets is load-bearing — see the lint job in .github/workflows/ci.yml
-  # for why (benches are in no other gate). Keep the two in step. #299.
-  "cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings",
-]
+description = "Run cargo fmt --check and clippy on the pinned lint toolchain (same as CI)"
+# The toolchain comes from engine/lint-toolchain.txt, via the same script the
+# CI lint job reads, so a local pass means the CI lint job passes too. Installed
+# on first use (rustup no-ops when it is already present).
+# --all-targets is load-bearing — see the lint job in .github/workflows/ci.yml
+# for why (benches are in no other gate). Keep the two in step. #299.
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+tc=$(bash scripts/lint-toolchain.sh)
+rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt >/dev/null
+cd engine
+cargo +"$tc" fmt --all --check
+cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
+"""
 
 [tasks.audit]
 description = "Run supply chain checks (quarantine, build.rs, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
