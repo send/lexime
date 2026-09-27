@@ -498,7 +498,9 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`.
+# offline failure) in front of every `mise run test`. In CI's lint job the pin
+# is already installed (as the rustup default, for the cache key — see there),
+# so this does nothing.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -511,13 +513,20 @@ fi
 [tasks.lint]
 description = "Run cargo fmt --check and clippy on the pinned lint toolchain (same as CI)"
 depends = ["lint-toolchain"]
-# --all-targets is load-bearing — see the lint job in .github/workflows/ci.yml
-# for why (benches are in no other gate). Keep the two in step. #299.
+# The only definition of the lint commands: CI's lint job runs this task
+# rather than cargo lines of its own.
+#
+# --all-targets is load-bearing: clippy otherwise checks only lib+bins,
+# leaving benches in no gate at all — `cargo test` skips `[[bench]]` targets
+# too (they default to `test = false`; `harness` is not the lever). That is
+# how #299 rotted unnoticed.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 tc=$(bash scripts/lint-toolchain.sh)
 cd engine
+# So a CI log shows which clippy ran, not only that one did.
+echo "lint: $(cargo +"$tc" clippy --version)"
 cargo +"$tc" fmt --all --check
 cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
 """

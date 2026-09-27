@@ -5,8 +5,10 @@
 # that runs `lint` at once, for a reason unrelated to the PR (a882420, #328).
 # With the pin, new lints arrive only when this line moves.
 #
-# Read by scripts/lint-toolchain.sh for both consumers: the CI `lint` job and
-# `mise run lint`. The local gate and CI therefore run the same clippy.
+# Read by scripts/lint-toolchain.sh for both consumers: `mise run lint`, which
+# runs fmt/clippy on it, and the CI `lint` job, which installs it as the rustup
+# default and then runs `mise run lint`. The local gate and CI therefore run the
+# same clippy with the same flags.
 #
 # Only `lint` is pinned. The build and test jobs stay on stable, since they do
 # not run with -D warnings. MSRV has its own pin (`rust-version` in

@@ -38,8 +38,8 @@ jobs:
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
-              # mise.toml defines the gates themselves ([tasks.lint] is the
-              # local twin of this workflow's lint job). Without this, an edit
+              # mise.toml defines the gates themselves (this workflow's lint
+              # job runs [tasks.lint] as-is). Without this, an edit
               # weakening a gate would skip the very jobs that would catch it.
               - 'mise.toml'
               # The lint toolchain pin and its reader. A PR that only bumps
@@ -113,9 +113,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned, not `stable` — see engine/lint-toolchain.txt. The assignment is
-      # on its own line so a failing read fails the step (`echo "…$(cmd)"`
-      # would not).
+      # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
+      # selects the pin by itself (`cargo +<pin>`), so installing it here is
+      # not what makes clippy run on it. It is for the cache: dtolnay makes the
+      # pin the rustup default, and Swatinem/rust-cache keys on the default
+      # toolchain's `rustc -vV`. Left to the mise task, the pin would be
+      # installed after the cache restore and beside the runner's stable, so
+      # the key would name stable while clippy builds on the pin — a pin bump
+      # would not change the key. The assignment is on its own line so a
+      # failing read fails the step (`echo "…$(cmd)"` would not).
       - name: Read the pinned lint toolchain
         id: toolchain
         run: |
@@ -132,13 +138,15 @@ jobs:
           workspaces: engine -> target
           shared-key: lint
 
-      - run: cd engine && cargo fmt --all --check
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
 
-      # --all-targets is load-bearing: clippy otherwise checks only lib+bins,
-      # leaving benches in no gate at all — `cargo test` skips `[[bench]]`
-      # targets too (they default to `test = false`; `harness` is not the
-      # lever). That is how #299 rotted unnoticed.
-      - run: cd engine && cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The fmt/clippy command lines live only in mise.toml's [tasks.lint], so
+      # CI and the local gate cannot drift apart on a flag (--all-targets is
+      # load-bearing — see there, #299). Its `lint-toolchain` dependency finds
+      # the pin already installed by the dtolnay step and does nothing.
+      - run: mise run lint
 
   msrv:
     needs: [changes, screen]
