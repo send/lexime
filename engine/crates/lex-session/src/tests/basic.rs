@@ -845,3 +845,55 @@ fn settle_unconfirmed_on_idle_is_a_no_op() {
     );
     assert!(!session.is_composing());
 }
+
+#[test]
+fn commit_after_settle_emits_nothing() {
+    // #319: IMKit can deliver `commitComposition` after `deactivateServer`
+    // (measured: 0.7–4.4ms later, same controller). It is left unfenced
+    // because the settle has already reached Idle and a commit there does
+    // nothing — this pins the "does nothing". Were it to emit even a
+    // `.hideCandidates`, the trailing callback would hide the shared panel
+    // now owned by whichever controller just gained focus.
+    let dict = make_test_dict();
+    // History is wired in so the no-training assertion below can fail:
+    // `record_history` returns early on a session without one.
+    let history = UserHistory::new();
+    let mut session = InputSession::new(dict.clone(), None, Some(Arc::new(RwLock::new(history))));
+
+    let shown = type_string_returning_marked(&mut session, "kyou");
+    session.settle_unconfirmed(&shown);
+    assert!(!session.is_composing(), "precondition: settle reached Idle");
+    session.take_history_records();
+
+    let epoch_before = session.epoch();
+
+    // Destructured without `..`: a field added to the response must be
+    // accounted for here before this compiles, rather than slipping past.
+    let crate::types::KeyResponse {
+        consumed: _,
+        commit,
+        marked,
+        candidates,
+        async_request,
+        side_effects: crate::types::SideEffects { switch_to_abc },
+    } = session.commit();
+
+    assert!(commit.is_none(), "nothing to insert");
+    assert!(marked.is_none(), "the host's marked text is left alone");
+    assert!(
+        matches!(candidates, CandidateAction::Keep),
+        "the shared candidate panel is left alone"
+    );
+    assert!(async_request.is_none(), "no candidate work is scheduled");
+    assert!(!switch_to_abc, "no input-source change");
+    assert!(
+        session.take_history_records().is_empty(),
+        "a late callback is not acceptance and must not train"
+    );
+    // Not an effect anyone relies on, but a Swift-side `isComposing` guard in
+    // front of `commit()` would remove it — this makes that a visible choice.
+    assert!(
+        session.epoch() > epoch_before,
+        "an Idle commit still advances the epoch"
+    );
+}

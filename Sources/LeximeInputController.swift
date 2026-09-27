@@ -245,6 +245,11 @@ class LeximeInputController: IMKInputController {
         return NSAttributedString(string: coordinator?.currentDisplay ?? "")
     }
 
+    // Not fenced to the activation that issued it (#319). IMKit binds each
+    // controller to one client, so a late callback can only come from this
+    // controller's own client and a `sender` check could never fail; the late
+    // ones measured find the session already settled by `deactivate(client:)`
+    // and commit nothing. SPEC.md § 不変条件（marked text と session の同期）.
     override func commitComposition(_ sender: Any!) {
         guard let coordinator, let client = sender as? IMKTextInput else { return }
         let wasEscapeCommit = modeController.takePendingEscapeCommit()
