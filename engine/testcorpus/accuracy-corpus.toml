@@ -31,9 +31,10 @@
 #   issue     (optional) - Related GitHub issue number (e.g. "#123")
 #   pr        (optional) - Related GitHub PR number (e.g. "#146")
 #   window_top1 (optional) - History corpus only: the production candidate
-#                          list's #1 when it legitimately differs from
-#                          `expected` (history promoting learned kana to
-#                          index 0). Rejected in a corpus without [[history]]
+#                          list's #1 when history promotes learned kana to
+#                          index 0. Must equal `reading`, learned as kana in
+#                          the corpus's [[history]]; anything else is
+#                          rejected (use [cases.width_issue])
 #   [cases.width_issue] (optional) - A known width disagreement, named
 #                          exactly: issue = "#123" (required) and what the
 #                          disagreeing width shows — one_best = "…" and/or

@@ -468,18 +468,31 @@ fn open_resources(
         })
     });
 
-    let hist = history.as_ref().map(|path| {
-        // open_with_wal: uncheckpointed commits live only in the WAL; a
-        // checkpoint-only read would ignore the most recent learning.
-        let (h, _wal) =
-            lex_core::user_history::wal::open_with_wal(Path::new(path)).unwrap_or_else(|e| {
-                eprintln!("Failed to open user history at {}: {}", path, e);
-                process::exit(1);
-            });
-        h
-    });
+    let hist = history.as_deref().map(open_history);
 
     (dict, conn, hist)
+}
+
+/// Open a user history the user named. `open_with_wal` returns an empty
+/// history for a missing checkpoint and WAL, so a mistyped path must fail
+/// here instead of measuring an unlearned engine as if it were the learned
+/// one. The WAL is replayed: uncheckpointed commits live only there.
+fn open_history(path: &str) -> UserHistory {
+    let checkpoint = Path::new(path);
+    let wal = checkpoint.with_extension("lxud.wal");
+    if !checkpoint.exists() && !wal.exists() {
+        eprintln!(
+            "User history not found: neither {} nor {} exists",
+            checkpoint.display(),
+            wal.display()
+        );
+        process::exit(1);
+    }
+    let (h, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint).unwrap_or_else(|e| {
+        eprintln!("Failed to open user history at {}: {}", path, e);
+        process::exit(1);
+    });
+    h
 }
 
 fn read_readings(input_file: &str) -> Vec<String> {
@@ -713,15 +726,25 @@ fn main() {
             // Validate window checks before running anything: a malformed
             // expectation must not read as a conversion failure.
             for case in &cases {
-                // window_top1 exists for learned kana promoted to #1; without
-                // corpus history it would be an unlinked width exemption.
-                if case.window_top1.is_some() && corpus.history.is_empty() {
-                    eprintln!(
-                        "window_top1 for {} is only meaningful in a corpus with [[history]]; \
-                         use width_issue for a known width disagreement",
-                        case.reading
-                    );
-                    process::exit(1);
+                // window_top1 exists for one thing: learned kana promoted to
+                // the list's #1. Anything else would be an unlinked width
+                // exemption, so it must be the reading itself, learned in
+                // this corpus's history.
+                if let Some(ref top) = case.window_top1 {
+                    let learned = corpus.history.iter().any(|rec| {
+                        rec.segments
+                            .iter()
+                            .any(|(r, s)| *r == case.reading && *s == case.reading)
+                    });
+                    if *top != case.reading || !learned {
+                        eprintln!(
+                            "window_top1 for {} must be the reading itself, learned as kana in \
+                             this corpus's [[history]]; use width_issue for any other width \
+                             disagreement",
+                            case.reading
+                        );
+                        process::exit(1);
+                    }
                 }
                 if let Some(ref w) = case.width_issue {
                     if !is_issue_ref(&w.issue) {
@@ -993,24 +1016,7 @@ fn main() {
             let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
             let conn = conn.expect("connection matrix is required for history-audit");
 
-            // open_with_wal silently returns an empty history for a missing
-            // checkpoint; a mistyped path must fail instead of reporting a
-            // plausible-looking zero-reading audit.
-            let checkpoint_path = Path::new(&history_file);
-            let wal_path = checkpoint_path.with_extension("lxud.wal");
-            if !checkpoint_path.exists() && !wal_path.exists() {
-                eprintln!(
-                    "User history not found: neither {} nor {} exists",
-                    checkpoint_path.display(),
-                    wal_path.display()
-                );
-                process::exit(1);
-            }
-            let (hist, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint_path)
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to open user history at {}: {}", history_file, e);
-                    process::exit(1);
-                });
+            let hist = open_history(&history_file);
 
             // Group unigrams by reading
             let mut by_reading: HashMap<&str, Vec<(&str, u32, u64)>> = HashMap::new();
