@@ -17,25 +17,48 @@ if [[ "${1:-}" == "--all" ]]; then
     CHECK_ALL=true
 fi
 
-# Parse Cargo.lock for (name, version) pairs of registry deps. As TOML, the
-# way cargo reads it: a line pattern would skip a package whose keys are
-# spelled differently (indented, quoted) but mean the same to cargo.
-parse_lockfile() {
-    python3 -c '
-import sys, tomllib
-with open(sys.argv[1], "rb") as f:
-    data = tomllib.load(f)
-for pkg in data.get("package", []):
-    if pkg.get("source", "").startswith("registry+"):
+# (name, version) of every registry dependency in the working tree's lock, as
+# cargo reads it (`cargo metadata`, which resolves without building). A hand
+# parser would skip packages whose keys are spelled differently but mean the
+# same to cargo (#345), and so leave them unchecked.
+current_deps() {
+    (cd engine && cargo metadata --locked --all-features --format-version 1) | python3 -c '
+import json, sys
+for pkg in json.load(sys.stdin)["packages"]:
+    if (pkg.get("source") or "").startswith("registry+"):
         print(pkg["name"], pkg["version"])
-' "$1"
+'
+}
+
+# The same pairs from a lock with no workspace around it (the base's, from
+# git show), so cargo cannot read it and this parses it by line. It can only
+# miss entries, never invent them, and a missed base entry makes the diff
+# below check that dependency again: stricter, never looser.
+parse_lockfile() {
+    awk '
+        /^\[\[package\]\]/ { name=""; version=""; source="" }
+        /^name = / { gsub(/"/, "", $3); name=$3 }
+        /^version = / { gsub(/"/, "", $3); version=$3 }
+        /^source = "registry\+/ { source="registry" }
+        /^$/ {
+            if (name != "" && version != "" && source == "registry") {
+                print name " " version
+            }
+            name=""; version=""; source=""
+        }
+        END {
+            if (name != "" && version != "" && source == "registry") {
+                print name " " version
+            }
+        }
+    ' "$1"
 }
 
 # Get deps to check (changed only, or all)
 if $CHECK_ALL; then
-    deps=$(parse_lockfile "$LOCKFILE")
+    deps=$(current_deps)
 else
-    current=$(parse_lockfile "$LOCKFILE" | sort)
+    current=$(current_deps | sort)
     # The vetted set to diff against: main, or SCREEN_POLICY_REF when set, so
     # a job that sets it trusts exactly one ref (see scripts/screen.sh).
     base_ref=${SCREEN_POLICY_REF:-origin/main}
