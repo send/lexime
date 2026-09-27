@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The supply-chain screen: the one definition behind ci.yml's `screen` job,
-# lint-canary.yml's `canary` job, `mise run audit`, and mise's `screen` task,
-# which `lint` and `test` depend on (the @claude bot's only screen). Add a
-# check here, not to a caller, or the other callers will not get it.
+# lint-canary.yml's `canary` job, and mise's `screen` task, which `lint`,
+# `test` and `audit` run first (the @claude bot's only screen). Add a check
+# here, not to a caller, or the other callers will not get it.
 #
 # Run it before anything that builds: cargo compiles and executes dependency
 # build scripts, and these checks are what vets them. None of the checks

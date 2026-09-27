@@ -22,7 +22,7 @@ Lexime /lɛksɪm/ — 軽量な日本語入力システム（IME）
 
 - macOS 13.0 (Ventura) 以降
 - [Rust](https://rustup.rs/)（エンジンのビルドに必要）
-- [mise](https://mise.jdx.dev/)（タスクランナー）
+- [mise](https://mise.jdx.dev/)（タスクランナー。`mise.toml` の `min_version` 以上）
 
 ## インストール
 

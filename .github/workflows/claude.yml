@@ -5,10 +5,18 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  # Not `edited`: every edit of an issue that mentions @claude would start
+  # another paid run.
   issues:
-    types: [opened, edited]
+    types: [opened]
   pull_request_review:
     types: [submitted]
+
+# As in ci.yml: mise reads only mise.toml. Here it matters more — the bot's
+# only supply-chain screen is [tasks.screen] as lint/test depend on it, and
+# a committed .mise.toml or mise.local.toml could redefine those tasks.
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
 
 jobs:
   claude:
@@ -67,16 +75,23 @@ jobs:
           fetch-depth: 0  # needed for quarantine diff against main
 
       # So the bot lints and formats through mise.toml's [tasks.lint] /
-      # [tasks.fmt], as CI's lint job does. Stricter than ci.yml because this
-      # job holds a secret and an agent shell runs after this step:
-      #   - cache: false — a restored mise dir puts its shims/ on PATH ahead of
-      #     that shell, and sha256 covers bin/mise only.
-      #   - github_token: '' — the action otherwise exports GITHUB_TOKEN to
-      #     every later step. It then warns "No GITHUB_TOKEN provided" each
-      #     run; expected, as nothing here fetches tools (install: false).
-      # To bump: pick a mise release at least 7 days old, and take sha256 of
-      # mise/bin/mise from its linux-x64 tarball, checked against the
-      # release's SHASUMS256.txt.
+      # [tasks.fmt], as CI's lint job does. Not through
+      # .github/actions/setup-mise, and stricter than it, because this job
+      # holds a secret and an agent shell runs after this step:
+      #   - version and sha256 are spelled out here, as nothing from the
+      #     checkout may run before the Claude step. CI holds them to the pin:
+      #     ci.yml's read-pin job fails when `version:` is not `min_version` in
+      #     mise.toml, or `sha256:` is not the linux-x64 bin/mise it installs
+      #     at that version.
+      #   - cache: false — setup-mise sets it too, but here it is load-bearing:
+      #     a restored mise dir puts its shims/ on PATH ahead of that shell,
+      #     and sha256 covers bin/mise only.
+      #   - github_token: '' — mise fetches nothing here (install: false), so
+      #     it gets no token; the Claude step passes its own. The action then
+      #     warns "No GITHUB_TOKEN provided" each run; expected.
+      # To bump, follow mise.toml's procedure; take sha256 of mise/bin/mise
+      # from the release's linux-x64 tarball, checked against its
+      # SHASUMS256.txt.
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
           version: 2026.9.11
@@ -85,6 +100,20 @@ jobs:
           cache: false
           github_token: ''
 
+      # Two settings that had never worked until #336 found them:
+      # - github_token: this job's own token, so the bot holds exactly the
+      #   permissions above. Without it the action wants the Claude GitHub
+      #   App's token over OIDC (needs `id-token: write`). The action also
+      #   gives this token to Claude's shell for `gh`. The git commit/push
+      #   tools tag mode adds get a 403 at push, as contents is read-only.
+      # - Tool rules go in claude_args: v1 has no `allowed_tools` input. The
+      #   action adds its read, comment, CI and git tools, and acceptEdits
+      #   lets it edit files in the workspace; no other build or gh command
+      #   is allowed.
+      #   That is not a sandbox: `mise run lint` / `test` execute workspace
+      #   code, so treat the bot as able to run anything with its tokens.
+      #   `gh pr` is read-only here — pull-requests: write would otherwise
+      #   let it close, edit or approve PRs.
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
       # `:::`). No raw cargo, not even a targeted `cargo test -p`: every build
@@ -102,4 +131,6 @@ jobs:
           SCREEN_POLICY_REF: origin/main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(gh pr:*)"
+          github_token: ${{ github.token }}
+          claude_args: >-
+            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
