@@ -845,3 +845,41 @@ fn settle_unconfirmed_on_idle_is_a_no_op() {
     );
     assert!(!session.is_composing());
 }
+
+#[test]
+fn commit_after_settle_emits_nothing() {
+    // #319: IMKit can deliver `commitComposition` after `deactivateServer`
+    // (measured: 0.7–4.4ms later, same controller). It is left unfenced
+    // because the settle has already reached Idle and a commit there does
+    // nothing — this pins the "does nothing". Were it to emit even a
+    // `.hideCandidates`, the trailing callback would hide the shared panel
+    // now owned by whichever controller just gained focus.
+    let dict = make_test_dict();
+    let mut session = InputSession::new(dict.clone(), None, None);
+
+    let shown = type_string_returning_marked(&mut session, "kyou");
+    session.settle_unconfirmed(&shown);
+    assert!(!session.is_composing(), "precondition: settle reached Idle");
+    session.take_history_records();
+
+    let resp = session.commit();
+
+    assert!(resp.commit.is_none(), "nothing to insert");
+    assert!(
+        resp.marked.is_none(),
+        "the host's marked text is left alone"
+    );
+    assert!(
+        matches!(resp.candidates, CandidateAction::Keep),
+        "the shared candidate panel is left alone"
+    );
+    assert!(
+        resp.async_request.is_none(),
+        "no candidate work is scheduled"
+    );
+    assert!(!resp.side_effects.switch_to_abc, "no input-source change");
+    assert!(
+        session.take_history_records().is_empty(),
+        "a late callback is not acceptance and must not train"
+    );
+}
