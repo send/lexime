@@ -708,7 +708,7 @@ macOS で動作する最小限の IME を構築。
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。両ワークフローは `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 

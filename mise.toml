@@ -33,8 +33,9 @@
 #      `sha256:` (how is in the comment there).
 #   4. Run `mise run test` and `mise run test-read-pin` locally; the PR runs
 #      every other gate.
-#   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, swift)
-#      prints the new version under "Check the installed mise is the pin".
+#   5. Confirm in the PR's CI logs that each mise job (lint, accuracy, audit,
+#      swift) prints the new version under "Check the installed mise is the
+#      pin".
 #
 # Format: exactly `min_version = "YYYY.M.P"` on its own line, with no trailing
 # comment or table form; scripts/mise-version.sh refuses anything else. Keep it

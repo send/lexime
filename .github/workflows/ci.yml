@@ -390,9 +390,7 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet,cargo-machete
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      - uses: ./.github/actions/setup-mise
 
       # Screening (quarantine / build.rs baseline) lives in the `screen` job,
       # which gates this and every other cargo-invoking job. The checks live
