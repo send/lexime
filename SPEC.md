@@ -667,7 +667,7 @@ macOS で動作する最小限の IME を構築。
 | `lint` | `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
 | `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | `scripts/screen.sh`（quarantine / build.rs スクリーニング）→ `audit-deps` の順（screen-first） |
-| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）。定義は mise.toml のここだけで、CI の audit job もこの task を実行する。build を伴うので単独ではなく `audit` 経由で回す |
+| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（CI の audit job もこの task を実行する） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
@@ -703,7 +703,7 @@ macOS で動作する最小限の IME を構築。
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
 | `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定） |
-| `audit` | ubuntu-latest | core 変更時 | `mise run audit-deps`（上表の `audit-deps` task: `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete`） |
+| `audit` | ubuntu-latest | core 変更時 | `mise run audit-deps`（上表の `audit-deps` task） |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。

@@ -41,8 +41,8 @@ jobs:
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
               # and audit jobs run [tasks.lint] / [tasks.audit-deps] as-is).
-              # Without this, an edit
-              # weakening a gate would skip the very jobs that would catch it.
+              # Without this, an edit weakening a gate would skip the very jobs
+              # that would catch it.
               - 'mise.toml'
               # The lint toolchain pin and its readers (lint-toolchain.sh
               # execs read-pin.sh). A PR that only bumps the pin must still
@@ -366,9 +366,8 @@ jobs:
           install: false
 
       # Screening (quarantine / build.rs baseline) lives in the `screen` job,
-      # which gates this and every other cargo-invoking job. The checks
-      # themselves (--locked check, cargo-deny, cargo-vet, cargo-machete) live
-      # only in mise.toml, which `mise run audit` also runs after the screen.
+      # which gates this and every other cargo-invoking job. The checks live
+      # only in mise.toml ([tasks.audit-deps]).
       - run: mise run audit-deps
 
   swift:
