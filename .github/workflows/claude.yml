@@ -82,15 +82,16 @@ jobs:
           cache: false
           github_token: ''
 
-      # github_token: this job's own token, so the bot holds exactly the
-      # permissions above (it can comment, it cannot push). Without it the
-      # action asks for the Claude GitHub App's token over OIDC, which needs
-      # `id-token: write` and failed on every run (#336). The action hands
-      # this token to Claude's shell as GITHUB_TOKEN / GH_TOKEN for `gh pr`.
-      #
-      # Tool rules go in claude_args: v1 has no `allowed_tools` input and
-      # ignored it with only a warning (#336). The action adds its own
-      # read-only and comment tools; anything listed nowhere is denied.
+      # Both fixed in #336, where neither had ever worked:
+      # - github_token: this job's own token, so the bot holds exactly the
+      #   permissions above. Without it the action wants the Claude GitHub
+      #   App's token over OIDC (needs `id-token: write`). The action also
+      #   gives this token to Claude's shell for `gh`. The git commit/push
+      #   tools tag mode adds get a 403 at push, as contents is read-only.
+      # - Tool rules go in claude_args: v1 has no `allowed_tools` input. The
+      #   action adds its read, comment, CI and git tools; anything listed
+      #   nowhere is denied. `gh pr` is read-only here — pull-requests: write
+      #   would otherwise let it close, edit or approve PRs.
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
       # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
@@ -104,4 +105,4 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: >-
-            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr:*)"
+            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(cd engine && cargo test:*),Bash(cd engine && cargo check:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
