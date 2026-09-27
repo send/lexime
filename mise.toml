@@ -498,11 +498,15 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`.
+# offline failure) in front of every `mise run test`. The probe disables
+# rustup's auto-install: without that, `cargo +<missing>` installs the default
+# profile itself, silently (the output is discarded), and the install below —
+# the path CI's lint job takes on every fresh runner — never runs.
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 tc=$(bash scripts/lint-toolchain.sh)
+export RUSTUP_AUTO_INSTALL=0
 if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --version >/dev/null 2>&1; then
   rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt
 fi

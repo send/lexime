@@ -158,7 +158,7 @@ jobs:
       # other job builds on stable. Default features only — the optional
       # `neural` feature pulls candle, whose MSRV is tracked separately, and
       # default targets only — do NOT propagate the `lint` job's --all-targets
-      # here, or criterion / proptest and bench source come under the MSRV
+      # (mise.toml [tasks.lint]) here, or criterion / proptest and bench source come under the MSRV
       # constraint and a dev-dep bump turns CI red over code that never ships.
       - uses: dtolnay/rust-toolchain@1.88.0
 
