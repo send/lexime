@@ -567,17 +567,19 @@ fi
 
 [tasks.screen]
 description = "Run the supply-chain screen (scripts/screen.sh) — every task that builds depends on it"
-# The screen goes before anything that builds (scripts/screen.sh). Every task
-# that builds lists this in `depends`, directly or through a task it depends
-# on: mise does not start it when the screen fails, and runs the screen once
-# per invocation however many tasks share it. scripts/check-task-screen.py
-# (CI's task-screen job) holds every task to that, bar the ones it lists as
-# not building, and holds the @claude bot's allowlist to screened tasks.
+# The screen goes before anything that builds (scripts/screen.sh). mise does
+# not start a task whose dependency failed, and runs the screen once per
+# invocation however many tasks share it. A task whose own run calls cargo
+# lists "screen" in `depends` itself, even when a dependency already brings
+# it in, so it stays screened if that dependency goes; a task that only uses
+# what others built (build, test-swift, ...) gets it through them.
+# scripts/check-task-screen.py (CI's task-screen job) holds every task to
+# having it in its closure, bar the ones it lists as not building, and holds
+# the @claude bot's allowlist to screened tasks.
 #
 # So a local `mise run dict` / `accuracy` / `explain` screens on every run:
-# ~0.7s while Cargo.lock matches origin/main, plus one crates.io request per
-# changed entry the first time it is seen (check-quarantine.sh caches the
-# publish dates of those that pass, so after that it also works offline).
+# ~0.7s while Cargo.lock matches origin/main, more for changed entries not
+# yet seen (the publish-date cache in scripts/check-quarantine.sh).
 #
 # For the bot this is the only screen its builds get; why it has to be here
 # and not in a workflow step is in .github/workflows/claude.yml. Together with

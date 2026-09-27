@@ -16,22 +16,6 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fails=0
 
-# The repository, as the gates run it (ci.yml and claude.yml set this).
-echo "--- this repository"
-if (cd "$repo" && MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml python3 "$check"); then
-  echo "ok   this repository"
-else
-  echo "FAIL this repository"
-  fails=$((fails + 1))
-fi
-
-# Fixtures see no global mise config or skip settings from the caller, so a
-# case fails only for its own change.
-: >"$tmp/global.toml"
-fx_env=(env -u MISE_TASK_SKIP -u MISE_TASK_SKIP_DEPENDS
-  MISE_GLOBAL_CONFIG_FILE="$tmp/global.toml"
-  MISE_TRUSTED_CONFIG_PATHS="$tmp"
-  MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
 
 # fixture: a fresh copy of the two files the check reads.
 fixture() {
@@ -56,11 +40,12 @@ open(p, "w").write(s.replace(old, new, 1))
 ' "$1"
 }
 
-# expect <name> pass|<message> <dir> [env...]: run the check in <dir>.
+# expect <name> pass|<message> <dir> [env...]: run the check in <dir>, under
+# run_env and then [env...].
 expect() {
   local name=$1 want=$2 dir=$3 out rc=0
   shift 3
-  out=$(cd "$dir" && "${fx_env[@]}" "$@" python3 "$check" 2>&1) || rc=$?
+  out=$(cd "$dir" && "${run_env[@]}" "$@" python3 "$check" 2>&1) || rc=$?
   if [[ $want == pass && $rc -eq 0 ]] || [[ $want != pass && $rc -ne 0 && $out == *"$want"* ]]; then
     echo "ok   $name"
   else
@@ -69,6 +54,18 @@ expect() {
     fails=$((fails + 1))
   fi
 }
+
+# The repository, as the gates run it (ci.yml and claude.yml set this).
+run_env=(env MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
+expect "this repository" pass "$repo"
+
+# Fixtures see no global mise config or skip settings from the caller, so a
+# case fails only for its own change.
+: >"$tmp/global.toml"
+run_env=(env -u MISE_TASK_SKIP -u MISE_TASK_SKIP_DEPENDS
+  MISE_GLOBAL_CONFIG_FILE="$tmp/global.toml"
+  MISE_TRUSTED_CONFIG_PATHS="$tmp"
+  MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
 
 d=$(fixture)
 expect "copy of this repository" pass "$d"
@@ -154,7 +151,7 @@ edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --dangerously-skip
 expect "permissions bypassed" "bypasses the permission rules" "$d"
 
 if [[ $fails -gt 0 ]]; then
-  echo "$fails case(s) failed"
+  echo "check-task-screen-test: $fails failed"
   exit 1
 fi
-echo "all cases passed"
+echo "check-task-screen-test: all passed"

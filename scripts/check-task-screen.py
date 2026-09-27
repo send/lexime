@@ -97,7 +97,7 @@ def refs(entries, where):
         if isinstance(e, str):
             if where == "run":
                 continue  # a script, not a task reference
-            pat = e.split()[0] if e.split() else ""
+            pat = (e.split() or [""])[0]
         elif isinstance(e, dict) and isinstance(e.get("task"), str):
             pat = e["task"].split()[0]
         elif isinstance(e, dict) and isinstance(e.get("tasks"), list):
@@ -114,11 +114,14 @@ def refs(entries, where):
     return names
 
 
+depends = {n: refs(t.get("depends"), "depends") for n, t in tasks.items()}
+
+
 def closure(name):
     """Every task `depends` makes mise finish before `name` starts."""
     seen, todo = set(), [name]
     while todo:
-        for d in refs(tasks[todo.pop()].get("depends"), "depends"):
+        for d in depends[todo.pop()]:
             if d not in seen:
                 seen.add(d)
                 todo.append(d)
@@ -129,12 +132,13 @@ screened = {n for n in tasks if "screen" in closure(n)}
 
 if "screen" not in tasks:
     err("no `screen` task")
-for listed in (NO_BUILD, SCREENED_BY_CALLER):
+for label, listed in (("NO_BUILD", NO_BUILD), ("SCREENED_BY_CALLER", SCREENED_BY_CALLER)):
     for n in sorted(set(listed) - set(tasks)):
-        err("%s is listed in %s but is not a task" % (n, "NO_BUILD" if listed is NO_BUILD else "SCREENED_BY_CALLER"))
+        err("%s is listed in %s but is not a task" % (n, label))
 
-for n in sorted(tasks):
-    if n not in screened and n not in NO_BUILD and n not in SCREENED_BY_CALLER:
+unscreened = sorted(set(tasks) - screened)
+for n in unscreened:
+    if n not in NO_BUILD and n not in SCREENED_BY_CALLER:
         err("task %s does not depend on `screen` (directly or through its depends); "
             "add \"screen\" to its depends, or if it does not build, to NO_BUILD in %s"
             % (n, sys.argv[0]))
@@ -142,13 +146,12 @@ for n in sorted(tasks):
 # Every way one task makes mise run another. None of these but `depends`
 # orders the named task after the caller's screen by itself, so a caller of a
 # SCREENED_BY_CALLER task must be screened.
-for n in sorted(tasks):
+for n in unscreened:
     t = tasks[n]
-    named = (refs(t.get("depends"), "depends") + refs(t.get("depends_post"), "depends")
+    named = (depends[n] + refs(t.get("depends_post"), "depends")
              + refs(t.get("wait_for"), "depends") + refs(t.get("run"), "run"))
     for c in sorted(set(named) & set(SCREENED_BY_CALLER)):
-        if n not in screened:
-            err("task %s runs %s, which builds, without depending on `screen`" % (n, c))
+        err("task %s runs %s, which builds, without depending on `screen`" % (n, c))
 
 # --- the @claude bot's allowlist -------------------------------------------
 # The bot builds only through the tasks it is allowed, so each must be
@@ -201,7 +204,7 @@ for n in allowed:
         err("bot rule `mise run %s`: the task builds without the screen" % n)
 
 if errors:
-    for e in errors:
+    for e in dict.fromkeys(errors):
         print("task-screen: " + e)
     sys.exit(1)
 print("task-screen: %d tasks, %d screened, %d exempt; bot tasks: %s"

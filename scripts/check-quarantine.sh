@@ -117,9 +117,11 @@ trap 'rm -f "$tmpfile"' EXIT
 # verdict so a longer QUARANTINE_DAYS still applies, and only for versions
 # that passed: one still in quarantine, or one the API could not answer for,
 # is asked about again on every run.
-# Outside the repository, and off under SCREEN_POLICY_REF: a job whose agent
-# builds edited code between screens (see scripts/screen.sh) could write this
-# file, so there every date comes from crates.io.
+# Outside the repository, and off under SCREEN_POLICY_REF: that marks the
+# one kind of job whose agent builds code it edited between screens (see
+# scripts/screen.sh), and that code could write this file. Elsewhere whoever
+# can write it can edit the allowlist in the tree too, so it grants nothing
+# more.
 cache=""
 if [ -z "${SCREEN_POLICY_REF:-}" ]; then
     cache="${XDG_CACHE_HOME:-$HOME/.cache}/lexime/crates-io-published"
@@ -144,7 +146,7 @@ echo "$deps" | while read -r name version; do
             END { if (max != "") print max }
         ' "$cache") || created_at=""
     fi
-    via=" (date cached)"
+    via=" (date from $cache)"
 
     if [ -z "$created_at" ]; then
         via=""
@@ -169,23 +171,21 @@ print(int(dt.timestamp()))
             echo "FAIL" >> "$tmpfile"
             continue
         }
+
+        # Rate limit: 1 req/sec
+        sleep 1
     fi
 
     age_days=$(( (now - created_at) / 86400 ))
 
     if [ "$created_at" -gt "$threshold" ]; then
-        echo "quarantine: FAIL $name@$version — published $age_days days ago (minimum: $QUARANTINE_DAYS)${via:+ (date from $cache)}"
+        echo "quarantine: FAIL $name@$version — published $age_days days ago (minimum: $QUARANTINE_DAYS)$via"
         echo "FAIL" >> "$tmpfile"
     else
         echo "quarantine: ok $name@$version — published $age_days days ago$via"
         if [ -z "$via" ] && [ -n "$cache" ]; then
             printf '%s %s %s\n' "$name" "$version" "$created_at" >> "$cache" 2>/dev/null || true
         fi
-    fi
-
-    # Rate limit: 1 req/sec
-    if [ -z "$via" ]; then
-        sleep 1
     fi
 done
 
