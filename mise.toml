@@ -506,7 +506,10 @@ hide = true
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
+if [ -n "${LINT_TOOLCHAIN:-}" ]; then
+  echo "lint-toolchain: LINT_TOOLCHAIN=$tc overrides the pin (engine/lint-toolchain.txt)" >&2
+fi
 export RUSTUP_AUTO_INSTALL=0
 if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --version >/dev/null 2>&1; then
   rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt
@@ -528,7 +531,7 @@ depends = ["lint-toolchain"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 # So a CI log shows which clippy ran, not only that one did. Assigned on its
 # own line so a failure stops the task (`echo "…$(cmd)"` would not).
@@ -546,7 +549,7 @@ depends = ["lint-toolchain"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-tc=$(bash scripts/lint-toolchain.sh)
+tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
 cd engine
 cargo +"$tc" fmt --all
 """
