@@ -6,10 +6,23 @@ set -euo pipefail
 
 BASELINE="engine/build-script-baseline.txt"
 
-if [ ! -f "$BASELINE" ]; then
-    echo "ERROR: baseline file $BASELINE not found"
-    echo "Generate it with: scripts/check-build-scripts.sh --update"
-    exit 1
+# The baseline checked against is the working tree's, or with
+# SCREEN_POLICY_REF set (see scripts/screen.sh) that git ref's. --update
+# always writes the working tree's.
+if [[ "${1:-}" != "--update" ]]; then
+    if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+        baseline=$(git show "$SCREEN_POLICY_REF:$BASELINE") || {
+            echo "ERROR: cannot read $BASELINE at $SCREEN_POLICY_REF"
+            exit 1
+        }
+    elif [ -f "$BASELINE" ]; then
+        baseline=$(cat "$BASELINE")
+    else
+        echo "ERROR: baseline file $BASELINE not found"
+        echo "Generate it with: scripts/check-build-scripts.sh --update"
+        exit 1
+    fi
+    baseline=$(printf '%s\n' "$baseline" | sort -u)
 fi
 
 # --locked: metadata must not rewrite an out-of-sync Cargo.lock — this script
@@ -34,8 +47,8 @@ if [[ "${1:-}" == "--update" ]]; then
     exit 0
 fi
 
-added=$(comm -23 <(printf '%s\n' "$current") <(sort -u "$BASELINE"))
-removed=$(comm -13 <(printf '%s\n' "$current") <(sort -u "$BASELINE"))
+added=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$baseline"))
+removed=$(comm -13 <(printf '%s\n' "$current") <(printf '%s\n' "$baseline"))
 
 if [ -n "$removed" ]; then
     echo "build-scripts: removed (info only):"
@@ -48,7 +61,11 @@ if [ -n "$added" ]; then
     echo ""
     echo "Review their build.rs before accepting. If safe, update baseline:"
     echo "  scripts/check-build-scripts.sh --update"
+    if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+        echo "The baseline here is read from $SCREEN_POLICY_REF, so an update takes"
+        echo "effect only once it has been reviewed and merged there."
+    fi
     exit 1
 fi
 
-echo "build-scripts: no new build.rs crates (baseline: $(wc -l < "$BASELINE" | tr -d ' ') crates)"
+echo "build-scripts: no new build.rs crates (baseline${SCREEN_POLICY_REF:+ at $SCREEN_POLICY_REF}: $(printf '%s\n' "$baseline" | wc -l | tr -d ' ') crates)"

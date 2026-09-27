@@ -91,9 +91,15 @@ jobs:
       # here must pass the supply-chain screen, and only the mise tasks carry
       # it (see [tasks.screen] in mise.toml). `mise run fmt` does not build,
       # and stands in for `cargo fmt` for the pinned rustfmt.
+      # SCREEN_POLICY_REF: the screen reads its baseline and allowlist from
+      # main, not from the tree Claude can edit (scripts/screen.sh). A PR
+      # that adds a build.rs crate or a quarantine exception therefore fails
+      # the bot's lint/test until that change has merged.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1
+        env:
+          SCREEN_POLICY_REF: origin/main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_tools: "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(gh pr:*)"

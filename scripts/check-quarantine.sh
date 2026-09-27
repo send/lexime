@@ -56,10 +56,17 @@ if [ -z "$deps" ]; then
     exit 0
 fi
 
-# Parse allowlist
+# Parse allowlist: the working tree's, or with SCREEN_POLICY_REF set (see
+# scripts/screen.sh) that git ref's. Unreadable there counts as empty.
+allowlist=""
+if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+    allowlist=$(git show "$SCREEN_POLICY_REF:$ALLOWLIST" 2>/dev/null) || allowlist=""
+elif [ -f "$ALLOWLIST" ]; then
+    allowlist=$(cat "$ALLOWLIST")
+fi
 allowed=""
-if [ -f "$ALLOWLIST" ]; then
-    allowed=$(awk -F' *= *' '
+if [ -n "$allowlist" ]; then
+    allowed=$(printf '%s\n' "$allowlist" | awk -F' *= *' '
         /^\[allow\]/ { in_allow=1; next }
         /^\[/ { in_allow=0 }
         in_allow && /=/ {
@@ -69,7 +76,7 @@ if [ -f "$ALLOWLIST" ]; then
             gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2);
             if ($1 != "" && $2 != "") print $1 " " $2
         }
-    ' "$ALLOWLIST")
+    ')
 fi
 
 now=$(date +%s)
@@ -131,6 +138,9 @@ if [ "$failures" -gt 0 ]; then
     echo ""
     echo "quarantine: $failures dep(s) published less than $QUARANTINE_DAYS days ago"
     echo "If this is intentional (e.g. security patch), add to $ALLOWLIST"
+    if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+        echo "(read from $SCREEN_POLICY_REF here: an entry counts once it is merged there)"
+    fi
     exit 1
 fi
 

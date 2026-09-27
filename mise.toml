@@ -524,7 +524,12 @@ description = "Run the supply-chain screen (scripts/screen.sh) — lint and test
 # (.github/workflows/claude.yml): the bot builds whatever tree is checked out
 # when each command runs — the action switches to the PR branch after every
 # earlier step, and Claude can edit Cargo.lock between commands — so the
-# screen has to run inside the command, not in a step before it.
+# screen has to run inside the command, not in a step before it. The bot also
+# reads the screen's policy files from origin/main (SCREEN_POLICY_REF), and
+# lint and test build `--locked`, so neither editing those files nor leaving
+# Cargo.toml out of step with the lock gets an unscreened crate built. This
+# guards against unvetted dependencies, not against the bot itself: it can
+# edit this file or the scripts, and workspace code runs in these tasks.
 #
 # The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
 # on it yet. CI gates them with its `screen` job; locally they run
@@ -554,7 +559,7 @@ cd engine
 clippy=$(cargo +"$tc" clippy --version)
 echo "lint: $clippy"
 cargo +"$tc" fmt --all --check
-cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
+cargo +"$tc" clippy --workspace --all-targets --all-features --locked -- -D warnings
 """
 
 [tasks.fmt]
@@ -593,7 +598,7 @@ description = "Run lint + workspace tests"
 # `screen` in its own right, since cargo test builds too; mise runs it once
 # per invocation.
 depends = ["screen", "lint"]
-run = "cd engine && cargo test --workspace --all-features"
+run = "cd engine && cargo test --workspace --all-features --locked"
 
 [tasks.clean]
 description = "Remove build artifacts"
