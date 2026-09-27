@@ -188,8 +188,9 @@ impl Rewriter for PartialHiraganaRewriter {
     }
 }
 
-/// For each top-N Viterbi path, generate variants where individual hiragana
-/// segments are replaced with kanji alternatives from the lattice.
+/// For the first 5 multi-segment paths in list order, generate variants where
+/// individual hiragana segments are replaced with kanji alternatives from the
+/// lattice.
 ///
 /// This is the reverse of `PartialHiraganaRewriter`: instead of softening
 /// kanji → hiragana, it surfaces kanji alternatives that the Viterbi
@@ -204,10 +205,13 @@ pub(crate) struct KanjiVariantRewriter<'a> {
 const MAX_KANJI_PER_SEGMENT: usize = 3;
 
 impl Rewriter for KanjiVariantRewriter<'_> {
-    fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
+    fn generate(&self, paths: &[ScoredPath], _reading: &str) -> Vec<ScoredPath> {
         let mut new_paths = Vec::new();
 
-        // Phase 1: Segment-based replacement on multi-segment paths.
+        // Multi-segment paths only. A kanji span always starts at an existing
+        // segment start (a 3+ char segment is split once, at +2, and its
+        // remainder must be a lattice kana node); single-segment kana runs
+        // are never scanned for kanji at arbitrary offsets.
         for path in paths.iter().filter(|p| p.segments.len() > 1).take(5) {
             let mut char_pos = 0usize;
             for seg_idx in 0..path.segments.len() {
@@ -239,15 +243,6 @@ impl Rewriter for KanjiVariantRewriter<'_> {
                     self.kanji_variants_subsplit(path, spos, &mut new_paths);
                 }
             }
-        }
-
-        // Phase 2: Reading-scan for single-segment hiragana paths.
-        if let Some(base) = paths.iter().find(|p| {
-            p.segments.len() == 1
-                && p.segments[0].surface == p.segments[0].reading
-                && p.segments[0].surface.chars().all(is_hiragana)
-        }) {
-            self.kanji_variants_from_reading(reading, base.pre_history_cost(), &mut new_paths);
         }
 
         new_paths
@@ -336,45 +331,6 @@ impl KanjiVariantRewriter<'_> {
                 viterbi_cost: path.pre_history_cost().saturating_add(2000),
                 history_boost: 0,
             });
-        }
-    }
-
-    /// Scan the full reading for 2-char positions that have kanji alternatives
-    /// in the lattice, and build single-segment variants with the kanji inlined.
-    fn kanji_variants_from_reading(
-        &self,
-        reading: &str,
-        base_cost: i64,
-        new_paths: &mut Vec<ScoredPath>,
-    ) {
-        let byte_offsets: Vec<usize> = reading
-            .char_indices()
-            .map(|(i, _)| i)
-            .chain(std::iter::once(reading.len()))
-            .collect();
-        let char_count = byte_offsets.len() - 1;
-        if char_count < 3 {
-            return;
-        }
-
-        for pos in 1..char_count.saturating_sub(2) {
-            let end = pos + 2;
-            let kanji_indices = self.top_kanji_at(pos..end);
-            if kanji_indices.is_empty() {
-                continue;
-            }
-
-            let prefix = &reading[..byte_offsets[pos]];
-            let suffix = &reading[byte_offsets[end]..];
-
-            for idx in kanji_indices {
-                let surface = format!("{}{}{}", prefix, self.lattice.surface(idx), suffix);
-                new_paths.push(ScoredPath::single(
-                    reading.to_string(),
-                    surface,
-                    base_cost.saturating_add(2000),
-                ));
-            }
         }
     }
 }

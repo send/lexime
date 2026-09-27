@@ -351,9 +351,10 @@ fn test_kanji_variant_subsplit_only_2char_prefix() {
 }
 
 #[test]
-fn test_kanji_variant_reading_scan_single_segment() {
-    // Single-segment hiragana path "しておいたほうが" — reading scan should
-    // find 方 at [5,7) and produce a single-segment variant with kanji inlined.
+fn test_kanji_variant_single_segment_kana_run_yields_nothing() {
+    // A single-segment kana path has no internal boundaries, so no kanji may
+    // be inlined into it — even where the lattice has a kanji node for a
+    // sub-span. Inlining at arbitrary offsets cut through words (お|圧|さか).
     let lattice = Lattice::from_test_nodes(
         "しておいたほうが",
         &[
@@ -363,7 +364,6 @@ fn test_kanji_variant_reading_scan_single_segment() {
     );
     let rw = KanjiVariantRewriter { lattice: &lattice };
 
-    // Single-segment hiragana path (as produced by HiraganaVariantRewriter)
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
             reading: "しておいたほうが".into(),
@@ -376,42 +376,5 @@ fn test_kanji_variant_reading_scan_single_segment() {
         history_boost: 0,
     }];
 
-    let result = rw.generate(&paths, "しておいたほうが");
-
-    // Should produce 方 and 法 variants as single-segment paths
-    assert_eq!(result.len(), 2, "should produce 2 reading-scan variants");
-    assert!(result.iter().any(|p| p.surface_key() == "しておいた方が"));
-    assert!(result.iter().any(|p| p.surface_key() == "しておいた法が"));
-    // Single-segment to avoid group_segments POS misclassification
-    assert!(result.iter().all(|p| p.segments.len() == 1));
-    assert!(result.iter().all(|p| p.viterbi_cost == 32000));
-}
-
-#[test]
-fn test_kanji_variant_reading_scan_skips_edges() {
-    // Reading scan should skip positions at start (pos=0) and end
-    // where the remaining prefix/suffix would be empty.
-    let lattice = Lattice::from_test_nodes("ほうが", &[(0, 2, "ほう", "方", 733, 0, 0)]);
-    let rw = KanjiVariantRewriter { lattice: &lattice };
-
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
-            reading: "ほうが".into(),
-            surface: "ほうが".into(),
-            left_id: 0,
-            right_id: 0,
-            word_cost: 0,
-        }],
-        viterbi_cost: 10000,
-        history_boost: 0,
-    }];
-
-    let result = rw.generate(&paths, "ほうが");
-
-    // pos=0 is skipped (no prefix), end=3 doesn't happen (2-char only goes to pos=1)
-    // pos=1 → [1,3) "うが" — no kanji
-    assert!(
-        result.is_empty(),
-        "should not produce variants at reading edges"
-    );
+    assert!(rw.generate(&paths, "しておいたほうが").is_empty());
 }
