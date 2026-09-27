@@ -15,7 +15,6 @@
 # and the tasks are the gates, so a mise release that changes rendering or task
 # semantics would fail every PR at once, for a reason unrelated to the PR —
 # the failure class engine/lint-toolchain.txt pins clippy against (#328).
-# Locally a newer mise still runs; CI, on the pin, is the reference.
 #
 # When: there is no canary, and nothing breaks while the pin ages. Bump when
 # this file needs a newer mise feature or fix, or when the pinned release has
@@ -26,13 +25,14 @@
 #      least 7 days ago — the same quarantine scripts/check-quarantine.sh
 #      applies to crates, since CI runs this binary on the repo.
 #   2. Replace the version below, and update your local mise to at least it.
-#   3. Run `mise run test` locally. The PR runs every gate, as mise.toml is in
-#      the `core` paths filter of .github/workflows/ci.yml.
+#   3. Run `mise run test` locally; the PR runs every other gate.
 #   4. Confirm in the PR's CI logs that each mise job (lint, accuracy, swift)
 #      prints the new version under "Running mise --version".
 #
 # Format: exactly `min_version = "YYYY.M.P"` on its own line, with no trailing
-# comment or table form; scripts/mise-version.sh refuses anything else.
+# comment or table form; scripts/mise-version.sh refuses anything else. Keep it
+# above the first [table] header: below one, mise reads it as that table's key
+# and drops the local floor, while the CI reader would still find it.
 min_version = "2026.9.11"
 
 # Minimum macOS the app is built for. Shared so `build` and `compile-swift`

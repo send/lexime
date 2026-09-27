@@ -144,7 +144,6 @@ jobs:
           workspaces: engine -> target
           shared-key: lint-${{ steps.toolchain.outputs.version }}
 
-      # Pinned mise — see `min_version` in mise.toml.
       - uses: ./.github/actions/setup-mise
 
       # The lint commands and the toolchain install live only in mise.toml.
@@ -277,7 +276,6 @@ jobs:
           workspaces: engine -> target
           shared-key: accuracy
 
-      # Pinned mise — see `min_version` in mise.toml.
       - uses: ./.github/actions/setup-mise
 
       # Restore/save split keyed on the pinned SHA itself (not a hash of the
@@ -384,7 +382,6 @@ jobs:
           workspaces: engine -> target
           shared-key: engine
 
-      # Pinned mise — see `min_version` in mise.toml.
       - uses: ./.github/actions/setup-mise
 
       # Real compile (not just a type-check) of every file under Sources/, at
