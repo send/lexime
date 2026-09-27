@@ -536,7 +536,8 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`. The probe disables
+# offline failure) in front of every `mise run test`. (The screen `test` also
+# depends on makes requests of its own, but only when Cargo.lock has changed.) The probe disables
 # rustup's auto-install: without that, `cargo +<missing>` installs the default
 # profile itself, silently (the output is discarded), and the install below —
 # the path CI's lint job takes on every fresh runner — never runs. The variable
@@ -555,9 +556,30 @@ if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --versi
 fi
 """
 
+[tasks.screen]
+description = "Run the supply-chain screen (scripts/screen.sh) — lint, test and audit depend on it"
+# The screen goes before anything that builds (scripts/screen.sh). A task that
+# builds lists this in `depends`: mise does not start it when the screen
+# fails, and runs the screen once per invocation however many tasks share it.
+# `lint`, `test` and `audit` do. That is the only screen the @claude bot's
+# builds get; why it has to be here and not in a workflow step is in
+# .github/workflows/claude.yml. Together with `--locked` builds and the policy
+# files read from main (SCREEN_POLICY_REF), it guards against unvetted
+# dependencies, not against the bot itself: it can edit this file or the
+# scripts, and workspace code runs in these tasks. Nor does it cover the lock
+# changing while one invocation runs: the screen checks it once, before
+# clippy and cargo test start.
+#
+# The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
+# on it yet. CI gates them with its `screen` job; locally they run
+# unscreened, as they did before this task. The bot is allowed none of them,
+# and a task has to depend on this before the bot may run it. `fmt` does not
+# build.
+run = "bash scripts/screen.sh"
+
 [tasks.lint]
-description = "Run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
-depends = ["lint-toolchain"]
+description = "Screen, then run cargo fmt --check and clippy on the pinned lint toolchain (CI's lint job runs this task)"
+depends = ["screen", "lint-toolchain"]
 # The lint commands are defined here only: CI's lint job and the @claude bot
 # (.github/workflows/claude.yml) run this task rather than cargo lines of
 # their own. CLAUDE.md summarizes the gate but does not copy the command line.
@@ -576,7 +598,7 @@ cd engine
 clippy=$(cargo +"$tc" clippy --version)
 echo "lint: $clippy"
 cargo +"$tc" fmt --all --check
-cargo +"$tc" clippy --workspace --all-targets --all-features -- -D warnings
+cargo +"$tc" clippy --workspace --all-targets --all-features --locked -- -D warnings
 """
 
 [tasks.fmt]
@@ -592,21 +614,20 @@ cd engine
 cargo +"$tc" fmt --all
 """
 
+[tasks.test-check-sources]
+description = "Test the screen's source check scripts/check-sources.sh (as CI's screen job does)"
+run = "bash scripts/check-sources-test.sh"
+
 [tasks.test-read-pin]
 description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's read-pin job does)"
 run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
-description = "Run supply chain checks (scripts/screen.sh, then audit-deps) — mirrors the CI screen + audit jobs"
-run = [
-  # screening first: cargo check executes build scripts, so the build.rs /
-  # quarantine screen must run before anything that builds. In CI it is the
-  # `screen` job that gates all cargo-invoking jobs; locally there is no job
-  # DAG, so it runs here, first. A run-list entry, not `depends`, so the order
-  # is sequential and a failed screen stops the task.
-  "bash scripts/screen.sh",
-  { task = "audit-deps" },
-]
+description = "Run supply chain checks (the screen task, then audit-deps) — mirrors the CI screen + audit jobs"
+# audit-deps builds (cargo check runs build scripts), so the screen goes
+# first. In CI the `screen` job does that; locally this dependency does.
+depends = ["screen"]
+run = [{ task = "audit-deps" }]
 
 [tasks.audit-deps]
 description = "Run the post-screen dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"
@@ -626,9 +647,11 @@ run = [
 ]
 
 [tasks.test]
-description = "Run lint + workspace tests"
-depends = ["lint"]
-run = "cd engine && cargo test --workspace --all-features"
+description = "Run the screen, lint and workspace tests"
+# `screen` in its own right, since cargo test builds too; mise runs it once
+# per invocation.
+depends = ["screen", "lint"]
+run = "cd engine && cargo test --workspace --all-features --locked"
 
 [tasks.clean]
 description = "Remove build artifacts"

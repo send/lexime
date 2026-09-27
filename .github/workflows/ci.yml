@@ -45,6 +45,7 @@ jobs:
               - 'scripts/screen.sh'
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
+              - 'scripts/check-sources.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
@@ -116,6 +117,11 @@ jobs:
       # out-of-sync Cargo.lock before the --locked screen below could reject
       # it. This job only runs metadata (no build), so the cache buys little.
 
+      # The source check's own tests first: it parses Cargo.lock and cargo
+      # configs, and a parser that misses a spelling fails open (#345).
+      - name: Test the source check
+        run: bash scripts/check-sources-test.sh
+
       - name: Supply-chain screen
         run: bash scripts/screen.sh
 
@@ -164,6 +170,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
       # installs the pin and runs on it by itself; CI reads it only for the
@@ -189,6 +197,9 @@ jobs:
       - uses: ./.github/actions/setup-mise
 
       # The lint commands and the toolchain install live only in mise.toml.
+      # It screens again ([tasks.screen]); the screen job is the pass that
+      # counts, as this one runs after rust-cache, whose unlocked `cargo
+      # metadata` may already have rewritten Cargo.lock.
       - run: mise run lint
 
   msrv:

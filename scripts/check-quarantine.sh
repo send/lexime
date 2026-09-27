@@ -17,7 +17,23 @@ if [[ "${1:-}" == "--all" ]]; then
     CHECK_ALL=true
 fi
 
-# Parse Cargo.lock for (name, version) pairs of registry deps
+# (name, version) of every registry dependency in the working tree's lock, as
+# cargo reads it (`cargo metadata`, which resolves without building). A hand
+# parser would skip packages whose keys are spelled differently but mean the
+# same to cargo (#345), and so leave them unchecked.
+current_deps() {
+    (cd engine && cargo metadata --locked --all-features --format-version 1) | python3 -c '
+import json, sys
+for pkg in json.load(sys.stdin)["packages"]:
+    if (pkg.get("source") or "").startswith("registry+"):
+        print(pkg["name"], pkg["version"])
+'
+}
+
+# The same pairs from a lock with no workspace around it (the base's, from
+# git show), so cargo cannot read it and this parses it by line. It can only
+# miss entries, never invent them, and a missed base entry makes the diff
+# below check that dependency again: stricter, never looser.
 parse_lockfile() {
     awk '
         /^\[\[package\]\]/ { name=""; version=""; source="" }
@@ -40,11 +56,14 @@ parse_lockfile() {
 
 # Get deps to check (changed only, or all)
 if $CHECK_ALL; then
-    deps=$(parse_lockfile "$LOCKFILE")
+    deps=$(current_deps)
 else
-    current=$(parse_lockfile "$LOCKFILE" | sort)
-    if git show origin/main:"$LOCKFILE" >/dev/null 2>&1; then
-        base=$(git show origin/main:"$LOCKFILE" | parse_lockfile /dev/stdin | sort)
+    current=$(current_deps | sort)
+    # The vetted set to diff against: main, or SCREEN_POLICY_REF when set, so
+    # a job that sets it trusts exactly one ref (see scripts/screen.sh).
+    base_ref=${SCREEN_POLICY_REF:-origin/main}
+    if git show "$base_ref:$LOCKFILE" >/dev/null 2>&1; then
+        base=$(git show "$base_ref:$LOCKFILE" | parse_lockfile /dev/stdin | sort)
         deps=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$base"))
     else
         deps="$current"
@@ -56,10 +75,17 @@ if [ -z "$deps" ]; then
     exit 0
 fi
 
-# Parse allowlist
+# Parse allowlist: the working tree's, or with SCREEN_POLICY_REF set (see
+# scripts/screen.sh) that git ref's. Unreadable there counts as empty.
+allowlist=""
+if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+    allowlist=$(git show "$SCREEN_POLICY_REF:$ALLOWLIST" 2>/dev/null) || true
+elif [ -f "$ALLOWLIST" ]; then
+    allowlist=$(cat "$ALLOWLIST")
+fi
 allowed=""
-if [ -f "$ALLOWLIST" ]; then
-    allowed=$(awk -F' *= *' '
+if [ -n "$allowlist" ]; then
+    allowed=$(printf '%s\n' "$allowlist" | awk -F' *= *' '
         /^\[allow\]/ { in_allow=1; next }
         /^\[/ { in_allow=0 }
         in_allow && /=/ {
@@ -69,7 +95,7 @@ if [ -f "$ALLOWLIST" ]; then
             gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2);
             if ($1 != "" && $2 != "") print $1 " " $2
         }
-    ' "$ALLOWLIST")
+    ')
 fi
 
 now=$(date +%s)
@@ -131,6 +157,9 @@ if [ "$failures" -gt 0 ]; then
     echo ""
     echo "quarantine: $failures dep(s) published less than $QUARANTINE_DAYS days ago"
     echo "If this is intentional (e.g. security patch), add to $ALLOWLIST"
+    if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+        echo "(read from $SCREEN_POLICY_REF here: an entry counts once it is merged there)"
+    fi
     exit 1
 fi
 

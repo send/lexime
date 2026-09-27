@@ -12,6 +12,11 @@ on:
   pull_request_review:
     types: [submitted]
 
+# As in ci.yml: mise reads only mise.toml, so a committed .mise.toml or
+# mise.local.toml cannot redefine lint/test and drop their screen.
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
+
 jobs:
   claude:
     if: |
@@ -60,10 +65,13 @@ jobs:
       issues: write
       actions: read
     steps:
+      # The screen in `mise run lint` / `test` needs origin/main (see
+      # scripts/screen.sh). A depth-1 checkout has it only on the issue
+      # events, whose ref is main, not on the PR review events.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       # So the bot lints and formats through mise.toml's [tasks.lint] /
       # [tasks.fmt], as CI's lint job does. Not through
@@ -101,23 +109,29 @@ jobs:
       #   action adds its read, comment, CI and git tools, and acceptEdits
       #   lets it edit files in the workspace; no other build or gh command
       #   is allowed.
-      #   That is not a sandbox: `cargo test` / `mise run` execute workspace
+      #   That is not a sandbox: `mise run lint` / `test` execute workspace
       #   code, so treat the bot as able to run anything with its tokens.
       #   `gh pr` is read-only here — pull-requests: write would otherwise
-      #   let it close, edit or approve PRs. No `cd engine && …` forms:
-      #   each side of `&&` is matched on its own, so the plain cargo rules
-      #   already cover them, and a rule spelling out `&&` never matches.
+      #   let it close, edit or approve PRs.
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
-      # `:::`). Raw `cargo fmt` / `cargo clippy` are deliberately absent — on
-      # stable they can disagree with the pinned toolchain CI lints with.
-      # `cargo test` / `cargo check` stay for targeted runs, which the exact
-      # `mise run test` rule cannot take, and CI's test jobs run on stable too.
+      # `:::`). No raw cargo, not even a targeted `cargo test -p`: every build
+      # here must pass the supply-chain screen, and only the mise tasks carry
+      # it ([tasks.screen]). It cannot be a step before this one: the action
+      # checks out the PR branch after every earlier step, and Claude can edit
+      # Cargo.lock between commands, so it runs inside each command. `mise run
+      # fmt` does not build, and stands in for `cargo fmt` for the pinned
+      # rustfmt.
+      # SCREEN_POLICY_REF: see scripts/screen.sh. A PR that adds a build.rs
+      # crate or a quarantine exception fails the bot's lint/test until merged,
+      # as does a branch behind main's baseline until main is merged into it.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1
+        env:
+          SCREEN_POLICY_REF: origin/main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: >-
-            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(cargo test:*),Bash(cargo check:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
+            --allowedTools "Bash(mise run lint),Bash(mise run test),Bash(mise run fmt),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"

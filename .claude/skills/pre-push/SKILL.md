@@ -25,10 +25,10 @@ mise run fmt   # lint が --check に使うのと同じ固定 rustfmt で整形�
 
 ### Stage 2 — Verify
 
-**順序規則: screen-before-build**。依存変更 (CI で screen + audit が走る変更) がある場合、build を伴う cargo (clippy / test / check) より**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
+**順序規則: screen-before-build**。`mise run lint` / `mise run test` は自前で先に screen を通す (mise.toml の `[tasks.screen]`)。それ以外の build を伴う cargo (msrv の `cargo check`、accuracy / swift の task) は、依存変更 (CI で screen + audit が走る変更) がある場合**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
 
 ```sh
-mise run test   # = lint (fmt --check + clippy -D warnings、CI と同じ固定 toolchain) + cargo test --workspace --all-features
+mise run test   # = screen → lint (CI と同じ固定 toolchain) → workspace tests。定義は mise.toml の [tasks.test] / [tasks.lint]
 ```
 
 この worktree **自身の target** で走らせる。他 worktree の `CARGO_TARGET_DIR` を借りると clippy が誤って clean を返す (PR #327 で CI の lint だけが落ちた)
@@ -43,7 +43,7 @@ mise run test   # = lint (fmt --check + clippy -D warnings、CI と同じ固定 
 | accuracy | `mise run accuracy && mise run accuracy-history`。accuracy に影響する変更 (コスト・重み・reranker・辞書ソース・変換パス) なら before/after を記録し PR に貼る (CLAUDE.md §変換精度テスト) |
 | swift | `mise run compile-swift && mise run test-swift` |
 | read-pin | `mise run test-read-pin` (CI では無条件 job — diff を問わず毎回走らせる) |
-| screen + audit | `mise run audit` (CI の screen + audit job を screen-first 順で。`audit-deps` 単独は screen を飛ばすので不可) |
+| screen + audit | `mise run test-check-sources && mise run audit` (CI の screen job の source check テスト、続けて screen + audit job を screen-first 順で。`audit-deps` 単独は screen を飛ばすので不可) |
 | msrv | `cd engine && cargo +<toolchain> check --workspace --locked` (`<toolchain>` は ci.yml の msrv job が指定する toolchain 値をそのまま使う — 正規化・別ソース参照をしない。未導入なら `rustup toolchain install <toolchain>`) |
 | CodeQL / Analyze | ローカル等価なし — CI に委ねる |
 
