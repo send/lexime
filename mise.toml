@@ -536,7 +536,8 @@ description = "Install the pinned lint toolchain (engine/lint-toolchain.txt) if 
 hide = true
 # Only when missing: `rustup toolchain install` fetches the release manifest
 # even for an installed toolchain, which would put a network round-trip (and an
-# offline failure) in front of every `mise run test`. The probe disables
+# offline failure) in front of every `mise run test`. (The screen `test` also
+# depends on makes requests of its own, but only when Cargo.lock has changed.) The probe disables
 # rustup's auto-install: without that, `cargo +<missing>` installs the default
 # profile itself, silently (the output is discarded), and the install below —
 # the path CI's lint job takes on every fresh runner — never runs. The variable
@@ -565,7 +566,9 @@ description = "Run the supply-chain screen (scripts/screen.sh) — lint, test an
 # .github/workflows/claude.yml. Together with `--locked` builds and the policy
 # files read from main (SCREEN_POLICY_REF), it guards against unvetted
 # dependencies, not against the bot itself: it can edit this file or the
-# scripts, and workspace code runs in these tasks.
+# scripts, and workspace code runs in these tasks. Nor does it cover the lock
+# changing while one invocation runs: the screen checks it once, before
+# clippy and cargo test start.
 #
 # The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
 # on it yet. CI gates them with its `screen` job; locally they run

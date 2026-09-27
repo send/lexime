@@ -663,7 +663,7 @@ macOS で動作する最小限の IME を構築。
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `test-read-pin` | pin 読み取り (`scripts/read-pin.sh` + ラッパー 3 本) のテスト + mise の全インストールが pin に従うかの検査 |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
-| `screen` | `scripts/screen.sh`（crates.io 以外の source 拒否 + quarantine + build.rs ベースライン検査）。`lint` / `test` / `audit` はこれに依存し、失敗すれば走らない。@claude bot の build が通る screen はこれだけ（理由は mise.toml の `[tasks.screen]`） |
+| `screen` | `scripts/screen.sh`（crates.io 以外の source 拒否 + quarantine + build.rs ベースライン検査）。`lint` / `test` / `audit` はこれに依存し、失敗すれば走らない。@claude bot の build が通る screen はこれだけ（理由は mise.toml の `[tasks.screen]`）。bot では baseline / allowlist / quarantine の差分基準を main から読む（`SCREEN_POLICY_REF`）ので、build.rs crate や quarantine 例外を足す PR は main にマージされるまで bot の lint / test が落ちる |
 | `test` | screen + lint + `cargo test --workspace --all-features --locked` |
 | `lint` | screen の後に `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
 | `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |

@@ -60,7 +60,8 @@ if [ -n "$added" ]; then
     echo "  scripts/check-build-scripts.sh --update"
     if [ -n "${SCREEN_POLICY_REF:-}" ]; then
         echo "The baseline here is read from $SCREEN_POLICY_REF, so an update takes"
-        echo "effect only once it has been reviewed and merged there."
+        echo "effect only once it has been reviewed and merged there. If the crate"
+        echo "is one $SCREEN_POLICY_REF has since dropped, merge it into this branch."
     fi
     exit 1
 fi

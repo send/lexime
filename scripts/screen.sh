@@ -14,7 +14,8 @@
 #
 # SCREEN_POLICY_REF: when set to a git ref, the policy files — the build.rs
 # baseline and the quarantine allowlist — are read from that ref instead of
-# the working tree. For a job whose agent can edit the tree and then build
+# the working tree, and quarantine diffs Cargo.lock against it instead of
+# origin/main. For a job whose agent can edit the tree and then build
 # (the @claude bot sets it to origin/main): without it, following the
 # screen's own "update the baseline" advice would let the next build run
 # the crate it had just stopped. CI leaves it unset, because a PR's policy
@@ -33,6 +34,16 @@ if [ -n "$other" ]; then
     echo "$other" | sed 's/^/  - /'
     exit 1
 fi
+# Source replacement in a cargo config would fetch "crates.io" packages from
+# somewhere else while Cargo.lock still names crates.io, so nothing above
+# would see it. Only the configs inside the repository: the ones cargo reads
+# from outside it are the runner's, not the tree's.
+for f in .cargo/config .cargo/config.toml engine/.cargo/config engine/.cargo/config.toml; do
+    if [ -f "$f" ] && grep -qE '^[[:space:]]*(\[source|source\.)' "$f"; then
+        echo "sources: $f replaces a cargo source"
+        exit 1
+    fi
+done
 echo "sources: crates.io only"
 
 bash scripts/check-quarantine.sh

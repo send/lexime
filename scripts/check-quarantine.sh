@@ -43,8 +43,11 @@ if $CHECK_ALL; then
     deps=$(parse_lockfile "$LOCKFILE")
 else
     current=$(parse_lockfile "$LOCKFILE" | sort)
-    if git show origin/main:"$LOCKFILE" >/dev/null 2>&1; then
-        base=$(git show origin/main:"$LOCKFILE" | parse_lockfile /dev/stdin | sort)
+    # The vetted set to diff against: main, or SCREEN_POLICY_REF when set, so
+    # a job that sets it trusts exactly one ref (see scripts/screen.sh).
+    base_ref=${SCREEN_POLICY_REF:-origin/main}
+    if git show "$base_ref:$LOCKFILE" >/dev/null 2>&1; then
+        base=$(git show "$base_ref:$LOCKFILE" | parse_lockfile /dev/stdin | sort)
         deps=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$base"))
     else
         deps="$current"
