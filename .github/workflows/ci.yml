@@ -10,7 +10,7 @@ permissions:
 
 # mise reads only mise.toml. By default it also merges .mise.toml,
 # mise.local.toml and others, which override its tasks: a committed one could
-# redefine a gate task (lint, audit-deps, ...) without touching the `core`
+# redefine a gate task (lint, audit, ...) without touching the `core`
 # filter's 'mise.toml' entry, so the jobs would neither be triggered by the
 # change nor run the gate as mise.toml defines it.
 env:
@@ -49,7 +49,7 @@ jobs:
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
-              # and audit jobs run [tasks.lint] / [tasks.audit-deps] as-is).
+              # and audit jobs run [tasks.lint] / [tasks.audit] as-is).
               # Without this, an edit weakening a gate would skip the very jobs
               # that would catch it.
               - 'mise.toml'
@@ -406,6 +406,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -421,10 +423,10 @@ jobs:
 
       - uses: ./.github/actions/setup-mise
 
-      # Screening (quarantine / build.rs baseline) lives in the `screen` job,
-      # which gates this and every other cargo-invoking job. The checks live
-      # only in mise.toml ([tasks.audit-deps]).
-      - run: mise run audit-deps
+      # The checks live only in mise.toml ([tasks.audit]). It screens again
+      # first; as in `lint`, the `screen` job is the pass that counts, since
+      # rust-cache's unlocked `cargo metadata` runs before it.
+      - run: mise run audit
 
   swift:
     needs: [changes, screen]

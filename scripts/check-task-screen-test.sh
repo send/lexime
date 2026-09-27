@@ -103,13 +103,10 @@ d=$(fixture)
 edit "$d/mise.toml" '[tasks.icon]' '[tasks.icons]'
 expect "listed task renamed" "icon is listed in NO_BUILD but is not a task" "$d"
 
+# mise would skip a screen with sources/outputs as up to date.
 d=$(fixture)
-edit "$d/mise.toml" 'depends = ["lint-toolchain"]' 'depends = ["lint-toolchain", "audit-deps"]'
-expect "unscreened task depends on audit-deps" "task fmt runs audit-deps" "$d"
-
-d=$(fixture)
-edit "$d/mise.toml" 'run = "bash scripts/icon.sh"' 'run = [{ task = "audit-deps" }]'
-expect "unscreened task runs audit-deps" "task icon runs audit-deps" "$d"
+edit "$d/mise.toml" 'run = "bash scripts/screen.sh"' $'sources = ["engine/Cargo.lock"]\noutputs = ["build/.screened"]\nrun = "bash scripts/screen.sh"'
+expect "screen made skippable" "the \`screen\` task must be exactly" "$d"
 
 # --- mise settings ---
 d=$(fixture)
@@ -123,7 +120,7 @@ expect "[settings] task.skip" "task.skip is ['screen']" "$d"
 d=$(fixture)
 expect "MISE_TASK_SKIP_DEPENDS in the environment" "task.skip_depends is True" "$d" MISE_TASK_SKIP_DEPENDS=1
 
-# --- the bot's allowlist ---
+# --- the bot's workflow ---
 yml=.github/workflows/claude.yml
 
 d=$(fixture)
@@ -131,8 +128,9 @@ edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run bench)'
 expect "bot allowed a screened task" pass "$d"
 
 d=$(fixture)
-edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run audit-deps)'
-expect "bot allowed audit-deps" "bot rule \`mise run audit-deps\`: the task builds without the screen" "$d"
+printf '\n[tasks.newbuild]\nrun = "cd engine && cargo build"\n' >>"$d/mise.toml"
+edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run newbuild)'
+expect "bot allowed an unscreened task" "bot rule \`mise run newbuild\`: the task builds without the screen" "$d"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(mise run lint)' 'Bash(mise run lint:*)'
@@ -144,15 +142,31 @@ expect "bot raw cargo" "bot rule Bash(cargo test -p lex-core)" "$d"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowed-tools "Bash(cargo build)"'
-expect "second list, other spelling" "bot rule Bash(cargo build)" "$d"
+expect "second list, other spelling" "claude_args must be exactly --allowedTools" "$d"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowedTools Bash(cargo)'
-expect "unquoted list" "only 1 parse" "$d"
+expect "unquoted list" "claude_args must be exactly --allowedTools" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --settings bot.json'
+expect "settings file in claude_args" "claude_args must be exactly --allowedTools" "$d"
+
+d=$(fixture)
+edit "$d/$yml" '          github_token: ${{ github.token }}' $'          github_token: ${{ github.token }}\n          settings: \'{"permissions": {"allow": ["Bash(cargo:*)"]}}\''
+expect "settings input" "input 'settings' is not one of" "$d"
+
+d=$(fixture)
+edit "$d/$yml" '        id: claude' $'        id: claude\n        continue-on-error: true'
+expect "other step key" "key 'continue-on-error' is not one of" "$d"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --dangerously-skip-permissions'
-expect "permissions bypassed" "bypasses the permission rules" "$d"
+expect "permissions bypassed" "names dangerously-skip-permissions" "$d"
+
+d=$(fixture)
+edit "$d/$yml" '      - name: Run Claude Code' $'      - run: echo "PATH=$PWD/bin:$PATH" >> "$GITHUB_ENV"\n      - name: Run Claude Code'
+expect "earlier step writes the job env" "names GITHUB_ENV" "$d"
 
 d=$(fixture)
 edit "$d/$yml" 'Bash(gh pr checks:*)' 'Bash(gh pr merge:*)'
@@ -160,11 +174,21 @@ expect "bot gh write rule" "bot rule Bash(gh pr merge:*)" "$d"
 
 d=$(fixture)
 edit "$d/$yml" '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml' '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml,.mise.toml'
-expect "bot mise reads another config" "does not set MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml" "$d"
+expect "bot mise reads another config" "sets MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml,.mise.toml" "$d"
 
 d=$(fixture)
 edit "$d/$yml" '          SCREEN_POLICY_REF: origin/main' $'          SCREEN_POLICY_REF: origin/main\n          MISE_TASK_SKIP_DEPENDS: 1'
-expect "bot job skips depends" "sets a MISE_TASK* variable" "$d"
+expect "bot job skips depends" "sets MISE_TASK_SKIP_DEPENDS=1" "$d"
+
+# MISE_ENV loads mise.<env>.toml, which can set task.skip_depends.
+d=$(fixture)
+edit "$d/$yml" '          SCREEN_POLICY_REF: origin/main' $'          SCREEN_POLICY_REF: origin/main\n          MISE_ENV: ci'
+expect "bot job loads another mise config" "sets MISE_ENV=ci" "$d"
+
+# Without it the bot reads policy from its own tree and caches publish dates.
+d=$(fixture)
+edit "$d/$yml" $'        env:\n          SCREEN_POLICY_REF: origin/main\n' ''
+expect "bot job without SCREEN_POLICY_REF" "does not set SCREEN_POLICY_REF: origin/main" "$d"
 
 # --- Claude Code permissions committed to the repository ---
 d=$(fixture)
