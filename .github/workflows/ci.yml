@@ -40,7 +40,8 @@ jobs:
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
-              # job runs [tasks.lint] as-is). Without this, an edit
+              # and audit jobs run [tasks.lint] / [tasks.audit-deps] as-is).
+              # Without this, an edit
               # weakening a gate would skip the very jobs that would catch it.
               - 'mise.toml'
               # The lint toolchain pin and its readers (lint-toolchain.sh
@@ -360,19 +361,15 @@ jobs:
         with:
           tool: cargo-deny,cargo-vet,cargo-machete
 
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+
       # Screening (quarantine / build.rs baseline) lives in the `screen` job,
-      # which gates this and every other cargo-invoking job.
-      - name: Verify Cargo.lock is in sync
-        run: cd engine && cargo check --locked
-
-      - name: cargo deny (advisories, licenses, sources, bans)
-        run: cd engine && cargo deny check
-
-      - name: cargo vet (audit tracking)
-        run: cd engine && cargo vet check
-
-      - name: Unused dependencies
-        run: cd engine && cargo machete
+      # which gates this and every other cargo-invoking job. The checks
+      # themselves (--locked check, cargo-deny, cargo-vet, cargo-machete) live
+      # only in mise.toml, which `mise run audit` also runs after the screen.
+      - run: mise run audit-deps
 
   swift:
     needs: [changes, screen]
