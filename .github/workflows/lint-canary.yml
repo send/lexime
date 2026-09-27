@@ -49,7 +49,9 @@ jobs:
       # but workflow_dispatch can target any branch. `mise run lint` screens
       # again ([tasks.screen]); this step stays so that a screen failure fails
       # the job here, not inside lint-canary.sh, which would count it as a
-      # lint failure and could report the pin as behind.
+      # lint failure and could report the pin as behind. Only a transient
+      # crates.io error on that second pass still can, and only on a branch
+      # whose Cargo.lock differs from main (on main it makes no request).
       - name: Supply-chain screen
         run: bash scripts/screen.sh
 

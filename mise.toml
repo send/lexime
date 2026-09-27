@@ -526,8 +526,8 @@ description = "Run the supply-chain screen (scripts/screen.sh) — lint and test
 # earlier step, and Claude can edit Cargo.lock between commands — so the
 # screen has to run inside the command, not in a step before it.
 #
-# The other tasks that run cargo (engine-lib, dict, accuracy, ...) do not
-# depend on it yet. CI gates them with its `screen` job; locally they run
+# The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
+# on it yet. CI gates them with its `screen` job; locally they run
 # unscreened, as they did before this task. The bot is allowed none of them,
 # and a task has to depend on this before the bot may run it. `fmt` does not
 # build.
