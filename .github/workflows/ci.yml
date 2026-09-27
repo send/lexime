@@ -79,17 +79,12 @@ jobs:
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
-            # Everything the read-pin job runs or reads: the test, the reader,
-            # both wrappers, and the two real pin files (its "current pin"
-            # cases). The job does not go through mise, so no 'mise.toml'.
+            # The read-pin job's own input. The reader, its wrappers, both pin
+            # files, ci.yml and mise.toml are already in `core` or `corpus`,
+            # which gate their consumers (lint, accuracy), and the job's `if`
+            # ORs both, so they are not repeated here.
             pins:
               - 'scripts/read-pin-test.sh'
-              - 'scripts/read-pin.sh'
-              - 'scripts/mozc-pin.sh'
-              - 'scripts/lint-toolchain.sh'
-              - 'engine/data/mozc-pin.txt'
-              - 'engine/lint-toolchain.txt'
-              - '.github/workflows/ci.yml'
 
   # Supply-chain screening. Runs the quarantine / build.rs baseline checks
   # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
@@ -124,7 +119,10 @@ jobs:
   # cache key. Plain bash and no cargo, so no `screen`.
   read-pin:
     needs: changes
-    if: needs.changes.outputs.pins == 'true'
+    if: >-
+      needs.changes.outputs.core == 'true' ||
+      needs.changes.outputs.corpus == 'true' ||
+      needs.changes.outputs.pins == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -59,22 +59,17 @@ expect_refusal() {
   fi
 }
 
-# mozc_value <name> <value> <fixture>: mozc-pin.sh prints <value>, and so did
-# the legacy one-liner.
-mozc_value() {
-  expect_value "mozc: $1" "$2" bash scripts/mozc-pin.sh "$3"
+# mozc_case <name> <value or ""> <fixture>: mozc-pin.sh prints <value>, or
+# refuses when it is empty, and the legacy one-liner printed <value> (nothing).
+mozc_case() {
+  if [[ -n $2 ]]; then
+    expect_value "mozc: $1" "$2" bash scripts/mozc-pin.sh "$3"
+  else
+    expect_refusal "mozc: $1" "read-pin: no 40-hex SHA line in $3" bash scripts/mozc-pin.sh "$3"
+  fi
   local legacy
   legacy=$(legacy_mozc "$3")
-  [[ $legacy == "$2" ]] || fail "mozc: $1 (legacy one-liner)" "want: $2" "got:  $legacy"
-}
-
-# mozc_refusal <name> <fixture>: mozc-pin.sh refuses, and the legacy one-liner
-# printed nothing.
-mozc_refusal() {
-  expect_refusal "mozc: $1" "read-pin: no 40-hex SHA line in $2" bash scripts/mozc-pin.sh "$2"
-  local legacy
-  legacy=$(legacy_mozc "$2")
-  [[ -z $legacy ]] || fail "mozc: $1 (legacy one-liner)" "want: no output" "got:  $legacy"
+  [[ $legacy == "$2" ]] || fail "mozc: $1 (legacy one-liner)" "want: '$2'" "got:  '$legacy'"
 }
 
 sha=0123456789abcdef0123456789abcdef01234567
@@ -89,20 +84,20 @@ current=$(legacy_mozc engine/data/mozc-pin.txt)
 expect_value "mozc: current pin" "$current" bash scripts/mozc-pin.sh
 
 printf '# pin\r\n \t%s \t\r\n' "$upper" >"$tmp/upper-crlf"
-mozc_value "uppercase, spaces/tabs, CRLF" "$sha" "$tmp/upper-crlf"
+mozc_case "uppercase, spaces/tabs, CRLF" "$sha" "$tmp/upper-crlf"
 
 printf '%s\n' "sha: $sha" "$sha trailing" "x$sha" "not a sha" "  $sha" "$other" >"$tmp/first-wins"
-mozc_value "junk lines first, first SHA wins" "$sha" "$tmp/first-wins"
+mozc_case "junk lines first, first SHA wins" "$sha" "$tmp/first-wins"
 
 printf '# %s\n' "$sha" >"$tmp/commented"
 printf '%s\n' "${sha:1}" >"$tmp/hex39"
 printf '%s0\n' "$sha" >"$tmp/hex41"
 printf '%s foo\n' "$sha" >"$tmp/trailing-text"
 : >"$tmp/empty"
-for f in commented hex39 hex41 trailing-text empty; do
-  mozc_refusal "$f" "$tmp/$f"
+# `missing` is never created.
+for f in commented hex39 hex41 trailing-text empty missing; do
+  mozc_case "$f" "" "$tmp/$f"
 done
-mozc_refusal "missing file" "$tmp/missing"
 
 expect_refusal "mozc: ::error annotation under GITHUB_ACTIONS" \
   "::error file=$tmp/empty::read-pin: no 40-hex SHA line in $tmp/empty" \
