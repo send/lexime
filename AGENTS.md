@@ -447,7 +447,11 @@ what a generic reviewer misses:
   gate re-litigate it, and so do findings that restore the skipped Idle epoch
   bump or move the guard back to the callers. SPEC § 不変条件 has the
   evidence, the precondition (a commit arriving on a later run-loop turn, not
-  re-entrantly mid-teardown) and why nothing depends on that epoch bump.
+  re-entrantly mid-teardown), why nothing depends on that epoch bump, and the
+  residual: real but unobserved, a host that trails its commit *and*
+  re-activates fast with an immediate keystroke would commit the new
+  composition (the guard passes — the session is composing again). It is
+  recorded, not fenced, because nothing can tell it apart.
   **Everything else in this area is open**, and specifically these are known
   and unfixed, not settled: the `activateServer` side is still unmodelled — if
   IMKit skips `deactivateServer` the session reaches `resetDisplay()` still
