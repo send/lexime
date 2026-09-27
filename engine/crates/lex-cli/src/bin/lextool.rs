@@ -237,7 +237,10 @@ impl SnapshotKind {
 
 // --- Accuracy types ---
 
+// deny_unknown_fields: a misspelled key or table (`[cases.windows]`) must
+// fail the load, not silently drop the check it meant to add.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccuracyCorpus {
     cases: Vec<AccuracyCase>,
     #[serde(default)]
@@ -245,6 +248,7 @@ struct AccuracyCorpus {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HistoryRecord {
     segments: Vec<(String, String)>,
     #[serde(default = "default_repeat")]
@@ -256,6 +260,7 @@ fn default_repeat() -> u32 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccuracyCase {
     reading: String,
     expected: String,
