@@ -156,12 +156,38 @@ for n in unscreened:
 # --- the @claude bot's allowlist -------------------------------------------
 # The bot builds only through the tasks it is allowed, so each must be
 # screened or not build. Bash rules other than exact `mise run <task>` and
-# `gh` are refused outright: raw cargo would skip the screen, and a prefix
-# rule (`mise run lint:*`) also admits `mise run lint ::: <any task>`.
+# the read-only `gh pr view/diff/checks` are refused outright: raw cargo
+# would skip the screen, and a prefix rule (`mise run lint:*`) also admits
+# `mise run lint ::: <any task>`.
 with open(CLAUDE_YML) as f:
     yml = f.read()
 if re.search(r"dangerously-skip-permissions|bypassPermissions", yml):
     err("%s bypasses the permission rules" % CLAUDE_YML)
+
+# The bot's mise must read mise.toml alone, with no skip setting: this check
+# reads its own environment, not the bot job's, so it holds claude.yml to
+# the one it assumes. (A job that writes MISE_* to $GITHUB_ENV also names it
+# here, so any MISE_TASK spelling is refused, not only an `env:` key.)
+if not re.search(r"^[ \t]*MISE_OVERRIDE_CONFIG_FILENAMES:[ \t]*mise\.toml[ \t]*$", yml, re.M):
+    err("%s does not set MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml" % CLAUDE_YML)
+if re.search(r"MISE_TASK", yml):
+    err("%s sets a MISE_TASK* variable, which can skip the screen" % CLAUDE_YML)
+
+# Claude Code also takes permissions and hooks (shell commands) from the
+# repository: .claude/settings*.json, and `allowed-tools` in skills and
+# commands. None of it is needed, and none of it would be read by the rules
+# below, so a committed one is refused; adding one means changing this
+# check, in review. Committed only: CI and the bot see nothing else, and a
+# local settings.local.json is the developer's own.
+tracked = subprocess.run(["git", "ls-files", "-z", "--", ".claude"], check=True,
+                         stdout=subprocess.PIPE, universal_newlines=True).stdout.split("\0")
+for path in filter(None, tracked):
+    if re.fullmatch(r"\.claude/settings[^/]*\.json", path):
+        err("%s: committed Claude Code settings can grant the bot tools or run hooks" % path)
+    elif path.endswith(".md"):
+        with open(path) as f:
+            if re.search(r"allowed[-_]tools", f.read(), re.I):
+                err("%s names allowed-tools, which grants tools while it is active" % path)
 spellings = re.findall(r"allowed-?tools", yml, re.I)
 lists = re.findall(r"--allowed-?tools[ =]+\"([^\"]*)\"", yml, re.I)
 if not spellings:
@@ -195,8 +221,8 @@ for rule in (r for lst in lists for r in rules(lst)):
     task = re.fullmatch(r"mise run ([A-Za-z0-9_-]+)", cmd)
     if task:
         allowed.append(task.group(1))
-    elif not re.fullmatch(r"gh [a-z].*", cmd):
-        err("bot rule %s: only exact `mise run <task>` and `gh` Bash rules are allowed" % rule)
+    elif not re.fullmatch(r"gh pr (view|diff|checks)(:\*)?", cmd):
+        err("bot rule %s: only exact `mise run <task>` and `gh pr view/diff/checks` Bash rules are allowed" % rule)
 for n in allowed:
     if n not in tasks:
         err("bot rule `mise run %s`: no such task" % n)

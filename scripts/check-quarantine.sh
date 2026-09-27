@@ -124,8 +124,10 @@ trap 'rm -f "$tmpfile"' EXIT
 # more.
 cache=""
 if [ -z "${SCREEN_POLICY_REF:-}" ]; then
-    cache="${XDG_CACHE_HOME:-$HOME/.cache}/lexime/crates-io-published"
-    mkdir -p "$(dirname "$cache")" 2>/dev/null || cache=""
+    cache_dir="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
+    if [ -n "$cache_dir" ] && mkdir -p "$cache_dir/lexime" 2>/dev/null; then
+        cache="$cache_dir/lexime/crates-io-published"
+    fi
 fi
 
 echo "$deps" | while read -r name version; do
@@ -138,11 +140,13 @@ echo "$deps" | while read -r name version; do
     fi
 
     # The cached date, if any. Malformed lines are ignored; of several, the
-    # latest date is the strictest.
+    # latest date is the strictest. Held to 1-11 digits without a leading
+    # zero: bash's `[ -gt ]` errors on a number past its range, and the error
+    # would take the `ok` branch below; a leading zero reads as octal.
     created_at=""
     if [ -n "$cache" ] && [ -f "$cache" ]; then
         created_at=$(awk -v n="$name" -v v="$version" '
-            NF == 3 && $1 == n && $2 == v && $3 ~ /^[0-9]+$/ && $3 > max { max = $3 }
+            NF == 3 && $1 == n && $2 == v && $3 ~ /^[1-9][0-9]*$/ && length($3) <= 11 && $3 + 0 > max + 0 { max = $3 }
             END { if (max != "") print max }
         ' "$cache") || created_at=""
     fi

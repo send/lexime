@@ -119,7 +119,7 @@ jobs:
       # here must pass the supply-chain screen, and only the mise tasks carry
       # it ([tasks.screen]); CI's task-screen job fails when a task allowed
       # here builds without it, or when a Bash rule here is anything but an
-      # exact `mise run <task>` or `gh`. It cannot be a step before this one:
+      # exact `mise run <task>` or `gh pr view/diff/checks`. It cannot be a step before this one:
       # the action checks out the PR branch after every earlier step, and
       # Claude can edit Cargo.lock between commands, so it runs inside each
       # command. `mise run fmt` does not build, and stands in for `cargo fmt`

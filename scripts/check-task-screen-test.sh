@@ -16,14 +16,18 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fails=0
 
-
-# fixture: a fresh copy of the two files the check reads.
+# fixture: a fresh git checkout of the files the check reads (it lists
+# .claude/ through git, as only committed files reach CI and the bot).
 fixture() {
   local dir
   dir=$(mktemp -d "$tmp/case.XXXXXX")
   mkdir -p "$dir/.github/workflows"
   cp "$repo/mise.toml" "$dir/mise.toml"
   cp "$repo/.github/workflows/claude.yml" "$dir/.github/workflows/claude.yml"
+  mkdir -p "$dir/.claude"
+  cp -R "$repo/.claude/skills" "$dir/.claude/skills"
+  git -C "$dir" init -q
+  git -C "$dir" add -A
   echo "$dir"
 }
 
@@ -149,6 +153,32 @@ expect "unquoted list" "only 1 parse" "$d"
 d=$(fixture)
 edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --dangerously-skip-permissions'
 expect "permissions bypassed" "bypasses the permission rules" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(gh pr checks:*)' 'Bash(gh pr merge:*)'
+expect "bot gh write rule" "bot rule Bash(gh pr merge:*)" "$d"
+
+d=$(fixture)
+edit "$d/$yml" '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml' '  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml,.mise.toml'
+expect "bot mise reads another config" "does not set MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml" "$d"
+
+d=$(fixture)
+edit "$d/$yml" '          SCREEN_POLICY_REF: origin/main' $'          SCREEN_POLICY_REF: origin/main\n          MISE_TASK_SKIP_DEPENDS: 1'
+expect "bot job skips depends" "sets a MISE_TASK* variable" "$d"
+
+# --- Claude Code permissions committed to the repository ---
+d=$(fixture)
+printf '{"permissions": {"allow": ["Bash(cargo build:*)"]}}\n' >"$d/.claude/settings.json"
+git -C "$d" add .claude/settings.json
+expect "committed .claude/settings.json" ".claude/settings.json: committed Claude Code settings" "$d"
+
+d=$(fixture)
+printf '{}\n' >"$d/.claude/settings.local.json"
+expect "uncommitted settings.local.json" pass "$d"
+
+d=$(fixture)
+edit "$d/.claude/skills/pre-push/SKILL.md" 'user-invocable: true' $'user-invocable: true\nallowed-tools: Bash(cargo:*)'
+expect "skill granting tools" ".claude/skills/pre-push/SKILL.md names allowed-tools" "$d"
 
 if [[ $fails -gt 0 ]]; then
   echo "check-task-screen-test: $fails failed"
