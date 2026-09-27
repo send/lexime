@@ -119,11 +119,12 @@ jobs:
       # here must pass the supply-chain screen, and only the mise tasks carry
       # it ([tasks.screen]); CI's task-screen job fails when a task allowed
       # here builds without it, or when a Bash rule here is anything but an
-      # exact `mise run <task>` or `gh pr view/diff/checks`. It cannot be a step before this one:
-      # the action checks out the PR branch after every earlier step, and
-      # Claude can edit Cargo.lock between commands, so it runs inside each
-      # command. `mise run fmt` does not build, and stands in for `cargo fmt`
-      # for the pinned rustfmt.
+      # exact `mise run <task>` or `gh pr view/diff/checks` (it also refuses
+      # the other ways the bot gets tools; see scripts/check-task-screen.py).
+      # It cannot be a step before this one: the action checks out the PR
+      # branch after every earlier step, and Claude can edit Cargo.lock
+      # between commands, so it runs inside each command. `mise run fmt` does
+      # not build, and stands in for `cargo fmt` for the pinned rustfmt.
       # SCREEN_POLICY_REF: see scripts/screen.sh. A PR that adds a build.rs
       # crate or a quarantine exception fails the bot's lint/test until merged,
       # as does a branch behind main's baseline until main is merged into it.
