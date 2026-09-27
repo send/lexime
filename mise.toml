@@ -575,17 +575,16 @@ description = "Run the post-screen dependency checks (locked check, cargo-deny, 
 # this task rather than cargo lines of their own. Add a check here, not to a
 # caller (a check needing a new cargo tool also goes in that job's
 # install-action list). Hidden because it builds unscreened: locally, run it
-# via `audit` (screen first, see above).
+# via `audit` (screen first, see above). A run list, not a script, so the log
+# echoes each command and shows which check failed; it stops at the first.
 hide = true
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-cd engine
-cargo check --locked
-cargo deny check
-cargo vet check
-cargo machete
-"""
+dir = "{{config_root}}/engine"
+run = [
+  "cargo check --locked",
+  "cargo deny check",
+  "cargo vet check",
+  "cargo machete",
+]
 
 [tasks.test]
 description = "Run lint + workspace tests"

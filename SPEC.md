@@ -667,7 +667,7 @@ macOS で動作する最小限の IME を構築。
 | `lint` | `cargo fmt --check` + `cargo clippy`（`engine/lint-toolchain.txt` で固定した toolchain。フラグは mise.toml の定義が唯一。CI の lint job と @claude bot もこの task を実行する） |
 | `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | `scripts/screen.sh`（quarantine / build.rs スクリーニング）→ `audit-deps` の順（screen-first） |
-| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（CI の audit job もこの task を実行する） |
+| `audit-deps` | `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps）（hidden。`audit` と CI の audit job が実行する） |
 | `log` | ログストリーミング |
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
