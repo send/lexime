@@ -107,6 +107,25 @@ threshold=$((now - QUARANTINE_DAYS * 86400))
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
 
+# Publish dates already looked up, one "name version unix-time" per line, so
+# a changed entry costs a crates.io request once per machine rather than on
+# every task that builds (and works offline after that). Keyed like the diff
+# above, by name and version, which crates.io never lets anyone publish
+# twice: the date is fixed and the age only grows. (A deleted crate's name
+# can be taken again, but its new upload does not match the checksum
+# Cargo.lock holds, and cargo refuses it.) The date is kept rather than the
+# verdict so a longer QUARANTINE_DAYS still applies, and only for versions
+# that passed: one still in quarantine, or one the API could not answer for,
+# is asked about again on every run.
+# Outside the repository, and off under SCREEN_POLICY_REF: a job whose agent
+# builds edited code between screens (see scripts/screen.sh) could write this
+# file, so there every date comes from crates.io.
+cache=""
+if [ -z "${SCREEN_POLICY_REF:-}" ]; then
+    cache="${XDG_CACHE_HOME:-$HOME/.cache}/lexime/crates-io-published"
+    mkdir -p "$(dirname "$cache")" 2>/dev/null || cache=""
+fi
+
 echo "$deps" | while read -r name version; do
     [ -z "$name" ] && continue
 
@@ -116,39 +135,58 @@ echo "$deps" | while read -r name version; do
         continue
     fi
 
-    # Query crates.io API
-    response=$(curl -sf --connect-timeout 10 --max-time 30 \
-        --retry 2 --retry-delay 2 --retry-all-errors \
-        -H "User-Agent: $USER_AGENT" \
-        "https://crates.io/api/v1/crates/$name/$version" 2>/dev/null) || {
-        echo "quarantine: FAIL $name@$version — API request failed (unable to verify age)"
-        echo "FAIL" >> "$tmpfile"
-        continue
-    }
+    # The cached date, if any. Malformed lines are ignored; of several, the
+    # latest date is the strictest.
+    created_at=""
+    if [ -n "$cache" ] && [ -f "$cache" ]; then
+        created_at=$(awk -v n="$name" -v v="$version" '
+            NF == 3 && $1 == n && $2 == v && $3 ~ /^[0-9]+$/ && $3 > max { max = $3 }
+            END { if (max != "") print max }
+        ' "$cache") || created_at=""
+    fi
+    via=" (date cached)"
 
-    created_at=$(echo "$response" | python3 -c "
+    if [ -z "$created_at" ]; then
+        via=""
+        # Query crates.io API
+        response=$(curl -sf --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-delay 2 --retry-all-errors \
+            -H "User-Agent: $USER_AGENT" \
+            "https://crates.io/api/v1/crates/$name/$version" 2>/dev/null) || {
+            echo "quarantine: FAIL $name@$version — API request failed (unable to verify age)"
+            echo "FAIL" >> "$tmpfile"
+            continue
+        }
+
+        created_at=$(echo "$response" | python3 -c "
 import sys, json
 from datetime import datetime
 data = json.load(sys.stdin)
 dt = datetime.fromisoformat(data['version']['created_at'].replace('Z', '+00:00'))
 print(int(dt.timestamp()))
 " 2>/dev/null) || {
-        echo "quarantine: FAIL $name@$version — failed to parse publication date (unable to verify age)"
-        echo "FAIL" >> "$tmpfile"
-        continue
-    }
+            echo "quarantine: FAIL $name@$version — failed to parse publication date (unable to verify age)"
+            echo "FAIL" >> "$tmpfile"
+            continue
+        }
+    fi
 
     age_days=$(( (now - created_at) / 86400 ))
 
     if [ "$created_at" -gt "$threshold" ]; then
-        echo "quarantine: FAIL $name@$version — published $age_days days ago (minimum: $QUARANTINE_DAYS)"
+        echo "quarantine: FAIL $name@$version — published $age_days days ago (minimum: $QUARANTINE_DAYS)${via:+ (date from $cache)}"
         echo "FAIL" >> "$tmpfile"
     else
-        echo "quarantine: ok $name@$version — published $age_days days ago"
+        echo "quarantine: ok $name@$version — published $age_days days ago$via"
+        if [ -z "$via" ] && [ -n "$cache" ]; then
+            printf '%s %s %s\n' "$name" "$version" "$created_at" >> "$cache" 2>/dev/null || true
+        fi
     fi
 
     # Rate limit: 1 req/sec
-    sleep 1
+    if [ -z "$via" ]; then
+        sleep 1
+    fi
 done
 
 failures=$(wc -l < "$tmpfile" | tr -d ' ')

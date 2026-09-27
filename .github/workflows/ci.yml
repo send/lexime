@@ -160,6 +160,19 @@ jobs:
             exit 1
           }
 
+  # Every mise task that builds depends on `screen`, and the @claude bot is
+  # allowed no other build (scripts/check-task-screen.py; its tests run
+  # first). Unconditional like read-pin, for the same reason: it reads
+  # mise.toml and claude.yml, and claude.yml sits in no filter. No cargo.
+  task-screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-mise
+
+      - run: bash scripts/check-task-screen-test.sh
+
   lint:
     needs: [changes, screen]
     if: >-
@@ -309,7 +322,9 @@ jobs:
   # re-downloads it — so a stale cache entry can never poison the dict.
   # No `lint` dependency: a corpus-only change must not be skipped just
   # because the Rust lint job didn't run. `screen` IS required — this job
-  # builds dictool, which executes dependency build scripts.
+  # builds dictool, which executes dependency build scripts. Each `mise run`
+  # below screens again ([tasks.screen]), as every task that builds does; as
+  # in `lint`, the `screen` job is the pass that counts.
   accuracy:
     needs: [changes, screen]
     if: >-
@@ -319,6 +334,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -417,7 +434,11 @@ jobs:
       needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
+      # Both tasks below screen first (through uniffi-gen), like every task
+      # that builds.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
         with:

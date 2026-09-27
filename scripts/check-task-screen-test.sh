@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Tests for scripts/check-task-screen.py, which checks that every mise task
+# that builds depends on the supply-chain screen and that the @claude bot is
+# allowed no build without it. Run by CI's task-screen job and by
+# `mise run test-task-screen`.
+#
+# The first case is the check itself, on this repository. The others copy
+# this repository's mise.toml and claude.yml and change one thing each, so
+# they test the shapes those files really have.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+check="$repo/scripts/check-task-screen.py"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+
+# The repository, as the gates run it (ci.yml and claude.yml set this).
+echo "--- this repository"
+if (cd "$repo" && MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml python3 "$check"); then
+  echo "ok   this repository"
+else
+  echo "FAIL this repository"
+  fails=$((fails + 1))
+fi
+
+# Fixtures see no global mise config or skip settings from the caller, so a
+# case fails only for its own change.
+: >"$tmp/global.toml"
+fx_env=(env -u MISE_TASK_SKIP -u MISE_TASK_SKIP_DEPENDS
+  MISE_GLOBAL_CONFIG_FILE="$tmp/global.toml"
+  MISE_TRUSTED_CONFIG_PATHS="$tmp"
+  MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml)
+
+# fixture: a fresh copy of the two files the check reads.
+fixture() {
+  local dir
+  dir=$(mktemp -d "$tmp/case.XXXXXX")
+  mkdir -p "$dir/.github/workflows"
+  cp "$repo/mise.toml" "$dir/mise.toml"
+  cp "$repo/.github/workflows/claude.yml" "$dir/.github/workflows/claude.yml"
+  echo "$dir"
+}
+
+# edit <file> <old> <new>: replace the first <old>, which must be there — a
+# case whose edit no longer applies must fail, not test the unchanged file.
+edit() {
+  OLD=$2 NEW=$3 python3 -c '
+import os, sys
+p, old, new = sys.argv[1], os.environ["OLD"], os.environ["NEW"]
+s = open(p).read()
+if old not in s:
+    sys.exit("edit: %r not in %s" % (old, p))
+open(p, "w").write(s.replace(old, new, 1))
+' "$1"
+}
+
+# expect <name> pass|<message> <dir> [env...]: run the check in <dir>.
+expect() {
+  local name=$1 want=$2 dir=$3 out rc=0
+  shift 3
+  out=$(cd "$dir" && "${fx_env[@]}" "$@" python3 "$check" 2>&1) || rc=$?
+  if [[ $want == pass && $rc -eq 0 ]] || [[ $want != pass && $rc -ne 0 && $out == *"$want"* ]]; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name (exit $rc, want: $want)"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+}
+
+d=$(fixture)
+expect "copy of this repository" pass "$d"
+
+# --- the task graph ---
+d=$(fixture)
+printf '\n[tasks.newbuild]\nrun = "cd engine && cargo build"\n' >>"$d/mise.toml"
+expect "new task without the screen" "task newbuild does not depend on \`screen\`" "$d"
+
+d=$(fixture)
+printf '\n[tasks.newbuild]\ndepends = ["screen"]\nrun = "cd engine && cargo build"\n' >>"$d/mise.toml"
+expect "new task depending on the screen" pass "$d"
+
+d=$(fixture)
+printf '\n[tasks.newbuild]\ndepends = ["dict"]\nrun = "cd engine && cargo build"\n' >>"$d/mise.toml"
+expect "new task screened through its depends" pass "$d"
+
+# mise loads file tasks too, which a parse of mise.toml would not see.
+d=$(fixture)
+mkdir -p "$d/mise-tasks"
+printf '#!/usr/bin/env bash\ncd engine && cargo build\n' >"$d/mise-tasks/filebuild"
+chmod +x "$d/mise-tasks/filebuild"
+expect "file task without the screen" "task filebuild does not depend on \`screen\`" "$d"
+
+d=$(fixture)
+edit "$d/mise.toml" $'[tasks.engine-lib]\ndescription = "Build universal static library (x86_64 + aarch64)"\ndepends = ["screen"]\n' \
+  $'[tasks.engine-lib]\ndescription = "Build universal static library (x86_64 + aarch64)"\n'
+expect "leaf task's screen removed" "task engine-lib does not depend on \`screen\`" "$d"
+
+d=$(fixture)
+edit "$d/mise.toml" '[tasks.icon]' '[tasks.icons]'
+expect "listed task renamed" "icon is listed in NO_BUILD but is not a task" "$d"
+
+d=$(fixture)
+edit "$d/mise.toml" 'depends = ["lint-toolchain"]' 'depends = ["lint-toolchain", "audit-deps"]'
+expect "unscreened task depends on audit-deps" "task fmt runs audit-deps" "$d"
+
+d=$(fixture)
+edit "$d/mise.toml" 'run = "bash scripts/icon.sh"' 'run = [{ task = "audit-deps" }]'
+expect "unscreened task runs audit-deps" "task icon runs audit-deps" "$d"
+
+# --- mise settings ---
+d=$(fixture)
+printf '\n[settings]\ntask.skip_depends = true\n' >>"$d/mise.toml"
+expect "[settings] task.skip_depends" "task.skip_depends is True" "$d"
+
+d=$(fixture)
+printf '\n[settings]\ntask.skip = ["screen"]\n' >>"$d/mise.toml"
+expect "[settings] task.skip" "task.skip is ['screen']" "$d"
+
+d=$(fixture)
+expect "MISE_TASK_SKIP_DEPENDS in the environment" "task.skip_depends is True" "$d" MISE_TASK_SKIP_DEPENDS=1
+
+# --- the bot's allowlist ---
+yml=.github/workflows/claude.yml
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run bench)'
+expect "bot allowed a screened task" pass "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(mise run fmt)' 'Bash(mise run audit-deps)'
+expect "bot allowed audit-deps" "bot rule \`mise run audit-deps\`: the task builds without the screen" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(mise run lint)' 'Bash(mise run lint:*)'
+expect "bot prefix rule" "bot rule Bash(mise run lint:*)" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(mise run lint),' 'Bash(mise run lint),Bash(cargo test -p lex-core),'
+expect "bot raw cargo" "bot rule Bash(cargo test -p lex-core)" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowed-tools "Bash(cargo build)"'
+expect "second list, other spelling" "bot rule Bash(cargo build)" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --allowedTools Bash(cargo)'
+expect "unquoted list" "only 1 parse" "$d"
+
+d=$(fixture)
+edit "$d/$yml" 'Bash(gh pr checks:*)"' 'Bash(gh pr checks:*)" --dangerously-skip-permissions'
+expect "permissions bypassed" "bypasses the permission rules" "$d"
+
+if [[ $fails -gt 0 ]]; then
+  echo "$fails case(s) failed"
+  exit 1
+fi
+echo "all cases passed"
