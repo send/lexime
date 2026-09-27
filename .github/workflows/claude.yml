@@ -12,9 +12,8 @@ on:
   pull_request_review:
     types: [submitted]
 
-# As in ci.yml: mise reads only mise.toml. Here it matters more — the bot's
-# only supply-chain screen is [tasks.screen] as lint/test depend on it, and
-# a committed .mise.toml or mise.local.toml could redefine those tasks.
+# As in ci.yml: mise reads only mise.toml, so a committed .mise.toml or
+# mise.local.toml cannot redefine lint/test and drop their screen.
 env:
   MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
 
@@ -72,7 +71,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # needed for quarantine diff against main
+          fetch-depth: 0
 
       # So the bot lints and formats through mise.toml's [tasks.lint] /
       # [tasks.fmt], as CI's lint job does. Not through
@@ -118,12 +117,13 @@ jobs:
       # also admit `mise run lint ::: <any task>` (mise runs every task after
       # `:::`). No raw cargo, not even a targeted `cargo test -p`: every build
       # here must pass the supply-chain screen, and only the mise tasks carry
-      # it (see [tasks.screen] in mise.toml). `mise run fmt` does not build,
-      # and stands in for `cargo fmt` for the pinned rustfmt.
-      # SCREEN_POLICY_REF: the screen reads its baseline and allowlist from
-      # main, not from the tree Claude can edit (scripts/screen.sh). A PR
-      # that adds a build.rs crate or a quarantine exception therefore fails
-      # the bot's lint/test until that change has merged.
+      # it ([tasks.screen]). It cannot be a step before this one: the action
+      # checks out the PR branch after every earlier step, and Claude can edit
+      # Cargo.lock between commands, so it runs inside each command. `mise run
+      # fmt` does not build, and stands in for `cargo fmt` for the pinned
+      # rustfmt.
+      # SCREEN_POLICY_REF: see scripts/screen.sh. A PR that adds a build.rs
+      # crate or a quarantine exception fails the bot's lint/test until merged.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1

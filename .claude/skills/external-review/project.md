@@ -11,7 +11,7 @@ invoked from this repo. The multi-round loop variant's calibration
 
 ## build_verify
 
-`mise run test` (the supply-chain screen, scripts/screen.sh; then lint on the pinned toolchain in `engine/lint-toolchain.txt`, the same one CI runs, then `cargo test --workspace --all-features --locked`)
+`mise run test` (the supply-chain screen, then lint on the pinned toolchain CI runs, then the workspace tests; defined in mise.toml's `[tasks.test]` / `[tasks.lint]`)
 
 Per CLAUDE.md「ビルド・テスト」. When a fix touches any accuracy-impacting
 input — dictionary sources (dict_source / `engine/data/`) / connection

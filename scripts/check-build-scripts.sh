@@ -6,25 +6,6 @@ set -euo pipefail
 
 BASELINE="engine/build-script-baseline.txt"
 
-# The baseline checked against is the working tree's, or with
-# SCREEN_POLICY_REF set (see scripts/screen.sh) that git ref's. --update
-# always writes the working tree's.
-if [[ "${1:-}" != "--update" ]]; then
-    if [ -n "${SCREEN_POLICY_REF:-}" ]; then
-        baseline=$(git show "$SCREEN_POLICY_REF:$BASELINE") || {
-            echo "ERROR: cannot read $BASELINE at $SCREEN_POLICY_REF"
-            exit 1
-        }
-    elif [ -f "$BASELINE" ]; then
-        baseline=$(cat "$BASELINE")
-    else
-        echo "ERROR: baseline file $BASELINE not found"
-        echo "Generate it with: scripts/check-build-scripts.sh --update"
-        exit 1
-    fi
-    baseline=$(printf '%s\n' "$baseline" | sort -u)
-fi
-
 # --locked: metadata must not rewrite an out-of-sync Cargo.lock — this script
 # now runs before the audit chain's `cargo check --locked` and would otherwise
 # silently repair the lockfile that check is supposed to verify.
@@ -45,6 +26,22 @@ if [[ "${1:-}" == "--update" ]]; then
     echo "$current" > "$BASELINE"
     echo "build-scripts: baseline updated ($(wc -l < "$BASELINE" | tr -d ' ') crates)"
     exit 0
+fi
+
+# The baseline checked against: the working tree's, or with SCREEN_POLICY_REF
+# set (see scripts/screen.sh) that git ref's. --update above always writes
+# the working tree's.
+if [ -n "${SCREEN_POLICY_REF:-}" ]; then
+    baseline=$(git show "$SCREEN_POLICY_REF:$BASELINE" | sort -u) || {
+        echo "ERROR: cannot read $BASELINE at $SCREEN_POLICY_REF"
+        exit 1
+    }
+elif [ -f "$BASELINE" ]; then
+    baseline=$(sort -u "$BASELINE")
+else
+    echo "ERROR: baseline file $BASELINE not found"
+    echo "Generate it with: scripts/check-build-scripts.sh --update"
+    exit 1
 fi
 
 added=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$baseline"))

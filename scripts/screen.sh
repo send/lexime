@@ -21,16 +21,13 @@
 # change is exactly what its reviewers look at.
 set -euo pipefail
 
-# crates.io only. The checks below look at registry packages alone, so a git
-# or other-registry dependency would pass them unexamined. The same policy as
-# engine/deny.toml's [sources], which cargo-deny enforces only in the audit
-# job, alongside the builds rather than before them.
-# A missing or unreadable Cargo.lock (grep exit 2) stops here; exit 1, no
-# source lines at all, is fine.
-sources=$(grep '^source = ' engine/Cargo.lock || [ $? -eq 1 ])
-other=$(printf '%s\n' "$sources" \
-    | grep -vxF -e 'source = "registry+https://github.com/rust-lang/crates.io-index"' -e '' \
-    | sort -u || true)
+# crates.io only, because that is all the checks below can vet: quarantine
+# asks the crates.io API for publish dates, and both checks skip every
+# package that is not from a registry. A git or other-registry dependency
+# would pass them unexamined. (engine/deny.toml's [sources] says the same,
+# but cargo-deny runs only in the audit job, alongside the builds.)
+other=$(awk '/^source = / && $0 != "source = \"registry+https://github.com/rust-lang/crates.io-index\""' \
+    engine/Cargo.lock | sort -u)
 if [ -n "$other" ]; then
     echo "sources: Cargo.lock has dependencies from outside crates.io:"
     echo "$other" | sed 's/^/  - /'

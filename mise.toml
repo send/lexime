@@ -556,19 +556,16 @@ fi
 """
 
 [tasks.screen]
-description = "Run the supply-chain screen (scripts/screen.sh) — lint and test depend on it"
-# The screen goes before anything that builds (scripts/screen.sh). `lint` and
-# `test` build, so they depend on this task, and mise does not start them when
-# it fails. That dependency is the only screen the @claude bot's builds get
-# (.github/workflows/claude.yml): the bot builds whatever tree is checked out
-# when each command runs — the action switches to the PR branch after every
-# earlier step, and Claude can edit Cargo.lock between commands — so the
-# screen has to run inside the command, not in a step before it. The bot also
-# reads the screen's policy files from origin/main (SCREEN_POLICY_REF), and
-# lint and test build `--locked`, so neither editing those files nor leaving
-# Cargo.toml out of step with the lock gets an unscreened crate built. This
-# guards against unvetted dependencies, not against the bot itself: it can
-# edit this file or the scripts, and workspace code runs in these tasks.
+description = "Run the supply-chain screen (scripts/screen.sh) — lint, test and audit depend on it"
+# The screen goes before anything that builds (scripts/screen.sh). A task that
+# builds lists this in `depends`: mise does not start it when the screen
+# fails, and runs the screen once per invocation however many tasks share it.
+# `lint`, `test` and `audit` do. That is the only screen the @claude bot's
+# builds get; why it has to be here and not in a workflow step is in
+# .github/workflows/claude.yml. Together with `--locked` builds and the policy
+# files read from main (SCREEN_POLICY_REF), it guards against unvetted
+# dependencies, not against the bot itself: it can edit this file or the
+# scripts, and workspace code runs in these tasks.
 #
 # The other tasks that build (engine-lib, dict, accuracy, ...) do not depend
 # on it yet. CI gates them with its `screen` job; locally they run
@@ -620,14 +617,10 @@ run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
 description = "Run supply chain checks (the screen task, then audit-deps) — mirrors the CI screen + audit jobs"
-run = [
-  # The screen first ([tasks.screen]): audit-deps builds (cargo check runs
-  # build scripts). In CI the `screen` job gates every cargo-invoking job;
-  # locally there is no job DAG, so it runs here, first. Run-list entries run
-  # in order, and a failed one stops the task.
-  { task = "screen" },
-  { task = "audit-deps" },
-]
+# audit-deps builds (cargo check runs build scripts), so the screen goes
+# first. In CI the `screen` job does that; locally this dependency does.
+depends = ["screen"]
+run = [{ task = "audit-deps" }]
 
 [tasks.audit-deps]
 description = "Run the post-screen dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"

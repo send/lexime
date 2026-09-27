@@ -60,7 +60,7 @@ fi
 # scripts/screen.sh) that git ref's. Unreadable there counts as empty.
 allowlist=""
 if [ -n "${SCREEN_POLICY_REF:-}" ]; then
-    allowlist=$(git show "$SCREEN_POLICY_REF:$ALLOWLIST" 2>/dev/null) || allowlist=""
+    allowlist=$(git show "$SCREEN_POLICY_REF:$ALLOWLIST" 2>/dev/null) || true
 elif [ -f "$ALLOWLIST" ]; then
     allowlist=$(cat "$ALLOWLIST")
 fi

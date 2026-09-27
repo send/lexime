@@ -163,9 +163,6 @@ jobs:
       needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     steps:
-      # `mise run lint` screens again ([tasks.screen]). The screen job is the
-      # pass that counts: this one runs after rust-cache, whose unlocked
-      # `cargo metadata` may already have rewritten Cargo.lock.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # needed for quarantine diff against main
@@ -194,6 +191,9 @@ jobs:
       - uses: ./.github/actions/setup-mise
 
       # The lint commands and the toolchain install live only in mise.toml.
+      # It screens again ([tasks.screen]); the screen job is the pass that
+      # counts, as this one runs after rust-cache, whose unlocked `cargo
+      # metadata` may already have rewritten Cargo.lock.
       - run: mise run lint
 
   msrv:
