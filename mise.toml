@@ -596,14 +596,13 @@ description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's
 run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
-description = "Run supply chain checks (quarantine, build.rs, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
+description = "Run supply chain checks (scripts/screen.sh, locked check, cargo-deny, cargo-vet, machete) — mirrors the CI screen + audit jobs"
 run = [
   # screening first: cargo check executes build scripts, so the build.rs /
-  # quarantine screens must run before anything that builds. In CI these two
-  # live in the `screen` job that gates all cargo-invoking jobs; locally
-  # there is no job DAG, so they run here, first.
-  "bash scripts/check-quarantine.sh",
-  "bash scripts/check-build-scripts.sh",
+  # quarantine screen must run before anything that builds. In CI it is the
+  # `screen` job that gates all cargo-invoking jobs; locally there is no job
+  # DAG, so it runs here, first.
+  "bash scripts/screen.sh",
   "cd engine && cargo check --locked",
   "cd engine && cargo deny check",
   "cd engine && cargo vet check",
