@@ -1,6 +1,6 @@
 ---
 name: lexime-review
-description: lexime project-specific pre-push design review (5-agent parallel). Checks 辞書ソースオブトゥルース / 測定・コーパス規律 / 構造的正しさ / UniFFI 境界 / プロジェクト文脈 beyond what generic /code-review covers. Run BEFORE git push as /pre-push Stage 5 — the final design gate; post-push Codex is a single-shot second opinion, not a safety loop.
+description: lexime project-specific pre-push design review (5-agent parallel). Checks 辞書ソースオブトゥルース / 測定・コーパス規律 / 構造的正しさ / UniFFI 境界 / プロジェクト文脈 beyond what generic /code-review covers. Run BEFORE git push as the final /pre-push stage (the final design gate); post-push Codex is a single-shot second opinion, not a safety loop.
 user-invocable: true
 ---
 
