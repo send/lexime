@@ -14,7 +14,7 @@ file=$1 what=$2 ere=$3
 
 # With pipefail a missing match fails the assignment, so an empty value never
 # reaches the consumers. In CI the refusal is also a file annotation.
-value=$(grep -oE -m1 "^[[:space:]]*${ere}[[:space:]]*\$" "$file" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]') || {
+value=$(grep -oE -m1 "^[[:space:]]*(${ere})[[:space:]]*\$" "$file" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]') || {
   echo "${GITHUB_ACTIONS:+::error file=$file::}read-pin: no $what line in $file" >&2
   exit 1
 }
