@@ -21,6 +21,7 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       corpus: ${{ steps.filter.outputs.corpus }}
       swift: ${{ steps.filter.outputs.swift }}
+      pins: ${{ steps.filter.outputs.pins }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -78,6 +79,17 @@ jobs:
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
+            # Everything the read-pin job runs or reads: the test, the reader,
+            # both wrappers, and the two real pin files (its "current pin"
+            # cases). The job does not go through mise, so no 'mise.toml'.
+            pins:
+              - 'scripts/read-pin-test.sh'
+              - 'scripts/read-pin.sh'
+              - 'scripts/mozc-pin.sh'
+              - 'scripts/lint-toolchain.sh'
+              - 'engine/data/mozc-pin.txt'
+              - 'engine/lint-toolchain.txt'
+              - '.github/workflows/ci.yml'
 
   # Supply-chain screening. Runs the quarantine / build.rs baseline checks
   # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
@@ -106,6 +118,18 @@ jobs:
 
       - name: build.rs baseline check
         run: bash scripts/check-build-scripts.sh
+
+  # Tests the pin reader and its wrappers (scripts/read-pin-test.sh), including
+  # that mozc-pin.sh prints what the pre-#332 one-liner did: the accuracy job's
+  # cache key. Plain bash and no cargo, so no `screen`.
+  read-pin:
+    needs: changes
+    if: needs.changes.outputs.pins == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: bash scripts/read-pin-test.sh
 
   lint:
     needs: [changes, screen]
