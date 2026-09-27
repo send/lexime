@@ -692,9 +692,9 @@ macOS で動作する最小限の IME を構築。
 
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
-| `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift / pins） |
+| `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
-| `read-pin` | ubuntu-latest | pin ファイル・読み取りスクリプト変更時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであることも検査） |
+| `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであることも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（`cargo fmt --check` + `cargo clippy --all-targets`。toolchain は `engine/lint-toolchain.txt` で固定） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
