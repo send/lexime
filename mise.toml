@@ -614,6 +614,10 @@ cd engine
 cargo +"$tc" fmt --all
 """
 
+[tasks.test-check-sources]
+description = "Test the screen's source check scripts/check-sources.sh (as CI's screen job does)"
+run = "bash scripts/check-sources-test.sh"
+
 [tasks.test-read-pin]
 description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's read-pin job does)"
 run = "bash scripts/read-pin-test.sh"

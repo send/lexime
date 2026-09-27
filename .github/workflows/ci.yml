@@ -45,6 +45,7 @@ jobs:
               - 'scripts/screen.sh'
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
+              - 'scripts/check-sources.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
@@ -115,6 +116,11 @@ jobs:
       # `cargo metadata` for its cache key, which would silently repair an
       # out-of-sync Cargo.lock before the --locked screen below could reject
       # it. This job only runs metadata (no build), so the cache buys little.
+
+      # The source check's own tests first: it parses Cargo.lock and cargo
+      # configs, and a parser that misses a spelling fails open (#345).
+      - name: Test the source check
+        run: bash scripts/check-sources-test.sh
 
       - name: Supply-chain screen
         run: bash scripts/screen.sh
