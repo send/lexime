@@ -663,7 +663,7 @@ macOS で動作する最小限の IME を構築。
 | `test-swift` | Swift UniFFI ラウンドトリップテスト |
 | `compile-swift` | `Sources/` 全ファイルを両アーキで実コンパイル（テストがリンクしないファイルのゲート、#316） |
 | `test` | lint + `cargo test --workspace --all-features` |
-| `lint` | `cargo fmt --check` + `cargo clippy --all-targets`（`engine/lint-toolchain.txt` で固定した toolchain。CI の lint job と同じ） |
+| `lint` | `cargo fmt --check` + `cargo clippy --all-targets`（`engine/lint-toolchain.txt` で固定した toolchain。CI の lint job もこの task を実行する） |
 | `fmt` | engine を整形（lint の `--check` と同じ固定 toolchain の rustfmt） |
 | `audit` | quarantine / build.rs スクリーニング + `--locked` 検証 + cargo-deny（脆弱性・ライセンス）+ cargo-vet + cargo-machete（未使用 deps） |
 | `log` | ログストリーミング |
@@ -693,7 +693,7 @@ macOS で動作する最小限の IME を構築。
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
 | `screen` | ubuntu-latest | 常時 | quarantine + build.rs ベースライン検査。cargo を呼ぶ全ジョブをこれが gate する |
-| `lint` | ubuntu-latest | Rust 変更時 | `cargo fmt --check` + `cargo clippy --all-targets`（toolchain は `engine/lint-toolchain.txt` で固定） |
+| `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（`cargo fmt --check` + `cargo clippy --all-targets`。toolchain は `engine/lint-toolchain.txt` で固定） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
 | `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
@@ -703,7 +703,7 @@ macOS で動作する最小限の IME を構築。
 | `audit` | ubuntu-latest | core 変更時 | `--locked` 検証 + `cargo-deny` + `cargo-vet` + `cargo-machete` |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift` |
 
-Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
+Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 
