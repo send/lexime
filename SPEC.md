@@ -709,8 +709,7 @@ Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: en
 
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
-| `screen` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` と同じ quarantine + build.rs ベースライン検査 |
-| `canary` | ubuntu-latest | `screen` 通過後 | 浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。新しい lint が出れば赤 |
+| `canary` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` の `screen` と同じ検査を先に通してから、浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。stable が pin より新しく lint が落ちれば赤 |
 | `report` | ubuntu-latest | `canary` が判定を出した時 | 追跡 issue「lint pin is behind stable」を 1 件だけ維持: behind / free bump なら open・更新、pin が追いついたら close（`issues: write` はこのジョブだけ） |
 
 > これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks` で一覧できる）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。

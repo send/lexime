@@ -14,12 +14,10 @@
 # not run with -D warnings. MSRV has its own pin (`rust-version` in
 # engine/Cargo.toml and the msrv job in .github/workflows/ci.yml).
 #
-# When: the weekly lint canary (.github/workflows/lint-canary.yml) runs the
-# same gate on floating stable. While stable is ahead of this pin it keeps one
-# issue, "lint pin is behind stable", open. The issue says either "behind" (the
-# canary run is red, and the issue lists the new lint names) or "free bump"
-# (stable passes as-is). Either one is the cue to bump. The canary closes the
-# issue once the pin catches up. Nothing bumps the pin automatically.
+# When: the weekly lint canary (.github/workflows/lint-canary.yml) runs this
+# gate on floating stable. While stable is ahead of the pin, it keeps an issue
+# titled "lint pin is behind stable" open, marked either "behind" (with the new
+# lint names) or "free bump". Either one is the cue to bump.
 #
 # Bump procedure (do all of this in ONE PR):
 #   1. Replace the version below with the new stable X.Y.Z.

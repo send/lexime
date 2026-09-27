@@ -19,13 +19,21 @@ title='lint pin is behind stable'
 
 # Everything below lands in an issue body. The values come from rustc output
 # via lint-canary.sh, so check their shape rather than trust it.
-[[ $STATE =~ ^(current|free-bump|behind)$ ]] || { echo "report: bad STATE '$STATE'" >&2; exit 1; }
-[[ $STABLE =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "report: bad STABLE '$STABLE'" >&2; exit 1; }
-[[ $PIN =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "report: bad PIN '$PIN'" >&2; exit 1; }
-[[ $LINTS =~ ^[A-Za-z0-9_:,]*$ ]] || { echo "report: bad LINTS '$LINTS'" >&2; exit 1; }
+need() { [[ ${!1} =~ $2 ]] || { echo "report: bad $1 '${!1}'" >&2; exit 1; }; }
+version='^[0-9]+\.[0-9]+\.[0-9]+$'
+need STATE '^(current|free-bump|behind)$'
+need STABLE "$version"
+need PIN "$version"
+need LINTS '^[A-Za-z0-9_:,]*$'
 
-number=$(gh issue list --state open --limit 1000 --json number,body \
-  --jq "map(select(.body | contains(\"$marker\"))) | .[0].number // empty")
+# "<number>\t<marker line>" of the open issue, or nothing. The marker line
+# holds the last verdict's fingerprint, compared below.
+found=$(gh issue list --state open --limit 1000 --json number,body --jq '
+  map(select(.body | contains("'"$marker"'"))) | .[0] | select(.)
+  | [.number, (.body | split("\n") | map(rtrimstr("\r"))
+               | map(select(startswith("'"$marker"'"))) | .[0] // "")]
+  | @tsv')
+IFS=$'\t' read -r number old <<<"$found" || true
 
 if [ "$STATE" = current ]; then
   if [ -n "$number" ]; then
@@ -42,8 +50,12 @@ fingerprint="$marker state=$STATE stable=$STABLE lints=$LINTS -->"
 case $STATE in
   behind)
     # shellcheck disable=SC2016 # literal backticks: markdown code spans
-    findings=$(printf '%s' "$LINTS" | sed 's/,/`, `/g')
-    verdict="Stable **$STABLE** fails the lint gate. The pin is **$PIN**. Findings: \`$findings\`."
+    if [ -n "$LINTS" ]; then
+      findings=\`$(printf '%s' "$LINTS" | sed 's/,/`, `/g')\`
+    else
+      findings="none recognised in the log, see the run"
+    fi
+    verdict="Stable **$STABLE** fails the lint gate. The pin is **$PIN**. Findings: $findings."
     action="Bump the pin and fix the findings in the same PR." ;;
   free-bump)
     verdict="Stable **$STABLE** passes the lint gate as-is. The pin is **$PIN**."
@@ -68,7 +80,6 @@ if [ -z "$number" ]; then
   exit 0
 fi
 
-old=$(gh issue view "$number" --json body --jq .body | grep -F -m1 "$marker" || true)
 gh issue edit "$number" --body "$body" >/dev/null
 if [ "$old" = "$fingerprint" ]; then
   echo "report: #$number unchanged, refreshed its last-checked link"

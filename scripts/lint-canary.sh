@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Run the lint gate (`mise run lint`) on a floating toolchain instead of the pin
-# and classify the result. Driven weekly by .github/workflows/lint-canary.yml;
-# `behind` or `free-bump` is the cue to bump engine/lint-toolchain.txt.
+# and classify the result. Driven weekly by .github/workflows/lint-canary.yml.
 #
 # Usage: scripts/lint-canary.sh [toolchain]   (default: stable)
 #
@@ -9,17 +8,19 @@
 # LINT_TOOLCHAIN overriding the pin, so the canary runs exactly the gate that
 # CI and the local hook run.
 #
-# After the lint log, prints key=value lines (appended to $GITHUB_OUTPUT when
-# set):
-#   state   current    toolchain not newer than the pin, lint passes
-#           free-bump  newer than the pin, lint passes: bumping costs nothing
-#           behind     newer than the pin, lint reports findings: bump and fix
-#           error      lint failed, but not as a sign of pin age: no finding
-#                      was recognised (the run itself broke), or the toolchain
-#                      is not newer than the pin
-#   stable  version of the toolchain that ran
-#   pin     pinned version
-#   lints   comma-separated lint names / error codes (behind only)
+# The verdict depends only on whether the toolchain is newer than the pin and
+# whether lint passed:
+#   current    not newer, passes    nothing to do
+#   free-bump  newer, passes        bumping the pin costs nothing
+#   behind     newer, fails         bump the pin and fix what it reports
+#   error      not newer, fails     not a pin-age signal: the gate is red on
+#                                   the pin itself, or the run broke
+# `lints` (the lint names / error codes found in the log) is informational.
+# If rustc rewords its notes, `lints` comes back empty but the verdict does not
+# change.
+#
+# After the lint log, prints state / stable / pin / lints as key=value lines
+# (appended to $GITHUB_OUTPUT when set) and a table to $GITHUB_STEP_SUMMARY.
 # Exits 0 for current / free-bump and 1 for behind / error.
 set -euo pipefail
 
@@ -50,24 +51,25 @@ lints=$(
   } | sed 's/-/_/g' | sort -u | paste -sd, -
 )
 
-# The pin is behind when it sorts strictly before the toolchain.
-if [ "$pin" != "$stable" ] && [ "$(printf '%s\n%s\n' "$pin" "$stable" | sort -V | head -n1)" = "$pin" ]; then
-  newer=true
-else
-  newer=false
-fi
-
-if [ "$status" -eq 0 ]; then
-  if $newer; then state=free-bump; else state=current; fi
-  lints=
-elif $newer && [ -n "$lints" ]; then
-  state=behind
-else
-  state=error
-fi
+# Newer means the toolchain, not the pin, sorts last (equal versions: the pin).
+newest=$(printf '%s\n%s\n' "$pin" "$stable" | sort -V | tail -n1)
+case $status:$([ "$newest" != "$pin" ] && echo newer) in
+  0:newer) state=free-bump ;;
+  0:) state=current ;;
+  *:newer) state=behind ;;
+  *) state=error ;;
+esac
 
 printf 'state=%s\nstable=%s\npin=%s\nlints=%s\n' "$state" "$stable" "$pin" "$lints" |
   tee -a "${GITHUB_OUTPUT:-/dev/null}"
+
+{
+  echo "## Lint canary: $state"
+  echo
+  echo "| $toolchain | pin | findings |"
+  echo "|---|---|---|"
+  echo "| $stable | $pin | ${lints:-none recognised} |"
+} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 case $state in
   current | free-bump) exit 0 ;;

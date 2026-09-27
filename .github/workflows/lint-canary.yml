@@ -1,11 +1,9 @@
 name: Lint canary
 
 # Runs the lint gate on floating `stable` instead of the pin in
-# engine/lint-toolchain.txt. A signal, not a gate: nothing here runs on
-# pull_request or push, so it can never block a PR. When stable is ahead of
-# the pin, it opens or updates one tracking issue: "behind" (new lints fire, so
-# the run is red) or "free bump" (stable passes as-is). Once the pin catches up
-# it closes that issue.
+# engine/lint-toolchain.txt. A signal, not a gate: it never runs on
+# pull_request or push. The verdicts are in scripts/lint-canary.sh, and the
+# tracking issue they drive is in scripts/lint-canary-report.sh.
 on:
   schedule:
     # Mondays 03:17 UTC. Stable releases land on Thursdays every 6 weeks, so
@@ -21,27 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Same screen as ci.yml, and for the same reason: cargo executes dependency
-  # build scripts, so the quarantine / build.rs baseline checks run first. On
-  # main the lockfile has already passed the screen, but workflow_dispatch can
-  # target any branch.
-  screen:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # needed for quarantine diff against main
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
-
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
-
   canary:
-    needs: screen
     runs-on: ubuntu-latest
     outputs:
       state: ${{ steps.canary.outputs.state }}
@@ -50,13 +28,29 @@ jobs:
       lints: ${{ steps.canary.outputs.lints }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
 
+      # Not the runner image's preinstalled stable, which can lag a release by
+      # days: this step installs the newest stable, which is what the canary is
+      # for.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
-      # No rust-cache. With a weekly run the entry would sit right at the
-      # 7-day eviction window, and stable changes every sixth week anyway.
+      # The same screen as ci.yml's `screen` job, and for the same reason:
+      # cargo executes dependency build scripts, so the quarantine / build.rs
+      # checks come first. Steps rather than a job, since nothing else here
+      # runs cargo. On main they re-pass trivially, but workflow_dispatch can
+      # target any branch.
+      - name: Quarantine check (7-day)
+        run: bash scripts/check-quarantine.sh
+
+      - name: build.rs baseline check
+        run: bash scripts/check-build-scripts.sh
+
+      # No rust-cache. A weekly run leaves the entry at the 7-day eviction
+      # window, and the key changes with every stable release anyway.
 
       - uses: jdx/mise-action@v2
         with:
@@ -66,31 +60,9 @@ jobs:
         id: canary
         run: bash scripts/lint-canary.sh stable
 
-      - name: Summary
-        if: ${{ !cancelled() }}
-        env:
-          STATE: ${{ steps.canary.outputs.state }}
-          STABLE: ${{ steps.canary.outputs.stable }}
-          PIN: ${{ steps.canary.outputs.pin }}
-          LINTS: ${{ steps.canary.outputs.lints }}
-        run: |
-          {
-            echo "## Lint canary: ${STATE:-no result}"
-            echo
-            echo "| stable | pin | findings |"
-            echo "|---|---|---|"
-            echo "| ${STABLE:-?} | ${PIN:-?} | ${LINTS:-none} |"
-            echo
-            case $STATE in
-              current) echo "Stable is not ahead of the pin. Nothing to do." ;;
-              free-bump) echo "Stable passes lint as-is. Bumping the pin costs nothing." ;;
-              behind) echo "Stable reports new findings. Bump the pin and fix them in the same PR." ;;
-              *) echo "The canary did not produce a verdict. Read the log above; this is not a pin-age signal." ;;
-            esac
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # Split from `canary` so the job that executes dependency build scripts never
-  # holds a token that can write issues.
+  # holds a token that can write issues. `error` (and a canary that died before
+  # a verdict) is left to the red run.
   report:
     needs: canary
     if: >-
