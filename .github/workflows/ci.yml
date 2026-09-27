@@ -48,6 +48,11 @@ jobs:
               - 'engine/lint-toolchain.txt'
               - 'scripts/lint-toolchain.sh'
               - 'scripts/read-pin.sh'
+              # The mise pin's reader and the action that installs it (the pin
+              # itself is `min_version` in mise.toml, listed above). Every
+              # mise-using job ORs `core`, so a bump runs all of them.
+              - 'scripts/mise-version.sh'
+              - '.github/actions/setup-mise/**'
             session:
               - 'engine/crates/lex-session/**'
             # Root `lex_engine` package. examples/ and uniffi-bindgen.rs are
@@ -139,9 +144,8 @@ jobs:
           workspaces: engine -> target
           shared-key: lint-${{ steps.toolchain.outputs.version }}
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      # Pinned mise — see `min_version` in mise.toml.
+      - uses: ./.github/actions/setup-mise
 
       # The lint commands and the toolchain install live only in mise.toml.
       - run: mise run lint
@@ -273,9 +277,8 @@ jobs:
           workspaces: engine -> target
           shared-key: accuracy
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      # Pinned mise — see `min_version` in mise.toml.
+      - uses: ./.github/actions/setup-mise
 
       # Restore/save split keyed on the pinned SHA itself (not a hash of the
       # whole pin file, so comment-only edits don't churn cache entries):
@@ -381,9 +384,8 @@ jobs:
           workspaces: engine -> target
           shared-key: engine
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      # Pinned mise — see `min_version` in mise.toml.
+      - uses: ./.github/actions/setup-mise
 
       # Real compile (not just a type-check) of every file under Sources/, at
       # the app's deployment target, for both arches — the 13 that `test-swift`

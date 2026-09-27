@@ -1,0 +1,27 @@
+name: Set up mise (pinned)
+description: >-
+  Install the mise version pinned by `min_version` in mise.toml. Every job that
+  runs mise uses this rather than jdx/mise-action directly, so none can float
+  on the latest release. Needs actions/checkout first.
+
+runs:
+  using: composite
+  steps:
+    # The same reader the bump procedure in mise.toml documents. The assignment
+    # is on its own line so a failing read fails the step (`echo "…$(cmd)"`
+    # would not), which also keeps an empty `version:` — meaning "latest" to
+    # mise-action — from ever being passed.
+    - name: Read the pinned mise version
+      id: pin
+      shell: bash
+      run: |
+        version=$(bash scripts/mise-version.sh)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    # install: false — the jobs' mise tasks install what they need themselves.
+    # mise-action logs the installed binary under "Running mise --version";
+    # that line is what a bump PR checks.
+    - uses: jdx/mise-action@v2
+      with:
+        version: ${{ steps.pin.outputs.version }}
+        install: false

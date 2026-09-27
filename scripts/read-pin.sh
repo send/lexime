@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# The one reader behind the pin files engine/lint-toolchain.txt and
-# engine/data/mozc-pin.txt. Each has a thin wrapper (lint-toolchain.sh,
-# mozc-pin.sh) that owns its file and value pattern.
+# The one reader behind the pins in engine/lint-toolchain.txt,
+# engine/data/mozc-pin.txt and mise.toml (`min_version`). Each has a thin
+# wrapper (lint-toolchain.sh, mozc-pin.sh, mise-version.sh) that owns its file
+# and value pattern. mise.toml cannot hold a bare value, so its pattern matches
+# the whole `min_version = "…"` line and mise-version.sh strips the key.
 #
 #   read-pin.sh <file> <what> <value-ERE>
 #
