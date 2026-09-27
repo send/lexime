@@ -26,6 +26,7 @@
 ```bash
 # Rust lint + test。lint (fmt --check + clippy -D warnings) は CI と同じ固定 toolchain
 # (engine/lint-toolchain.txt) で走る。コマンドとフラグの定義は mise.toml の [tasks.lint] だけ。
+# --all-targets は必須: bench はこれ以外のゲートに載らない — #299
 # 素の cargo fmt / clippy で代用しない — stable は固定版とずれ得る。整形は mise run fmt
 mise run test
 
