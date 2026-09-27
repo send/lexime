@@ -42,9 +42,9 @@ jobs:
               # local twin of this workflow's lint job). Without this, an edit
               # weakening a gate would skip the very jobs that would catch it.
               - 'mise.toml'
-              # The lint toolchain pin and its reader. A PR that only bumps
-              # the pin must still run lint — that run is the whole point of
-              # the bump procedure.
+              # The lint toolchain pin and its readers (lint-toolchain.sh
+              # execs read-pin.sh). A PR that only bumps the pin must still
+              # run lint — that run is the whole point of the bump procedure.
               - 'engine/lint-toolchain.txt'
               - 'scripts/lint-toolchain.sh'
               - 'scripts/read-pin.sh'
@@ -61,8 +61,8 @@ jobs:
               - 'engine/crates/lex-cli/**'
             corpus:
               - 'engine/testcorpus/**'
-              # The Mozc pin and its reader: either can move the SHA the
-              # accuracy job builds the dictionary from.
+              # The Mozc pin and its readers (mozc-pin.sh execs read-pin.sh):
+              # any of them can move the SHA the accuracy job builds from.
               - 'engine/data/mozc-pin.txt'
               - 'scripts/mozc-pin.sh'
               - 'scripts/read-pin.sh'

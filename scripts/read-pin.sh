@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The one reader behind every in-repo pin file. Each pin has a thin wrapper
-# (lint-toolchain.sh, mozc-pin.sh) that owns its file and value pattern.
+# The one reader behind the pin files engine/lint-toolchain.txt and
+# engine/data/mozc-pin.txt. Each has a thin wrapper (lint-toolchain.sh,
+# mozc-pin.sh) that owns its file and value pattern.
 #
 #   read-pin.sh <file> <what> <value-ERE>
 #
