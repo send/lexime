@@ -422,7 +422,11 @@ fn count_rank(hist: &mut Vec<usize>, rank: usize) {
 }
 
 /// Compare ranks per selection, joined on `(i, t)`: a cleared and rewritten
-/// log reuses line indices, so the index alone would mis-join.
+/// log reuses line indices, so the index alone would mis-join. `t` has
+/// whole-second resolution, so a rewritten line at the same index within the
+/// same second as the old one still mis-joins — that takes several commits a
+/// second on both sides of the clear. A content-derived key would close it
+/// but would put personal input into the baseline file.
 pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> BaselineDiff {
     let before_map: HashMap<(usize, u64), Option<usize>> =
         before.iter().map(|b| ((b.i, b.t), b.rank)).collect();

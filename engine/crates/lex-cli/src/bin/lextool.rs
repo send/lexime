@@ -182,7 +182,10 @@ enum Command {
         /// app does (optional; default is system dictionary only)
         #[arg(long)]
         user_dict: Option<String>,
-        /// Compare against a baseline written by --emit-baseline
+        /// Compare against a baseline written by --emit-baseline. Lines join
+        /// on (line index, timestamp in seconds): a log cleared and rewritten
+        /// is told apart unless its line at the same index lands in the same
+        /// second as the old one
         #[arg(long)]
         baseline: Option<String>,
         /// Write a baseline (line index, timestamp, rank — no reading or
@@ -1106,8 +1109,20 @@ fn main() {
             // Same layering as LexDictionary::open_with_user_dict.
             let dict: Box<dyn Dictionary> = match &user_dict {
                 Some(path) => {
-                    let ud = UserDictionary::open(Path::new(path))
-                        .unwrap_or_else(|e| die(format!("{path}: {e}")));
+                    // A corrupt file is what the app replaces with an empty
+                    // dictionary (it also quarantines the file; a measurement
+                    // tool never touches user data). Unreadable is an error.
+                    let ud = match UserDictionary::open(Path::new(path)) {
+                        Ok(ud) => ud,
+                        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                            eprintln!(
+                                "replay-commit-log: warning: {path} is corrupt ({e}); \
+                                 replaying with an empty user dictionary, as the app runs"
+                            );
+                            UserDictionary::new()
+                        }
+                        Err(e) => die(format!("{path}: {e}")),
+                    };
                     Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)]))
                 }
                 None => Box::new(trie),
