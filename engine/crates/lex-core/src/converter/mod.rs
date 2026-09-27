@@ -73,12 +73,7 @@ impl ConversionContext<'_> {
         lattice: &Lattice,
         n: usize,
     ) -> Vec<Vec<ConvertedSegment>> {
-        let oversample = if self.history.is_some() {
-            (n * 3).max(50)
-        } else {
-            n * 3
-        };
-        self.convert_lattice_impl(lattice, n, oversample)
+        self.convert_lattice_impl(lattice, n, nbest_oversample(n, self.history.is_some()))
     }
 
     /// Shared Viterbi + postprocess pipeline used by the 1-best and N-best wrappers.
@@ -102,6 +97,17 @@ impl ConversionContext<'_> {
             &lattice.input,
             n,
         )
+    }
+}
+
+/// Viterbi paths collected for an N-best of `n`: the population rerank,
+/// history and the rewriters work on. Diagnostics that must describe the
+/// production list (explain) use this same rule.
+pub(crate) fn nbest_oversample(n: usize, has_history: bool) -> usize {
+    if has_history {
+        (n * 3).max(50)
+    } else {
+        n * 3
     }
 }
 

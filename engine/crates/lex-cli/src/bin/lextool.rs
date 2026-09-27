@@ -1151,6 +1151,15 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
     row("In list", r.in_list);
     row("Absent", r.absent);
     println!();
+    println!("=== Position in the candidate list ===");
+    for (rank, &n) in r.rank_hist.iter().enumerate().take(rank_ops::PAGE_SIZE) {
+        row(&format!("#{}", rank + 1), n);
+    }
+    row(
+        &format!("#{} or later", rank_ops::PAGE_SIZE + 1),
+        r.rank_hist.iter().skip(rank_ops::PAGE_SIZE).sum(),
+    );
+    println!();
     println!("=== Cost gap to #1 (N-best path of the selected surface) ===");
     for (i, &n) in r.gap_hist.iter().enumerate() {
         let lower = i.checked_sub(1).map_or(0, |j| rank_ops::GAP_BIN_UPPER[j]);
