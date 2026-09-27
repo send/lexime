@@ -58,15 +58,13 @@ jobs:
       issues: write
       actions: read
     steps:
-      # fetch-depth: 0 for scripts/screen.sh, which `mise run lint` / `test`
-      # run first: its quarantine check diffs Cargo.lock against origin/main,
-      # and without it checks every dependency at 1 request/s. A depth-1
-      # checkout has origin/main only on the issue events (ref: main), not on
-      # the PR review events (ref: refs/pull/N/merge).
+      # The screen in `mise run lint` / `test` needs origin/main (see
+      # scripts/screen.sh). A depth-1 checkout has it only on the issue
+      # events, whose ref is main, not on the PR review events.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # needed for quarantine diff against main
 
       # So the bot lints and formats through mise.toml's [tasks.lint] /
       # [tasks.fmt], as CI's lint job does. Stricter than ci.yml because this
@@ -89,14 +87,10 @@ jobs:
 
       # The mise rules are exact matches, not `:*` prefixes: a prefix would
       # also admit `mise run lint ::: <any task>` (mise runs every task after
-      # `:::`). No raw cargo rule at all: cargo compiles and runs dependency
-      # build scripts, and every build here has to pass scripts/screen.sh
-      # first, which only the mise tasks carry (`lint` and `test` depend on
-      # [tasks.screen]; see there for why no step before this one can do it).
-      # So no targeted `cargo test -p …` either; `mise run test` runs them all.
-      # `mise run fmt` does not build, and is here rather than `cargo fmt` for
-      # the pinned rustfmt. A rule added here that builds must go through
-      # [tasks.screen] too.
+      # `:::`). No raw cargo, not even a targeted `cargo test -p`: every build
+      # here must pass the supply-chain screen, and only the mise tasks carry
+      # it (see [tasks.screen] in mise.toml). `mise run fmt` does not build,
+      # and stands in for `cargo fmt` for the pinned rustfmt.
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@26ddc358fe3befff50c5ec2f80304c90c763f6f8 # v1

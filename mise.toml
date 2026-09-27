@@ -518,19 +518,19 @@ fi
 
 [tasks.screen]
 description = "Run the supply-chain screen (scripts/screen.sh) — lint and test depend on it"
-# `lint` and `test` build (clippy and cargo test compile and run dependency
-# build scripts and proc macros), so they depend on this task, and mise does
-# not start them when it fails. That dependency is the only screen the @claude
-# bot's builds get (.github/workflows/claude.yml): the bot builds whatever tree
-# is checked out when each command runs — the action switches to the PR branch
-# after every earlier step, and Claude can edit Cargo.lock between commands —
-# so the screen has to run inside the command, not before the job's agent
-# step. A task that builds and that the bot's rules allow must depend on this.
-# `fmt` does not build. CI's other cargo jobs are gated by its `screen` job
-# instead, so there the screen in `lint` is a second pass.
+# The screen goes before anything that builds (scripts/screen.sh). `lint` and
+# `test` build, so they depend on this task, and mise does not start them when
+# it fails. That dependency is the only screen the @claude bot's builds get
+# (.github/workflows/claude.yml): the bot builds whatever tree is checked out
+# when each command runs — the action switches to the PR branch after every
+# earlier step, and Claude can edit Cargo.lock between commands — so the
+# screen has to run inside the command, not in a step before it.
 #
-# Needs origin/main, as scripts/screen.sh says, or each run checks every
-# dependency against crates.io at 1 request/s.
+# The other tasks that run cargo (engine-lib, dict, accuracy, ...) do not
+# depend on it yet. CI gates them with its `screen` job; locally they run
+# unscreened, as they did before this task. The bot is allowed none of them,
+# and a task has to depend on this before the bot may run it. `fmt` does not
+# build.
 run = "bash scripts/screen.sh"
 
 [tasks.lint]
@@ -590,8 +590,8 @@ run = [
 
 [tasks.test]
 description = "Run lint + workspace tests"
-# `screen` directly, not only through `lint`, so that dropping lint from here
-# cannot leave cargo test unscreened. mise runs it once per invocation.
+# `screen` in its own right, since cargo test builds too; mise runs it once
+# per invocation.
 depends = ["screen", "lint"]
 run = "cd engine && cargo test --workspace --all-features"
 

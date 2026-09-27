@@ -25,7 +25,7 @@ mise run fmt   # lint が --check に使うのと同じ固定 rustfmt で整形�
 
 ### Stage 2 — Verify
 
-**順序規則: screen-before-build**。依存変更 (CI で screen + audit が走る変更) がある場合、build を伴う cargo (clippy / test / check) より**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
+**順序規則: screen-before-build**。`mise run lint` / `mise run test` は自前で先に screen を通す (mise.toml の `[tasks.screen]`)。それ以外の build を伴う cargo (msrv の `cargo check`、accuracy / swift の task、audit の cargo check) は、依存変更 (CI で screen + audit が走る変更) がある場合**先に** `mise run audit` を回す — cargo は依存の build.rs をコンパイル・実行するので、screen が拒否すべき build.rs を base verify が先に実行してはならない (CI の `screen` job ゲートと同じ不変条件)。
 
 ```sh
 mise run test   # = screen (scripts/screen.sh) + lint (fmt --check + clippy -D warnings、CI と同じ固定 toolchain) + cargo test --workspace --all-features
