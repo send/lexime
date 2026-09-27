@@ -1,34 +1,46 @@
-//! Rank-2+ measurement: production-width candidate lists, `[cases.window]`
-//! checks for the accuracy corpora, and commit-log replay.
+//! Rank-2+ measurement: production-width candidate lists, top-1 at every
+//! display width, `[cases.window]` checks for the accuracy corpora, and
+//! commit-log replay.
 //!
 //! The commit log holds the user's personal input. Replay therefore returns
-//! counts only ([`ReplayReport`]); the per-line baseline it can emit carries
-//! a line index, timestamp and rank — never a reading or surface. The only
-//! way content leaves this module is the explicit `verbose` flag, which
-//! writes to stderr for local inspection.
+//! counts ([`ReplayReport`]) and baseline lines ([`BaselineLine`]: line index,
+//! timestamp, rank) — never a reading or surface. The only way content leaves
+//! this module is the explicit `verbose` flag, which writes to stderr for
+//! local inspection.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use lex_core::candidates::{generate_candidates, CandidateResponse};
-use lex_core::converter::explain;
+use lex_core::converter::{
+    convert_nbest, convert_nbest_with_history, explain, ConversionContext, ConvertedSegment,
+};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
 use lex_core::settings::settings;
 use lex_core::user_history::UserHistory;
 
-/// Candidates shown on the first page of the candidate window.
+/// Candidates shown on the first page of the candidate window. Mirrors
+/// `CandidateManager.maxDisplay` in Sources/CandidateManager.swift, which
+/// owns the value; change both together.
 pub const PAGE_SIZE: usize = 9;
 
-/// The candidate list exactly as the IME builds it: N-best + learned
-/// injection + kana + predictions + lookup, at the production result limit.
+/// Concatenated surface of a conversion path.
+pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
+    segments.iter().map(|s| s.surface.as_str()).collect()
+}
+
+/// The candidate list as the IME builds it: N-best + learned injection +
+/// kana + predictions + lookup, at `candidates.max_results` — the limit the
+/// async worker uses. (The session's synchronous path uses its own
+/// `MAX_CANDIDATES`; both are 20.)
 ///
-/// Callers slice the result with `take(n)`; passing a smaller `max_results`
-/// would change which predictions are fetched for short readings.
+/// Callers slice the result with `take(n)`; passing a smaller limit would
+/// change which predictions are fetched for short readings.
 pub fn production_candidates(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
@@ -44,6 +56,47 @@ pub fn production_candidates(
     )
 }
 
+/// Top-1 at each width the user can see. They oversample differently, so
+/// the reranker's structure filter sees different populations and the
+/// top-1 can diverge between them.
+pub struct Top1Widths {
+    /// N-best head at n=1 — the historical accuracy gate.
+    pub nbest_head: String,
+    /// Synchronous 1-best shown while candidates are pending (the session's
+    /// deferred-candidates response).
+    pub one_best: String,
+    /// The production candidate list, whose #1 is `list.surfaces[0]`.
+    pub list: CandidateResponse,
+}
+
+impl Top1Widths {
+    pub fn list_top(&self) -> &str {
+        self.list.surfaces.first().map_or("", String::as_str)
+    }
+}
+
+pub fn top1_widths(
+    dict: &dyn Dictionary,
+    conn: &ConnectionMatrix,
+    history: Option<&UserHistory>,
+    reading: &str,
+) -> Top1Widths {
+    let head = match history {
+        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, 1),
+        None => convert_nbest(dict, Some(conn), reading, 1),
+    };
+    let ctx = ConversionContext {
+        dict,
+        conn: Some(conn),
+        history,
+    };
+    Top1Widths {
+        nbest_head: head.first().map(|p| joined_surface(p)).unwrap_or_default(),
+        one_best: joined_surface(&ctx.convert_from_lattice(&ctx.build_lattice(reading))),
+        list: production_candidates(dict, conn, history, reading),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // [cases.window]
 // ---------------------------------------------------------------------------
@@ -54,6 +107,17 @@ pub fn production_candidates(
 #[serde(deny_unknown_fields)]
 pub struct WindowCheck {
     pub n: usize,
+    #[serde(flatten)]
+    pub lists: WindowLists,
+    /// History corpora only (and required there): the same checks without
+    /// history, like `baseline` for top-1, so a learning effect is shown
+    /// rather than assumed.
+    pub baseline: Option<WindowLists>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowLists {
     /// Must appear in the first `n` candidates.
     #[serde(default)]
     pub present: Vec<String>,
@@ -64,11 +128,6 @@ pub struct WindowCheck {
     /// Must not appear in the first `n` candidates.
     #[serde(default)]
     pub absent: Vec<String>,
-    /// History corpora only: the same checks without history, mirroring the
-    /// top-1 `baseline` so a learning effect is shown, not assumed.
-    pub baseline_present: Option<Vec<String>>,
-    pub baseline_present_nbest: Option<Vec<String>>,
-    pub baseline_absent: Option<Vec<String>>,
 }
 
 impl WindowCheck {
@@ -78,123 +137,67 @@ impl WindowCheck {
         if self.n == 0 {
             return Err("window.n must be at least 1".into());
         }
-        let baselines = [
-            &self.baseline_present,
-            &self.baseline_present_nbest,
-            &self.baseline_absent,
-        ];
-        if history_corpus {
-            if baselines.iter().any(|b| b.is_none()) {
-                return Err("a window in a history corpus needs baseline_present, \
-                     baseline_present_nbest and baseline_absent (use [] for none)"
-                    .into());
+        match (history_corpus, &self.baseline) {
+            (true, None) => {
+                return Err("a window in a history corpus needs [cases.window.baseline]".into())
             }
-        } else if baselines.iter().any(|b| b.is_some()) {
-            return Err("baseline_* window fields are only meaningful with history".into());
-        }
-        let clash = |present: &[String], nbest: &[String], absent: &[String]| {
-            present
-                .iter()
-                .chain(nbest)
-                .find(|s| absent.contains(s))
-                .cloned()
-        };
-        if let Some(s) = clash(&self.present, &self.present_nbest, &self.absent) {
-            return Err(format!("{s} is both required and forbidden"));
-        }
-        if let (Some(p), Some(pn), Some(a)) = (
-            &self.baseline_present,
-            &self.baseline_present_nbest,
-            &self.baseline_absent,
-        ) {
-            if let Some(s) = clash(p, pn, a) {
-                return Err(format!(
-                    "{s} is both required and forbidden in the baseline"
-                ));
+            (false, Some(_)) => {
+                return Err("[cases.window.baseline] is only meaningful with history".into())
             }
+            _ => {}
+        }
+        self.lists.check_consistent()?;
+        if let Some(b) = &self.baseline {
+            b.check_consistent().map_err(|e| format!("baseline: {e}"))?;
         }
         Ok(())
     }
-
-    /// Violations of the with-history (or only) expectations.
-    pub fn violations(&self, resp: &CandidateResponse) -> Vec<String> {
-        window_violations(
-            self.n,
-            &self.present,
-            &self.present_nbest,
-            &self.absent,
-            resp,
-        )
-    }
-
-    /// Violations of the no-history baseline expectations, if any are set.
-    pub fn baseline_violations(&self, resp: &CandidateResponse) -> Vec<String> {
-        let empty = Vec::new();
-        window_violations(
-            self.n,
-            self.baseline_present.as_ref().unwrap_or(&empty),
-            self.baseline_present_nbest.as_ref().unwrap_or(&empty),
-            self.baseline_absent.as_ref().unwrap_or(&empty),
-            resp,
-        )
-    }
-
-    pub fn has_baseline(&self) -> bool {
-        self.baseline_present.is_some()
-    }
 }
 
-fn window_violations(
-    n: usize,
-    present: &[String],
-    present_nbest: &[String],
-    absent: &[String],
-    resp: &CandidateResponse,
-) -> Vec<String> {
-    let window: Vec<&str> = resp.surfaces.iter().take(n).map(String::as_str).collect();
-    let nbest: HashSet<String> = resp
-        .paths
-        .iter()
-        .map(|p| p.iter().map(|s| s.surface.as_str()).collect())
-        .collect();
-    let mut out = Vec::new();
-    for s in present {
-        if !window.contains(&s.as_str()) {
-            out.push(format!("{s} not in top {n}"));
+impl WindowLists {
+    fn check_consistent(&self) -> Result<(), String> {
+        match self
+            .present
+            .iter()
+            .chain(&self.present_nbest)
+            .find(|s| self.absent.contains(s))
+        {
+            Some(s) => Err(format!("{s} is both required and forbidden")),
+            None => Ok(()),
         }
     }
-    for s in present_nbest {
-        if !window.contains(&s.as_str()) {
-            out.push(format!("{s} not in top {n}"));
-        } else if !nbest.contains(s) {
-            out.push(format!("{s} in top {n} but not from an N-best path"));
+
+    /// Human-readable violations against the first `n` of `resp`.
+    pub fn violations(&self, n: usize, resp: &CandidateResponse) -> Vec<String> {
+        let window: Vec<&str> = resp.surfaces.iter().take(n).map(String::as_str).collect();
+        let in_nbest = |s: &str| resp.paths.iter().any(|p| joined_surface(p) == s);
+        let mut out = Vec::new();
+        for s in self.present.iter().chain(&self.present_nbest) {
+            if !window.contains(&s.as_str()) {
+                out.push(format!("{s} not in top {n}"));
+            }
         }
-    }
-    for s in absent {
-        if let Some(i) = window.iter().position(|w| w == s) {
-            out.push(format!("{s} at rank {} (must be outside top {n})", i + 1));
+        for s in &self.present_nbest {
+            if window.contains(&s.as_str()) && !in_nbest(s) {
+                out.push(format!("{s} in top {n} but not from an N-best path"));
+            }
         }
+        for s in &self.absent {
+            if let Some(i) = window.iter().position(|w| w == s) {
+                out.push(format!("{s} at rank {} (must be outside top {n})", i + 1));
+            }
+        }
+        out
     }
-    out
 }
 
 // ---------------------------------------------------------------------------
 // Commit-log replay
 // ---------------------------------------------------------------------------
 
-/// One rank>0 selection from the commit log. Content stays private to this
-/// module; see the module docs.
-struct Selection {
-    /// 0-based line index in the commit log.
-    i: usize,
-    t: u64,
-    reading: String,
-    surface: String,
-}
-
 /// The fields of a commit-log line replay needs. The contract is SPEC
 /// §コミットログ; the writer is `commit_log_line` in the engine crate,
-/// which lex-cli cannot depend on.
+/// which lex-cli cannot depend on. Content stays private to this module.
 #[derive(Deserialize)]
 struct CommitLine {
     t: u64,
@@ -203,7 +206,8 @@ struct CommitLine {
     rank: usize,
 }
 
-fn read_selections(path: &Path) -> Result<Vec<Selection>, String> {
+/// rank>0 lines of the commit log with their 0-based line index.
+fn read_selections(path: &Path) -> Result<Vec<(usize, CommitLine)>, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut out = Vec::new();
     for (i, line) in BufReader::new(file).lines().enumerate() {
@@ -215,12 +219,7 @@ fn read_selections(path: &Path) -> Result<Vec<Selection>, String> {
         let rec: CommitLine = serde_json::from_str(&line)
             .map_err(|_| format!("malformed commit-log line {}", i + 1))?;
         if rec.rank > 0 {
-            out.push(Selection {
-                i,
-                t: rec.t,
-                reading: rec.reading,
-                surface: rec.surface,
-            });
+            out.push((i, rec));
         }
     }
     Ok(out)
@@ -247,7 +246,7 @@ fn gap_bin(gap: i64) -> usize {
 
 /// Counts-only replay result. Adding a field here is the only way to
 /// publish more; keep it free of readings and surfaces.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ReplayReport {
     /// rank>0 selections replayed.
     pub selections: usize,
@@ -265,8 +264,6 @@ pub struct ReplayReport {
     pub gap_hist: Vec<usize>,
     /// Selections with no N-best path (lookup / prediction / injection only).
     pub gap_no_path: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub baseline: Option<BaselineDiff>,
 }
 
 /// Movement against a baseline, joined on `(i, t)`.
@@ -287,76 +284,66 @@ pub struct BaselineDiff {
     pub only_baseline: usize,
 }
 
-pub struct ReplayOptions<'a> {
-    pub history: Option<&'a UserHistory>,
-    pub baseline: Option<&'a Path>,
-    pub emit_baseline: Option<&'a Path>,
-    /// Print per-selection content to stderr (local inspection only).
-    pub verbose: bool,
+/// What replay needs per distinct reading, computed once.
+struct ReadingView {
+    /// The production candidate list.
+    surfaces: Vec<String>,
+    /// N-best paths as (surface, final cost), cheapest first.
+    costs: Vec<(String, i64)>,
 }
 
+/// Replay every rank>0 selection in `log`. Returns the counts and one
+/// baseline line per selection (for `--emit-baseline` / `--baseline`).
+/// `verbose` prints per-selection content to stderr (local inspection only).
 pub fn replay(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
+    history: Option<&UserHistory>,
     log: &Path,
-    opts: &ReplayOptions<'_>,
-) -> Result<ReplayReport, String> {
+    verbose: bool,
+) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let selections = read_selections(log)?;
     if selections.is_empty() {
         return Err(format!("no rank>0 selections in {}", log.display()));
     }
     let nbest = settings().candidates.nbest;
 
-    let mut report = ReplayReport {
-        rank_hist: vec![0; PAGE_SIZE],
-        gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
-        ..Default::default()
-    };
+    let mut rank_hist = vec![0; PAGE_SIZE];
+    let mut gap_hist = vec![0; GAP_BIN_UPPER.len() + 1];
+    let mut gap_no_path = 0;
     let mut lines = Vec::with_capacity(selections.len());
-    let mut surfaces_cache: HashMap<&str, Vec<String>> = HashMap::new();
-    let mut costs_cache: HashMap<&str, Vec<(String, i64)>> = HashMap::new();
+    let mut cache: HashMap<&str, ReadingView> = HashMap::new();
 
-    for sel in &selections {
-        let surfaces = surfaces_cache
-            .entry(sel.reading.as_str())
-            .or_insert_with(|| {
-                production_candidates(dict, conn, opts.history, &sel.reading).surfaces
-            });
+    for (i, sel) in &selections {
+        let ReadingView { surfaces, costs } =
+            cache
+                .entry(sel.reading.as_str())
+                .or_insert_with(|| ReadingView {
+                    surfaces: production_candidates(dict, conn, history, &sel.reading).surfaces,
+                    costs: explain::explain(dict, Some(conn), history, &sel.reading, nbest)
+                        .paths
+                        .iter()
+                        .map(|p| (p.surface(), p.final_cost))
+                        .collect(),
+                });
         let rank = surfaces.iter().position(|s| *s == sel.surface);
-
-        let costs = costs_cache.entry(sel.reading.as_str()).or_insert_with(|| {
-            explain::explain(dict, Some(conn), opts.history, &sel.reading, nbest)
-                .paths
+        let gap = costs.first().and_then(|(_, top)| {
+            costs
                 .iter()
-                .map(|p| (p.surface(), p.final_cost))
-                .collect()
+                .find(|(s, _)| *s == sel.surface)
+                .map(|(_, c)| c - top)
         });
-        let top = costs.first().map(|(_, c)| *c);
-        let gap = costs
-            .iter()
-            .find(|(s, _)| *s == sel.surface)
-            .zip(top)
-            .map(|((_, c), top)| c - top);
 
-        report.selections += 1;
-        match rank {
-            Some(r) => {
-                report.in_list += 1;
-                if r < PAGE_SIZE {
-                    report.in_page += 1;
-                }
-                count_rank(&mut report.rank_hist, r);
-            }
-            None => report.absent += 1,
+        if let Some(r) = rank {
+            count_rank(&mut rank_hist, r);
         }
         match gap {
-            Some(g) => report.gap_hist[gap_bin(g)] += 1,
-            None => report.gap_no_path += 1,
+            Some(g) => gap_hist[gap_bin(g)] += 1,
+            None => gap_no_path += 1,
         }
-        if opts.verbose {
+        if verbose {
             eprintln!(
-                "{}\t{}\t{}\trank={}\tgap={}",
-                sel.i,
+                "{i}\t{}\t{}\trank={}\tgap={}",
                 sel.reading,
                 sel.surface,
                 rank.map_or("-".into(), |r| r.to_string()),
@@ -364,20 +351,23 @@ pub fn replay(
             );
         }
         lines.push(BaselineLine {
-            i: sel.i,
+            i: *i,
             t: sel.t,
             rank,
         });
     }
 
-    if let Some(path) = opts.baseline {
-        let before = read_baseline(path)?;
-        report.baseline = Some(diff_baseline(&before, &lines));
-    }
-    if let Some(path) = opts.emit_baseline {
-        write_baseline(path, &lines)?;
-    }
-    Ok(report)
+    let in_list: usize = rank_hist.iter().sum();
+    let report = ReplayReport {
+        selections: selections.len(),
+        in_page: rank_hist.iter().take(PAGE_SIZE).sum(),
+        in_list,
+        absent: selections.len() - in_list,
+        rank_hist,
+        gap_hist,
+        gap_no_path,
+    };
+    Ok((report, lines))
 }
 
 fn count_rank(hist: &mut Vec<usize>, rank: usize) {
@@ -387,45 +377,19 @@ fn count_rank(hist: &mut Vec<usize>, rank: usize) {
     hist[rank] += 1;
 }
 
-fn read_baseline(path: &Path) -> Result<Vec<BaselineLine>, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    content
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim().is_empty())
-        .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("baseline line {}: {e}", n + 1)))
-        .collect()
-}
-
-fn write_baseline(path: &Path, lines: &[BaselineLine]) -> Result<(), String> {
-    let mut f =
-        fs::File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    for line in lines {
-        let json = serde_json::to_string(line).expect("BaselineLine serializes");
-        writeln!(f, "{json}").map_err(|e| format!("write {}: {e}", path.display()))?;
-    }
-    Ok(())
-}
-
 /// Compare ranks per selection, joined on `(i, t)`: a cleared and rewritten
 /// log reuses line indices, so the index alone would mis-join.
 pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> BaselineDiff {
     let before_map: HashMap<(usize, u64), Option<usize>> =
         before.iter().map(|b| ((b.i, b.t), b.rank)).collect();
-    let after_keys: HashSet<(usize, u64)> = after.iter().map(|a| (a.i, a.t)).collect();
-    let mut d = BaselineDiff {
-        only_baseline: before_map
-            .keys()
-            .filter(|k| !after_keys.contains(k))
-            .count(),
-        ..Default::default()
-    };
+    let mut d = BaselineDiff::default();
+    let mut matched = 0;
     for a in after {
         let Some(&was) = before_map.get(&(a.i, a.t)) else {
             d.only_current += 1;
             continue;
         };
+        matched += 1;
         match (was, a.rank) {
             (Some(_), None) => d.lost += 1,
             (None, Some(_)) => d.improved += 1,
@@ -436,13 +400,13 @@ pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> Baselin
             (Some(_), Some(_)) => d.demoted_in_page += 1,
         }
     }
+    d.only_baseline = before_map.len() - matched;
     d
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lex_core::converter::ConvertedSegment;
 
     fn resp(surfaces: &[&str], nbest: &[&str]) -> CandidateResponse {
         CandidateResponse {
@@ -463,10 +427,6 @@ mod tests {
         toml::from_str(toml_src).expect("valid window")
     }
 
-    fn strs(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
     fn window_present_absent_and_slicing() {
         let w = check(
@@ -474,11 +434,14 @@ mod tests {
 present = ["b"]
 absent = ["c"]"#,
         );
-        assert!(w.violations(&resp(&["a", "b", "c"], &[])).is_empty());
-        let v = w.violations(&resp(&["a", "c", "b"], &[]));
+        assert!(w
+            .lists
+            .violations(w.n, &resp(&["a", "b", "c"], &[]))
+            .is_empty());
+        let v = w.lists.violations(w.n, &resp(&["a", "c", "b"], &[]));
         assert_eq!(v.len(), 2, "{v:?}");
         // Fewer candidates than n must not panic.
-        assert_eq!(w.violations(&resp(&["a"], &[])).len(), 1);
+        assert_eq!(w.lists.violations(w.n, &resp(&["a"], &[])).len(), 1);
     }
 
     #[test]
@@ -487,8 +450,11 @@ absent = ["c"]"#,
             r#"n = 3
 present_nbest = ["b"]"#,
         );
-        assert!(w.violations(&resp(&["a", "b"], &["a", "b"])).is_empty());
-        let v = w.violations(&resp(&["a", "b"], &["a"]));
+        assert!(w
+            .lists
+            .violations(w.n, &resp(&["a", "b"], &["a", "b"]))
+            .is_empty());
+        let v = w.lists.violations(w.n, &resp(&["a", "b"], &["a"]));
         assert_eq!(v.len(), 1);
         assert!(v[0].contains("not from an N-best path"));
     }
@@ -503,33 +469,22 @@ absent = ["x"]"#
         )
         .validate(false)
         .is_err());
-        // baseline_* required with history, forbidden without.
+        // The baseline table is required with history, forbidden without.
         assert!(check("n = 9").validate(true).is_err());
-        let with_base = check(
-            r#"n = 9
-baseline_present = []
-baseline_present_nbest = []
-baseline_absent = []"#,
-        );
+        let with_base = check("n = 9\n[baseline]\nabsent = [\"x\"]");
         assert!(with_base.validate(true).is_ok());
         assert!(with_base.validate(false).is_err());
+        let clash = check("n = 9\n[baseline]\npresent = [\"x\"]\nabsent = [\"x\"]");
+        assert!(clash.validate(true).is_err());
         assert!(toml::from_str::<WindowCheck>("n = 9\nbogus = 1").is_err());
     }
 
     #[test]
-    fn baseline_violations_use_baseline_lists() {
-        let w = WindowCheck {
-            n: 2,
-            present: strs(&["x"]),
-            present_nbest: vec![],
-            absent: vec![],
-            baseline_present: Some(vec![]),
-            baseline_present_nbest: Some(vec![]),
-            baseline_absent: Some(strs(&["x"])),
-        };
+    fn baseline_lists_are_checked_separately() {
+        let w = check("n = 2\npresent = [\"x\"]\n[baseline]\nabsent = [\"x\"]");
         let r = resp(&["a", "x"], &[]);
-        assert!(w.violations(&r).is_empty());
-        assert_eq!(w.baseline_violations(&r).len(), 1);
+        assert!(w.lists.violations(w.n, &r).is_empty());
+        assert_eq!(w.baseline.as_ref().unwrap().violations(w.n, &r).len(), 1);
     }
 
     #[test]
@@ -622,7 +577,7 @@ baseline_absent = []"#,
         .unwrap();
         let sels = read_selections(&path).unwrap();
         assert_eq!(sels.len(), 1, "only rank>0 lines are replayed");
-        assert_eq!((sels[0].i, sels[0].t), (1, 2));
+        assert_eq!((sels[0].0, sels[0].1.t), (1, 2));
         fs::remove_dir_all(&dir).ok();
     }
 }

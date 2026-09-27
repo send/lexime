@@ -19,8 +19,8 @@
 #   - 新規ケースには baseline（履歴なし結果）を必ず付ける
 #   - Fields are the same as accuracy-corpus.toml (see its header), including
 #     window_top1 / width_issue and [cases.window]. Here a [cases.window] must
-#     also give baseline_present / baseline_present_nbest / baseline_absent
-#     (the no-history window, like `baseline` for top-1).
+#     be followed by [cases.window.baseline] (the no-history window, like
+#     `baseline` for top-1). `baseline` is checked at every width too.
 #   - [[history]] records only the segments listed. The live engine also
 #     records the whole (reading, surface) pair, so a case that depends on
 #     whole-path learning must list that pair as its own entry.

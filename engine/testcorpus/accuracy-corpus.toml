@@ -49,9 +49,9 @@
 #     present_nbest - Surfaces that must be in the first n AND come from an
 #                     N-best path (rules out history re-injection)
 #     absent        - Surfaces that must not be in the first n
-#     baseline_present / baseline_present_nbest / baseline_absent
-#                   - History corpus only, and required there: the same
-#                     checks without history (like `baseline` for top-1)
+#   [cases.window.baseline] - History corpus only, and required there: the
+#                     same present / present_nbest / absent lists checked
+#                     without history (like `baseline` for top-1)
 
 # ═══════════════════════════════════════════════════════════════════
 # Basic words

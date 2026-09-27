@@ -7,9 +7,9 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use lex_cli::commands::rank_ops::{self, WindowCheck};
+use lex_cli::commands::rank_ops::{self, joined_surface, WindowCheck};
 use lex_core::converter::tune;
-use lex_core::converter::{convert_nbest, convert_nbest_with_history, ConversionContext};
+use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
 use lex_core::user_history::UserHistory;
@@ -266,7 +266,7 @@ struct AccuracyCase {
     width_issue: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AccuracyResult {
     reading: String,
     expected: String,
@@ -283,15 +283,40 @@ struct AccuracyResult {
     issue: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr: Option<String>,
-    /// Which gate failed: "top1", "baseline", "width" or "window".
+    /// Which gate failed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    failure: Option<&'static str>,
+    failure: Option<Failure>,
     /// Width disagreements and window violations, human-readable.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     details: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// The gate a failing case tripped.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Failure {
+    /// The no-history `baseline` moved.
+    Baseline,
+    /// The N-best head at n=1 is not `expected`.
+    Top1,
+    /// Another display width disagrees on top-1.
+    Width,
+    /// A `[cases.window]` expectation is violated.
+    Window,
+}
+
+impl Failure {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Top1 => "top1",
+            Self::Width => "width",
+            Self::Window => "window",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum AccuracyStatus {
     Pass,
@@ -415,10 +440,7 @@ fn run_snapshot(
                 Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
                 None => convert_nbest(dict, Some(conn), reading, n),
             };
-            paths
-                .iter()
-                .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                .collect()
+            paths.iter().map(|segs| joined_surface(segs)).collect()
         }
         SnapshotKind::Candidates => rank_ops::production_candidates(dict, conn, hist, reading)
             .surfaces
@@ -431,10 +453,6 @@ fn run_snapshot(
         surfaces,
         kind,
     }
-}
-
-fn joined_surface(segments: &[lex_core::converter::ConvertedSegment]) -> String {
-    segments.iter().map(|s| s.surface.as_str()).collect()
 }
 
 fn main() {
@@ -556,132 +574,10 @@ fn main() {
                 }
             }
 
-            // Run each case
-            let mut results: Vec<AccuracyResult> = Vec::new();
-            for case in &cases {
-                let result = |actual: String,
-                              status: AccuracyStatus,
-                              baseline_actual: Option<String>,
-                              failure: Option<&'static str>,
-                              details: Vec<String>| AccuracyResult {
-                    reading: case.reading.clone(),
-                    expected: case.expected.clone(),
-                    actual,
-                    status,
-                    category: case.category.clone(),
-                    baseline: case.baseline.clone(),
-                    baseline_actual,
-                    note: case.note.clone(),
-                    issue: case.issue.clone(),
-                    pr: case.pr.clone(),
-                    failure,
-                    details,
-                };
-
-                if case.skip {
-                    results.push(result(
-                        String::new(),
-                        AccuracyStatus::Skip,
-                        None,
-                        None,
-                        Vec::new(),
-                    ));
-                    continue;
-                }
-
-                // If baseline is specified, first verify no-history conversion
-                let baseline_actual = case.baseline.as_ref().map(|_| {
-                    let paths_no_hist = convert_nbest(&dict, Some(&conn), &case.reading, 1);
-                    paths_no_hist
-                        .first()
-                        .map(|segs| joined_surface(segs))
-                        .unwrap_or_default()
-                });
-                if baseline_actual.is_some() && baseline_actual != case.baseline {
-                    results.push(result(
-                        String::new(),
-                        AccuracyStatus::Fail,
-                        baseline_actual,
-                        Some("baseline"),
-                        Vec::new(),
-                    ));
-                    continue;
-                }
-
-                // Width (i): the N-best head at n=1 — the historical top-1 gate.
-                let paths = match hist.as_ref() {
-                    Some(h) => convert_nbest_with_history(&dict, Some(&conn), h, &case.reading, 1),
-                    None => convert_nbest(&dict, Some(&conn), &case.reading, 1),
-                };
-                let actual: String = paths
-                    .first()
-                    .map(|segs| joined_surface(segs))
-                    .unwrap_or_default();
-                if actual != case.expected {
-                    results.push(result(
-                        actual,
-                        AccuracyStatus::Fail,
-                        baseline_actual,
-                        Some("top1"),
-                        Vec::new(),
-                    ));
-                    continue;
-                }
-
-                // Widths (ii) and (iii): the synchronous 1-best shown while
-                // candidates are pending, and the production list's #1. They
-                // use different oversampling, so the structure filter sees a
-                // different population and top-1 can diverge from (i).
-                let ctx = ConversionContext {
-                    dict: &dict,
-                    conn: Some(&conn),
-                    history: hist.as_ref(),
-                };
-                let one_best =
-                    joined_surface(&ctx.convert_from_lattice(&ctx.build_lattice(&case.reading)));
-                let resp =
-                    rank_ops::production_candidates(&dict, &conn, hist.as_ref(), &case.reading);
-                let list_top = resp.surfaces.first().cloned().unwrap_or_default();
-                let want_list_top = case.window_top1.as_ref().unwrap_or(&case.expected);
-
-                let mut width = Vec::new();
-                if one_best != case.expected {
-                    width.push(format!("1-best shows {one_best}"));
-                }
-                if list_top != *want_list_top {
-                    width.push(format!("candidate #1 is {list_top} (want {want_list_top})"));
-                }
-
-                let mut window = Vec::new();
-                if let Some(ref w) = case.window {
-                    window.extend(w.violations(&resp));
-                    if w.has_baseline() {
-                        let plain =
-                            rank_ops::production_candidates(&dict, &conn, None, &case.reading);
-                        window.extend(
-                            w.baseline_violations(&plain)
-                                .into_iter()
-                                .map(|v| format!("baseline: {v}")),
-                        );
-                    }
-                }
-
-                let (status, failure, mut details) = if !window.is_empty() {
-                    (AccuracyStatus::Fail, Some("window"), window)
-                } else if !width.is_empty() && case.width_issue.is_none() {
-                    (AccuracyStatus::Fail, Some("width"), Vec::new())
-                } else {
-                    (AccuracyStatus::Pass, None, Vec::new())
-                };
-                if !width.is_empty() {
-                    let tag = match &case.width_issue {
-                        Some(issue) => format!("width ({issue}, reported only)"),
-                        None => "width".to_string(),
-                    };
-                    details.extend(width.into_iter().map(|w| format!("{tag}: {w}")));
-                }
-                results.push(result(actual, status, baseline_actual, failure, details));
-            }
+            let results: Vec<AccuracyResult> = cases
+                .iter()
+                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case))
+                .collect();
 
             // Compute summary
             let total = results.len();
@@ -762,7 +658,7 @@ fn main() {
                                         continue;
                                     }
                                 }
-                                if r.failure == Some("top1") {
+                                if r.failure == Some(Failure::Top1) {
                                     println!(
                                         "  \u{2717} {} \u{2192} {} (got: {})",
                                         r.reading, r.expected, r.actual
@@ -772,7 +668,7 @@ fn main() {
                                         "  \u{2717} {} \u{2192} {} [{}]",
                                         r.reading,
                                         r.expected,
-                                        r.failure.unwrap_or("?")
+                                        r.failure.map_or("?", Failure::label)
                                     );
                                 }
                                 for d in &r.details {
@@ -985,10 +881,7 @@ fn main() {
                 }
 
                 let paths = convert_nbest(&dict, Some(&conn), reading, n);
-                let joined: Vec<String> = paths
-                    .iter()
-                    .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                    .collect();
+                let joined: Vec<String> = paths.iter().map(|segs| joined_surface(segs)).collect();
                 let raw_top1 = joined.first().cloned().unwrap_or_default();
                 if raw_top1 == dominant {
                     agree += 1;
@@ -1006,7 +899,7 @@ fn main() {
                 let hist_top1: String =
                     convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
                         .first()
-                        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                        .map(|segs| joined_surface(segs))
                         .unwrap_or_default();
 
                 misses.push(AuditMiss {
@@ -1175,88 +1068,231 @@ fn main() {
         } => {
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
-            let opts = rank_ops::ReplayOptions {
-                history: hist.as_ref(),
-                baseline: baseline.as_deref().map(Path::new),
-                emit_baseline: emit_baseline.as_deref().map(Path::new),
-                verbose,
+            let die = |e: String| -> ! {
+                eprintln!("replay-commit-log: {}", e);
+                process::exit(1);
             };
-            let report = rank_ops::replay(&dict, &conn, Path::new(&log_file), &opts)
-                .unwrap_or_else(|e| {
-                    eprintln!("replay-commit-log: {}", e);
-                    process::exit(1);
-                });
+            let (report, lines) =
+                rank_ops::replay(&dict, &conn, hist.as_ref(), Path::new(&log_file), verbose)
+                    .unwrap_or_else(|e| die(e));
+            let diff = baseline.map(|path| {
+                let before: Vec<rank_ops::BaselineLine> =
+                    read_jsonl(&path).unwrap_or_else(|e| die(e));
+                rank_ops::diff_baseline(&before, &lines)
+            });
+            if let Some(path) = emit_baseline {
+                write_jsonl(&path, &lines).unwrap_or_else(|e| die(e));
+            }
             if json {
+                #[derive(Serialize)]
+                struct Out<'a> {
+                    #[serde(flatten)]
+                    report: &'a rank_ops::ReplayReport,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    baseline: Option<&'a rank_ops::BaselineDiff>,
+                }
+                let out = Out {
+                    report: &report,
+                    baseline: diff.as_ref(),
+                };
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&report).expect("JSON serialization failed")
+                    serde_json::to_string_pretty(&out).expect("JSON serialization failed")
                 );
             } else {
-                print_replay_text(&report);
+                print_replay_text(&report, diff.as_ref());
             }
         }
     }
 }
 
-fn print_replay_text(r: &rank_ops::ReplayReport) {
-    let pct = |k: usize| {
-        if r.selections == 0 {
-            0.0
-        } else {
-            k as f64 * 100.0 / r.selections as f64
-        }
+fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::BaselineDiff>) {
+    let row = |label: &str, n: usize| {
+        println!("  {:<20} {:>5} ({:.1}%)", label, n, pct(n, r.selections));
     };
     println!("=== Replay (rank>0 selections: {}) ===", r.selections);
-    println!(
-        "  On page 1 (rank < {}): {:>5} ({:.1}%)",
-        rank_ops::PAGE_SIZE,
-        r.in_page,
-        pct(r.in_page)
-    );
-    println!(
-        "  In list:             {:>5} ({:.1}%)",
-        r.in_list,
-        pct(r.in_list)
-    );
-    println!(
-        "  Absent:              {:>5} ({:.1}%)",
-        r.absent,
-        pct(r.absent)
-    );
+    row(&format!("On page 1 (< {})", rank_ops::PAGE_SIZE), r.in_page);
+    row("In list", r.in_list);
+    row("Absent", r.absent);
     println!();
     println!("=== Cost gap to #1 (N-best path of the selected surface) ===");
-    let mut lower = 0;
-    for (i, count) in r.gap_hist.iter().enumerate() {
+    for (i, &n) in r.gap_hist.iter().enumerate() {
+        let lower = i.checked_sub(1).map_or(0, |j| rank_ops::GAP_BIN_UPPER[j]);
         let label = match rank_ops::GAP_BIN_UPPER.get(i) {
-            Some(upper) => {
-                let l = if i == 0 {
-                    format!("[0, {upper}]")
-                } else {
-                    format!("({lower}, {upper}]")
-                };
-                lower = *upper;
-                l
-            }
+            Some(upper) if i == 0 => format!("[0, {upper}]"),
+            Some(upper) => format!("({lower}, {upper}]"),
             None => format!("> {lower}"),
         };
-        println!("  {:<16} {:>5} ({:.1}%)", label, count, pct(*count));
+        row(&label, n);
     }
-    println!(
-        "  {:<16} {:>5} ({:.1}%)",
-        "no N-best path",
-        r.gap_no_path,
-        pct(r.gap_no_path)
-    );
-    if let Some(ref d) = r.baseline {
+    row("no N-best path", r.gap_no_path);
+    if let Some(d) = diff {
         println!();
         println!("=== Against baseline ===");
-        println!("  Lost:              {:>5}", d.lost);
-        println!("  Demoted off page:  {:>5}", d.demoted_off_page);
-        println!("  Demoted in page:   {:>5}", d.demoted_in_page);
-        println!("  Improved:          {:>5}", d.improved);
-        println!("  Unchanged:         {:>5}", d.unchanged);
-        println!("  Only in current:   {:>5}", d.only_current);
-        println!("  Only in baseline:  {:>5}", d.only_baseline);
+        for (label, n) in [
+            ("Lost", d.lost),
+            ("Demoted off page", d.demoted_off_page),
+            ("Demoted in page", d.demoted_in_page),
+            ("Improved", d.improved),
+            ("Unchanged", d.unchanged),
+            ("Only in current", d.only_current),
+            ("Only in baseline", d.only_baseline),
+        ] {
+            println!("  {:<20} {:>5}", label, n);
+        }
+    }
+}
+
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("{path} line {}: {e}", n + 1)))
+        .collect()
+}
+
+fn write_jsonl<T: Serialize>(path: &str, items: &[T]) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
+    let mut w = BufWriter::new(file);
+    for item in items {
+        let line = serde_json::to_string(item).expect("JSON serialization failed");
+        writeln!(w, "{line}").map_err(|e| format!("write {path}: {e}"))?;
+    }
+    w.flush().map_err(|e| format!("write {path}: {e}"))
+}
+
+/// Evaluate one accuracy case. Gates run in order and the first to fail
+/// decides the result: no-history `baseline`, top-1 at n=1, then the other
+/// display widths and the `[cases.window]` expectations.
+fn eval_case(
+    dict: &TrieDictionary,
+    conn: &ConnectionMatrix,
+    hist: Option<&UserHistory>,
+    case: &AccuracyCase,
+) -> AccuracyResult {
+    let base = AccuracyResult {
+        reading: case.reading.clone(),
+        expected: case.expected.clone(),
+        actual: String::new(),
+        status: AccuracyStatus::Skip,
+        category: case.category.clone(),
+        baseline: case.baseline.clone(),
+        baseline_actual: None,
+        note: case.note.clone(),
+        issue: case.issue.clone(),
+        pr: case.pr.clone(),
+        failure: None,
+        details: Vec::new(),
+    };
+    if case.skip {
+        return base;
+    }
+    let fail = |failure, actual, baseline_actual, details| AccuracyResult {
+        status: AccuracyStatus::Fail,
+        failure: Some(failure),
+        actual,
+        baseline_actual,
+        details,
+        ..base.clone()
+    };
+
+    // No-history baseline: every width must still agree on it.
+    let plain = case
+        .baseline
+        .as_ref()
+        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading));
+    let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
+    if let (Some(want), Some(w)) = (&case.baseline, &plain) {
+        if w.nbest_head != *want {
+            return fail(
+                Failure::Baseline,
+                String::new(),
+                baseline_actual,
+                Vec::new(),
+            );
+        }
+    }
+
+    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading);
+    let actual = widths.nbest_head.clone();
+    if actual != case.expected {
+        return fail(Failure::Top1, actual, baseline_actual, Vec::new());
+    }
+
+    let want_list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
+    let mut width = width_disagreements(&widths, &case.expected, want_list_top);
+    if let (Some(want), Some(w)) = (&case.baseline, &plain) {
+        width.extend(
+            width_disagreements(w, want, want)
+                .into_iter()
+                .map(|d| format!("baseline {d}")),
+        );
+    }
+
+    let mut window = Vec::new();
+    if let Some(ref w) = case.window {
+        window.extend(w.lists.violations(w.n, &widths.list));
+        if let Some(ref b) = w.baseline {
+            let list = match &plain {
+                Some(p) => b.violations(w.n, &p.list),
+                None => b.violations(
+                    w.n,
+                    &rank_ops::production_candidates(dict, conn, None, &case.reading),
+                ),
+            };
+            window.extend(list.into_iter().map(|v| format!("baseline: {v}")));
+        }
+    }
+
+    let width_tag = match &case.width_issue {
+        Some(issue) => format!("width ({issue}, reported only)"),
+        None => "width".to_string(),
+    };
+    let failure = if !window.is_empty() {
+        Some(Failure::Window)
+    } else if !width.is_empty() && case.width_issue.is_none() {
+        Some(Failure::Width)
+    } else {
+        None
+    };
+    let details: Vec<String> = window
+        .into_iter()
+        .chain(width.into_iter().map(|w| format!("{width_tag}: {w}")))
+        .collect();
+    match failure {
+        Some(f) => fail(f, actual, baseline_actual, details),
+        None => AccuracyResult {
+            status: AccuracyStatus::Pass,
+            actual,
+            baseline_actual,
+            details,
+            ..base
+        },
+    }
+}
+
+/// Widths other than the n=1 head that disagree with the expected top-1.
+fn width_disagreements(w: &rank_ops::Top1Widths, expected: &str, list_top: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if w.one_best != expected {
+        out.push(format!("1-best shows {}", w.one_best));
+    }
+    if w.list_top() != list_top {
+        out.push(format!(
+            "candidate #1 is {} (want {list_top})",
+            w.list_top()
+        ));
+    }
+    out
+}
+
+fn pct(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 * 100.0 / whole as f64
     }
 }
 
