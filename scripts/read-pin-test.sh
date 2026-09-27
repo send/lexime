@@ -3,8 +3,10 @@
 # lint-toolchain.sh). Run by CI's read-pin job and `mise run test-read-pin`.
 #
 # The Mozc cases also compare against the inline one-liner read-pin.sh replaced
-# (#332). Its output is the accuracy job's snapshot cache key and the SHA
-# `mise run fetch-dict-mozc` downloads, so it has to stay byte-identical.
+# (#332), whose output was the accuracy job's snapshot cache key and the SHA
+# `mise run fetch-dict-mozc` downloads: it pins that the switch changed neither.
+# It is a record of #332, not a contract on the pin grammar. A deliberate
+# grammar change updates or drops legacy_mozc rather than bending around it.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,7 +25,8 @@ fail() {
   fails=$((fails + 1))
 }
 
-# The pre-#332 reader, verbatim. Prints nothing when no line matches.
+# The pre-#332 reader, with the file as an argument and grep's stderr (a missing
+# file) silenced. Prints nothing when no line matches.
 legacy_mozc() {
   grep -oE -m1 '^[[:space:]]*[0-9a-fA-F]{40}[[:space:]]*$' "$1" 2>/dev/null |
     tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true
