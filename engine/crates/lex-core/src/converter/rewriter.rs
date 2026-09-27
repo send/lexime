@@ -188,8 +188,9 @@ impl Rewriter for PartialHiraganaRewriter {
     }
 }
 
-/// For the 5 cheapest multi-segment paths, generate variants where individual
-/// hiragana segments are replaced with kanji alternatives from the lattice.
+/// For the first 5 multi-segment paths in list order, generate variants where
+/// individual hiragana segments are replaced with kanji alternatives from the
+/// lattice.
 ///
 /// This is the reverse of `PartialHiraganaRewriter`: instead of softening
 /// kanji → hiragana, it surfaces kanji alternatives that the Viterbi
