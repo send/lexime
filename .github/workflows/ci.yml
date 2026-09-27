@@ -74,17 +74,25 @@ jobs:
               - 'Info.plist'
               # Defines which files `compile-swift` gates and `build`
               # compiles, so an edit to it changes what this job checks. Not
-              # covered by any other filter — `core` names only the two
-              # supply-chain scripts.
+              # covered by any other filter — the scripts `core` names are the
+              # supply-chain and lint-toolchain ones.
               - 'scripts/swift-sources.sh'
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
-            # The read-pin job's own input. The reader, its wrappers, both pin
-            # files, ci.yml and mise.toml are already in `core` or `corpus`,
-            # which gate their consumers (lint, accuracy), and the job's `if`
-            # ORs both, so they are not repeated here.
+            # Everything the read-pin job runs or reads: the test, the reader,
+            # both wrappers, the two real pin files (its "current pin" cases)
+            # and this workflow. `core` and `corpus` list most of these too,
+            # but for their own jobs' sake; ORing them into read-pin's `if`
+            # would tie its trigger to paths those jobs may drop, and run it on
+            # every engine change. The job does not go through mise.
             pins:
               - 'scripts/read-pin-test.sh'
+              - 'scripts/read-pin.sh'
+              - 'scripts/mozc-pin.sh'
+              - 'scripts/lint-toolchain.sh'
+              - 'engine/data/mozc-pin.txt'
+              - 'engine/lint-toolchain.txt'
+              - '.github/workflows/ci.yml'
 
   # Supply-chain screening. Runs the quarantine / build.rs baseline checks
   # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
@@ -119,10 +127,7 @@ jobs:
   # cache key. Plain bash and no cargo, so no `screen`.
   read-pin:
     needs: changes
-    if: >-
-      needs.changes.outputs.core == 'true' ||
-      needs.changes.outputs.corpus == 'true' ||
-      needs.changes.outputs.pins == 'true'
+    if: needs.changes.outputs.pins == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -105,9 +105,11 @@ expect_refusal "mozc: ::error annotation under GITHUB_ACTIONS" \
 
 # --- lint-toolchain.sh ------------------------------------------------------
 
-expect_value "toolchain: current pin" \
-  "$(grep -m1 -xE '[0-9]+\.[0-9]+\.[0-9]+' engine/lint-toolchain.txt)" \
-  bash scripts/lint-toolchain.sh
+# The real pin, read by its default path, against a plain grep of it.
+current=$(grep -oE -m1 '^[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' engine/lint-toolchain.txt |
+  tr -d '[:space:]' || true)
+[[ -n $current ]] || fail "toolchain: current pin (grep)" "no X.Y.Z line"
+expect_value "toolchain: current pin" "$current" bash scripts/lint-toolchain.sh
 
 printf '# pin\r\n\t 1.98.1 \r\n' >"$tmp/tc-crlf"
 expect_value "toolchain: spaces/tabs, CRLF" 1.98.1 bash scripts/lint-toolchain.sh "$tmp/tc-crlf"
