@@ -34,6 +34,7 @@ jobs:
               - 'engine/deny.toml'
               - 'engine/quarantine-allowlist.toml'
               - 'engine/build-script-baseline.txt'
+              - 'scripts/screen.sh'
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
               - 'engine/supply-chain/**'
@@ -79,8 +80,9 @@ jobs:
               # Deliberately no 'mise.toml' here: it is already in `core`, and
               # this job's `if` ORs `core`, so adding it would be dead config.
 
-  # Supply-chain screening. Runs the quarantine / build.rs baseline checks
-  # BEFORE any job that invokes cargo on the PR's dependency graph: cargo
+  # Supply-chain screening. Runs scripts/screen.sh (quarantine / build.rs
+  # baseline; the one definition lint-canary.yml and `mise run audit` also
+  # call) BEFORE any job that invokes cargo on the PR's dependency graph: cargo
   # compiles and executes dependency build scripts, so every cargo-invoking
   # job below `needs: screen` (test-* inherit it through lint). Unconditional
   # (no `if`) on purpose — a path-filtered screen would have to hand-maintain
@@ -101,11 +103,8 @@ jobs:
       # out-of-sync Cargo.lock before the --locked screen below could reject
       # it. This job only runs metadata (no build), so the cache buys little.
 
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
-
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
+      - name: Supply-chain screen (quarantine + build.rs baseline)
+        run: bash scripts/screen.sh
 
   lint:
     needs: [changes, screen]

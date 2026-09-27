@@ -42,16 +42,13 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      # The same screen as ci.yml's `screen` job, and for the same reason:
-      # cargo executes dependency build scripts, so the quarantine / build.rs
-      # checks come first. Steps rather than a job, since nothing else here
-      # runs cargo. On main they re-pass trivially, but workflow_dispatch can
-      # target any branch.
-      - name: Quarantine check (7-day)
-        run: bash scripts/check-quarantine.sh
-
-      - name: build.rs baseline check
-        run: bash scripts/check-build-scripts.sh
+      # The same screen as ci.yml's `screen` job (one definition, in
+      # scripts/screen.sh), and for the same reason: cargo executes dependency
+      # build scripts, so the screen comes first. A step rather than a job,
+      # since nothing else here runs cargo. On main it re-passes trivially,
+      # but workflow_dispatch can target any branch.
+      - name: Supply-chain screen (quarantine + build.rs baseline)
+        run: bash scripts/screen.sh
 
       # No rust-cache. A weekly run leaves the entry at the 7-day eviction
       # window, and the key changes with every stable release anyway.
