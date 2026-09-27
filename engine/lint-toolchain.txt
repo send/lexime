@@ -8,7 +8,8 @@
 # Read by scripts/lint-toolchain.sh for both consumers: the CI `lint` job and
 # `mise run lint`. The local gate and CI therefore run the same clippy.
 # LINT_TOOLCHAIN=<toolchain> overrides the pin for the mise lint tasks. Only
-# the canary below sets it.
+# the canary below sets it, and it also reads this file to compare the pin
+# with stable.
 #
 # Only `lint` is pinned. The build and test jobs stay on stable, since they do
 # not run with -D warnings. MSRV has its own pin (`rust-version` in

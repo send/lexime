@@ -503,6 +503,9 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 tc=${LINT_TOOLCHAIN:-$(bash scripts/lint-toolchain.sh)}
+if [ -n "${LINT_TOOLCHAIN:-}" ]; then
+  echo "lint-toolchain: LINT_TOOLCHAIN=$tc overrides the pin (engine/lint-toolchain.txt)" >&2
+fi
 if ! cargo +"$tc" clippy --version >/dev/null 2>&1 || ! cargo +"$tc" fmt --version >/dev/null 2>&1; then
   rustup toolchain install "$tc" --profile minimal --component clippy --component rustfmt
 fi

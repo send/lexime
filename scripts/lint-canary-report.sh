@@ -12,6 +12,8 @@
 #
 # The issue is found by the marker comment in its body, not by title or
 # search, so a retitled issue still dedupes and there is no search-index lag.
+# Only bot-authored issues count: the repo is public, and anyone can paste the
+# marker into an issue of their own.
 set -euo pipefail
 
 marker='<!-- lint-canary'
@@ -28,8 +30,9 @@ need LINTS '^[A-Za-z0-9_:,]*$'
 
 # "<number>\t<marker line>" of the open issue, or nothing. The marker line
 # holds the last verdict's fingerprint, compared below.
-found=$(gh issue list --state open --limit 1000 --json number,body --jq '
-  map(select(.body | contains("'"$marker"'"))) | .[0] | select(.)
+found=$(gh issue list --state open --limit 1000 --json number,author,body --jq '
+  map(select(.author.is_bot and (.body | contains("'"$marker"'"))))
+  | sort_by(.number) | .[0] | select(.)
   | [.number, (.body | split("\n") | map(rtrimstr("\r"))
                | map(select(startswith("'"$marker"'"))) | .[0] // "")]
   | @tsv')
@@ -53,9 +56,9 @@ case $STATE in
     if [ -n "$LINTS" ]; then
       findings=\`$(printf '%s' "$LINTS" | sed 's/,/`, `/g')\`
     else
-      findings="none recognised in the log, see the run"
+      findings="none recognised in the log. It may be a broken run rather than new lints, so read the run"
     fi
-    verdict="Stable **$STABLE** fails the lint gate. The pin is **$PIN**. Findings: $findings."
+    verdict="Stable **$STABLE** fails \`mise run lint\`. The pin is **$PIN**. Findings: $findings."
     action="Bump the pin and fix the findings in the same PR." ;;
   free-bump)
     verdict="Stable **$STABLE** passes the lint gate as-is. The pin is **$PIN**."

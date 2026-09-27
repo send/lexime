@@ -5,8 +5,8 @@
 # Usage: scripts/lint-canary.sh [toolchain]   (default: stable)
 #
 # The lint command is not spelled out here: it is `mise run lint` with
-# LINT_TOOLCHAIN overriding the pin, so the canary runs exactly the gate that
-# CI and the local hook run.
+# LINT_TOOLCHAIN overriding the pin, so the canary runs the gate's own
+# definition rather than a copy of its flags.
 #
 # The verdict depends only on whether the toolchain is newer than the pin and
 # whether lint passed:

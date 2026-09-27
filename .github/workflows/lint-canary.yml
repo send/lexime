@@ -67,12 +67,16 @@ jobs:
   # Split from `canary` so the job that executes dependency build scripts never
   # holds a token that can write issues. `canary` fails only on `error` (or
   # when it dies before a verdict), which leaves no issue and just a red run.
-  # So the outputs read here always come from a job that succeeded, and
-  # `behind` turns the run red in this job, after the issue is up to date.
+  # The `if` has no status function, so the implicit success() applies and the
+  # outputs read here always come from a job that succeeded. `behind` turns the
+  # run red in this job, after the issue is up to date. Only main reports: a
+  # dispatch on a pin-bump branch would otherwise see `current` and close the
+  # issue before the bump merges. A literal, because a `schedule` event's
+  # payload carries no `repository.default_branch`.
   report:
     needs: canary
     if: >-
-      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
       contains(fromJSON('["current", "free-bump", "behind"]'), needs.canary.outputs.state)
     runs-on: ubuntu-latest
     permissions:
