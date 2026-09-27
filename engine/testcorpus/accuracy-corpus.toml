@@ -30,6 +30,28 @@
 #   note      (optional) - Explanation of the test case or known issue
 #   issue     (optional) - Related GitHub issue number (e.g. "#123")
 #   pr        (optional) - Related GitHub PR number (e.g. "#146")
+#   window_top1 (optional) - The production candidate list's #1 when it
+#                          legitimately differs from `expected` (history
+#                          promoting learned kana to index 0)
+#   width_issue (optional) - Issue for a known width disagreement: reported,
+#                          but the case does not fail on it
+#
+# Top-1 is checked at three widths and all must equal `expected`: the N-best
+# head (n=1), the synchronous 1-best shown while candidates are pending, and
+# the production candidate list's #1. They oversample differently, so the
+# structure filter sees different populations. A disagreement fails the case
+# as "width"; `skip` would also silence the top-1 gate, so use width_issue.
+#
+# [cases.window] (optional) - Rank-2+ expectations on the production candidate
+#   list (N-best + kana + predictions + lookup), placed right after its case:
+#     n             (required) - Window size; 9 = the first page
+#     present       - Surfaces that must be in the first n
+#     present_nbest - Surfaces that must be in the first n AND come from an
+#                     N-best path (rules out history re-injection)
+#     absent        - Surfaces that must not be in the first n
+#     baseline_present / baseline_present_nbest / baseline_absent
+#                   - History corpus only, and required there: the same
+#                     checks without history (like `baseline` for top-1)
 
 # ═══════════════════════════════════════════════════════════════════
 # Basic words
@@ -80,6 +102,10 @@ reading = "おおさか"
 expected = "大阪"
 category = "word"
 tags = ["place"]
+
+[cases.window]
+n = 9
+absent = ["お圧さか"]
 
 [[cases]]
 reading = "きょうと"
@@ -173,6 +199,10 @@ expected = "考える"
 category = "conjugation"
 tags = ["verb", "ichidan"]
 
+[cases.window]
+n = 9
+absent = ["かん替える"]
+
 [[cases]]
 reading = "つくった"
 expected = "作った"
@@ -200,6 +230,10 @@ reading = "うつくしい"
 expected = "美しい"
 category = "word"
 tags = ["adjective", "i-adj"]
+
+[cases.window]
+n = 9
+absent = ["う就くしい"]
 
 [[cases]]
 reading = "しずかな"
@@ -532,6 +566,10 @@ reading = "しょくにほんぎ"
 expected = "続日本紀"
 category = "extras"
 tags = ["history", "classical-work"]
+
+[cases.window]
+n = 9
+absent = ["しょく仁保んぎ"]
 
 [[cases]]
 reading = "せんしそうしょ"
@@ -1079,3 +1117,19 @@ category = "loanword"
 tags = ["katakana-policy"]
 issue = "#273"
 note = "設計判断ガード (#261 Q1): katakana_penalty はタイブレーカーに留め辞書序列に従う。旧 snapshot は カッコ、2026-07 pin は 括弧 が辞書優位 (margin 109) — 設計に従い expected を更新 (#273)。カタカナが欲しい場合は履歴学習で flip"
+
+# ═══════════════════════════════════════════════════════════════════
+# Candidate window (rank 2+)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "しておいたほうが"
+expected = "しておいたほうが"
+category = "regression"
+tags = ["candidate-window"]
+pr = "#350"
+note = "#350 で KanjiVariant の reading-scan を削除した後も、分節境界フェーズで しておいた方が が頁 1 に出ること"
+
+[cases.window]
+n = 9
+present = ["しておいた方が"]

@@ -7,8 +7,9 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
+use lex_cli::commands::rank_ops::{self, WindowCheck};
 use lex_core::converter::tune;
-use lex_core::converter::{convert_nbest, convert_nbest_with_history};
+use lex_core::converter::{convert_nbest, convert_nbest_with_history, ConversionContext};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
 use lex_core::user_history::UserHistory;
@@ -64,6 +65,10 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
+        /// Record the production candidate list (N-best + kana + predictions
+        /// + lookup) instead of the N-best paths
+        #[arg(long)]
+        candidates: bool,
     },
 
     /// Run conversion accuracy tests from a structured TOML corpus
@@ -149,6 +154,37 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
+        /// Compare production candidate lists (baseline must be a
+        /// `snapshot --candidates` file)
+        #[arg(long)]
+        candidates: bool,
+    },
+
+    /// Replay rank>0 selections from the commit log against the current
+    /// engine. Prints counts only; the log holds personal input.
+    ReplayCommitLog {
+        /// Path to the compiled dictionary file
+        dict_file: String,
+        /// Path to the compiled connection matrix file
+        conn_file: String,
+        /// Path to commit-log.jsonl
+        log_file: String,
+        /// Path to user history file (optional; default is no history)
+        #[arg(long)]
+        history: Option<String>,
+        /// Compare against a baseline written by --emit-baseline
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Write a baseline (line index, timestamp, rank — no content)
+        #[arg(long)]
+        emit_baseline: Option<String>,
+        /// Print each selection's reading and surface to stderr (local only;
+        /// never paste this output into a PR or issue)
+        #[arg(long)]
+        verbose: bool,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -157,6 +193,28 @@ enum Command {
 struct SnapshotEntry {
     reading: String,
     surfaces: Vec<String>,
+    /// What `surfaces` holds. Absent in files written before `--candidates`
+    /// existed, which recorded N-best paths.
+    #[serde(default)]
+    kind: SnapshotKind,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SnapshotKind {
+    #[default]
+    Nbest,
+    Candidates,
+}
+
+impl SnapshotKind {
+    fn from_flag(candidates: bool) -> Self {
+        if candidates {
+            Self::Candidates
+        } else {
+            Self::Nbest
+        }
+    }
 }
 
 // --- Accuracy types ---
@@ -196,6 +254,16 @@ struct AccuracyCase {
     issue: Option<String>,
     #[serde(default)]
     pr: Option<String>,
+    /// Rank-2+ expectations on the production candidate list.
+    #[serde(default)]
+    window: Option<WindowCheck>,
+    /// The production list's #1 when it legitimately differs from
+    /// `expected` (history promoting learned kana to index 0).
+    #[serde(default)]
+    window_top1: Option<String>,
+    /// Known width disagreement: report it without failing the case.
+    #[serde(default)]
+    width_issue: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,6 +283,12 @@ struct AccuracyResult {
     issue: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr: Option<String>,
+    /// Which gate failed: "top1", "baseline", "width" or "window".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<&'static str>,
+    /// Width disagreements and window violations, human-readable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    details: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -333,19 +407,34 @@ fn run_snapshot(
     hist: Option<&UserHistory>,
     reading: &str,
     n: usize,
+    kind: SnapshotKind,
 ) -> SnapshotEntry {
-    let paths = match hist {
-        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
-        None => convert_nbest(dict, Some(conn), reading, n),
+    let surfaces: Vec<String> = match kind {
+        SnapshotKind::Nbest => {
+            let paths = match hist {
+                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
+                None => convert_nbest(dict, Some(conn), reading, n),
+            };
+            paths
+                .iter()
+                .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                .collect()
+        }
+        SnapshotKind::Candidates => rank_ops::production_candidates(dict, conn, hist, reading)
+            .surfaces
+            .into_iter()
+            .take(n)
+            .collect(),
     };
-    let surfaces: Vec<String> = paths
-        .iter()
-        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-        .collect();
     SnapshotEntry {
         reading: reading.to_string(),
         surfaces,
+        kind,
     }
+}
+
+fn joined_surface(segments: &[lex_core::converter::ConvertedSegment]) -> String {
+    segments.iter().map(|s| s.surface.as_str()).collect()
 }
 
 fn main() {
@@ -456,71 +545,25 @@ fn main() {
                 process::exit(1);
             }
 
+            // Validate window checks before running anything: a malformed
+            // expectation must not read as a conversion failure.
+            for case in &cases {
+                if let Some(ref w) = case.window {
+                    if let Err(e) = w.validate(hist.is_some()) {
+                        eprintln!("Invalid [cases.window] for {}: {}", case.reading, e);
+                        process::exit(1);
+                    }
+                }
+            }
+
             // Run each case
             let mut results: Vec<AccuracyResult> = Vec::new();
             for case in &cases {
-                if case.skip {
-                    results.push(AccuracyResult {
-                        reading: case.reading.clone(),
-                        expected: case.expected.clone(),
-                        actual: String::new(),
-                        status: AccuracyStatus::Skip,
-                        category: case.category.clone(),
-                        baseline: case.baseline.clone(),
-                        baseline_actual: None,
-                        note: case.note.clone(),
-                        issue: case.issue.clone(),
-                        pr: case.pr.clone(),
-                    });
-                    continue;
-                }
-
-                // If baseline is specified, first verify no-history conversion
-                let (baseline_actual, baseline_changed) =
-                    if let Some(ref expected_baseline) = case.baseline {
-                        let paths_no_hist = convert_nbest(&dict, Some(&conn), &case.reading, 1);
-                        let ba: String = paths_no_hist
-                            .first()
-                            .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                            .unwrap_or_default();
-                        let changed = ba != *expected_baseline;
-                        (Some(ba), changed)
-                    } else {
-                        (None, false)
-                    };
-
-                if baseline_changed {
-                    results.push(AccuracyResult {
-                        reading: case.reading.clone(),
-                        expected: case.expected.clone(),
-                        actual: String::new(),
-                        status: AccuracyStatus::Fail,
-                        category: case.category.clone(),
-                        baseline: case.baseline.clone(),
-                        baseline_actual: baseline_actual.clone(),
-                        note: case.note.clone(),
-                        issue: case.issue.clone(),
-                        pr: case.pr.clone(),
-                    });
-                    continue;
-                }
-
-                let paths = match hist.as_ref() {
-                    Some(h) => convert_nbest_with_history(&dict, Some(&conn), h, &case.reading, 1),
-                    None => convert_nbest(&dict, Some(&conn), &case.reading, 1),
-                };
-                let actual: String = paths
-                    .first()
-                    .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                    .unwrap_or_default();
-
-                let status = if actual == case.expected {
-                    AccuracyStatus::Pass
-                } else {
-                    AccuracyStatus::Fail
-                };
-
-                results.push(AccuracyResult {
+                let result = |actual: String,
+                              status: AccuracyStatus,
+                              baseline_actual: Option<String>,
+                              failure: Option<&'static str>,
+                              details: Vec<String>| AccuracyResult {
                     reading: case.reading.clone(),
                     expected: case.expected.clone(),
                     actual,
@@ -531,7 +574,113 @@ fn main() {
                     note: case.note.clone(),
                     issue: case.issue.clone(),
                     pr: case.pr.clone(),
+                    failure,
+                    details,
+                };
+
+                if case.skip {
+                    results.push(result(
+                        String::new(),
+                        AccuracyStatus::Skip,
+                        None,
+                        None,
+                        Vec::new(),
+                    ));
+                    continue;
+                }
+
+                // If baseline is specified, first verify no-history conversion
+                let baseline_actual = case.baseline.as_ref().map(|_| {
+                    let paths_no_hist = convert_nbest(&dict, Some(&conn), &case.reading, 1);
+                    paths_no_hist
+                        .first()
+                        .map(|segs| joined_surface(segs))
+                        .unwrap_or_default()
                 });
+                if baseline_actual.is_some() && baseline_actual != case.baseline {
+                    results.push(result(
+                        String::new(),
+                        AccuracyStatus::Fail,
+                        baseline_actual,
+                        Some("baseline"),
+                        Vec::new(),
+                    ));
+                    continue;
+                }
+
+                // Width (i): the N-best head at n=1 — the historical top-1 gate.
+                let paths = match hist.as_ref() {
+                    Some(h) => convert_nbest_with_history(&dict, Some(&conn), h, &case.reading, 1),
+                    None => convert_nbest(&dict, Some(&conn), &case.reading, 1),
+                };
+                let actual: String = paths
+                    .first()
+                    .map(|segs| joined_surface(segs))
+                    .unwrap_or_default();
+                if actual != case.expected {
+                    results.push(result(
+                        actual,
+                        AccuracyStatus::Fail,
+                        baseline_actual,
+                        Some("top1"),
+                        Vec::new(),
+                    ));
+                    continue;
+                }
+
+                // Widths (ii) and (iii): the synchronous 1-best shown while
+                // candidates are pending, and the production list's #1. They
+                // use different oversampling, so the structure filter sees a
+                // different population and top-1 can diverge from (i).
+                let ctx = ConversionContext {
+                    dict: &dict,
+                    conn: Some(&conn),
+                    history: hist.as_ref(),
+                };
+                let one_best =
+                    joined_surface(&ctx.convert_from_lattice(&ctx.build_lattice(&case.reading)));
+                let resp =
+                    rank_ops::production_candidates(&dict, &conn, hist.as_ref(), &case.reading);
+                let list_top = resp.surfaces.first().cloned().unwrap_or_default();
+                let want_list_top = case.window_top1.as_ref().unwrap_or(&case.expected);
+
+                let mut width = Vec::new();
+                if one_best != case.expected {
+                    width.push(format!("1-best shows {one_best}"));
+                }
+                if list_top != *want_list_top {
+                    width.push(format!("candidate #1 is {list_top} (want {want_list_top})"));
+                }
+
+                let mut window = Vec::new();
+                if let Some(ref w) = case.window {
+                    window.extend(w.violations(&resp));
+                    if w.has_baseline() {
+                        let plain =
+                            rank_ops::production_candidates(&dict, &conn, None, &case.reading);
+                        window.extend(
+                            w.baseline_violations(&plain)
+                                .into_iter()
+                                .map(|v| format!("baseline: {v}")),
+                        );
+                    }
+                }
+
+                let (status, failure, mut details) = if !window.is_empty() {
+                    (AccuracyStatus::Fail, Some("window"), window)
+                } else if !width.is_empty() && case.width_issue.is_none() {
+                    (AccuracyStatus::Fail, Some("width"), Vec::new())
+                } else {
+                    (AccuracyStatus::Pass, None, Vec::new())
+                };
+                if !width.is_empty() {
+                    let tag = match &case.width_issue {
+                        Some(issue) => format!("width ({issue}, reported only)"),
+                        None => "width".to_string(),
+                    };
+                    details.extend(width.into_iter().map(|w| format!("{tag}: {w}")));
+                }
+                results.push(result(actual, status, baseline_actual, failure, details));
             }
 
             // Compute summary
@@ -581,6 +730,11 @@ fn main() {
                     for r in group {
                         match r.status {
                             AccuracyStatus::Pass => {
+                                // Reported-only width disagreements stay
+                                // visible without failing the run.
+                                for d in &r.details {
+                                    println!("  ! {}: {}", r.reading, d);
+                                }
                                 if verbose {
                                     if let Some(ref bl) = r.baseline {
                                         println!(
@@ -608,10 +762,22 @@ fn main() {
                                         continue;
                                     }
                                 }
-                                println!(
-                                    "  \u{2717} {} \u{2192} {} (got: {})",
-                                    r.reading, r.expected, r.actual
-                                );
+                                if r.failure == Some("top1") {
+                                    println!(
+                                        "  \u{2717} {} \u{2192} {} (got: {})",
+                                        r.reading, r.expected, r.actual
+                                    );
+                                } else {
+                                    println!(
+                                        "  \u{2717} {} \u{2192} {} [{}]",
+                                        r.reading,
+                                        r.expected,
+                                        r.failure.unwrap_or("?")
+                                    );
+                                }
+                                for d in &r.details {
+                                    println!("      {}", d);
+                                }
                             }
                             AccuracyStatus::Skip => {
                                 let reason = r
@@ -649,7 +815,9 @@ fn main() {
             output_file,
             n,
             history,
+            candidates,
         } => {
+            let kind = SnapshotKind::from_flag(candidates);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
@@ -661,7 +829,7 @@ fn main() {
             let mut writer = BufWriter::new(file);
 
             for reading in &readings {
-                let entry = run_snapshot(&dict, &conn, hist.as_ref(), reading, n);
+                let entry = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
                 let line = serde_json::to_string(&entry).expect("JSON serialization failed");
                 writeln!(writer, "{}", line).unwrap_or_else(|e| {
                     eprintln!("Failed to write: {}", e);
@@ -892,7 +1060,9 @@ fn main() {
             baseline_file,
             n,
             history,
+            candidates,
         } => {
+            let kind = SnapshotKind::from_flag(candidates);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
@@ -911,6 +1081,13 @@ fn main() {
                     eprintln!("Failed to parse baseline JSONL: {}", e);
                     process::exit(1);
                 });
+                if entry.kind != kind {
+                    eprintln!(
+                        "Baseline holds {:?} snapshots but {:?} was requested (toggle --candidates)",
+                        entry.kind, kind
+                    );
+                    process::exit(1);
+                }
                 baseline.insert(entry.reading.clone(), entry);
             }
 
@@ -920,7 +1097,7 @@ fn main() {
             let total = readings.len();
 
             for reading in &readings {
-                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n);
+                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
 
                 match baseline.get(reading) {
                     Some(base) => {
@@ -985,6 +1162,101 @@ fn main() {
                 process::exit(1);
             }
         }
+
+        Command::ReplayCommitLog {
+            dict_file,
+            conn_file,
+            log_file,
+            history,
+            baseline,
+            emit_baseline,
+            verbose,
+            json,
+        } => {
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let conn = conn.expect("connection matrix is required for replay-commit-log");
+            let opts = rank_ops::ReplayOptions {
+                history: hist.as_ref(),
+                baseline: baseline.as_deref().map(Path::new),
+                emit_baseline: emit_baseline.as_deref().map(Path::new),
+                verbose,
+            };
+            let report = rank_ops::replay(&dict, &conn, Path::new(&log_file), &opts)
+                .unwrap_or_else(|e| {
+                    eprintln!("replay-commit-log: {}", e);
+                    process::exit(1);
+                });
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).expect("JSON serialization failed")
+                );
+            } else {
+                print_replay_text(&report);
+            }
+        }
+    }
+}
+
+fn print_replay_text(r: &rank_ops::ReplayReport) {
+    let pct = |k: usize| {
+        if r.selections == 0 {
+            0.0
+        } else {
+            k as f64 * 100.0 / r.selections as f64
+        }
+    };
+    println!("=== Replay (rank>0 selections: {}) ===", r.selections);
+    println!(
+        "  On page 1 (rank < {}): {:>5} ({:.1}%)",
+        rank_ops::PAGE_SIZE,
+        r.in_page,
+        pct(r.in_page)
+    );
+    println!(
+        "  In list:             {:>5} ({:.1}%)",
+        r.in_list,
+        pct(r.in_list)
+    );
+    println!(
+        "  Absent:              {:>5} ({:.1}%)",
+        r.absent,
+        pct(r.absent)
+    );
+    println!();
+    println!("=== Cost gap to #1 (N-best path of the selected surface) ===");
+    let mut lower = 0;
+    for (i, count) in r.gap_hist.iter().enumerate() {
+        let label = match rank_ops::GAP_BIN_UPPER.get(i) {
+            Some(upper) => {
+                let l = if i == 0 {
+                    format!("[0, {upper}]")
+                } else {
+                    format!("({lower}, {upper}]")
+                };
+                lower = *upper;
+                l
+            }
+            None => format!("> {lower}"),
+        };
+        println!("  {:<16} {:>5} ({:.1}%)", label, count, pct(*count));
+    }
+    println!(
+        "  {:<16} {:>5} ({:.1}%)",
+        "no N-best path",
+        r.gap_no_path,
+        pct(r.gap_no_path)
+    );
+    if let Some(ref d) = r.baseline {
+        println!();
+        println!("=== Against baseline ===");
+        println!("  Lost:              {:>5}", d.lost);
+        println!("  Demoted off page:  {:>5}", d.demoted_off_page);
+        println!("  Demoted in page:   {:>5}", d.demoted_in_page);
+        println!("  Improved:          {:>5}", d.improved);
+        println!("  Unchanged:         {:>5}", d.unchanged);
+        println!("  Only in current:   {:>5}", d.only_current);
+        println!("  Only in baseline:  {:>5}", d.only_baseline);
     }
 }
 

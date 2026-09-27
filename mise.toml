@@ -485,6 +485,15 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- history-audit \
   "$HOME/Library/Application Support/Lexime/user_history.lxud" "$@"
 """
 
+[tasks.replay-commit-log]
+description = "Replay rank>0 selections from the commit log (counts only)"
+depends = ["screen", "dict", "conn"]
+run = """
+cd engine && cargo run --release -p lex-cli --bin lextool -- replay-commit-log \
+  data/lexime.dict data/lexime.conn \
+  "$HOME/Library/Application Support/Lexime/commit-log.jsonl" "$@"
+"""
+
 [tasks.trace-log]
 description = "Stream trace JSONL output"
 run = "tail -f ~/Library/Logs/Lexime/lexime-trace.jsonl | python3 -m json.tool --no-ensure-ascii"

@@ -502,7 +502,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 
 ### コミットログ（診断用）
 
-変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開、フォーカス喪失時の `settle_unconfirmed`）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
+変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開、フォーカス喪失時の `settle_unconfirmed`）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。`lextool replay-commit-log` はこの節を読み取り側の契約とする（書き手は lex_engine、lex-cli からは依存できない）。フィールドを変えるときは両方を直す。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
 
 ## ユーザー辞書
 
@@ -675,11 +675,12 @@ macOS で動作する最小限の IME を構築。
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
 | `explain` | 変換パイプラインの説明出力 |
-| `snapshot` | 変換スナップショット生成 |
-| `diff-snapshot` | スナップショット差分比較 |
-| `accuracy` | 変換精度テスト（accuracy-corpus.toml） |
+| `snapshot` | 変換スナップショット生成（`--candidates` で N-best ではなく本番の候補列を記録） |
+| `diff-snapshot` | スナップショット差分比較（`--candidates` は候補列スナップショット同士のみ比較できる） |
+| `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
 | `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
 | `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
+| `replay-commit-log` | コミットログの手動選択（rank>0）を現在のエンジンで再生し、選択された候補の頁 1 在否・順位・1 位とのコスト差を件数だけで集計。`--emit-baseline` / `--baseline` で変更前後の消失・降格を比較（baseline は行番号・時刻・順位のみ）。個人の入力内容は `--verbose` の stderr にしか出さない |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |
