@@ -53,9 +53,9 @@ jobs:
       # No rust-cache. A weekly run leaves the entry at the 7-day eviction
       # window, and the key changes with every stable release anyway.
 
-      - uses: jdx/mise-action@v2
-        with:
-          install: false
+      # Pinned mise, as in ci.yml: only Rust floats here, so a verdict cannot
+      # come from a mise release instead of a new clippy.
+      - uses: ./.github/actions/setup-mise
 
       - name: Lint on stable
         id: canary

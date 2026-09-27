@@ -64,16 +64,23 @@ jobs:
           fetch-depth: 1
 
       # So the bot lints and formats through mise.toml's [tasks.lint] /
-      # [tasks.fmt], as CI's lint job does. Stricter than ci.yml because this
-      # job holds a secret and an agent shell runs after this step:
-      #   - cache: false — a restored mise dir puts its shims/ on PATH ahead of
-      #     that shell, and sha256 covers bin/mise only.
+      # [tasks.fmt], as CI's lint job does. Not through
+      # .github/actions/setup-mise, and stricter than it, because this job
+      # holds a secret and an agent shell runs after this step:
+      #   - version and sha256 are spelled out here, as nothing from the
+      #     checkout may run before the Claude step. CI holds them to the pin:
+      #     ci.yml's read-pin job fails when `version:` is not `min_version` in
+      #     mise.toml, or `sha256:` is not the linux-x64 bin/mise it installs
+      #     at that version.
+      #   - cache: false — setup-mise sets it too, but here it is load-bearing:
+      #     a restored mise dir puts its shims/ on PATH ahead of that shell,
+      #     and sha256 covers bin/mise only.
       #   - github_token: '' — the action otherwise exports GITHUB_TOKEN to
       #     every later step. It then warns "No GITHUB_TOKEN provided" each
       #     run; expected, as nothing here fetches tools (install: false).
-      # To bump: pick a mise release at least 7 days old, and take sha256 of
-      # mise/bin/mise from its linux-x64 tarball, checked against the
-      # release's SHASUMS256.txt.
+      # To bump, follow mise.toml's procedure; take sha256 of mise/bin/mise
+      # from the release's linux-x64 tarball, checked against its
+      # SHASUMS256.txt.
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
           version: 2026.9.11
