@@ -70,6 +70,14 @@ segments = [["せんせい", "先生"], ["に", "に"], ["しつもん", "質問
 repeat = 5
 
 [[history]]
+segments = [["けん", "券"]]
+repeat = 2
+
+[[history]]
+segments = [["さん", "さん"], ["ど", "℃"]]
+repeat = 2
+
+[[history]]
 segments = [["おねがいします", "お願いします"]]
 repeat = 5
 
@@ -149,3 +157,31 @@ category = "regression"
 tags = ["history", "whole-path", "rewriter"]
 note = "学習済み お願いします が候補上位に出る。以前は history_rerank 後の KanjiVariantRewriter が boost 済みひらがなパスから漢字バリアントを量産し、その継承コストで お願いします を2ページ目に押し下げていた (pre_history_cost で修正)。baseline は Mozc 2026-07 スナップショットのコスト変更で おねがいします → お願いします に変化 (#273)"
 pr = "#248"
+
+# ═══════════════════════════════════════════════════════════════════
+# Numeric: the 1-best prices number compounds from the same anchor as N-best
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "にけん"
+expected = "二件"
+baseline = "二件"
+category = "numeric"
+tags = ["history", "numeric", "counter", "width"]
+note = "けん→券 の学習 (per-segment) で に|券 が Viterbi #1 を抜くが、#1 からの差は数詞複合語の割引 500 未満。数詞複合語は履歴前の #1 (anchor) − 500 で値付けされ、1-best でも N-best でも 二件 が #1。以前の 1-best は学習済み #1 から値付けして に券 を出し、候補リストの先頭 (二件) とずれていた"
+
+# 前提の固定: に|券 が学習で履歴前の #1 (二軒) を抜いていること。抜かなくなると旧コードでも 二件 になり、このケースが修正を守らなくなる
+[cases.window]
+n = 2
+present_nbest = ["に券"]
+
+[cases.window.baseline]
+absent = ["に券"]
+
+[[cases]]
+reading = "さんど"
+expected = "さん℃"
+baseline = "三度"
+category = "numeric"
+tags = ["history", "numeric", "counter", "width", "partial-hiragana"]
+note = "さん|℃ を 2 回選んだ履歴 (per-segment)。さん℃ は 3|℃ の表記ゆれ提示 (かなノード さん、src+2000 上限) で、実経路 さん|℃ が 1-best の oversample に入っているかどうかに関わらず同じ価格になる。以前は実経路が oversample 外の 1-best だけ方針価格で さん℃、N-best は 三度 と幅で割れていた"

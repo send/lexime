@@ -12,6 +12,7 @@ use super::cost::DefaultCostFunction;
 use super::features::FeatureConfig;
 pub use super::features::{FeatureWeights, PathFeatures};
 use super::lattice::build_lattice;
+use super::reranker;
 use super::resegment;
 use super::viterbi::{viterbi_nbest, ScoredPath};
 
@@ -113,10 +114,8 @@ pub fn precompute_cases(
     conn: &ConnectionMatrix,
     cases: &[(String, String)],
 ) -> Vec<TuneCase> {
-    let s = settings();
-    let cap = s.reranker.structure_cost_transition_cap;
-    let prefix_floor = (s.reranker.structure_cost_filter / 2).min(cap);
-    let filter = s.reranker.structure_cost_filter;
+    let cap = settings().reranker.structure_cost_transition_cap;
+    let prefix_floor = reranker::structure_prefix_floor();
     let cost_fn = DefaultCostFunction::new(Some(conn));
 
     let fcfg = FeatureConfig {
@@ -144,7 +143,7 @@ pub fn precompute_cases(
                 .collect();
 
             // Hard filter using structure_cost from features
-            hard_filter(&mut paired, prefix_floor, filter);
+            hard_filter(&mut paired, prefix_floor);
 
             // Build TuneCandidates from surviving paths
             let candidates = paired
@@ -168,30 +167,21 @@ pub fn precompute_cases(
 /// Apply the structure-cost hard filter (same logic as reranker step 1-2).
 ///
 /// Removes pairs whose structure_cost exceeds `min_sc + filter`.
-fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64, filter: i64) {
+fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64) {
     if paired.len() <= 1 {
         return;
     }
-
-    let min_sc = paired
-        .iter()
-        .map(|(p, f)| {
-            if p.segments.len() <= 1 {
-                prefix_floor
-            } else {
-                f.structure_cost
-            }
-        })
-        .min()
-        .unwrap_or(0);
-    let threshold = min_sc + filter;
-
-    // Identity paths (surface == reading throughout) are exempt, mirroring
-    // the production filter in reranker step 2 (#263) — the tuner must
-    // optimize against the same candidate set production keeps.
-    paired.retain(|(p, f)| {
-        p.segments.iter().all(|s| s.surface == s.reading) || f.structure_cost <= threshold
-    });
+    let Some(threshold) = reranker::structure_threshold(
+        paired
+            .iter()
+            .map(|(p, f)| (p.segments.len(), f.structure_cost)),
+        prefix_floor,
+    ) else {
+        return;
+    };
+    // Identity paths are exempt, mirroring the production filter (#263) —
+    // the tuner must optimize against the same candidate set production keeps.
+    paired.retain(|(p, f)| p.is_identity() || f.structure_cost <= threshold);
 }
 
 // ---------------------------------------------------------------------------

@@ -8,12 +8,12 @@ use crate::user_history::UserHistory;
 
 use crate::settings::settings;
 
-use super::cost::{conn_cost, script_cost, DefaultCostFunction};
+use super::cost::{conn_cost, score_path, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
-use super::reranker::compute_history_boost;
-use super::viterbi::{viterbi_nbest, ScoredPath};
+use super::reranker::{compute_history_boost, FeaturePricer};
+use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
 
 // Re-export so downstream crates (e.g. lex-cli) can name the type behind
 // `ExplainPath::history_breakdown` — the definition lives in the crate-private
@@ -73,6 +73,24 @@ pub struct ExplainPath {
     pub history_segment_count: usize,
     /// Final cost after all adjustments.
     pub final_cost: i64,
+    /// Who produced the segments.
+    pub origin: PathOrigin,
+    /// Who set the price (differs from `origin` when a duplicate's price
+    /// was adopted).
+    pub priced_by: PathOrigin,
+    /// What Viterbi charges for these segments, before the rerank features
+    /// (over the ungrouped nodes); `None` for a synthetic single segment
+    /// (kana rescue, Numeric, Katakana).
+    pub model_cost: Option<i64>,
+    /// For a path not priced by the model (an offer, the kana rescue, a
+    /// policy price, or a path one of them repriced): its price before
+    /// history minus `model_cost` and the rerank features — what the offer
+    /// clamp or the policy moved it by. `None` for model-priced paths and
+    /// where there is no `model_cost`.
+    pub price_clamp: Option<i64>,
+    /// The price was set by another stage than the one that made the
+    /// segments (an offer, the kana rescue or Numeric adopted over them).
+    pub repriced: bool,
 }
 
 impl ExplainPath {
@@ -130,8 +148,8 @@ struct PreHistorySnapshot {
 /// Keys are `ScoredPath::surface_key()` — i.e. the concatenated surface — so
 /// that lookups survive `group_segments` (which merges adjacent segments but
 /// preserves the overall surface). Paths that only appear after history_rerank
-/// (rewriter-added candidates: numeric, katakana, kanji variants) are absent
-/// from these maps and fall back to zero in the caller.
+/// (the Override stage: numeric, katakana) are absent from these maps and
+/// fall back to zero in the caller.
 struct ExplainObserver<'a> {
     history: Option<&'a UserHistory>,
     /// Needed so the displayed breakdown matches `history_rerank`'s
@@ -142,16 +160,28 @@ struct ExplainObserver<'a> {
     original_costs: HashMap<String, i64>,
     /// State at the post-rerank / pre-history-rerank boundary.
     pre_history: HashMap<String, PreHistorySnapshot>,
+    /// `(Viterbi price, rerank features)` of each final path whose segments
+    /// are lattice nodes, taken before `group_segments` merges morphemes (a
+    /// grouped segment keeps only the first node's cost).
+    model_costs: HashMap<String, (i64, i64)>,
+    pricer: FeaturePricer<'a>,
 }
 
 impl<'a> ExplainObserver<'a> {
-    fn new(history: Option<&'a UserHistory>, conn: Option<&'a ConnectionMatrix>, now: u64) -> Self {
+    fn new(
+        history: Option<&'a UserHistory>,
+        conn: Option<&'a ConnectionMatrix>,
+        dict: &'a dyn Dictionary,
+        now: u64,
+    ) -> Self {
         Self {
             history,
             conn,
             now,
             original_costs: HashMap::new(),
             pre_history: HashMap::new(),
+            model_costs: HashMap::new(),
+            pricer: FeaturePricer::new(conn, Some(dict)),
         }
     }
 }
@@ -185,6 +215,28 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 },
             );
         }
+    }
+
+    fn before_group(&mut self, paths: &[ScoredPath]) {
+        // Offers are lattice nodes too (one swapped node); the kana rescue,
+        // Numeric and Katakana are one synthetic segment.
+        self.model_costs = paths
+            .iter()
+            .filter(|p| {
+                p.origin.is_lattice_path()
+                    || matches!(
+                        p.origin,
+                        PathOrigin::KanjiVariant | PathOrigin::PartialHiragana
+                    )
+            })
+            .map(|p| {
+                let costs = (
+                    score_path(&p.segments, self.conn),
+                    self.pricer.adjustment(p),
+                );
+                (p.surface_key(), costs)
+            })
+            .collect();
     }
 }
 
@@ -284,7 +336,7 @@ pub fn explain(
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
     let now = crate::user_history::now_epoch();
-    let mut observer = ExplainObserver::new(history, conn, now);
+    let mut observer = ExplainObserver::new(history, conn, dict, now);
     let ctx = PostprocessContext {
         lattice: &lattice,
         conn,
@@ -301,14 +353,27 @@ pub fn explain(
         .map(|scored| {
             let key = scored.surface_key();
             // Look up snapshots by surface_key — preserved through group_segments.
-            // Rewriter-added candidates (numeric / katakana / kanji variants) are
-            // synthesised after history_rerank and have no snapshot, so they fall
-            // back to zero history boost and use the final cost for `viterbi_cost`.
-            let original = observer
-                .original_costs
-                .get(&key)
-                .copied()
-                .unwrap_or(scored.viterbi_cost);
+            // A model-priced path shows its raw Viterbi cost (or, missed by
+            // the observer, its model cost) and the rerank delta. Any other
+            // price is split into model cost + features + clamp/policy.
+            // Numeric / Katakana are added after history_rerank, so they
+            // have no snapshot and no history boost.
+            let model = observer.model_costs.get(&key).copied();
+            let model_cost = model.map(|(m, _)| m);
+            let pre = scored.pre_history_cost();
+            let original = if scored.priced_by.is_model() {
+                observer
+                    .original_costs
+                    .get(&key)
+                    .copied()
+                    .or(model_cost)
+                    .unwrap_or(pre)
+            } else {
+                model_cost.unwrap_or(pre)
+            };
+            let price_clamp = model
+                .filter(|_| !scored.priced_by.is_model())
+                .map(|(m, adj)| pre - (m + adj));
             let snapshot = observer
                 .pre_history
                 .get(&key)
@@ -319,14 +384,23 @@ pub fn explain(
                     applied_boost: 0,
                     segment_count: scored.segments.len(),
                 });
+            let rerank_delta = match (price_clamp, model) {
+                (Some(_), Some((_, adj))) => adj,
+                _ => snapshot.cost - original,
+            };
             ExplainPath {
                 segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
-                rerank_delta: snapshot.cost - original,
+                rerank_delta,
                 history_breakdown: snapshot.breakdown,
                 history_boost: snapshot.applied_boost,
                 history_segment_count: snapshot.segment_count,
                 final_cost: scored.viterbi_cost,
+                origin: scored.origin,
+                priced_by: scored.priced_by,
+                model_cost,
+                price_clamp,
+                repriced: scored.priced_by != scored.origin,
             }
         })
         .collect();
@@ -389,11 +463,17 @@ pub fn format_text(result: &ExplainResult) -> String {
     out.push_str(&format!("\n=== Paths ({}) ===\n", result.paths.len()));
     for (i, path) in result.paths.iter().enumerate() {
         let surface = path.surface();
+        let priced = if path.priced_by == path.origin {
+            format!("{:?}", path.origin)
+        } else {
+            format!("{:?}, priced by {:?}", path.origin, path.priced_by)
+        };
         out.push_str(&format!(
-            "\n  #{:<2} {}  (final_cost={})\n",
+            "\n  #{:<2} {}  (final_cost={}, {})\n",
             i + 1,
             surface,
             path.final_cost,
+            priced,
         ));
 
         for (j, seg) in path.segments.iter().enumerate() {
@@ -434,9 +514,12 @@ pub fn format_text(result: &ExplainResult) -> String {
             ));
         }
 
+        let clamp = path
+            .price_clamp
+            .map_or(String::new(), |c| format!(" clamp={c:<+8}"));
         out.push_str(&format!(
-            "    viterbi={:<8} rerank={:<+8} history={:<+8} -> final={}\n",
-            path.viterbi_cost, path.rerank_delta, -path.history_boost, path.final_cost,
+            "    viterbi={:<8} rerank={:<+8}{} history={:<+8} -> final={}\n",
+            path.viterbi_cost, path.rerank_delta, clamp, -path.history_boost, path.final_cost,
         ));
         let hb = &path.history_breakdown;
         if hb.unigram_sum != 0 || hb.bigram_sum != 0 || hb.whole_path_boost != 0 {
@@ -629,8 +712,8 @@ mod tests {
         // Paths whose surface does NOT match the recorded history must show a
         // zero breakdown regardless of how they entered the final candidate set:
         //   - Real Viterbi paths that simply don't match (lookup hit, zero score).
-        //   - Rewriter-added paths (katakana / kanji variants) that were
-        //     synthesised after history_rerank, so the observer never saw them.
+        //   - Rewriter-added paths (katakana / numeric) that were synthesised
+        //     after history_rerank, so the observer never saw them.
         //
         // Regression for the PR #247 R1 review: previously the breakdown was
         // recomputed against the final (post-grouping / post-rewriter) path,
@@ -677,5 +760,56 @@ mod tests {
                 assert_eq!(seg.segment_penalty, settings().cost.segment_penalty);
             }
         }
+    }
+
+    #[test]
+    fn breakdown_adds_up_for_every_price_owner() {
+        // viterbi + rerank (+ clamp) − history = final, for model paths,
+        // offers, repriced paths and the kana rescue alike — with and
+        // without history.
+        let e = |surface: &str, cost: i16| DictEntry {
+            surface: surface.into(),
+            cost,
+            left_id: 0,
+            right_id: 0,
+        };
+        // 方 is cheap and ほう dear, so the rescue and a Partial offer both
+        // price あったほうが; 会った|ほう is a real path a KanjiVariant can
+        // reprice.
+        let dict = TrieDictionary::from_entries(vec![
+            ("あった".into(), vec![e("あった", 0), e("会った", 50)]),
+            ("ほう".into(), vec![e("方", 0), e("ほう", 3000)]),
+            ("が".into(), vec![e("が", 0), e("蛾", 100)]),
+        ]);
+        let mut h = UserHistory::new();
+        for _ in 0..3 {
+            h.record(&[("あったほうが".into(), "あったほうが".into())]);
+        }
+        let mut owners = std::collections::HashSet::new();
+        for history in [None, Some(&h)] {
+            let result = explain(&dict, None, history, "あったほうが", 20);
+            for p in &result.paths {
+                if matches!(p.origin, PathOrigin::Numeric | PathOrigin::Katakana) {
+                    continue;
+                }
+                owners.insert(format!("{:?}", p.priced_by));
+                assert_eq!(
+                    p.viterbi_cost + p.rerank_delta + p.price_clamp.unwrap_or(0) - p.history_boost,
+                    p.final_cost,
+                    "{} ({:?} priced by {:?})",
+                    p.surface(),
+                    p.origin,
+                    p.priced_by
+                );
+                assert_eq!(
+                    p.price_clamp.is_some(),
+                    !p.priced_by.is_model() && p.model_cost.is_some()
+                );
+            }
+        }
+        assert!(
+            owners.len() >= 3,
+            "fixture: several price owners {owners:?}"
+        );
     }
 }

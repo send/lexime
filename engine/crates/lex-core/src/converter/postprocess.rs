@@ -22,8 +22,11 @@ use super::viterbi::{RichSegment, ScoredPath};
 pub(crate) trait PostprocessObserver {
     /// Called after viterbi paths are collected, before resegment/rerank.
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
-    /// Called after resegment + rerank + hiragana rewriters, before history_rerank.
+    /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
+    /// Called on the final paths before `group_segments` merges morphemes
+    /// into phrases, while segments are still the priced lattice nodes.
+    fn before_group(&mut self, _paths: &[ScoredPath]) {}
 }
 
 /// No-op observer for production use.
@@ -52,7 +55,9 @@ pub(crate) struct PostprocessContext<'a> {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-/// Shared post-processing pipeline: resegment → rerank → hiragana_rewrite → history_rerank → take(n) → rewrite → group.
+/// Shared post-processing pipeline: resegment → rerank → hiragana / partial
+/// / kanji-variant rewriters → history_rerank → take(n) → numeric/katakana
+/// → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
@@ -94,59 +99,104 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
 
     reranker::rerank(paths, ctx.conn, ctx.dict);
 
-    // Hiragana variant must run BEFORE history_rerank so that whole-path
-    // unigram boosts (×5) can promote a previously-selected hiragana variant.
+    // Variants run BEFORE history_rerank, so history boosts a variant the
+    // user picked like any other path (whole-path boosts ×5 can promote a
+    // learned hiragana or kanji spelling), and the 1-best sees the variants
+    // the N-best sees. The one exception: a 1-best without history keeps
+    // index 0 by construction (the Model stage never touches it and nothing
+    // re-sorts), so the offers could only be dropped at the cut.
     let hiragana_rw = rewriter::HiraganaVariantRewriter;
-    let partial_rw = rewriter::PartialHiraganaRewriter;
-    rewriter::run_rewriters(&[&hiragana_rw, &partial_rw], paths, ctx.kana);
+    let pricer = reranker::FeaturePricer::new(ctx.conn, ctx.dict);
+    let partial_rw = rewriter::PartialHiraganaRewriter {
+        lattice: ctx.lattice,
+        conn: ctx.conn,
+        pricer: &pricer,
+    };
+    let kanji_rw = rewriter::KanjiVariantRewriter {
+        lattice: ctx.lattice,
+        conn: ctx.conn,
+        pricer: &pricer,
+    };
+    let offers_can_surface = ctx.n > 1 || ctx.history.is_some_and(|h| !h.is_empty());
+    let variants: &[&dyn rewriter::Rewriter] = if offers_can_surface {
+        &[&hiragana_rw, &partial_rw, &kanji_rw]
+    } else {
+        &[]
+    };
+    rewriter::run_rewriters(variants, paths, ctx.kana, rewriter::RewriteStage::Model);
 
     observer.after_rerank(paths);
 
-    // Remember the pure-Viterbi best surface before history reranking.
-    // History boosts per-segment unigrams (e.g. き→機 from past "機械") which can
-    // push fragmented single-char paths above the statistically correct compound
-    // path (e.g. きがし→気がし). Preserving the Viterbi #1 ensures it is always
-    // available as a candidate.
-    let viterbi_best_key = if ctx.history.is_some() && !paths.is_empty() {
-        Some(paths[0].surface_key())
-    } else {
-        None
-    };
+    // The rerank best before history. Its cost is what number compounds are
+    // priced from, whatever history or later rewriters do to the list (the
+    // anchor). Its surface is kept on the list: history boosts per-segment
+    // unigrams (e.g. き→機 from past "機械"), which can push fragmented
+    // single-char paths above the statistically correct compound path
+    // (e.g. きがし→気がし).
+    let best = paths.first();
+    let anchor = best.map_or(0, |p| p.viterbi_cost);
+    let viterbi_best_key = best
+        .filter(|_| ctx.history.is_some())
+        .map(|p| p.surface_key());
 
     if let Some(h) = ctx.history {
         reranker::history_rerank_at(paths, h, ctx.conn, ctx.now);
     }
-    let mut top: Vec<ScoredPath> = paths.drain(..ctx.n.min(paths.len())).collect();
+
+    let mut top: Vec<ScoredPath> = paths.drain(..model_budget_end(paths, ctx.n)).collect();
 
     // If the Viterbi #1 was pushed out of the top-n by history boosts, pull it
-    // back in (after the history-preferred #1, or at 0 if top is empty).
+    // back in after the history-preferred #1, in place of the n-th model
+    // path (top's last entry when the budget is full), so the offers sorted
+    // before that path stay. At n = 1 there is no room: the one model path is
+    // the history #1.
     if let Some(ref best_key) = viterbi_best_key {
-        if !top.iter().any(|p| p.surface_key_eq(best_key)) {
+        if ctx.n >= 2 && !top.iter().any(|p| p.surface_key_eq(best_key)) {
             if let Some(pos) = paths.iter().position(|p| p.surface_key_eq(best_key)) {
                 let best = paths.remove(pos);
+                if top.iter().filter(|p| p.priced_by.is_model()).count() >= ctx.n {
+                    top.pop();
+                }
                 let insert_at = 1.min(top.len());
                 top.insert(insert_at, best);
             }
         }
     }
-    // Truncate Viterbi paths to n before rewriters so that rewriter-added
-    // candidates (numeric, katakana) are not immediately pruned.
-    top.truncate(ctx.n);
     let numeric_rw = rewriter::NumericRewriter {
         lattice: Some(ctx.lattice),
         connection: ctx.conn,
+        anchor,
     };
     let katakana_rw = rewriter::KatakanaRewriter;
-    let kanji_rw = rewriter::KanjiVariantRewriter {
-        lattice: ctx.lattice,
-    };
-    rewriter::run_rewriters(&[&numeric_rw, &katakana_rw, &kanji_rw], &mut top, ctx.kana);
+    rewriter::run_rewriters(
+        &[&numeric_rw, &katakana_rw],
+        &mut top,
+        ctx.kana,
+        rewriter::RewriteStage::Override,
+    );
+    observer.before_group(&top);
     if let Some(c) = ctx.conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);
         }
     }
     top
+}
+
+/// Length of the prefix of `paths` holding its first `n` model-priced paths
+/// and every offer (kana/kanji variant, kana rescue) sorted among them:
+/// offers ride along and do not use up the N-best budget, so offering a
+/// spelling never pushes a model path off the list.
+fn model_budget_end(paths: &[ScoredPath], n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    paths
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.priced_by.is_model())
+        .nth(n - 1)
+        .map_or(paths.len(), |(i, _)| i + 1)
 }
 
 /// Group morpheme-level segments into phrase-level segments (bunsetsu).

@@ -286,6 +286,13 @@ fn bench_convert_latency() {
 
     let warmup = 50;
     let iterations = 200;
+    let mut history = crate::user_history::UserHistory::new();
+    for _ in 0..3 {
+        history.record(&[
+            ("きょう".into(), "今日".into()),
+            ("てんき".into(), "天気".into()),
+        ]);
+    }
 
     println!();
     println!("=== Viterbi Convert Pipeline Latency Benchmark ===");
@@ -307,6 +314,16 @@ fn bench_convert_latency() {
         }
         let elapsed_1best = start.elapsed();
         let avg_1best_us = elapsed_1best.as_micros() as f64 / iterations as f64;
+
+        // Measure 1-best with a non-empty history (the IME's shape: offers run)
+        for _ in 0..warmup {
+            let _ = convert_with_history(&dict, None, &history, kana);
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..iterations {
+            let _ = convert_with_history(&dict, None, &history, kana);
+        }
+        let avg_1best_hist_us = start.elapsed().as_micros() as f64 / iterations as f64;
 
         // Measure convert_nbest (10-best)
         for _ in 0..warmup {
@@ -336,6 +353,11 @@ fn bench_convert_latency() {
             "    convert (1-best): {:>8.1} us ({:.3} ms)",
             avg_1best_us,
             avg_1best_us / 1000.0
+        );
+        println!(
+            "    convert (1-best, history): {:>8.1} us ({:.3} ms)",
+            avg_1best_hist_us,
+            avg_1best_hist_us / 1000.0
         );
         println!(
             "    convert (10-best):{:>8.1} us ({:.3} ms)",

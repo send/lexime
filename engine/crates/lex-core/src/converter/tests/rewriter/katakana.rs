@@ -1,5 +1,5 @@
-use crate::converter::rewriter::{run_rewriters, KatakanaRewriter, Rewriter};
-use crate::converter::viterbi::{RichSegment, ScoredPath};
+use crate::converter::rewriter::{run_rewriters, KatakanaRewriter, RewriteStage, Rewriter};
+use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
 #[test]
 fn test_katakana_rewriter_generates_candidate() {
@@ -14,6 +14,8 @@ fn test_katakana_rewriter_generates_candidate() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "きょう");
@@ -36,9 +38,11 @@ fn test_katakana_dedup_via_run_rewriters() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
-    run_rewriters(&[&rw], &mut paths, "きょう");
+    run_rewriters(&[&rw], &mut paths, "きょう", RewriteStage::Override);
 
     assert_eq!(
         paths.len(),
