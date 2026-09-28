@@ -40,13 +40,15 @@ mise run build && mise run install && mise run reload
 
 main に直接コミットしない。必ず以下の流れで作業する:
 
-1. `git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
+1. `git fetch origin && git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
 3. push 前に `/pre-push` を通す（fmt → verify → /simplify → /code-review → /lexime-review の 5 段ゲート。post-push レビューは single-shot なので深さはここで確保する）。ゲートが編集を生んだら（fmt / /simplify auto-apply / fix 適用）追加コミットしてから次へ
 4. `git push -u origin <branch>` で push する
 5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 6. コードの変更を含む PR はレビュー対応後にマージする（後述）
-7. `gh pr merge <number> --merge` でマージする。`--delete-branch` は付けない — gh ≥2.99 はその branch を checkout している別 worktree を `git worktree remove` する (#354 で Orca ワークスペースごとセッションが消えた)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す。ローカルの worktree と branch は、その worktree を使っているセッションが無いことを確かめてから `git worktree remove` / `git branch -D` で片付ける
+7. `gh pr merge {number} --merge` でマージする（`--delete-branch` は付けない — 下記）
+
+`--delete-branch` を付けない理由: gh ≥2.99 は PR の branch を checkout している別 worktree を `git worktree remove` する。そこが Orca ワークスペースや並行セッションの cwd だと、セッションごと消える (#354)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す。ローカルの worktree / branch は、誰も使っていないと分かっている時だけ消す（分からなければ残す。Orca ワークスペースは Orca から片付ける）
 
 ### PR レビュー対応フロー
 
