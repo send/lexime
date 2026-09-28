@@ -1289,10 +1289,9 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
         "", "sel", "in-page", "off-page", "slots", "slot%"
     );
     for (owner, c) in &r.by_owner {
-        let name = serde_json::to_value(owner).expect("owner serializes");
         println!(
             "  {:<18} {:>5} {:>8} {:>8} {:>7} {:>5.1}%",
-            name.as_str().unwrap_or_default(),
+            owner.name(),
             c.selections,
             c.in_page,
             c.off_page,

@@ -282,6 +282,10 @@ fn test_priced_candidates_are_the_production_list() {
     }
 }
 
+fn joined(path: &[crate::converter::ConvertedSegment]) -> String {
+    path.iter().map(|s| s.surface.as_str()).collect()
+}
+
 /// Each price names the stage that set it: an offer that undercuts the
 /// real path's price owns its slot, the model owns the rest.
 #[test]
@@ -305,7 +309,7 @@ fn test_diagnostics_record_who_priced_each_path() {
             .response
             .paths
             .iter()
-            .position(|p| p.iter().map(|s| s.surface.as_str()).collect::<String>() == surface)
+            .position(|p| joined(p) == surface)
             .unwrap_or_else(|| panic!("no path for {surface}"));
         priced.diagnostics.prices[i].priced_by
     };

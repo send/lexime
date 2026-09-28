@@ -472,12 +472,28 @@ pub enum Owner {
 impl Owner {
     fn priced_by(origin: PathOrigin) -> Self {
         match origin {
+            // The origins `PathOrigin::is_model` names.
             PathOrigin::Viterbi | PathOrigin::Resegment => Self::Model,
             PathOrigin::KanjiVariant => Self::KanjiVariant,
             PathOrigin::PartialHiragana => Self::PartialHiragana,
             PathOrigin::HiraganaVariant => Self::Rescue,
             PathOrigin::Numeric => Self::Numeric,
             PathOrigin::Katakana => Self::Katakana,
+        }
+    }
+
+    /// The name reports use (the JSON key's spelling).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::KanjiVariant => "kanji_variant",
+            Self::PartialHiragana => "partial_hiragana",
+            Self::Rescue => "rescue",
+            Self::Numeric => "numeric",
+            Self::Katakana => "katakana",
+            Self::Injected => "injected",
+            Self::Kana => "kana",
+            Self::Tail => "tail",
         }
     }
 }
@@ -578,7 +594,6 @@ struct Tally {
     rank_hist: Vec<usize>,
     gap_hist: Vec<usize>,
     gap_no_path: usize,
-    page1_slots: usize,
     by_owner: BTreeMap<Owner, OwnerCounts>,
 }
 
@@ -588,7 +603,6 @@ impl Tally {
             rank_hist: vec![0; PAGE_SIZE],
             gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
             gap_no_path: 0,
-            page1_slots: 0,
             by_owner: BTreeMap::new(),
         }
     }
@@ -613,7 +627,6 @@ impl Tally {
         }
         for &o in view.owners.iter().take(PAGE_SIZE) {
             self.by_owner.entry(o).or_default().page1_slots += 1;
-            self.page1_slots += 1;
         }
         landing
     }
@@ -637,7 +650,7 @@ impl Tally {
             malformed_lines,
             from_line,
             readings,
-            page1_slots: self.page1_slots,
+            page1_slots: self.by_owner.values().map(|c| c.page1_slots).sum(),
             by_owner: self.by_owner,
         }
     }
@@ -681,7 +694,7 @@ pub fn replay(
                 sel.surface,
                 rank.map_or("-".into(), |r| r.to_string()),
                 gap.map_or("-".into(), |g| g.to_string()),
-                rank.map_or("-".into(), |r| format!("{:?}", view.owners[r])),
+                rank.map_or("-", |r| view.owners[r].name()),
             );
         }
         lines.push(BaselineLine {
@@ -1015,6 +1028,25 @@ absent = ["x"]"#
         assert_eq!(json["from_line"], 7);
         assert_eq!(json["by_owner"]["partial_hiragana"]["selections"], 1);
         assert_eq!(json["by_owner"]["partial_hiragana"]["page1_slots"], 1);
+
+        use Owner::*;
+        for o in [
+            Model,
+            KanjiVariant,
+            PartialHiragana,
+            Rescue,
+            Numeric,
+            Katakana,
+            Injected,
+            Kana,
+            Tail,
+        ] {
+            assert_eq!(
+                serde_json::to_value(o).unwrap(),
+                o.name(),
+                "text and JSON agree"
+            );
+        }
     }
 
     #[test]

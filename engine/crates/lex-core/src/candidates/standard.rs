@@ -54,6 +54,10 @@ pub(super) fn generate_normal_priced(
 /// The one Standard-mode generator. `diag`, when given, receives what built
 /// the list (each N-best path's price, the injected surfaces); the IME
 /// passes `None` and pays nothing for it.
+///
+/// `lextool replay-commit-log` names the stage that listed each surface from
+/// these records and the stage order below (N-best → injection → kana →
+/// predictions / lookup). A new stage that lists surfaces records them here.
 fn generate_normal(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
