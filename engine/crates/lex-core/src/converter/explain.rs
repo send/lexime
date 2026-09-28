@@ -381,7 +381,16 @@ pub fn explain(
                 segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
                 rerank_delta,
-                history_breakdown: snapshot.breakdown,
+                // An Override price (Numeric) cleared the boost; its
+                // pre-history breakdown no longer applies.
+                history_breakdown: if matches!(
+                    scored.priced_by,
+                    PathOrigin::Numeric | PathOrigin::Katakana
+                ) {
+                    HistoryBoostBreakdown::default()
+                } else {
+                    snapshot.breakdown
+                },
                 // The path's own boost: an Override price (Numeric) clears
                 // the one the snapshot recorded.
                 history_boost: scored.history_boost,

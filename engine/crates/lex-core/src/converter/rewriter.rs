@@ -76,6 +76,12 @@ pub(crate) fn run_rewriters(
         .iter()
         .flat_map(|rw| rw.generate(paths, reading))
         .collect();
+    let rescue = PathOrigin::HiraganaVariant;
+    let rescue_keys: Vec<String> = candidates
+        .iter()
+        .filter(|c| c.priced_by == rescue)
+        .map(ScoredPath::surface_key)
+        .collect();
     for candidate in candidates {
         let key = candidate.surface_key();
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
@@ -86,6 +92,16 @@ pub(crate) fn run_rewriters(
                     insert_by_cost(paths, resolved, stage);
                 }
             }
+        }
+    }
+    // The kana rescue's surface stays marked as the rescue whichever rewriter
+    // priced it — the mark keeps it on the list (#263). Decided once the
+    // stage has settled, so it does not depend on the rewriters' order; set
+    // in place, so a mark does not move the path. A model price stays the
+    // model's.
+    for p in paths.iter_mut() {
+        if !p.priced_by.is_model() && rescue_keys.iter().any(|k| p.surface_key_eq(k)) {
+            p.priced_by = rescue;
         }
     }
 }
@@ -114,12 +130,10 @@ fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteS
 ///
 /// Every rewriter price is a standing contract (an offer ≤ source+2000, the
 /// kana rescue ≤ best+4000, Numeric #239), so the cheaper price wins and
-/// `priced_by` names whoever set it — except that the kana rescue's surface
-/// stays marked `HiraganaVariant` whichever side priced it: that mark is what
-/// keeps it on the list (#263), and an offer's price is only ever lower. The
-/// segments come from the lattice side when there is one — committing the
-/// surface then records per-segment history (#271) — else the finer
-/// segmentation.
+/// `priced_by` names whoever set it (the kana rescue's mark is settled after
+/// the stage, in [`run_rewriters`]). The segments come from the lattice side
+/// when there is one — committing the surface then records per-segment
+/// history (#271) — else the finer segmentation.
 fn resolve_duplicate(
     stage: RewriteStage,
     candidate: ScoredPath,
@@ -138,18 +152,8 @@ fn resolve_duplicate(
     let take_segments = !existing.origin.is_lattice_path()
         && (candidate.origin.is_lattice_path()
             || candidate.segments.len() > existing.segments.len());
-    // Two rewriter prices on the kana rescue's surface: it stays marked as
-    // the rescue whichever priced it. (A model price is the model's; the
-    // rescue marks it only by pricing it, i.e. when cheaper.)
-    let rescue = PathOrigin::HiraganaVariant;
-    let mark_rescue = !existing.priced_by.is_model()
-        && (candidate.priced_by == rescue || existing.priced_by == rescue);
     if !cheaper && !take_segments {
-        return (mark_rescue && existing.priced_by != rescue).then(|| {
-            let mut marked = existing.clone();
-            marked.priced_by = rescue;
-            marked
-        });
+        return None;
     }
     // Taking the candidate's segments but not its price would keep a price
     // the resolved path's boost no longer describes; only the Model stage
@@ -160,7 +164,6 @@ fn resolve_duplicate(
     } else {
         (existing.viterbi_cost, existing.priced_by)
     };
-    let priced_by = if mark_rescue { rescue } else { priced_by };
     let mut resolved = if take_segments {
         candidate
     } else {
@@ -378,6 +381,7 @@ impl Rewriter for PartialHiraganaRewriter<'_> {
         let replaceable =
             |s: &RichSegment| s.surface != s.reading && !s.surface.chars().all(is_katakana);
         let mut new_paths = Vec::new();
+        let mut fallbacks = Vec::new();
 
         // Select the 5 cheapest paths that can actually yield variants BEFORE
         // limiting: paths with no replaceable segment must not displace a
@@ -395,29 +399,36 @@ impl Rewriter for PartialHiraganaRewriter<'_> {
                         && crate::unicode::is_hiragana_reading(s)
                         && same_role(self.conn, self.lattice, idx, seg)
                 });
-                new_paths.push(
-                    match favourite_swap(self.lattice, self.conn, source, i, kana) {
-                        Some((idx, gap)) => offer(
-                            source,
-                            i,
-                            self.lattice.to_rich_segment(idx),
-                            model + gap,
-                            self.pricer,
+                match favourite_swap(self.lattice, self.conn, source, i, kana) {
+                    Some((idx, gap)) => new_paths.push(offer(
+                        source,
+                        i,
+                        self.lattice.to_rich_segment(idx),
+                        model + gap,
+                        self.pricer,
+                        PathOrigin::PartialHiragana,
+                    )),
+                    None => {
+                        let mut segments = source.segments.clone();
+                        segments[i].surface = segments[i].reading.clone();
+                        fallbacks.push(ScoredPath::new(
+                            segments,
+                            source.pre_history_cost().saturating_add(OFFER_CAP),
                             PathOrigin::PartialHiragana,
-                        ),
-                        None => {
-                            let mut segments = source.segments.clone();
-                            segments[i].surface = segments[i].reading.clone();
-                            ScoredPath::new(
-                                segments,
-                                source.pre_history_cost().saturating_add(OFFER_CAP),
-                                PathOrigin::PartialHiragana,
-                            )
-                        }
-                    },
-                );
+                        ));
+                    }
+                }
             }
         }
+        // A fallback relabels a kanji node; where another source spells the
+        // same surface with real kana nodes, those segments are the ones to
+        // keep (dedup would otherwise keep whichever came first, since both
+        // are PartialHiragana).
+        fallbacks.retain(|f| {
+            let key = f.surface_key();
+            !new_paths.iter().any(|p| p.surface_key_eq(&key))
+        });
+        new_paths.extend(fallbacks);
 
         new_paths
     }
@@ -446,16 +457,20 @@ impl Rewriter for KanjiVariantRewriter<'_> {
 
         // Multi-segment paths only: a kanji span is an existing segment's
         // span, never an arbitrary offset inside a single-segment kana run.
-        for source in offer_sources(paths, |_| true) {
+        // Kana segments of 2+ chars: single-char ones are almost always
+        // function morphemes (し, た, な, が).
+        let eligible = |seg: &RichSegment| {
+            seg.surface == seg.reading
+                && crate::unicode::is_hiragana_reading(&seg.surface)
+                && seg.reading.chars().count() >= 2
+        };
+        // Select the 5 cheapest paths that can yield variants BEFORE
+        // limiting, as Partial does.
+        for source in offer_sources(paths, |p| p.segments.iter().any(eligible)) {
             let model = score_path(&source.segments, self.conn);
             for (i, span) in segment_spans(source) {
                 let seg = &source.segments[i];
-                // Kana segments of 2+ chars: single-char ones are almost
-                // always function morphemes (し, た, な, が).
-                if seg.surface != seg.reading
-                    || !seg.surface.chars().all(is_hiragana)
-                    || span.len() < 2
-                {
+                if !eligible(seg) {
                     continue;
                 }
                 let kanji = nodes_at(self.lattice, span, |idx| {

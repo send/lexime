@@ -258,3 +258,96 @@ fn partial_offer_uses_a_kana_node_with_a_long_vowel_mark() {
         .unwrap();
     assert_eq!(v.segments[0].left_id, KANA_NOUN);
 }
+
+#[test]
+fn kanji_sources_are_paths_with_an_eligible_kana_segment() {
+    // Five cheaper multi-segment paths with no kana segment of 2+ chars do
+    // not use up the sources: あった|ほう|が still yields its offer.
+    let c = conn();
+    let lattice =
+        Lattice::from_test_nodes("あったほうが", &[(3, 5, "ほう", "方", 1000, NOUN, NOUN)]);
+    let mut paths: Vec<ScoredPath> = (0..5)
+        .map(|k| {
+            let mut p = model_price(
+                vec![
+                    seg("あった", "有っ多", VERB_L, VERB_R, k),
+                    seg("ほうが", "方画", NOUN, NOUN, 0),
+                ],
+                &c,
+                PathOrigin::Viterbi,
+            );
+            p.viterbi_cost -= 100_000;
+            p
+        })
+        .collect();
+    paths.push(model_price(
+        vec![atta(), seg("ほう", "ほう", KANA_NOUN, KANA_NOUN, 0), ga()],
+        &c,
+        PathOrigin::Viterbi,
+    ));
+    let pricer = FeaturePricer::new(Some(&c), None);
+    let offers = KanjiVariantRewriter {
+        lattice: &lattice,
+        conn: Some(&c),
+        pricer: &pricer,
+    }
+    .generate(&paths, "あったほうが");
+    assert!(
+        offers.iter().any(|p| p.surface_key() == "あった方が"),
+        "{offers:?}"
+    );
+}
+
+#[test]
+fn kanji_offer_for_a_kana_segment_with_a_long_vowel_mark() {
+    let c = conn();
+    let lattice = Lattice::from_test_nodes(
+        "じーさんが",
+        &[(0, 4, "じーさん", "爺さん", 1000, NOUN, NOUN)],
+    );
+    let src = model_price(
+        vec![seg("じーさん", "じーさん", KANA_NOUN, KANA_NOUN, 0), ga()],
+        &c,
+        PathOrigin::Viterbi,
+    );
+    let offers = kanji_offers(&lattice, &c, &src, "じーさんが");
+    assert!(offers.iter().any(|p| p.surface_key() == "爺さんが"));
+}
+
+#[test]
+fn a_real_kana_node_offer_wins_over_another_sources_fallback() {
+    // 下 (particle-class ids here) has no same-class kana node, so its offer
+    // relabels 下; 舌 (a noun) has one. Both spell した方: the real node's
+    // segments are the ones offered.
+    let c = conn();
+    let lattice = Lattice::from_test_nodes(
+        "したほう",
+        &[(0, 2, "した", "した", 500, KANA_NOUN, KANA_NOUN)],
+    );
+    let fang = seg("ほう", "方", NOUN, NOUN, 0);
+    let a = model_price(
+        vec![seg("した", "下", PARTICLE_L, PARTICLE_R, 0), fang.clone()],
+        &c,
+        PathOrigin::Viterbi,
+    );
+    let b = model_price(
+        vec![seg("した", "舌", NOUN, NOUN, 0), fang],
+        &c,
+        PathOrigin::Viterbi,
+    );
+    let pricer = FeaturePricer::new(Some(&c), None);
+    let offers = PartialHiraganaRewriter {
+        lattice: &lattice,
+        conn: Some(&c),
+        pricer: &pricer,
+    }
+    .generate(&[a, b], "したほう");
+    let shita: Vec<_> = offers
+        .iter()
+        .filter(|p| p.surface_key() == "した方")
+        .collect();
+    assert!(!shita.is_empty());
+    for p in shita {
+        assert_eq!(p.segments[0].left_id, KANA_NOUN, "not the relabelled 下");
+    }
+}

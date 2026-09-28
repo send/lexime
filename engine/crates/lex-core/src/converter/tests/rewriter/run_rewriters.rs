@@ -443,3 +443,42 @@ fn a_kanji_variant_is_not_sourced_from_a_path_partial_repriced() {
         chained.viterbi_cost
     );
 }
+
+#[test]
+fn the_rescue_mark_does_not_depend_on_rewriter_order() {
+    // A model path already spells the rescue's surface (3000). The rescue
+    // (4000) does not undercut it; a Partial offer (2000) does. Whichever
+    // runs first, the surface ends priced by the offer and marked as the
+    // rescue (#263), in the same place.
+    let base = || {
+        vec![
+            path("最", 0, PathOrigin::Viterbi),
+            path("かな", 3000, PathOrigin::Viterbi),
+            path("他", 2000, PathOrigin::Viterbi),
+        ]
+    };
+    let rescue = Fixed(vec![path("かな", 4000, PathOrigin::HiraganaVariant)]);
+    let partial = Fixed(vec![path("かな", 2000, PathOrigin::PartialHiragana)]);
+    let orders: [[&dyn Rewriter; 2]; 2] = [[&rescue, &partial], [&partial, &rescue]];
+    let mut results = Vec::new();
+    for order in orders {
+        let mut paths = base();
+        run_rewriters(&order, &mut paths, "よみ", RewriteStage::Model);
+        let kana = paths.iter().find(|p| p.surface_key() == "かな").unwrap();
+        assert_eq!(kana.priced_by, PathOrigin::HiraganaVariant);
+        assert_eq!(kana.viterbi_cost, 2000);
+        results.push(surfaces(&paths));
+    }
+    assert_eq!(results[0], results[1]);
+}
+
+#[test]
+fn a_model_price_is_not_marked_as_the_rescue() {
+    let mut paths = vec![
+        path("最", 0, PathOrigin::Viterbi),
+        path("かな", 3000, PathOrigin::Viterbi),
+    ];
+    let rescue = Fixed(vec![path("かな", 4000, PathOrigin::HiraganaVariant)]);
+    run_rewriters(&[&rescue], &mut paths, "よみ", RewriteStage::Model);
+    assert_eq!(paths[1].priced_by, PathOrigin::Viterbi);
+}
