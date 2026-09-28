@@ -273,6 +273,11 @@ expected = "仕事を探す"
 category = "phrase"
 tags = ["compound", "verb"]
 
+# rank 2+: し事を探す was a KanjiVariant sourced from a path a Partial offer had repriced (chain)
+[cases.window]
+n = 9
+absent = ["し事を探す"]
+
 # ═══════════════════════════════════════════════════════════════════
 # Regression tests (linked to specific PRs)
 # ═══════════════════════════════════════════════════════════════════
@@ -347,6 +352,11 @@ expected = "してからにしましょう"
 category = "regression"
 tags = ["person-name-penalty"]
 note = "人名候補（西間翔等）が助詞後に割り込む問題"
+
+# rank 2+: 助詞 から must not be respelled as the noun 殻 (offers keep the word class)
+[cases.window]
+n = 9
+absent = ["して殻にしましょう"]
 
 [[cases]]
 reading = "ひつようあれば"
@@ -693,6 +703,11 @@ reading = "だいがくせい"
 expected = "大学生"
 category = "compound"
 tags = ["prefix"]
+
+# rank 2+: だいがく性 was a KanjiVariant sourced from the kana-rescue-repriced path (chain)
+[cases.window]
+n = 9
+absent = ["だいがく性"]
 
 # ═══════════════════════════════════════════════════════════════════
 # Long sentences (10+ chars, multi-segment Viterbi)

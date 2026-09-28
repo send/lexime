@@ -18,21 +18,37 @@ impl CompositeDictionary {
     }
 }
 
-/// Deduplicate entries by surface, keeping the lowest cost for each.
-fn dedup_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
-    let mut best: HashMap<String, DictEntry> = HashMap::new();
+/// Keep the cheapest entry per `key`, then order by cost. Stable: entries of
+/// equal cost keep first-seen order (layer order, then each layer's own
+/// order), so the lattice — and every equal-cost tie decided by node order —
+/// is the same on every lookup.
+fn dedup_cheapest<K: std::hash::Hash + Eq>(
+    entries: Vec<DictEntry>,
+    key: impl Fn(&DictEntry) -> K,
+) -> Vec<DictEntry> {
+    let mut index: HashMap<K, usize> = HashMap::new();
+    let mut result: Vec<DictEntry> = Vec::with_capacity(entries.len());
     for e in entries {
-        best.entry(e.surface.clone())
-            .and_modify(|existing| {
+        match index.entry(key(&e)) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                let existing = &mut result[*slot.get()];
                 if e.cost < existing.cost {
-                    *existing = e.clone();
+                    *existing = e;
                 }
-            })
-            .or_insert(e);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(result.len());
+                result.push(e);
+            }
+        }
     }
-    let mut result: Vec<DictEntry> = best.into_values().collect();
     result.sort_by_key(|e| e.cost);
     result
+}
+
+/// Deduplicate entries by surface, keeping the lowest cost for each.
+fn dedup_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
+    dedup_cheapest(entries, |e| e.surface.clone())
 }
 
 /// Deduplicate entries by (surface, left_id, right_id), preserving POS variants.
@@ -40,20 +56,7 @@ fn dedup_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
 /// Unlike `dedup_entries` (which collapses by surface only), this keeps all
 /// POS variants so that the Viterbi lattice can score connection costs correctly.
 fn merge_entries(entries: Vec<DictEntry>) -> Vec<DictEntry> {
-    let mut best: HashMap<(String, u16, u16), DictEntry> = HashMap::new();
-    for e in entries {
-        let key = (e.surface.clone(), e.left_id, e.right_id);
-        best.entry(key)
-            .and_modify(|existing| {
-                if e.cost < existing.cost {
-                    *existing = e.clone();
-                }
-            })
-            .or_insert(e);
-    }
-    let mut result: Vec<DictEntry> = best.into_values().collect();
-    result.sort_by_key(|e| e.cost);
-    result
+    dedup_cheapest(entries, |e| (e.surface.clone(), e.left_id, e.right_id))
 }
 
 /// Merge search results by reading, preserving POS variants within each reading.
@@ -292,5 +295,38 @@ mod tests {
         let deduped = dedup_entries(entries);
         assert_eq!(deduped.len(), 1);
         assert_eq!(deduped[0].cost, 2000);
+    }
+
+    #[test]
+    fn equal_cost_entries_keep_layer_order_on_every_lookup() {
+        let entry = |surface: &str| DictEntry {
+            surface: surface.to_string(),
+            cost: 4000,
+            left_id: 300,
+            right_id: 300,
+        };
+        let layer = |surfaces: &[&str]| -> Arc<dyn Dictionary> {
+            Arc::new(TrieDictionary::from_entries(vec![(
+                "かき".to_string(),
+                surfaces.iter().map(|s| entry(s)).collect(),
+            )]))
+        };
+        let dict = CompositeDictionary::new(vec![
+            layer(&["柿", "牡蠣", "夏期"]),
+            layer(&["下記", "火気", "柿"]),
+        ]);
+        let expected = ["柿", "牡蠣", "夏期", "下記", "火気"];
+        for _ in 0..100 {
+            let surfaces: Vec<String> =
+                dict.lookup("かき").into_iter().map(|e| e.surface).collect();
+            assert_eq!(surfaces, expected);
+            let prefix = dict.common_prefix_search("かき");
+            let surfaces: Vec<&str> = prefix[0]
+                .entries
+                .iter()
+                .map(|e| e.surface.as_str())
+                .collect();
+            assert_eq!(surfaces, expected);
+        }
     }
 }

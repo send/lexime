@@ -5,5 +5,6 @@ mod bench;
 mod grouping;
 mod history;
 mod nbest;
+mod offers;
 mod reranker;
 mod rewriter;

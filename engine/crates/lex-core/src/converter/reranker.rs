@@ -8,6 +8,68 @@ use crate::user_history::UserHistory;
 use super::features::{compute_structure_cost, FeatureConfig, FeatureWeights};
 use super::viterbi::ScoredPath;
 
+/// The feature part of rerank's price: what rerank adds to a path's Viterbi
+/// cost, apart from its structure filter. Depends on the path alone, not on
+/// the population rerank saw — so a path synthesised later (a variant offer)
+/// is priced exactly as rerank would price the same segments.
+pub(crate) struct FeaturePricer<'a> {
+    fcfg: FeatureConfig<'a>,
+    weights: FeatureWeights,
+}
+
+impl<'a> FeaturePricer<'a> {
+    pub fn new(conn: Option<&'a ConnectionMatrix>, dict: Option<&'a dyn Dictionary>) -> Self {
+        let weights = FeatureWeights::from_settings();
+        // Only the single-kanji compound exemption requires dictionary lookups.
+        let need_dict = weights.single_kanji != 0;
+        Self {
+            fcfg: FeatureConfig {
+                conn,
+                dict: if need_dict { dict } else { None },
+                structure_cap: settings().reranker.structure_cost_transition_cap,
+                prefix_floor: structure_prefix_floor(),
+            },
+            weights,
+        }
+    }
+
+    /// Feature adjustment rerank adds to `path`'s Viterbi cost, given its
+    /// structure cost.
+    fn adjustment_with_sc(&self, path: &ScoredPath, sc: i64) -> i64 {
+        self.fcfg
+            .extract(path, Some(sc))
+            .weighted_cost(&self.weights)
+    }
+
+    /// Feature adjustment rerank adds to `path`'s Viterbi cost.
+    pub fn adjustment(&self, path: &ScoredPath) -> i64 {
+        self.fcfg.extract(path, None).weighted_cost(&self.weights)
+    }
+}
+
+/// Structure-filter threshold over `(segment count, structure cost)` pairs:
+/// `min + structure_cost_filter`, with single-segment paths (0 transitions)
+/// imputed at `prefix_floor` so they cannot set an artificially low
+/// baseline. Shared by rerank and tune.
+pub(crate) fn structure_threshold(
+    items: impl Iterator<Item = (usize, i64)>,
+    prefix_floor: i64,
+) -> Option<i64> {
+    items
+        .map(|(segs, sc)| if segs <= 1 { prefix_floor } else { sc })
+        .min()
+        .map(|min_sc| min_sc + settings().reranker.structure_cost_filter)
+}
+
+/// Transitions FROM a prefix POS (role == 3) get a floor of half the filter
+/// threshold. Without this, a prefix→content-word transition (e.g.
+/// 今[prefix]→デスネ with conn=256) can drag min_sc so low that the hard
+/// filter drops correct multi-segment paths like 今|です|ね.
+pub(crate) fn structure_prefix_floor() -> i64 {
+    let r = &settings().reranker;
+    (r.structure_cost_filter / 2).min(r.structure_cost_transition_cap)
+}
+
 /// Rerank N-best Viterbi paths by applying post-hoc features.
 ///
 /// The Viterbi core handles dictionary cost + connection cost + segment penalty.
@@ -29,75 +91,44 @@ pub fn rerank(
     if paths.len() <= 1 {
         return;
     }
+    let features = FeaturePricer::new(conn, dict);
 
-    // Step 1: Compute structure_cost for each path.
-    //
-    // Transitions FROM a prefix POS (role == 3) get a floor of half the
-    // filter threshold. Without this, a prefix→content-word transition
-    // (e.g. 今[prefix]→デスネ with conn=256) can drag min_sc so low that
-    // the hard filter drops correct multi-segment paths like 今|です|ね.
-    let cap = settings().reranker.structure_cost_transition_cap;
-    let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
+    // Structure cost per path, then the hard-filter threshold over them.
     let structure_costs: Vec<i64> = paths
         .iter()
-        .map(|p| compute_structure_cost(p, conn, cap, prefix_floor))
-        .collect();
-
-    // Step 2: Hard filter — drop paths exceeding min + threshold.
-    //
-    // For min_sc computation, single-segment paths (0 transitions, sc=0) are
-    // imputed with prefix_floor so they don't set an artificially low baseline.
-    // Combined with the prefix-transition floor in step 1, this ensures the
-    // threshold is high enough to keep correct multi-segment paths.
-    let filter = settings().reranker.structure_cost_filter;
-    let min_sc = structure_costs
-        .iter()
-        .zip(paths.iter())
-        .map(|(&sc, p)| {
-            if p.segments.len() <= 1 {
-                prefix_floor
-            } else {
-                sc
-            }
+        .map(|p| {
+            compute_structure_cost(
+                p,
+                conn,
+                features.fcfg.structure_cap,
+                features.fcfg.prefix_floor,
+            )
         })
-        .min()
-        .expect("paths guaranteed non-empty after early return");
-    let threshold = min_sc + filter;
-    let mut kept_sc: Vec<i64> = Vec::new();
-    {
-        let mut i = 0;
-        paths.retain(|p| {
-            // Identity paths (surface == reading throughout) are exempt: they
-            // are the user's typed input and must stay selectable so history
-            // learning can rescue readings the cost model gets wrong (#263).
-            // Their fragmented FW chains otherwise trip the structure filter.
-            let identity = p.segments.iter().all(|s| s.surface == s.reading);
-            let keep = identity || structure_costs[i] <= threshold;
-            if keep {
-                kept_sc.push(structure_costs[i]);
-            }
-            i += 1;
-            keep
-        });
-    }
-
-    // Step 3: Feature extraction + weighted cost adjustment.
-    // Pass pre-computed structure_cost to avoid recomputing transition costs.
-    // Only the single-kanji compound exemption requires dictionary lookups;
-    // te-form scoring does not.
-    let weights = FeatureWeights::from_settings();
-    let need_dict = weights.single_kanji != 0;
-    let dict_for_features = if need_dict { dict } else { None };
-    let fcfg = FeatureConfig {
-        conn,
-        dict: dict_for_features,
-        structure_cap: cap,
-        prefix_floor,
+        .collect();
+    let Some(threshold) = structure_threshold(
+        paths
+            .iter()
+            .zip(&structure_costs)
+            .map(|(p, &sc)| (p.segments.len(), sc)),
+        features.fcfg.prefix_floor,
+    ) else {
+        return;
     };
-    for (path, &sc) in paths.iter_mut().zip(kept_sc.iter()) {
-        let features = fcfg.extract(path, Some(sc));
-        path.viterbi_cost += features.weighted_cost(&weights);
-    }
+
+    // Filter and price in one pass. Identity paths (surface == reading
+    // throughout) are exempt from the filter: they are the user's typed input
+    // and must stay selectable so history learning can rescue readings the
+    // cost model gets wrong (#263). Their fragmented FW chains otherwise trip
+    // the structure filter.
+    let mut sc = structure_costs.into_iter();
+    paths.retain_mut(|p| {
+        let sc = sc.next().expect("one structure cost per path");
+        if !p.is_identity() && sc > threshold {
+            return false;
+        }
+        p.viterbi_cost += features.adjustment_with_sc(p, sc);
+        true
+    });
 
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(paths_out = paths.len());
@@ -199,9 +230,7 @@ pub fn history_rerank_at(
         let applied = breakdown.applied(path.segments.len());
         path.viterbi_cost -= applied;
         // Remember the boost so candidate generators running after this step
-        // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`)
-        // and avoid inheriting this path's whole-path boost into derived
-        // surfaces that were never actually confirmed.
+        // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
         path.history_boost = applied;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
@@ -211,7 +240,7 @@ pub fn history_rerank_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::viterbi::RichSegment;
+    use crate::converter::viterbi::{PathOrigin, RichSegment};
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, Dictionary, SearchResult};
 
@@ -237,6 +266,8 @@ mod tests {
             segments,
             viterbi_cost: cost,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         }
     }
 

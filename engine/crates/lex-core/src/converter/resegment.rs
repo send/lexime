@@ -9,11 +9,10 @@
 use std::collections::HashSet;
 
 use crate::dict::connection::ConnectionMatrix;
-use crate::settings::settings;
 
-use super::cost::conn_cost;
+use super::cost::score_path;
 use super::lattice::Lattice;
-use super::viterbi::{RichSegment, ScoredPath};
+use super::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
 /// Maximum number of resegmented paths to add.
 const MAX_RESEG_PATHS: usize = 10;
@@ -103,12 +102,7 @@ pub(super) fn resegment(
                     new_segs.extend_from_slice(&best.segments[(seg_idx + 1)..]);
 
                     let cost = score_path(&new_segs, conn);
-
-                    let candidate = ScoredPath {
-                        segments: new_segs,
-                        viterbi_cost: cost,
-                        history_boost: 0,
-                    };
+                    let candidate = ScoredPath::new(new_segs, cost, PathOrigin::Resegment);
 
                     // Dedup against existing paths and already-generated candidates
                     let key = candidate.surface_key();
@@ -126,43 +120,6 @@ pub(super) fn resegment(
     }
 
     new_paths
-}
-
-/// Score a path using the same formula as `DefaultCostFunction`.
-///
-/// Reproduces: word_cost(node) + BOS + transitions + EOS.
-fn score_path(segments: &[RichSegment], conn: Option<&ConnectionMatrix>) -> i64 {
-    if segments.is_empty() {
-        return 0;
-    }
-
-    let seg_penalty = settings().cost.segment_penalty;
-    let mut cost: i64 = 0;
-
-    for (i, seg) in segments.iter().enumerate() {
-        let is_fw = conn
-            .map(|c| c.is_function_word(seg.left_id))
-            .unwrap_or(false);
-        let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
-        cost += seg.word_cost as i64 + penalty;
-
-        if i == 0 {
-            // BOS transition
-            cost += conn_cost(conn, 0, seg.left_id);
-        } else {
-            // Transition from previous segment
-            cost += conn_cost(conn, segments[i - 1].right_id, seg.left_id);
-        }
-    }
-
-    // EOS transition
-    cost += conn_cost(
-        conn,
-        segments.last().expect("segments non-empty").right_id,
-        0,
-    );
-
-    cost
 }
 
 #[cfg(test)]

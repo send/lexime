@@ -3,6 +3,7 @@ use crate::settings::settings;
 use crate::unicode::{is_hiragana, is_kanji, is_katakana, is_latin};
 
 use super::lattice::Lattice;
+use super::viterbi::RichSegment;
 
 /// Cost adjustment based on the surface script.
 /// - Mixed-script (kanji+kana, e.g. 通っ, 食べる): bonus (negative)
@@ -72,15 +73,36 @@ impl<'a> DefaultCostFunction<'a> {
     }
 }
 
+/// Cost of one node on a path: its dictionary cost plus the segment
+/// penalty (halved for function words). The single definition Viterbi and
+/// [`score_path`] both use.
+pub(crate) fn node_cost(word_cost: i16, left_id: u16, conn: Option<&ConnectionMatrix>) -> i64 {
+    let seg_penalty = settings().cost.segment_penalty;
+    let is_fw = conn.is_some_and(|c| c.is_function_word(left_id));
+    let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
+    word_cost as i64 + penalty
+}
+
+/// Price a segment sequence exactly as `DefaultCostFunction` prices the same
+/// path in Viterbi: node costs + BOS + transitions + EOS.
+pub(crate) fn score_path(segments: &[RichSegment], conn: Option<&ConnectionMatrix>) -> i64 {
+    let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
+        return 0;
+    };
+    let nodes: i64 = segments
+        .iter()
+        .map(|s| node_cost(s.word_cost, s.left_id, conn))
+        .sum();
+    let transitions: i64 = segments
+        .windows(2)
+        .map(|w| conn_cost(conn, w[0].right_id, w[1].left_id))
+        .sum();
+    nodes + conn_cost(conn, 0, first.left_id) + transitions + conn_cost(conn, last.right_id, 0)
+}
+
 impl CostFunction for DefaultCostFunction<'_> {
     fn word_cost(&self, lattice: &Lattice, idx: usize) -> i64 {
-        let seg_penalty = settings().cost.segment_penalty;
-        let is_fw = self
-            .conn
-            .map(|c| c.is_function_word(lattice.left_id(idx)))
-            .unwrap_or(false);
-        let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
-        lattice.cost(idx) as i64 + penalty
+        node_cost(lattice.cost(idx), lattice.left_id(idx), self.conn)
     }
 
     fn transition_cost(&self, prev_right_id: u16, next_left_id: u16) -> i64 {

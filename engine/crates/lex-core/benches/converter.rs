@@ -1,6 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use lex_core::converter::{build_lattice, convert, convert_nbest};
+use lex_core::converter::{build_lattice, convert, convert_nbest, convert_with_history};
 use lex_core::dict::{DictEntry, TrieDictionary};
+use lex_core::user_history::UserHistory;
 
 fn bench_dict() -> TrieDictionary {
     let entries = vec![
@@ -299,6 +300,32 @@ fn bench_convert_1best(c: &mut Criterion) {
     group.finish();
 }
 
+/// A small non-empty history: the IME always attaches one, and with any
+/// learning the 1-best runs the offer rewriters (history can lift an offer
+/// to index 0).
+fn bench_history() -> UserHistory {
+    let mut h = UserHistory::new();
+    for _ in 0..3 {
+        h.record(&[
+            ("きょう".into(), "今日".into()),
+            ("てんき".into(), "天気".into()),
+        ]);
+    }
+    h
+}
+
+fn bench_convert_1best_history(c: &mut Criterion) {
+    let dict = bench_dict();
+    let history = bench_history();
+    let mut group = c.benchmark_group("converter/convert_1best_history");
+    for &(label, kana) in INPUTS {
+        group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
+            b.iter(|| convert_with_history(&dict, None, &history, kana));
+        });
+    }
+    group.finish();
+}
+
 fn bench_convert_10best(c: &mut Criterion) {
     let dict = bench_dict();
     let mut group = c.benchmark_group("converter/convert_10best");
@@ -314,6 +341,7 @@ criterion_group!(
     benches,
     bench_build_lattice,
     bench_convert_1best,
+    bench_convert_1best_history,
     bench_convert_10best
 );
 criterion_main!(benches);

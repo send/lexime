@@ -1,5 +1,5 @@
-use crate::converter::rewriter::{run_rewriters, HiraganaVariantRewriter, Rewriter};
-use crate::converter::viterbi::{RichSegment, ScoredPath};
+use crate::converter::rewriter::{run_rewriters, HiraganaVariantRewriter, RewriteStage, Rewriter};
+use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
 #[test]
 fn test_hiragana_variant_replaces_kanji() {
@@ -37,6 +37,8 @@ fn test_hiragana_variant_replaces_kanji() {
         ],
         viterbi_cost: 3000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "りだいれくとされますか");
@@ -69,6 +71,8 @@ fn test_hiragana_variant_skips_all_hiragana() {
         ],
         viterbi_cost: 1000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "されます");
@@ -93,6 +97,8 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
             }],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -104,10 +110,12 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
             }],
             viterbi_cost: 4000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
-    run_rewriters(&[&rw], &mut paths, "され");
+    run_rewriters(&[&rw], &mut paths, "され", RewriteStage::Model);
 
     assert_eq!(paths.len(), 2, "should not add duplicate hiragana variant");
 }
@@ -134,6 +142,8 @@ fn test_hiragana_variant_keeps_katakana() {
         ],
         viterbi_cost: 2000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "てすとちゅう");

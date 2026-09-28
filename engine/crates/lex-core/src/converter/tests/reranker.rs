@@ -1,5 +1,5 @@
 use crate::converter::reranker::{history_rerank_at, rerank};
-use crate::converter::viterbi::{RichSegment, ScoredPath};
+use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::{now_epoch, UserHistory};
 
@@ -42,6 +42,8 @@ fn test_rerank_penalizes_fragmented_path() {
             ],
             viterbi_cost: 1000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         // Single segment path: 0 transitions → 0 structure cost
         ScoredPath {
@@ -54,6 +56,8 @@ fn test_rerank_penalizes_fragmented_path() {
             }],
             viterbi_cost: 1040,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -85,6 +89,8 @@ fn test_rerank_no_conn_no_structure_penalty() {
             ],
             viterbi_cost: 1000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -96,6 +102,8 @@ fn test_rerank_no_conn_no_structure_penalty() {
             }],
             viterbi_cost: 2000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -118,6 +126,8 @@ fn test_rerank_single_path_noop() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     rerank(&mut paths, None, None);
@@ -157,6 +167,8 @@ fn test_rerank_penalizes_uneven_segments() {
             ],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         // Even: readings 2 + 2 chars → sum_sq_dev=0, penalty=0
         ScoredPath {
@@ -178,6 +190,8 @@ fn test_rerank_penalizes_uneven_segments() {
             ],
             viterbi_cost: 6500,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -212,6 +226,8 @@ fn test_rerank_applies_script_cost() {
             }],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         // Hiragana path: たら (no script penalty), raw cost 100 higher
         ScoredPath {
@@ -224,6 +240,8 @@ fn test_rerank_applies_script_cost() {
             }],
             viterbi_cost: 3100,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -257,6 +275,8 @@ fn test_history_rerank_unigram_boost_reorders() {
             }],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -268,6 +288,8 @@ fn test_history_rerank_unigram_boost_reorders() {
             }],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -303,6 +325,8 @@ fn test_history_rerank_bigram_boost() {
             ],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         // Path with bigram match: "今日" → "は"
         ScoredPath {
@@ -324,6 +348,8 @@ fn test_history_rerank_bigram_boost() {
             ],
             viterbi_cost: 7000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -348,6 +374,8 @@ fn test_history_rerank_empty_history_preserves_order() {
             }],
             viterbi_cost: 1000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -359,6 +387,8 @@ fn test_history_rerank_empty_history_preserves_order() {
             }],
             viterbi_cost: 2000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -401,6 +431,8 @@ fn test_history_rerank_at_matches_compute_history_boost() {
         }],
         viterbi_cost: 10_000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     };
     let expected_applied =
         compute_history_boost(&path_before, &h, None, now).applied(path_before.segments.len());
@@ -458,6 +490,8 @@ fn test_compute_history_boost_skips_function_word_unigram() {
         ],
         viterbi_cost: 0,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     };
 
     let content_boost = h.unigram_boost("だい", "代", now);
@@ -504,6 +538,8 @@ fn test_filter_drops_fragmented_paths() {
             }],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![
@@ -524,6 +560,8 @@ fn test_filter_drops_fragmented_paths() {
             ],
             viterbi_cost: 4000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![
@@ -565,6 +603,8 @@ fn test_filter_drops_fragmented_paths() {
             ],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -606,6 +646,8 @@ fn test_filter_keeps_all_when_all_exceed() {
             ],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![
@@ -616,6 +658,8 @@ fn test_filter_keeps_all_when_all_exceed() {
             ],
             viterbi_cost: 4000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -667,6 +711,8 @@ fn test_filter_preserves_minimum_path() {
             ],
             viterbi_cost: 1000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         ScoredPath {
             segments: vec![RichSegment {
@@ -678,6 +724,8 @@ fn test_filter_preserves_minimum_path() {
             }],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 
@@ -748,6 +796,8 @@ fn test_prefix_floor_prevents_low_baseline() {
             ],
             viterbi_cost: 3000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
         // Path B: content → content → content (sc = 8000)
         // Without floor this would be dropped (8000 > 6100).
@@ -778,6 +828,8 @@ fn test_prefix_floor_prevents_low_baseline() {
             ],
             viterbi_cost: 4000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         },
     ];
 

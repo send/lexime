@@ -22,37 +22,90 @@ pub(crate) struct RichSegment {
     pub word_cost: i16,
 }
 
+/// Which stage produced a path's segments, or set its price.
+///
+/// `ScoredPath::origin` records who made the segments and
+/// `ScoredPath::priced_by` who set the price. A price is the model's
+/// (Viterbi + rerank), an offer's (a kana↔kanji variant of a listed path,
+/// capped at its source + 2000 so the model's orthography preference can be
+/// overridden), or a policy's (the kana rescue #263, Numeric #239,
+/// Katakana — surfaces the lattice cannot represent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathOrigin {
+    Viterbi,
+    Resegment,
+    KanjiVariant,
+    HiraganaVariant,
+    PartialHiragana,
+    Numeric,
+    Katakana,
+}
+
+impl PathOrigin {
+    /// Every segment is a lattice node (applied to `origin`). A
+    /// PartialHiragana path may carry a kanji node under its kana reading.
+    pub fn is_lattice_path(self) -> bool {
+        matches!(self, Self::Viterbi | Self::Resegment | Self::KanjiVariant)
+    }
+
+    /// Made by the cost model itself. As `priced_by`: a price that uses up
+    /// the N-best budget (an offer's or a rescue's does not), and a path the
+    /// variant rewriters may start from.
+    pub fn is_model(self) -> bool {
+        matches!(self, Self::Viterbi | Self::Resegment)
+    }
+}
+
 /// A scored path from N-best Viterbi, carrying enough info for reranking.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct ScoredPath {
     pub segments: Vec<RichSegment>,
     pub viterbi_cost: i64,
     /// History boost subtracted from `viterbi_cost` by `history_rerank_at`
     /// (0 before history reranking, or when no history is applied).
     ///
-    /// Kept so that candidate generators running *after* history_rerank can
-    /// recover the pre-boost cost via [`Self::pre_history_cost`]. Without this,
-    /// rewriters that derive a new candidate's cost from a base path would
-    /// inherit the base's whole-path boost into surfaces that were never
-    /// actually confirmed (e.g. kanji variants of a boosted hiragana path),
-    /// burying genuinely-boosted candidates below junk.
+    /// Kept so that candidate generators running *after* history_rerank
+    /// (Numeric / Katakana) recover the pre-boost cost via
+    /// [`Self::pre_history_cost`] instead of pricing from a boosted one.
     pub history_boost: i64,
+    /// Who produced `segments`.
+    pub origin: PathOrigin,
+    /// Who set `viterbi_cost` (differs from `origin` when a duplicate's
+    /// price was adopted by another stage).
+    pub priced_by: PathOrigin,
 }
 
 impl ScoredPath {
-    /// Create a single-segment path with no POS metadata (for rewriter-generated candidates).
-    pub fn single(reading: String, surface: String, cost: i64) -> Self {
+    /// A path with no history applied, priced by the stage that made it.
+    pub fn new(segments: Vec<RichSegment>, cost: i64, origin: PathOrigin) -> Self {
         Self {
-            segments: vec![RichSegment {
+            segments,
+            viterbi_cost: cost,
+            history_boost: 0,
+            origin,
+            priced_by: origin,
+        }
+    }
+
+    /// Create a single-segment path with no POS metadata (for rewriter-generated candidates).
+    pub fn single(reading: String, surface: String, cost: i64, origin: PathOrigin) -> Self {
+        Self::new(
+            vec![RichSegment {
                 reading,
                 surface,
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: cost,
-            history_boost: 0,
-        }
+            cost,
+            origin,
+        )
+    }
+
+    /// Every segment's surface is its reading: the user's typed input.
+    pub fn is_identity(&self) -> bool {
+        self.segments.iter().all(|s| s.surface == s.reading)
     }
 
     /// Cost before any history boost was applied.
@@ -194,11 +247,7 @@ pub(crate) fn viterbi_nbest<C: CostFunction>(
             break;
         }
         let segments = backtrace_nbest(&top_k, end_idx, end_rank, lattice);
-        let scored = ScoredPath {
-            segments,
-            viterbi_cost: total_cost,
-            history_boost: 0,
-        };
+        let scored = ScoredPath::new(segments, total_cost, PathOrigin::Viterbi);
         if seen_surfaces.insert(scored.surface_key()) {
             results.push(scored);
         }

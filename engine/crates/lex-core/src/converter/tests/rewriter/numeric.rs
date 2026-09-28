@@ -1,6 +1,6 @@
 use crate::converter::lattice::Lattice;
-use crate::converter::rewriter::{run_rewriters, NumericRewriter, Rewriter};
-use crate::converter::viterbi::{RichSegment, ScoredPath};
+use crate::converter::rewriter::{run_rewriters, NumericRewriter, RewriteStage, Rewriter};
+use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 
 /// Build a tiny ConnectionMatrix where POS id `counter_id` is tagged as
@@ -24,6 +24,7 @@ fn test_numeric_rewriter_generates_candidates() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 3000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -35,6 +36,8 @@ fn test_numeric_rewriter_generates_candidates() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "にじゅうさん");
@@ -53,6 +56,7 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 3000,
     };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -64,9 +68,11 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
-    run_rewriters(&[&rw], &mut paths, "にじゅうさん");
+    run_rewriters(&[&rw], &mut paths, "にじゅうさん", RewriteStage::Override);
 
     // Kanji already exists, only halfwidth + fullwidth added
     assert_eq!(paths.len(), 3);
@@ -80,6 +86,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 3000,
     };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -91,9 +98,11 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
-    run_rewriters(&[&rw], &mut paths, "じゅう");
+    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override);
 
     // 十 is single-char → base_cost (not best_cost), all after 中
     assert_eq!(paths[0].surface_key(), "中");
@@ -106,6 +115,7 @@ fn test_numeric_rewriter_skips_non_numeric() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 1000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -117,6 +127,8 @@ fn test_numeric_rewriter_skips_non_numeric() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "きょう");
@@ -132,6 +144,7 @@ fn test_numeric_rewriter_skips_duplicate() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 1000,
     };
     let mut paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -143,9 +156,11 @@ fn test_numeric_rewriter_skips_duplicate() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
-    run_rewriters(&[&rw], &mut paths, "いち");
+    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override);
 
     // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
     assert_eq!(paths.len(), 3);
@@ -176,6 +191,7 @@ fn test_numeric_counter_generates_kanji_compound() {
     let rw = NumericRewriter {
         lattice: Some(&lattice),
         connection: Some(&conn),
+        anchor: 5000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -187,6 +203,8 @@ fn test_numeric_counter_generates_kanji_compound() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "さんぜんえん");
@@ -228,6 +246,7 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
     let rw = NumericRewriter {
         lattice: Some(&lattice),
         connection: Some(&conn),
+        anchor: 4000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -239,6 +258,8 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "ごえん");
@@ -263,6 +284,7 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
     let rw = NumericRewriter {
         lattice: Some(&lattice),
         connection: Some(&conn),
+        anchor: 4000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -274,6 +296,8 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "あいえん");
@@ -288,6 +312,7 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
+        anchor: 5000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -299,6 +324,8 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let result = rw.generate(&paths, "さんぜんえん");
@@ -323,6 +350,7 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
     let rw = NumericRewriter {
         lattice: Some(&lattice),
         connection: Some(&conn),
+        anchor: 4000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -334,6 +362,8 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     let mut emit_orders: Vec<Vec<String>> = Vec::new();
@@ -373,6 +403,7 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
     let rw = NumericRewriter {
         lattice: Some(&lattice),
         connection: Some(&conn),
+        anchor: 4000,
     };
     let paths = vec![ScoredPath {
         segments: vec![RichSegment {
@@ -384,6 +415,8 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        origin: PathOrigin::Viterbi,
+        priced_by: PathOrigin::Viterbi,
     }];
 
     // Should not panic; should still emit candidates for both counters.

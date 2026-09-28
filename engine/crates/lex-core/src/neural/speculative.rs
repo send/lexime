@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_scored_path_to_segments() {
-        use crate::converter::RichSegment;
+        use crate::converter::{PathOrigin, RichSegment};
 
         let path = ScoredPath {
             segments: vec![
@@ -266,6 +266,8 @@ mod tests {
             ],
             viterbi_cost: 5000,
             history_boost: 0,
+            origin: PathOrigin::Viterbi,
+            priced_by: PathOrigin::Viterbi,
         };
 
         let segments = scored_path_to_segments(&path);
