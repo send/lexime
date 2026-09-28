@@ -283,3 +283,58 @@ fn whole_path_boost_is_the_whole_part_of_the_history_boost() {
         "no whole pair, no whole-path boost"
     );
 }
+
+/// taberu plus kana nodes, so Partial offers kana spellings of the far
+/// fragments (た|辺留): offers priced at or above their source.
+fn taberu_with_kana() -> TrieDictionary {
+    TrieDictionary::from_entries(vec![
+        ("たべる".into(), vec![e("食べる", 0)]),
+        ("た".into(), vec![e("田", 3000), e("た", 4000)]),
+        ("べる".into(), vec![e("辺留", 3000), e("べる", 4000)]),
+    ])
+}
+
+#[test]
+fn a_dropped_source_takes_its_offers_and_a_learned_offer_stays() {
+    let dict = taberu_with_kana();
+    let offers = |paths: &[ScoredPath]| -> Vec<String> {
+        paths
+            .iter()
+            .filter(|p| p.origin == PathOrigin::PartialHiragana)
+            .map(ScoredPath::surface_key)
+            .collect()
+    };
+    // Oversample 2: the population is 食べる and 田|辺留, so た|辺留 and
+    // 田|べる exist only as offers of 田|辺留.
+    let unbounded = run(&dict, None, "たべる", 20, 2, i64::MAX);
+    let offered = offers(&unbounded);
+    assert!(
+        offered.contains(&"た辺留".to_string()),
+        "fixture: {offered:?}"
+    );
+    // At the floor the far fragments go, and their offers with them.
+    let bounded = run(&dict, None, "たべる", 20, 2, 0);
+    assert!(offers(&bounded).is_empty(), "{:?}", keys(&bounded));
+    // The spelling the user committed stays though its source goes.
+    let mut h = UserHistory::new();
+    for _ in 0..3 {
+        h.record(&[("たべる".into(), "食べる".into())]);
+    }
+    h.record(&[("たべる".into(), "た辺留".into())]);
+    let learned = keys(&run(&dict, Some(&h), "たべる", 20, 2, 0));
+    assert_eq!(learned[0], "食べる");
+    assert!(learned.contains(&"た辺留".to_string()), "{learned:?}");
+}
+
+#[test]
+fn the_pre_history_best_is_restored_at_the_floor() {
+    // Per-segment learning lifts 田|辺留 to #1; the pre-history best
+    // (gap 0) survives admission and K4 puts it back at index 1.
+    let dict = taberu();
+    let mut h = UserHistory::new();
+    for _ in 0..10 {
+        h.record(&[("た".into(), "田".into()), ("べる".into(), "辺留".into())]);
+    }
+    let paths = keys(&run(&dict, Some(&h), "たべる", 2, 50, 0));
+    assert_eq!(&paths[..2], ["田辺留", "食べる"], "{paths:?}");
+}

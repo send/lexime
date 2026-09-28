@@ -33,9 +33,8 @@ pub struct ExplainResult {
     /// The bound admission applied above the anchor: `max_cost_gap`, never
     /// below the kana-rescue band.
     pub cost_gap_bound: i64,
-    /// The pre-history #1's cost the gaps are measured from (`None` when
-    /// nothing was dropped).
-    pub cost_gap_anchor: Option<i64>,
+    /// The pre-history #1's cost the gaps are measured from.
+    pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
 }
@@ -188,7 +187,7 @@ struct ExplainObserver<'a> {
     pricer: FeaturePricer<'a>,
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
-    anchor: Option<i64>,
+    anchor: i64,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -207,7 +206,7 @@ impl<'a> ExplainObserver<'a> {
             model_costs: HashMap::new(),
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
-            anchor: None,
+            anchor: 0,
         }
     }
 }
@@ -222,6 +221,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
+        self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
         for p in paths {
             let breakdown = match self.history {
                 Some(h) => compute_history_boost(p, h, self.conn, self.now),
@@ -242,7 +242,6 @@ impl PostprocessObserver for ExplainObserver<'_> {
         // An Override candidate can bring the surface back; its breakdown
         // must not borrow the dropped path's snapshot.
         self.pre_history.remove(&path.surface_key());
-        self.anchor = Some(anchor);
         self.dropped.push(DroppedPath {
             surface: path.surface_key(),
             gap: path.pre_history_cost() - anchor,
@@ -355,7 +354,7 @@ pub fn explain(
             paths: Vec::new(),
             max_cost_gap,
             cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
-            cost_gap_anchor: None,
+            cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
         };
     }
@@ -586,7 +585,7 @@ pub fn format_text(result: &ExplainResult) -> String {
             "\n=== Dropped by cost gap ({}; bound={} above anchor={}, max_cost_gap={}) ===\n",
             result.dropped_by_cost_gap.len(),
             result.cost_gap_bound,
-            result.cost_gap_anchor.unwrap_or_default(),
+            result.cost_gap_anchor,
             result.max_cost_gap,
         ));
         for d in &result.dropped_by_cost_gap {

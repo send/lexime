@@ -212,7 +212,7 @@ expected = "食べる"
 baseline = "食べる"
 category = "regression"
 tags = ["history", "whole-path", "admission"]
-note = "田|辺留 は履歴なしで #1 との差 17841 > max_cost_gap で N-best から落ちる (複数分節なので lookup にも無い。RC-2 の 田辺る 型)。読み全体を 田辺留 で 1 回確定した履歴 (whole ペア) があれば admission は落とさない。食べる (×3) は #1 のまま。成立する T の上限は gap − 2000 = 15841 — T がそれを超えたら読みを選び直す"
+note = "田|辺留 は履歴なしで #1 との差 17841 > max_cost_gap で N-best から落ちる (複数分節なので lookup にも無い。RC-2 の 田辺る 型)。読み全体を 田辺留 で 1 回確定した履歴 (whole ペア) があれば admission は落とさない。食べる (×3) は #1 のまま。成立する T の上限は gap − 2000 = 15841 — T がそれを超えたら、新しい T + 2000 以上の gap を持つ表記に選び直す (無ければケースごと差し替え)"
 
 [cases.window]
 n = 20

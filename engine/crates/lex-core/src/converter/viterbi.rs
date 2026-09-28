@@ -65,12 +65,14 @@ pub(crate) struct ScoredPath {
     /// History boost subtracted from `viterbi_cost` by `history_rerank_at`
     /// (0 before history reranking, or when no history is applied).
     ///
-    /// Kept so that candidate generators running *after* history_rerank
-    /// (Numeric / Katakana) recover the pre-boost cost via
+    /// Kept so that steps running *after* history_rerank (cost-gap
+    /// admission, Numeric / Katakana) recover the pre-boost cost via
     /// [`Self::pre_history_cost`] instead of pricing from a boosted one.
     pub history_boost: i64,
-    /// The whole-path part of `history_boost` (written only by
-    /// `history_rerank_at`).
+    /// The whole-path part of `history_boost`: > 0 marks a surface committed
+    /// for this reading, which cost-gap admission always keeps. Recorded by
+    /// `history_rerank_at`; cleared with `history_boost` when an Override
+    /// price replaces the path's.
     pub whole_path_boost: i64,
     /// Who produced `segments`.
     pub origin: PathOrigin,

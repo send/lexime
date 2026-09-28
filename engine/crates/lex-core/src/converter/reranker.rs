@@ -213,8 +213,10 @@ pub fn compute_history_boost(
 /// fragmented paths (e.g. き→機 + が + し + ます) cannot gain a structural
 /// advantage by accumulating common-particle boosts across ALL prior
 /// conversions. The whole-path boost is the strongest signal and is not
-/// normalized — it only fires when the full reading→surface was explicitly
-/// selected.
+/// normalized — it only fires when this reading→surface was committed,
+/// whole or as a phrase segment of a longer commit (unigrams are recorded
+/// per phrase segment too). It is also recorded on the path: cost-gap
+/// admission keeps such a path whatever its gap.
 pub fn history_rerank_at(
     paths: &mut [ScoredPath],
     history: &UserHistory,

@@ -135,8 +135,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     observer.after_rerank(paths);
 
     // The rerank best before history. Its cost is what number compounds are
-    // priced from, whatever history or later rewriters do to the list (the
-    // anchor). Its surface is kept on the list: history boosts per-segment
+    // priced from and what cost-gap admission measures gaps from, whatever
+    // history or later rewriters do to the list (the anchor). Its surface is kept on the list: history boosts per-segment
     // unigrams (e.g. き→機 from past "機械"), which can push fragmented
     // single-char paths above the statistically correct compound path
     // (e.g. きがし→気がし).

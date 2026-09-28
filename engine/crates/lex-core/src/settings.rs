@@ -191,7 +191,8 @@ pub struct HistorySettings {
 /// page 1 ≤ 1% of selections, (b2′) selections in the bin just below T
 /// ((T−2000, T]) ≤ 0.5%, and (b3) both accuracy corpora, the 3-width top-1
 /// check and every window pass (windows that pin admission are re-picked
-/// first). On 2026-09-28: 443 selections, 4 lost at 8000, 1 in (6000, 8000].
+/// first). On 2026-09-28: 447 selections, 4 lost at 8000 (5 at 6000), 1 in
+/// (6000, 8000].
 /// Re-run the rule when rank>0 selections grow by 200, when a change to T
 /// is proposed, when the structure-filter fix (#353) lands, and when the
 /// Mozc pin moves (#273).

@@ -318,7 +318,7 @@ composing 中、キーストロークごとに候補を生成し、以下の順�
 
 Viterbi N-best をベースに、学習バイグラムを連鎖させた予測候補を生成する:
 
-1. Viterbi N-best で変換候補を取得
+1. Viterbi N-best で変換候補を取得（コスト差 admission の後の経路。落ちた経路からはチェーンを作らない）
 2. 各候補の末尾セグメントから `bigram_successors` でバイグラム後続を探索
 3. サイクル検出（`HashSet` で訪問済みサーフェスを追跡）付きで最大チェーン長まで連鎖
 4. 重複排除後に統合
@@ -686,7 +686,7 @@ macOS で動作する最小限の IME を構築。
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
-| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す |
+| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す |
 | `snapshot` | 変換スナップショット生成（N-best。本番の候補列は `lextool snapshot --candidates` を直接呼ぶ — task は引数を渡さず出力先も N-best 用に固定） |
 | `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` を直接呼ぶ。種別の違うファイルはエラー） |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |

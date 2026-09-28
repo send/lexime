@@ -336,9 +336,8 @@ reading = "どれぐらい"
 expected = "どれぐらい"
 category = "regression"
 tags = ["pronoun", "mixed-script-bonus"]
-note = "代名詞 reranker bonus (#187) で修正"
+note = "代名詞 reranker bonus (#187) で修正。rank 2+: どれ|グラ|医 の断片は #1 との差 16586 > max_cost_gap で候補から落ちる (cost-gap admission)。成立する T の上限は gap − 2000 = 14586 — T がそれを超えたら表記を選び直す"
 
-# rank 2+: どれ|グラ|医 の断片は #1 との差 16586 > max_cost_gap で候補から落ちる (cost-gap admission)。成立する T の上限は gap − 2000 = 14586 — T がそれを超えたら表記を選び直す
 [cases.window]
 n = 9
 absent = ["どれグラ医"]
@@ -690,6 +689,11 @@ reading = "こくさいかんけい"
 expected = "国際関係"
 category = "compound"
 tags = ["four-kanji"]
+note = "国債関係 は #1 との差 7160 の正しい同音複合語。cost-gap admission の下限側の固定: max_cost_gap が 7160 未満になると頁 1 から消える (T の下限 = gap)"
+
+[cases.window]
+n = 9
+present = ["国債関係"]
 
 [[cases]]
 reading = "じょうほうぎじゅつ"
