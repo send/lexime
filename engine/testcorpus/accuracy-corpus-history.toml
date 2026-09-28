@@ -83,6 +83,8 @@ repeat = 5
 
 # Cost-gap admission: 田辺留 committed once for the whole reading (the live
 # engine records the whole pair and the segments as separate records).
+# Like every [[history]] entry these apply to all cases in this file: a case
+# whose lattice has た→田, べる→辺留 or たべる→食べる picks up their boosts.
 [[history]]
 segments = [["たべる", "食べる"]]
 repeat = 3

@@ -11,18 +11,8 @@ use crate::dict::TrieDictionary;
 use crate::settings::DEFAULT_CANDIDATE_MAX_COST_GAP;
 use crate::user_history::UserHistory;
 
-fn seg(reading: &str, surface: &str) -> RichSegment {
-    RichSegment {
-        reading: reading.into(),
-        surface: surface.into(),
-        left_id: 0,
-        right_id: 0,
-        word_cost: 0,
-    }
-}
-
 fn path(reading: &str, surface: &str, cost: i64) -> ScoredPath {
-    ScoredPath::new(vec![seg(reading, surface)], cost, PathOrigin::Viterbi)
+    ScoredPath::single(reading.into(), surface.into(), cost, PathOrigin::Viterbi)
 }
 
 fn keys(paths: &[ScoredPath]) -> Vec<String> {
@@ -173,9 +163,18 @@ fn a_whole_pair_commit_keeps_a_far_surface_and_segments_alone_do_not() {
     let dict = taberu();
     let far = |h: &UserHistory| keys(&run(&dict, Some(h), "たべる", 20, 60, 0));
 
+    // Recorded as the live engine does: whole pairs and the committed
+    // segments as separate records, 食べる committed more often so 田辺留
+    // is kept by the exemption, not by being #1.
     let mut whole = UserHistory::new();
+    for _ in 0..3 {
+        whole.record(&[("たべる".into(), "食べる".into())]);
+    }
     whole.record(&[("たべる".into(), "田辺留".into())]);
-    assert!(far(&whole).contains(&"田辺留".to_string()));
+    whole.record(&[("た".into(), "田".into()), ("べる".into(), "辺留".into())]);
+    let listed = far(&whole);
+    assert_eq!(listed[0], "食べる", "fixture: the exemption, not index 0");
+    assert!(listed.contains(&"田辺留".to_string()), "{listed:?}");
 
     // Per-segment learning of a multi-segment path is not "committed for
     // this reading": the path still has to be within the gap.
