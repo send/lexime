@@ -114,9 +114,12 @@ fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteS
 ///
 /// Every rewriter price is a standing contract (an offer ≤ source+2000, the
 /// kana rescue ≤ best+4000, Numeric #239), so the cheaper price wins and
-/// `priced_by` names whoever set it. The segments come from the lattice side
-/// when there is one — committing the surface then records per-segment
-/// history (#271) — else the finer segmentation.
+/// `priced_by` names whoever set it — except that the kana rescue's surface
+/// stays marked `HiraganaVariant` whichever side priced it: that mark is what
+/// keeps it on the list (#263), and an offer's price is only ever lower. The
+/// segments come from the lattice side when there is one — committing the
+/// surface then records per-segment history (#271) — else the finer
+/// segmentation.
 fn resolve_duplicate(
     stage: RewriteStage,
     candidate: ScoredPath,
@@ -135,14 +138,29 @@ fn resolve_duplicate(
     let take_segments = !existing.origin.is_lattice_path()
         && (candidate.origin.is_lattice_path()
             || candidate.segments.len() > existing.segments.len());
+    // Two rewriter prices on the kana rescue's surface: it stays marked as
+    // the rescue whichever priced it. (A model price is the model's; the
+    // rescue marks it only by pricing it, i.e. when cheaper.)
+    let rescue = PathOrigin::HiraganaVariant;
+    let mark_rescue = !existing.priced_by.is_model()
+        && (candidate.priced_by == rescue || existing.priced_by == rescue);
     if !cheaper && !take_segments {
-        return None;
+        return (mark_rescue && existing.priced_by != rescue).then(|| {
+            let mut marked = existing.clone();
+            marked.priced_by = rescue;
+            marked
+        });
     }
+    // Taking the candidate's segments but not its price would keep a price
+    // the resolved path's boost no longer describes; only the Model stage
+    // (no boosts yet) can.
+    debug_assert!(cheaper || stage == RewriteStage::Model);
     let (cost, priced_by) = if cheaper {
         (candidate.viterbi_cost, candidate.priced_by)
     } else {
         (existing.viterbi_cost, existing.priced_by)
     };
+    let priced_by = if mark_rescue { rescue } else { priced_by };
     let mut resolved = if take_segments {
         candidate
     } else {
@@ -183,8 +201,7 @@ fn offer(
 pub(crate) const OFFER_CAP: i64 = 2000;
 
 /// The largest Viterbi-price increase a kanji spelling may add over its
-/// source and still be offered (方 2357 / 下さい 3380 in; over the corpus at
-/// rev J, 198 of 249 swaps fell at or under it). Measured against the source,
+/// source and still be offered (したほうがいい's 方: 2357). Measured against the source,
 /// not the rest of the list: rerank's structure filter judges a path by the
 /// population's best, so a sound variant would come and go with the
 /// oversample.
@@ -338,17 +355,18 @@ impl Rewriter for HiraganaVariantRewriter {
     }
 }
 
-/// For the first 5 multi-segment model paths, offer variants where one kanji
-/// segment is spelled in kana.
+/// For the first 5 multi-segment model-priced paths that have a kanji
+/// segment, offer variants where one kanji segment is spelled in kana.
 ///
 /// Example: `下|方|が|良い` → `した|方|が|良い`
 ///
 /// The reverse of [`KanjiVariantRewriter`], under the same offer price
 /// ([`offer`]) but without its gap bound: kana is always a valid
 /// spelling (#263). The kana segment is the lattice's kana node for the span
-/// when there is one; otherwise the kanji node keeps its POS and cost under
-/// its reading (as the kana rescue does for the whole input), offered at
-/// the cap.
+/// of the same word class ([`same_role`]) when there is one; otherwise —
+/// no kana node, or none of that class — the kanji node keeps its POS and
+/// cost under its reading (as the kana rescue does for the whole input),
+/// offered at the cap.
 pub(crate) struct PartialHiraganaRewriter<'a> {
     pub lattice: &'a Lattice,
     pub conn: Option<&'a ConnectionMatrix>,

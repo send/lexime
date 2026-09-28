@@ -61,9 +61,9 @@ fn saremasu() -> (Lattice, ScoredPath) {
 fn test_run_rewriters_dedup_across_rewriters() {
     // HiraganaVariant and PartialHiragana both produce されます. One copy
     // remains, whichever runs first: the offer's price (≤ source + 2000)
-    // beats the rescue's (best+4000) and the
-    // Partial's two segments replace the rescue's single synthetic one. The
-    // surface is still within the rescue's best+4000.
+    // beats the rescue's (best+4000) and the Partial's two segments replace
+    // the rescue's single synthetic one. It stays marked as the rescue
+    // (#263: what keeps the surface on the list).
     let (lattice, best) = saremasu();
     let pricer = super::pricer();
     let hiragana_rw = HiraganaVariantRewriter;
@@ -90,7 +90,7 @@ fn test_run_rewriters_dedup_across_rewriters() {
             rescue[0].viterbi_cost, 3000,
             "the offer, capped at source + 2000"
         );
-        assert_eq!(rescue[0].priced_by, PathOrigin::PartialHiragana);
+        assert_eq!(rescue[0].priced_by, PathOrigin::HiraganaVariant);
         assert_eq!(rescue[0].origin, PathOrigin::PartialHiragana);
         assert_eq!(rescue[0].segments.len(), 2, "per-segment history (#271)");
     }
@@ -211,29 +211,22 @@ fn dearer_candidate_leaves_a_lattice_path_alone() {
 
 #[test]
 fn lattice_segments_replace_a_synthetic_path_even_when_dearer() {
+    // One segment each, so the lattice side wins by being lattice nodes,
+    // not by being finer.
     let mut paths = vec![
         path("一", 1000, PathOrigin::Viterbi),
         path("同", 5000, PathOrigin::HiraganaVariant),
     ];
     let lattice = ScoredPath::new(
-        vec![
-            RichSegment {
-                reading: "よ".into(),
-                surface: "同".into(),
-                left_id: 7,
-                right_id: 7,
-                word_cost: 0,
-            },
-            RichSegment {
-                reading: "み".into(),
-                surface: "".into(),
-                left_id: 8,
-                right_id: 8,
-                word_cost: 0,
-            },
-        ],
+        vec![RichSegment {
+            reading: "よみ".into(),
+            surface: "同".into(),
+            left_id: 7,
+            right_id: 7,
+            word_cost: 0,
+        }],
         6000,
-        PathOrigin::PartialHiragana,
+        PathOrigin::KanjiVariant,
     );
     run_rewriters(
         &[&Fixed(vec![lattice])],
@@ -244,8 +237,8 @@ fn lattice_segments_replace_a_synthetic_path_even_when_dearer() {
     let same = &paths[1];
     assert_eq!(same.viterbi_cost, 5000, "the cheaper price stays");
     assert_eq!(same.priced_by, PathOrigin::HiraganaVariant);
-    assert_eq!(same.origin, PathOrigin::PartialHiragana);
-    assert_eq!(same.segments.len(), 2);
+    assert_eq!(same.origin, PathOrigin::KanjiVariant);
+    assert_eq!(same.segments[0].left_id, 7, "the lattice node's segment");
 }
 
 #[test]

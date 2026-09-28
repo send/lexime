@@ -78,9 +78,10 @@ pub struct ExplainPath {
     /// Who set the price (differs from `origin` when a duplicate's price
     /// was adopted).
     pub priced_by: PathOrigin,
-    /// What Viterbi charges for these segments, before the rerank features
-    /// (over the ungrouped nodes); `None` for a synthetic single segment
-    /// (kana rescue, Numeric, Katakana).
+    /// What Viterbi charges for these segments' ids and costs, before the
+    /// rerank features (over the ungrouped nodes; a PartialHiragana fallback
+    /// carries the kanji node's under its reading); `None` for a synthetic
+    /// single segment (kana rescue, Numeric, Katakana).
     pub model_cost: Option<i64>,
     /// For a path not priced by the model (an offer, the kana rescue, a
     /// policy price, or a path one of them repriced): its price before
@@ -130,12 +131,11 @@ pub struct ExplainSegment {
 /// against the final path.
 #[derive(Default, Clone, Copy)]
 struct PreHistorySnapshot {
-    /// Cost after resegment + rerank, before any history adjustment.
+    /// Cost after resegment, rerank and the Model-stage rewriters, before any
+    /// history adjustment.
     cost: i64,
     /// Per-component history boost (raw sums + whole-path × 5).
     breakdown: HistoryBoostBreakdown,
-    /// Boost actually subtracted from `cost` by `history_rerank`.
-    applied_boost: i64,
     /// Segment count at the moment `history_rerank` saw the path. May differ
     /// from the final `segments.len()` after `group_segments` merges adjacent
     /// segments — kept here so the displayed `/N segs` matches the denominator
@@ -197,20 +197,15 @@ impl PostprocessObserver for ExplainObserver<'_> {
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
         for p in paths {
-            let (breakdown, applied) = match self.history {
-                Some(h) => {
-                    let b = compute_history_boost(p, h, self.conn, self.now);
-                    let a = b.applied(p.segments.len());
-                    (b, a)
-                }
-                None => (HistoryBoostBreakdown::default(), 0),
+            let breakdown = match self.history {
+                Some(h) => compute_history_boost(p, h, self.conn, self.now),
+                None => HistoryBoostBreakdown::default(),
             };
             self.pre_history.insert(
                 p.surface_key(),
                 PreHistorySnapshot {
                     cost: p.viterbi_cost,
                     breakdown,
-                    applied_boost: applied,
                     segment_count: p.segments.len(),
                 },
             );
@@ -218,17 +213,12 @@ impl PostprocessObserver for ExplainObserver<'_> {
     }
 
     fn before_group(&mut self, paths: &[ScoredPath]) {
-        // Offers are lattice nodes too (one swapped node); the kana rescue,
-        // Numeric and Katakana are one synthetic segment.
+        // Offers carry node ids and costs (a Partial fallback, the kanji
+        // node's under its reading); the kana rescue, Numeric and Katakana
+        // are one synthetic segment.
         self.model_costs = paths
             .iter()
-            .filter(|p| {
-                p.origin.is_lattice_path()
-                    || matches!(
-                        p.origin,
-                        PathOrigin::KanjiVariant | PathOrigin::PartialHiragana
-                    )
-            })
+            .filter(|p| p.origin.is_lattice_path() || p.origin == PathOrigin::PartialHiragana)
             .map(|p| {
                 let costs = (
                     score_path(&p.segments, self.conn),
@@ -381,7 +371,6 @@ pub fn explain(
                 .unwrap_or(PreHistorySnapshot {
                     cost: original,
                     breakdown: HistoryBoostBreakdown::default(),
-                    applied_boost: 0,
                     segment_count: scored.segments.len(),
                 });
             let rerank_delta = match (price_clamp, model) {
@@ -393,7 +382,9 @@ pub fn explain(
                 viterbi_cost: original,
                 rerank_delta,
                 history_breakdown: snapshot.breakdown,
-                history_boost: snapshot.applied_boost,
+                // The path's own boost: an Override price (Numeric) clears
+                // the one the snapshot recorded.
+                history_boost: scored.history_boost,
                 history_segment_count: snapshot.segment_count,
                 final_cost: scored.viterbi_cost,
                 origin: scored.origin,
@@ -789,9 +780,6 @@ mod tests {
         for history in [None, Some(&h)] {
             let result = explain(&dict, None, history, "あったほうが", 20);
             for p in &result.paths {
-                if matches!(p.origin, PathOrigin::Numeric | PathOrigin::Katakana) {
-                    continue;
-                }
                 owners.insert(format!("{:?}", p.priced_by));
                 assert_eq!(
                     p.viterbi_cost + p.rerank_delta + p.price_clamp.unwrap_or(0) - p.history_boost,

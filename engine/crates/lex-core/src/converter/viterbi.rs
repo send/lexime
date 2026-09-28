@@ -49,9 +49,9 @@ impl PathOrigin {
         matches!(self, Self::Viterbi | Self::Resegment | Self::KanjiVariant)
     }
 
-    /// Made by the cost model itself: as `origin`, a path the variant
-    /// rewriters may start from; as `priced_by`, a price that uses up the
-    /// N-best budget (an offer's or a rescue's does not).
+    /// Made by the cost model itself. As `priced_by`: a price that uses up
+    /// the N-best budget (an offer's or a rescue's does not), and a path the
+    /// variant rewriters may start from.
     pub fn is_model(self) -> bool {
         matches!(self, Self::Viterbi | Self::Resegment)
     }

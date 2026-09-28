@@ -56,8 +56,8 @@ pub(crate) struct PostprocessContext<'a> {
 // ---------------------------------------------------------------------------
 
 /// Shared post-processing pipeline: resegment → rerank → hiragana / partial
-/// / kanji-variant rewriters → history_rerank → take(n) → numeric/katakana
-/// → group.
+/// / kanji-variant rewriters → history_rerank → n model-priced paths (offers
+/// ride along) → numeric/katakana → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
