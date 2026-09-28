@@ -46,7 +46,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 4. `git push -u origin <branch>` で push する
 5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 6. コードの変更を含む PR はレビュー対応後にマージする（後述）
-7. `gh pr merge --merge --delete-branch` でマージする
+7. `gh pr merge <number> --merge` でマージする。`--delete-branch` は付けない — gh ≥2.99 はその branch を checkout している別 worktree を `git worktree remove` する (#354 で Orca ワークスペースごとセッションが消えた)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す
 
 ### PR レビュー対応フロー
 
@@ -56,7 +56,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 - **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
-- **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
+- **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 
 ## 変換精度テスト
 
