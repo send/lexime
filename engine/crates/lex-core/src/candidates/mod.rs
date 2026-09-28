@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::converter::{build_lattice, ConvertedSegment, Lattice};
+use crate::converter::{build_lattice, ConvertedSegment, Lattice, PathOrigin};
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
@@ -40,15 +40,31 @@ pub struct CandidateResponse {
     pub paths: Vec<Vec<ConvertedSegment>>,
 }
 
-/// A candidate list with the final cost of each N-best path, both from one
-/// pipeline run. For diagnostics that must describe the list as shipped:
-/// a second run to recover costs could see a different path population.
+/// A candidate list with what built it, both from one pipeline run. For
+/// diagnostics that must describe the list as shipped: a second run to
+/// recover them could see a different path population.
 pub struct PricedCandidates {
     pub response: CandidateResponse,
-    /// `path_costs[i]` is the final cost of `response.paths[i]` (Viterbi +
-    /// rerank − history, as the list was ordered). Empty for punctuation
-    /// input, whose paths are not N-best paths.
-    pub path_costs: Vec<i64>,
+    pub diagnostics: CandidateDiagnostics,
+}
+
+/// What the Standard-mode generator records about the list it built. Empty
+/// for punctuation input, whose paths are not N-best paths.
+#[derive(Debug, Default)]
+pub struct CandidateDiagnostics {
+    /// `prices[i]` is the price of `response.paths[i]`.
+    pub prices: Vec<PathPrice>,
+    /// Learned surfaces the history-injection stage added to the list (those
+    /// no N-best path had already placed), in list order.
+    pub injected: Vec<String>,
+}
+
+/// The final price of an N-best path and the stage that set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathPrice {
+    /// Viterbi + rerank − history, as the list was ordered.
+    pub cost: i64,
+    pub priced_by: PathOrigin,
 }
 
 /// Look up punctuation alternatives for a reading.
@@ -139,7 +155,7 @@ pub fn generate_candidates_priced(
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
         return PricedCandidates {
             response: generate_candidates(dict, conn, history, reading, max_results),
-            path_costs: Vec::new(),
+            diagnostics: CandidateDiagnostics::default(),
         };
     }
     let lattice = build_lattice(dict, reading);

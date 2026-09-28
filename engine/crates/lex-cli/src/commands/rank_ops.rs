@@ -8,16 +8,18 @@
 //! this module is the explicit `verbose` flag, which writes to stderr for
 //! local inspection.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use lex_core::candidates::{generate_candidates_priced, CandidateResponse, PricedCandidates};
+use lex_core::candidates::{
+    generate_candidates_priced, CandidateResponse, PathPrice, PricedCandidates,
+};
 use lex_core::converter::{
-    convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment,
+    convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment, PathOrigin,
 };
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::Dictionary;
@@ -355,7 +357,9 @@ struct Selections {
     malformed: usize,
 }
 
-fn read_selections(path: &Path) -> Result<Selections, String> {
+/// Lines before 0-based index `from_line` are skipped unread; indices stay
+/// absolute, so a windowed run still joins a full baseline.
+fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut out = Selections {
@@ -370,6 +374,9 @@ fn read_selections(path: &Path) -> Result<Selections, String> {
             .map_err(|e| format!("read error at line {}: {e}", i + 1))?;
         if n == 0 {
             break;
+        }
+        if i < from_line {
+            continue;
         }
         let Ok(line) = std::str::from_utf8(&buf) else {
             out.malformed += 1;
@@ -428,6 +435,61 @@ pub struct ReplayReport {
     pub gap_no_path: usize,
     /// Log lines skipped as unreadable (see `Selections::malformed`).
     pub malformed_lines: usize,
+    /// First log line replayed (0-based; `--from-line`).
+    pub from_line: usize,
+    /// Distinct readings among the selections.
+    pub readings: usize,
+    /// First-page slots over every replayed selection's list: one window per
+    /// selection, the population the user scanned.
+    pub page1_slots: usize,
+    /// Selections and first-page slots by the stage that put the surface on
+    /// the list. Sums to `in_list`, `in_page` and `page1_slots`.
+    pub by_owner: BTreeMap<Owner, OwnerCounts>,
+}
+
+/// The stage that put a surface on the candidate list — the one whose
+/// insertion into the list's `seen` set succeeded. For an N-best path that is
+/// the stage that set its price (`priced_by`): the price placed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Owner {
+    /// Viterbi / Resegment: the cost model.
+    Model,
+    KanjiVariant,
+    PartialHiragana,
+    /// The kana rescue (#263, `HiraganaVariant`).
+    Rescue,
+    Numeric,
+    Katakana,
+    /// A learned surface no N-best path placed.
+    Injected,
+    /// The reading itself, added by the kana stage.
+    Kana,
+    /// Predictions and dictionary lookup.
+    Tail,
+}
+
+impl Owner {
+    fn priced_by(origin: PathOrigin) -> Self {
+        match origin {
+            PathOrigin::Viterbi | PathOrigin::Resegment => Self::Model,
+            PathOrigin::KanjiVariant => Self::KanjiVariant,
+            PathOrigin::PartialHiragana => Self::PartialHiragana,
+            PathOrigin::HiraganaVariant => Self::Rescue,
+            PathOrigin::Numeric => Self::Numeric,
+            PathOrigin::Katakana => Self::Katakana,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct OwnerCounts {
+    /// Selections of this owner's surfaces (`in_page + off_page`).
+    pub selections: usize,
+    pub in_page: usize,
+    pub off_page: usize,
+    /// First-page slots this owner held.
+    pub page1_slots: usize,
 }
 
 /// Movement against a baseline, joined on `(i, t)`.
@@ -454,72 +516,172 @@ pub struct BaselineDiff {
 struct ReadingView {
     /// The production candidate list.
     surfaces: Vec<String>,
-    /// The list's N-best paths as (surface, final cost), cheapest first —
-    /// from the same run as `surfaces`.
-    costs: Vec<(String, i64)>,
+    /// The list's N-best paths as (surface, price), cheapest first — from
+    /// the same run as `surfaces`. Joined surfaces are unique among paths.
+    paths: Vec<(String, PathPrice)>,
+    /// `owners[r]` put `surfaces[r]` on the list.
+    owners: Vec<Owner>,
 }
 
-/// Replay every rank>0 selection in `log`. Returns the counts and one
-/// baseline line per selection (for `--emit-baseline` / `--baseline`).
-/// A log with no rank>0 selection is a valid, all-zero measurement.
-/// `verbose` prints per-selection content to stderr (local inspection only).
+impl ReadingView {
+    fn new(reading: &str, priced: PricedCandidates) -> Self {
+        let PricedCandidates {
+            response,
+            diagnostics,
+        } = priced;
+        let paths: Vec<(String, PathPrice)> = response
+            .paths
+            .iter()
+            .map(|p| joined_surface(p))
+            .zip(diagnostics.prices)
+            .collect();
+        let owner = |surface: &str| {
+            if let Some((_, price)) = paths.iter().find(|(s, _)| s == surface) {
+                Owner::priced_by(price.priced_by)
+            } else if diagnostics.injected.iter().any(|s| s == surface) {
+                Owner::Injected
+            } else if surface == reading {
+                Owner::Kana
+            } else {
+                Owner::Tail
+            }
+        };
+        let owners = response.surfaces.iter().map(|s| owner(s)).collect();
+        Self {
+            surfaces: response.surfaces,
+            paths,
+            owners,
+        }
+    }
+
+    fn land(&self, surface: &str) -> Landing {
+        let rank = self.surfaces.iter().position(|s| s == surface);
+        let gap = self.paths.first().and_then(|(_, top)| {
+            self.paths
+                .iter()
+                .find(|(s, _)| s == surface)
+                .map(|(_, p)| p.cost - top.cost)
+        });
+        Landing { rank, gap }
+    }
+}
+
+/// Where one selection landed in its reading's list.
+struct Landing {
+    rank: Option<usize>,
+    /// Cost gap of the selected surface's N-best path to the #1 path.
+    gap: Option<i64>,
+}
+
+/// The report's counts, accumulated one selection at a time.
+struct Tally {
+    rank_hist: Vec<usize>,
+    gap_hist: Vec<usize>,
+    gap_no_path: usize,
+    page1_slots: usize,
+    by_owner: BTreeMap<Owner, OwnerCounts>,
+}
+
+impl Tally {
+    fn new() -> Self {
+        Self {
+            rank_hist: vec![0; PAGE_SIZE],
+            gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
+            gap_no_path: 0,
+            page1_slots: 0,
+            by_owner: BTreeMap::new(),
+        }
+    }
+
+    /// Count a selection of `surface` from `view`'s list: its rank and gap,
+    /// its owner, and the first page the user scanned for it.
+    fn add(&mut self, view: &ReadingView, surface: &str) -> Landing {
+        let landing = view.land(surface);
+        if let Some(r) = landing.rank {
+            count_rank(&mut self.rank_hist, r);
+            let c = self.by_owner.entry(view.owners[r]).or_default();
+            c.selections += 1;
+            if r < PAGE_SIZE {
+                c.in_page += 1;
+            } else {
+                c.off_page += 1;
+            }
+        }
+        match landing.gap {
+            Some(g) => self.gap_hist[gap_bin(g)] += 1,
+            None => self.gap_no_path += 1,
+        }
+        for &o in view.owners.iter().take(PAGE_SIZE) {
+            self.by_owner.entry(o).or_default().page1_slots += 1;
+            self.page1_slots += 1;
+        }
+        landing
+    }
+
+    fn into_report(
+        self,
+        selections: usize,
+        malformed_lines: usize,
+        from_line: usize,
+        readings: usize,
+    ) -> ReplayReport {
+        let in_list: usize = self.rank_hist.iter().sum();
+        ReplayReport {
+            selections,
+            in_page: self.rank_hist.iter().take(PAGE_SIZE).sum(),
+            in_list,
+            absent: selections - in_list,
+            rank_hist: self.rank_hist,
+            gap_hist: self.gap_hist,
+            gap_no_path: self.gap_no_path,
+            malformed_lines,
+            from_line,
+            readings,
+            page1_slots: self.page1_slots,
+            by_owner: self.by_owner,
+        }
+    }
+}
+
+/// Replay every rank>0 selection in `log` from 0-based line `from_line`.
+/// Returns the counts and one baseline line per selection (for
+/// `--emit-baseline` / `--baseline`). A log with no rank>0 selection is a
+/// valid, all-zero measurement. `verbose` prints per-selection content to
+/// stderr (local inspection only).
 pub fn replay(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
     history: Option<&UserHistory>,
     log: &Path,
+    from_line: usize,
     verbose: bool,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let Selections {
         lines: selections,
         malformed,
-    } = read_selections(log)?;
+    } = read_selections(log, from_line)?;
 
-    let mut rank_hist = vec![0; PAGE_SIZE];
-    let mut gap_hist = vec![0; GAP_BIN_UPPER.len() + 1];
-    let mut gap_no_path = 0;
+    let mut tally = Tally::new();
     let mut lines = Vec::with_capacity(selections.len());
     let mut cache: HashMap<&str, ReadingView> = HashMap::new();
 
     for (i, sel) in &selections {
-        let ReadingView { surfaces, costs } =
-            cache.entry(sel.reading.as_str()).or_insert_with(|| {
-                let PricedCandidates {
-                    response,
-                    path_costs,
-                } = production_candidates_priced(dict, conn, history, &sel.reading);
-                ReadingView {
-                    costs: response
-                        .paths
-                        .iter()
-                        .map(|p| joined_surface(p))
-                        .zip(path_costs)
-                        .collect(),
-                    surfaces: response.surfaces,
-                }
-            });
-        let rank = surfaces.iter().position(|s| *s == sel.surface);
-        let gap = costs.first().and_then(|(_, top)| {
-            costs
-                .iter()
-                .find(|(s, _)| *s == sel.surface)
-                .map(|(_, c)| c - top)
+        let reading = sel.reading.as_str();
+        let view = cache.entry(reading).or_insert_with(|| {
+            ReadingView::new(
+                reading,
+                production_candidates_priced(dict, conn, history, reading),
+            )
         });
-
-        if let Some(r) = rank {
-            count_rank(&mut rank_hist, r);
-        }
-        match gap {
-            Some(g) => gap_hist[gap_bin(g)] += 1,
-            None => gap_no_path += 1,
-        }
+        let Landing { rank, gap } = tally.add(view, &sel.surface);
         if verbose {
             eprintln!(
-                "{i}\t{}\t{}\trank={}\tgap={}",
+                "{i}\t{}\t{}\trank={}\tgap={}\towner={}",
                 sel.reading,
                 sel.surface,
                 rank.map_or("-".into(), |r| r.to_string()),
                 gap.map_or("-".into(), |g| g.to_string()),
+                rank.map_or("-".into(), |r| format!("{:?}", view.owners[r])),
             );
         }
         lines.push(BaselineLine {
@@ -529,17 +691,7 @@ pub fn replay(
         });
     }
 
-    let in_list: usize = rank_hist.iter().sum();
-    let report = ReplayReport {
-        selections: selections.len(),
-        in_page: rank_hist.iter().take(PAGE_SIZE).sum(),
-        in_list,
-        absent: selections.len() - in_list,
-        rank_hist,
-        gap_hist,
-        gap_no_path,
-        malformed_lines: malformed,
-    };
+    let report = tally.into_report(selections.len(), malformed, from_line, cache.len());
     Ok((report, lines))
 }
 
@@ -585,6 +737,7 @@ pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> Baselin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lex_core::candidates::CandidateDiagnostics;
 
     fn resp(surfaces: &[&str], nbest: &[&str]) -> CandidateResponse {
         CandidateResponse {
@@ -734,6 +887,136 @@ absent = ["x"]"#
         assert_eq!(d.only_baseline, 1);
     }
 
+    /// A hand-built list: `nbest` are (surface, priced_by) paths in order,
+    /// then `rest` in list order; `injected` names the injection stage's.
+    fn view(
+        reading: &str,
+        nbest: &[(&str, PathOrigin)],
+        rest: &[&str],
+        injected: &[&str],
+    ) -> ReadingView {
+        let names: Vec<&str> = nbest.iter().map(|(s, _)| *s).collect();
+        let mut response = resp(&names, &names);
+        response.surfaces.extend(rest.iter().map(|s| s.to_string()));
+        let diagnostics = CandidateDiagnostics {
+            prices: nbest
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, priced_by))| PathPrice {
+                    cost: 1000 * i as i64,
+                    priced_by,
+                })
+                .collect(),
+            injected: injected.iter().map(|s| s.to_string()).collect(),
+        };
+        ReadingView::new(
+            reading,
+            PricedCandidates {
+                response,
+                diagnostics,
+            },
+        )
+    }
+
+    #[test]
+    fn owner_is_the_stage_that_listed_the_surface() {
+        let v = view(
+            "かな",
+            &[
+                ("仮名", PathOrigin::Viterbi),
+                ("下名", PathOrigin::Resegment),
+                ("か名", PathOrigin::PartialHiragana),
+                ("化な", PathOrigin::KanjiVariant),
+                ("カナ", PathOrigin::Katakana),
+                ("かな2", PathOrigin::Numeric),
+                ("かなー", PathOrigin::HiraganaVariant),
+                ("可奈", PathOrigin::Viterbi),
+            ],
+            &["哉", "かな", "金"],
+            // 可奈 is both learned and an N-best path: the path listed it.
+            &["哉", "可奈"],
+        );
+        use Owner::*;
+        assert_eq!(
+            v.owners,
+            [
+                Model,
+                Model,
+                PartialHiragana,
+                KanjiVariant,
+                Katakana,
+                Numeric,
+                Rescue,
+                Model,
+                Injected,
+                Kana,
+                Tail
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_counts_sum_to_the_totals() {
+        let long = view(
+            "a",
+            &[
+                ("A0", PathOrigin::Viterbi),
+                ("A1", PathOrigin::KanjiVariant),
+            ],
+            &["A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10"],
+            &["A9"],
+        );
+        let short = view("b", &[("B0", PathOrigin::Viterbi)], &["b"], &[]);
+        let mut t = Tally::new();
+        // The same window scanned three times counts three times.
+        for _ in 0..3 {
+            t.add(&long, "A1");
+        }
+        t.add(&long, "A9"); // off page, injected
+        t.add(&long, "gone"); // absent
+        t.add(&short, "b"); // a 2-entry list holds 2 slots
+        let r = t.into_report(6, 0, 0, 2);
+
+        assert_eq!(r.page1_slots, 5 * PAGE_SIZE + 2);
+        let sum = |f: fn(&OwnerCounts) -> usize| r.by_owner.values().map(f).sum::<usize>();
+        assert_eq!(sum(|c| c.selections), r.in_list);
+        assert_eq!(sum(|c| c.in_page), r.in_page);
+        assert_eq!(sum(|c| c.page1_slots), r.page1_slots);
+        assert_eq!((r.in_list, r.absent), (5, 1));
+        assert_eq!(
+            r.by_owner[&Owner::KanjiVariant],
+            OwnerCounts {
+                selections: 3,
+                in_page: 3,
+                off_page: 0,
+                page1_slots: 5,
+            }
+        );
+        assert_eq!(
+            r.by_owner[&Owner::Injected],
+            OwnerCounts {
+                selections: 1,
+                in_page: 0,
+                off_page: 1,
+                page1_slots: 0,
+            }
+        );
+        assert_eq!(r.by_owner[&Owner::Kana].page1_slots, 1);
+    }
+
+    #[test]
+    fn report_json_names_owners_in_snake_case() {
+        let mut t = Tally::new();
+        t.add(
+            &view("a", &[("A", PathOrigin::PartialHiragana)], &[], &[]),
+            "A",
+        );
+        let json = serde_json::to_value(t.into_report(1, 0, 7, 1)).unwrap();
+        assert_eq!(json["from_line"], 7);
+        assert_eq!(json["by_owner"]["partial_hiragana"]["selections"], 1);
+        assert_eq!(json["by_owner"]["partial_hiragana"]["page1_slots"], 1);
+    }
+
     #[test]
     fn unreadable_commit_log_lines_are_counted_not_fatal() {
         let dir = std::env::temp_dir().join(format!("lexcli-replay-{}", std::process::id()));
@@ -751,7 +1034,7 @@ absent = ["x"]"#
         content.extend_from_slice(b"{\"t\":3,\"reading\":\"\xe3\x81");
         fs::write(&path, &content).unwrap();
 
-        let sels = read_selections(&path).unwrap();
+        let sels = read_selections(&path, 0).unwrap();
         assert_eq!(sels.malformed, 2);
         assert_eq!(sels.lines.len(), 1, "only rank>0 lines are replayed");
         assert_eq!((sels.lines[0].0, sels.lines[0].1.t), (1, 2));
@@ -762,9 +1045,28 @@ absent = ["x"]"#
             "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n",
         )
         .unwrap();
-        let sels = read_selections(&path).unwrap();
+        let sels = read_selections(&path, 0).unwrap();
         assert!(sels.lines.is_empty());
         assert_eq!(sels.malformed, 0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_line_skips_earlier_lines_and_keeps_absolute_indices() {
+        let dir = std::env::temp_dir().join(format!("lexcli-from-line-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("commit-log.jsonl");
+        let sel =
+            |t: u64| format!("{{\"t\":{t},\"reading\":\"い\",\"surface\":\"胃\",\"rank\":1}}\n");
+        fs::write(&path, format!("{}not json\n{}{}", sel(1), sel(3), sel(4))).unwrap();
+
+        let sels = read_selections(&path, 2).unwrap();
+        let got: Vec<(usize, u64)> = sels.lines.iter().map(|(i, l)| (*i, l.t)).collect();
+        assert_eq!(got, [(2, 3), (3, 4)]);
+        assert_eq!(sels.malformed, 0, "skipped lines are not read");
+
+        let sels = read_selections(&path, 99).unwrap();
+        assert!(sels.lines.is_empty(), "past EOF is an empty window");
         fs::remove_dir_all(&dir).ok();
     }
 

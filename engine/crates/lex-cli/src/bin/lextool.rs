@@ -198,6 +198,11 @@ enum Command {
         /// keep the file local, do not attach it to a PR or issue
         #[arg(long)]
         emit_baseline: Option<String>,
+        /// Replay only log lines from this 0-based index on (a window such as
+        /// "the lines since a snapshot"). Indices stay absolute, so the
+        /// window still joins a full baseline
+        #[arg(long, default_value = "0")]
+        from_line: usize,
         /// Print each selection's reading and surface to stderr (local only;
         /// never paste this output into a PR or issue)
         #[arg(long)]
@@ -1181,6 +1186,7 @@ fn main() {
             app_dir,
             baseline,
             emit_baseline,
+            from_line,
             verbose,
             json,
         } => {
@@ -1198,9 +1204,15 @@ fn main() {
                 Some(ud) => Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)])),
                 None => Box::new(trie),
             };
-            let (report, lines) =
-                rank_ops::replay(&*dict, &conn, hist.as_ref(), Path::new(&log_file), verbose)
-                    .unwrap_or_else(|e| die(e));
+            let (report, lines) = rank_ops::replay(
+                &*dict,
+                &conn,
+                hist.as_ref(),
+                Path::new(&log_file),
+                from_line,
+                verbose,
+            )
+            .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
@@ -1261,6 +1273,33 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
         row(&label, n);
     }
     row("no N-best path", r.gap_no_path);
+    println!();
+    println!(
+        "=== By owner ({} readings, {} page-1 slots{}) ===",
+        r.readings,
+        r.page1_slots,
+        if r.from_line > 0 {
+            format!(", from line {}", r.from_line)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "  {:<18} {:>5} {:>8} {:>8} {:>7} {:>6}",
+        "", "sel", "in-page", "off-page", "slots", "slot%"
+    );
+    for (owner, c) in &r.by_owner {
+        let name = serde_json::to_value(owner).expect("owner serializes");
+        println!(
+            "  {:<18} {:>5} {:>8} {:>8} {:>7} {:>5.1}%",
+            name.as_str().unwrap_or_default(),
+            c.selections,
+            c.in_page,
+            c.off_page,
+            c.page1_slots,
+            pct(c.page1_slots, r.page1_slots),
+        );
+    }
     if r.malformed_lines > 0 {
         println!();
         println!("  Unreadable log lines skipped: {}", r.malformed_lines);
