@@ -40,13 +40,15 @@ mise run build && mise run install && mise run reload
 
 main に直接コミットしない。必ず以下の流れで作業する:
 
-1. `git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
+1. `git fetch origin && git worktree add -b <type>/<topic> <dir> origin/main` で専用 worktree にブランチを切る（§設計規律: 並行セッションと tree を共有しない）
 2. 変更をコミットする（Conventional Commits: `feat`, `fix`, `refactor`, `docs`, `chore`）
 3. push 前に `/pre-push` を通す（fmt → verify → /simplify → /code-review → /lexime-review の 5 段ゲート。post-push レビューは single-shot なので深さはここで確保する）。ゲートが編集を生んだら（fmt / /simplify auto-apply / fix 適用）追加コミットしてから次へ
 4. `git push -u origin <branch>` で push する
 5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 6. コードの変更を含む PR はレビュー対応後にマージする（後述）
-7. `gh pr merge --merge --delete-branch` でマージする
+7. `gh pr merge {number} --merge` でマージする（`--delete-branch` は付けない — 下記）
+
+`--delete-branch` を付けない理由: gh ≥2.99 は PR の branch を checkout している別 worktree を `git worktree remove` する。そこが Orca ワークスペースや並行セッションの cwd だと、セッションごと消える (#354)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す。ローカルの worktree / branch は、誰も使っていないと分かっている時だけ消す（分からなければ残す。Orca ワークスペースは Orca から片付ける）
 
 ### PR レビュー対応フロー
 
@@ -56,7 +58,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 - **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
-- **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge --merge --delete-branch` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
+- **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 
 ## 変換精度テスト
 
