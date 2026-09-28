@@ -14,6 +14,7 @@ fn test_katakana_rewriter_generates_candidate() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -38,6 +39,7 @@ fn test_katakana_dedup_via_run_rewriters() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];

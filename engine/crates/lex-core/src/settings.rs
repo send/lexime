@@ -184,10 +184,29 @@ pub struct HistorySettings {
     pub max_bigrams: usize,
 }
 
+/// Default upper bound on a candidate's cost above the pre-history #1.
+///
+/// Chosen by a rule, not by hand: the smallest T for which, replaying the
+/// commit log's rank>0 selections without history, (b1) lost + pushed off
+/// page 1 ≤ 1% of selections, (b2′) selections in the bin just below T
+/// ((T−2000, T]) ≤ 0.5%, and (b3) both accuracy corpora, the 3-width top-1
+/// check and every window pass (windows that pin admission are re-picked
+/// first). On 2026-09-28: 443 selections, 4 lost at 8000, 1 in (6000, 8000].
+/// Re-run the rule when rank>0 selections grow by 200, when a change to T
+/// is proposed, when the structure-filter fix (#353) lands, and when the
+/// Mozc pin moves (#273).
+pub const DEFAULT_CANDIDATE_MAX_COST_GAP: i64 = 8000;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CandidateSettings {
     pub nbest: usize,
     pub max_results: usize,
+    #[serde(default = "default_candidate_max_cost_gap")]
+    pub max_cost_gap: i64,
+}
+
+fn default_candidate_max_cost_gap() -> i64 {
+    DEFAULT_CANDIDATE_MAX_COST_GAP
 }
 
 fn default_snippet_trigger() -> String {
@@ -405,6 +424,7 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
 
     check_positive_usize!(candidates.nbest);
     check_positive_usize!(candidates.max_results);
+    check_non_negative!(candidates.max_cost_gap);
 
     // i16 range check for unknown_word_cost is enforced by the type itself
 
@@ -444,6 +464,7 @@ mod tests {
         assert_eq!(s.history.max_bigrams, 10000);
         assert_eq!(s.candidates.nbest, 20);
         assert_eq!(s.candidates.max_results, 20);
+        assert_eq!(s.candidates.max_cost_gap, DEFAULT_CANDIDATE_MAX_COST_GAP);
         // Snippet defaults
         assert_eq!(s.snippets.trigger, "ctrl+shift+/");
         let trigger = s.snippet_trigger().unwrap();
@@ -580,6 +601,41 @@ max_results = 20
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(err.to_string().contains("candidates.nbest"));
+    }
+
+    #[test]
+    fn max_cost_gap_defaults_when_omitted_and_rejects_negative() {
+        let base = r#"
+[cost]
+segment_penalty = 5000
+mixed_script_bonus = 3000
+katakana_penalty = 5000
+pure_kanji_bonus = 1000
+latin_penalty = 20000
+unknown_word_cost = 10000
+
+[reranker]
+length_variance_weight = 2000
+structure_cost_filter = 6000
+
+[history]
+boost_per_use = 3000
+max_boost = 15000
+half_life_hours = 168.0
+max_unigrams = 10000
+max_bigrams = 10000
+
+[candidates]
+nbest = 20
+max_results = 20
+"#;
+        // A settings.toml written before the key existed still loads.
+        let s = parse_settings_toml(base).unwrap();
+        assert_eq!(s.candidates.max_cost_gap, DEFAULT_CANDIDATE_MAX_COST_GAP);
+        let s = parse_settings_toml(&format!("{base}max_cost_gap = 12000\n")).unwrap();
+        assert_eq!(s.candidates.max_cost_gap, 12000);
+        let err = parse_settings_toml(&format!("{base}max_cost_gap = -1\n")).unwrap_err();
+        assert!(err.to_string().contains("candidates.max_cost_gap"));
     }
 
     #[test]

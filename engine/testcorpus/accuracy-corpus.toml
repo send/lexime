@@ -338,6 +338,11 @@ category = "regression"
 tags = ["pronoun", "mixed-script-bonus"]
 note = "代名詞 reranker bonus (#187) で修正"
 
+# rank 2+: どれ|グラ|医 の断片は #1 との差 16586 > max_cost_gap で候補から落ちる (cost-gap admission)。成立する T の上限は gap − 2000 = 14586 — T がそれを超えたら表記を選び直す
+[cases.window]
+n = 9
+absent = ["どれグラ医"]
+
 [[cases]]
 reading = "かくにんしますね"
 expected = "確認しますね"

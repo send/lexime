@@ -266,6 +266,7 @@ mod tests {
             ],
             viterbi_cost: 5000,
             history_boost: 0,
+            whole_path_boost: 0,
             origin: PathOrigin::Viterbi,
             priced_by: PathOrigin::Viterbi,
         };

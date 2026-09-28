@@ -18,6 +18,7 @@ fn test_run_rewriters_applies_all() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -114,6 +115,7 @@ fn test_run_rewriters_cost_ordered_insertion() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -286,6 +288,7 @@ fn kana_rescue_adopts_its_price_on_a_model_path() {
 fn override_price_adoption_clears_boosts() {
     let mut learned = path("十円", 3000, PathOrigin::Viterbi);
     learned.history_boost = 100;
+    learned.whole_path_boost = 60;
     learned.viterbi_cost -= 100;
     let mut paths = vec![path("一", 1000, PathOrigin::Viterbi), learned];
     let rw = Fixed(vec![path("十円", 500, PathOrigin::Numeric)]);
@@ -293,6 +296,7 @@ fn override_price_adoption_clears_boosts() {
     let n = paths.iter().find(|p| p.surface_key() == "十円").unwrap();
     assert_eq!(n.priced_by, PathOrigin::Numeric);
     assert_eq!(n.history_boost, 0);
+    assert_eq!(n.whole_path_boost, 0);
 }
 
 #[test]

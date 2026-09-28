@@ -232,6 +232,7 @@ pub fn history_rerank_at(
         // Remember the boost so candidate generators running after this step
         // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
         path.history_boost = applied;
+        path.whole_path_boost = breakdown.whole_path_boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
@@ -266,6 +267,7 @@ mod tests {
             segments,
             viterbi_cost: cost,
             history_boost: 0,
+            whole_path_boost: 0,
             origin: PathOrigin::Viterbi,
             priced_by: PathOrigin::Viterbi,
         }

@@ -69,6 +69,11 @@ pub(crate) struct ScoredPath {
     /// (Numeric / Katakana) recover the pre-boost cost via
     /// [`Self::pre_history_cost`] instead of pricing from a boosted one.
     pub history_boost: i64,
+    /// The whole-path part of `history_boost`: > 0 when the user has
+    /// committed this surface for this reading (whole, or as a phrase
+    /// segment). Written only by `history_rerank_at`; cost-gap admission
+    /// keeps such a path whatever its gap.
+    pub whole_path_boost: i64,
     /// Who produced `segments`.
     pub origin: PathOrigin,
     /// Who set `viterbi_cost` (differs from `origin` when a duplicate's
@@ -83,6 +88,7 @@ impl ScoredPath {
             segments,
             viterbi_cost: cost,
             history_boost: 0,
+            whole_path_boost: 0,
             origin,
             priced_by: origin,
         }

@@ -36,6 +36,7 @@ fn test_numeric_rewriter_generates_candidates() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -68,6 +69,7 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -98,6 +100,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         }],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -127,6 +130,7 @@ fn test_numeric_rewriter_skips_non_numeric() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -156,6 +160,7 @@ fn test_numeric_rewriter_skips_duplicate() {
         }],
         viterbi_cost: 1000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -203,6 +208,7 @@ fn test_numeric_counter_generates_kanji_compound() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -258,6 +264,7 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -296,6 +303,7 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -324,6 +332,7 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
         }],
         viterbi_cost: 5000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -362,6 +371,7 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -415,6 +425,7 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
         }],
         viterbi_cost: 4000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];

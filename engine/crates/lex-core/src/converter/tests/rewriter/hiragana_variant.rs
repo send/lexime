@@ -37,6 +37,7 @@ fn test_hiragana_variant_replaces_kanji() {
         ],
         viterbi_cost: 3000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -71,6 +72,7 @@ fn test_hiragana_variant_skips_all_hiragana() {
         ],
         viterbi_cost: 1000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
@@ -97,6 +99,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
             }],
             viterbi_cost: 3000,
             history_boost: 0,
+            whole_path_boost: 0,
             origin: PathOrigin::Viterbi,
             priced_by: PathOrigin::Viterbi,
         },
@@ -110,6 +113,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
             }],
             viterbi_cost: 4000,
             history_boost: 0,
+            whole_path_boost: 0,
             origin: PathOrigin::Viterbi,
             priced_by: PathOrigin::Viterbi,
         },
@@ -142,6 +146,7 @@ fn test_hiragana_variant_keeps_katakana() {
         ],
         viterbi_cost: 2000,
         history_boost: 0,
+        whole_path_boost: 0,
         origin: PathOrigin::Viterbi,
         priced_by: PathOrigin::Viterbi,
     }];
