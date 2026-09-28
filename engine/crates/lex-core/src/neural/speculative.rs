@@ -247,8 +247,8 @@ mod tests {
     fn test_scored_path_to_segments() {
         use crate::converter::{PathOrigin, RichSegment};
 
-        let path = ScoredPath {
-            segments: vec![
+        let path = ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "きょう".into(),
                     surface: "今日".into(),
@@ -264,11 +264,9 @@ mod tests {
                     word_cost: 2000,
                 },
             ],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        };
+            5000,
+            PathOrigin::Viterbi,
+        );
 
         let segments = scored_path_to_segments(&path);
         assert_eq!(segments.len(), 2);

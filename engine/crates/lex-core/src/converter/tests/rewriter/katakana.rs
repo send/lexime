@@ -4,19 +4,17 @@ use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 #[test]
 fn test_katakana_rewriter_generates_candidate() {
     let rw = KatakanaRewriter;
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "きょう".into(),
             surface: "今日".into(),
             left_id: 10,
             right_id: 10,
             word_cost: 0,
         }],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "きょう");
 
@@ -28,19 +26,17 @@ fn test_katakana_rewriter_generates_candidate() {
 #[test]
 fn test_katakana_dedup_via_run_rewriters() {
     let rw = KatakanaRewriter;
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "きょう".into(),
             surface: "キョウ".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 5000,
-        history_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        5000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "きょう", RewriteStage::Override);
 

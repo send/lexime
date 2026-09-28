@@ -24,13 +24,16 @@ pub(crate) trait PostprocessObserver {
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
     /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
+    /// Called for each path cost-gap admission drops, with the gap's base
+    /// (the pre-history #1's cost).
+    fn dropped_by_cost_gap(&mut self, _path: &ScoredPath, _anchor: i64) {}
     /// Called on the final paths before `group_segments` merges morphemes
     /// into phrases, while segments are still the priced lattice nodes.
     fn before_group(&mut self, _paths: &[ScoredPath]) {}
 }
 
 /// No-op observer for production use.
-struct NoopObserver;
+pub(crate) struct NoopObserver;
 impl PostprocessObserver for NoopObserver {}
 
 // ---------------------------------------------------------------------------
@@ -45,6 +48,9 @@ pub(crate) struct PostprocessContext<'a> {
     pub history: Option<&'a UserHistory>,
     pub kana: &'a str,
     pub n: usize,
+    /// `[candidates] max_cost_gap`: how far above the pre-history #1 a path
+    /// may be priced and stay a candidate (see [`admit_by_cost_gap`]).
+    pub max_cost_gap: i64,
     /// Timestamp passed to `history_rerank_at`. Pinning it here lets diagnostic
     /// observers compute breakdowns against the exact value the pipeline will
     /// use, avoiding sub-second drift across the second boundary.
@@ -56,8 +62,8 @@ pub(crate) struct PostprocessContext<'a> {
 // ---------------------------------------------------------------------------
 
 /// Shared post-processing pipeline: resegment → rerank → hiragana / partial
-/// / kanji-variant rewriters → history_rerank → n model-priced paths (offers
-/// ride along) → numeric/katakana → group.
+/// / kanji-variant rewriters → history_rerank → cost-gap admission → n
+/// model-priced paths (offers ride along) → numeric/katakana → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
@@ -74,6 +80,7 @@ pub(super) fn postprocess(
         history,
         kana,
         n,
+        max_cost_gap: crate::settings::settings().candidates.max_cost_gap,
         now: crate::user_history::now_epoch(),
     };
     postprocess_observed(paths, &ctx, &mut NoopObserver)
@@ -128,8 +135,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     observer.after_rerank(paths);
 
     // The rerank best before history. Its cost is what number compounds are
-    // priced from, whatever history or later rewriters do to the list (the
-    // anchor). Its surface is kept on the list: history boosts per-segment
+    // priced from and what cost-gap admission measures gaps from, whatever
+    // history or later rewriters do to the list (the anchor). Its surface is kept on the list: history boosts per-segment
     // unigrams (e.g. き→機 from past "機械"), which can push fragmented
     // single-char paths above the statistically correct compound path
     // (e.g. きがし→気がし).
@@ -142,6 +149,10 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     if let Some(h) = ctx.history {
         reranker::history_rerank_at(paths, h, ctx.conn, ctx.now);
     }
+
+    admit_by_cost_gap(paths, anchor, ctx.max_cost_gap, |p| {
+        observer.dropped_by_cost_gap(p, anchor)
+    });
 
     let mut top: Vec<ScoredPath> = paths.drain(..model_budget_end(paths, ctx.n)).collect();
 
@@ -181,6 +192,35 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
         }
     }
     top
+}
+
+/// Drop the candidates priced too far above the pre-history #1 (`anchor`):
+/// every path after index 0 must cost at most `anchor + max(max_gap,
+/// RESCUE_OFFSET)` before history. Kept whatever their gap: index 0 (the
+/// top-1, learned or not), a surface the user has committed for this reading
+/// (`whole_path_boost > 0`), and the typed kana (`is_identity`, #263/#271).
+/// The floor keeps the kana rescue's band (best + 4000) however the rescue's
+/// surface is priced. An offer is judged by its own price, which is never
+/// below its source's, so a dropped source takes its offers with it.
+/// `on_drop` sees each dropped path (explain lists them).
+pub(super) fn admit_by_cost_gap(
+    paths: &mut Vec<ScoredPath>,
+    anchor: i64,
+    max_gap: i64,
+    mut on_drop: impl FnMut(&ScoredPath),
+) {
+    let limit = anchor.saturating_add(max_gap.max(rewriter::RESCUE_OFFSET));
+    let mut first = true;
+    paths.retain(|p| {
+        let keep = std::mem::take(&mut first)
+            || p.pre_history_cost() <= limit
+            || p.whole_path_boost > 0
+            || p.is_identity();
+        if !keep {
+            on_drop(p);
+        }
+        keep
+    });
 }
 
 /// Length of the prefix of `paths` holding its first `n` model-priced paths

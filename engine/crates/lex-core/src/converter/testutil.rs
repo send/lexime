@@ -133,3 +133,24 @@ pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
     let text = format!("{num_ids} {num_ids}\n{}", "0\n".repeat(n * n));
     ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
 }
+
+/// A dictionary entry with no POS ids.
+pub fn entry(surface: &str, cost: i16) -> DictEntry {
+    DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: 0,
+        right_id: 0,
+    }
+}
+
+/// 食べる against the fragments 田|辺留 (two nodes, two segment penalties):
+/// the fragments sit far above the best, more than the default cost-gap
+/// bound (the RC-2 田辺る shape).
+pub fn taberu_dict() -> TrieDictionary {
+    TrieDictionary::from_entries(vec![
+        ("たべる".into(), vec![entry("食べる", 0)]),
+        ("た".into(), vec![entry("田", 3000)]),
+        ("べる".into(), vec![entry("辺留", 3000)]),
+    ])
+}

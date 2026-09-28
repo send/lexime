@@ -28,6 +28,12 @@ max_bigrams = 10000
 [candidates]
 nbest = 20
 max_results = 20
+# Upper bound on a candidate's cost above the pre-history #1 (rerank best).
+# Never below the kana-rescue band (4000): a smaller value acts as 4000.
+# Always kept: #1, a surface the user has committed for this reading (whole
+# or as a phrase segment), the typed kana. 9223372036854775807 (i64::MAX)
+# disables the bound. How the default was chosen: DEFAULT_CANDIDATE_MAX_COST_GAP.
+max_cost_gap = 8000
 
 [snippets]
 trigger = "ctrl+shift+/"

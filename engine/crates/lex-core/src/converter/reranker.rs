@@ -213,8 +213,10 @@ pub fn compute_history_boost(
 /// fragmented paths (e.g. き→機 + が + し + ます) cannot gain a structural
 /// advantage by accumulating common-particle boosts across ALL prior
 /// conversions. The whole-path boost is the strongest signal and is not
-/// normalized — it only fires when the full reading→surface was explicitly
-/// selected.
+/// normalized — it only fires when this reading→surface was committed,
+/// whole or as a phrase segment of a longer commit (unigrams are recorded
+/// per phrase segment too). It is also recorded on the path: cost-gap
+/// admission keeps such a path whatever its gap.
 pub fn history_rerank_at(
     paths: &mut [ScoredPath],
     history: &UserHistory,
@@ -232,6 +234,7 @@ pub fn history_rerank_at(
         // Remember the boost so candidate generators running after this step
         // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
         path.history_boost = applied;
+        path.whole_path_boost = breakdown.whole_path_boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
@@ -262,13 +265,7 @@ mod tests {
     }
 
     fn path(segments: Vec<RichSegment>, cost: i64) -> ScoredPath {
-        ScoredPath {
-            segments,
-            viterbi_cost: cost,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        }
+        ScoredPath::new(segments, cost, PathOrigin::Viterbi)
     }
 
     /// Build a minimal ConnectionMatrix with the given roles vector and

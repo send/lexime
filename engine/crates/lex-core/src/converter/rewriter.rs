@@ -146,7 +146,10 @@ fn resolve_duplicate(
     // The Model stage runs before history: there is no boost to keep.
     debug_assert!(
         stage == RewriteStage::Override
-            || (candidate.history_boost == 0 && existing.history_boost == 0)
+            || (candidate.history_boost == 0
+                && existing.history_boost == 0
+                && candidate.whole_path_boost == 0
+                && existing.whole_path_boost == 0)
     );
     let cheaper = candidate.viterbi_cost < existing.viterbi_cost;
     let take_segments = !existing.origin.is_lattice_path()
@@ -174,6 +177,7 @@ fn resolve_duplicate(
     // An Override price replaces the model's, so the boost it carried no
     // longer describes it (F6). (The Model stage runs before history.)
     resolved.history_boost = 0;
+    resolved.whole_path_boost = 0;
     Some(resolved)
 }
 
@@ -202,6 +206,10 @@ fn offer(
 
 /// How far above its source a variant may be offered.
 pub(crate) const OFFER_CAP: i64 = 2000;
+
+/// How far above the best the kana rescue is offered (#263). Cost-gap
+/// admission never cuts below this band, so the rescue's surface stays.
+pub(crate) const RESCUE_OFFSET: i64 = 4000;
 
 /// The largest Viterbi-price increase a kanji spelling may add over its
 /// source and still be offered (したほうがいい's 方: 2357). Measured against the source,
@@ -352,7 +360,7 @@ impl Rewriter for HiraganaVariantRewriter {
         vec![ScoredPath::single(
             combined_reading,
             combined_surface,
-            best.pre_history_cost().saturating_add(4000),
+            best.pre_history_cost().saturating_add(RESCUE_OFFSET),
             PathOrigin::HiraganaVariant,
         )]
     }

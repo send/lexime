@@ -13,6 +13,7 @@ use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
 use super::reranker::{compute_history_boost, FeaturePricer};
+use super::rewriter::RESCUE_OFFSET;
 use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
 
 // Re-export so downstream crates (e.g. lex-cli) can name the type behind
@@ -27,6 +28,25 @@ pub struct ExplainResult {
     pub lattice_char_count: usize,
     pub lattice_nodes: Vec<ExplainNode>,
     pub paths: Vec<ExplainPath>,
+    /// The `[candidates] max_cost_gap` the pipeline ran with.
+    pub max_cost_gap: i64,
+    /// The bound admission applied above the anchor: `max_cost_gap`, never
+    /// below the kana-rescue band.
+    pub cost_gap_bound: i64,
+    /// The pre-history #1's cost the gaps are measured from.
+    pub cost_gap_anchor: i64,
+    /// Paths cost-gap admission dropped, by gap then surface.
+    pub dropped_by_cost_gap: Vec<DroppedPath>,
+}
+
+/// A path cost-gap admission dropped.
+#[derive(Debug, Serialize)]
+pub struct DroppedPath {
+    pub surface: String,
+    /// Its pre-history cost above the pre-history #1.
+    pub gap: i64,
+    pub origin: PathOrigin,
+    pub priced_by: PathOrigin,
 }
 
 /// A lattice node for diagnostic display.
@@ -165,6 +185,9 @@ struct ExplainObserver<'a> {
     /// grouped segment keeps only the first node's cost).
     model_costs: HashMap<String, (i64, i64)>,
     pricer: FeaturePricer<'a>,
+    /// Paths cost-gap admission dropped, and the anchor it measured from.
+    dropped: Vec<DroppedPath>,
+    anchor: i64,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -182,6 +205,8 @@ impl<'a> ExplainObserver<'a> {
             pre_history: HashMap::new(),
             model_costs: HashMap::new(),
             pricer: FeaturePricer::new(conn, Some(dict)),
+            dropped: Vec::new(),
+            anchor: 0,
         }
     }
 }
@@ -196,6 +221,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
+        self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
         for p in paths {
             let breakdown = match self.history {
                 Some(h) => compute_history_boost(p, h, self.conn, self.now),
@@ -210,6 +236,18 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 },
             );
         }
+    }
+
+    fn dropped_by_cost_gap(&mut self, path: &ScoredPath, anchor: i64) {
+        // An Override candidate can bring the surface back; its breakdown
+        // must not borrow the dropped path's snapshot.
+        self.pre_history.remove(&path.surface_key());
+        self.dropped.push(DroppedPath {
+            surface: path.surface_key(),
+            gap: path.pre_history_cost() - anchor,
+            origin: path.origin,
+            priced_by: path.priced_by,
+        });
     }
 
     fn before_group(&mut self, paths: &[ScoredPath]) {
@@ -307,12 +345,17 @@ pub fn explain(
     kana: &str,
     n: usize,
 ) -> ExplainResult {
+    let max_cost_gap = settings().candidates.max_cost_gap;
     if kana.is_empty() || n == 0 {
         return ExplainResult {
             reading: kana.to_string(),
             lattice_char_count: 0,
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
+            max_cost_gap,
+            cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
+            cost_gap_anchor: 0,
+            dropped_by_cost_gap: Vec::new(),
         };
     }
 
@@ -334,9 +377,12 @@ pub fn explain(
         history,
         kana,
         n,
+        max_cost_gap,
         now,
     };
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
+    let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
+    dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -410,6 +456,10 @@ pub fn explain(
         lattice_char_count: lattice.char_count,
         lattice_nodes,
         paths,
+        max_cost_gap: ctx.max_cost_gap,
+        cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
+        cost_gap_anchor: observer.anchor,
+        dropped_by_cost_gap,
     }
 }
 
@@ -527,6 +577,24 @@ pub fn format_text(result: &ExplainResult) -> String {
                 "      history: uni_sum={:<+7} bi_sum={:<+7} whole×5={:<+7} (/{} segs)\n",
                 -hb.unigram_sum, -hb.bigram_sum, -hb.whole_path_boost, path.history_segment_count,
             ));
+        }
+    }
+
+    if !result.dropped_by_cost_gap.is_empty() {
+        out.push_str(&format!(
+            "\n=== Dropped by cost gap ({}; bound={} above anchor={}, max_cost_gap={}) ===\n",
+            result.dropped_by_cost_gap.len(),
+            result.cost_gap_bound,
+            result.cost_gap_anchor,
+            result.max_cost_gap,
+        ));
+        for d in &result.dropped_by_cost_gap {
+            let priced = if d.priced_by == d.origin {
+                format!("{:?}", d.origin)
+            } else {
+                format!("{:?}, priced by {:?}", d.origin, d.priced_by)
+            };
+            out.push_str(&format!("  {}  (gap={}, {})\n", d.surface, d.gap, priced));
         }
     }
 
@@ -808,5 +876,33 @@ mod tests {
             owners.len() >= 3,
             "fixture: several price owners {owners:?}"
         );
+    }
+
+    #[test]
+    fn dropped_by_cost_gap_lists_what_admission_cut() {
+        let dict = crate::converter::testutil::taberu_dict();
+        let result = explain(&dict, None, None, "たべる", 20);
+        assert_eq!(
+            result.max_cost_gap,
+            crate::settings::settings().candidates.max_cost_gap
+        );
+        let dropped: Vec<&str> = result
+            .dropped_by_cost_gap
+            .iter()
+            .map(|d| d.surface.as_str())
+            .collect();
+        assert!(dropped.contains(&"田辺留"), "{dropped:?}");
+        let listed: Vec<String> = result.paths.iter().map(ExplainPath::surface).collect();
+        for d in &result.dropped_by_cost_gap {
+            assert!(d.gap > result.cost_gap_bound, "{} gap {}", d.surface, d.gap);
+            assert!(
+                !listed.contains(&d.surface),
+                "{} is both listed and dropped",
+                d.surface
+            );
+        }
+        let gaps: Vec<i64> = result.dropped_by_cost_gap.iter().map(|d| d.gap).collect();
+        assert!(gaps.windows(2).all(|w| w[0] <= w[1]), "by gap: {gaps:?}");
+        assert!(format_text(&result).contains("Dropped by cost gap"));
     }
 }

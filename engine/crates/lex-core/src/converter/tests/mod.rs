@@ -1,5 +1,7 @@
 use super::*;
 
+mod admission;
+
 mod basic;
 mod bench;
 mod grouping;

@@ -16,8 +16,8 @@ fn test_rerank_penalizes_fragmented_path() {
     let mut paths = vec![
         // Fragmented path: 3 segments → 2 transitions × 100 = 200 structure cost
         // Penalty: 200 / 4 = 50
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "き".into(),
                     surface: "木".into(),
@@ -40,25 +40,21 @@ fn test_rerank_penalizes_fragmented_path() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 1000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            1000,
+            PathOrigin::Viterbi,
+        ),
         // Single segment path: 0 transitions → 0 structure cost
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "きのは".into(),
                 surface: "木の葉".into(),
                 left_id: 1,
                 right_id: 1,
                 word_cost: 0,
             }],
-            viterbi_cost: 1040,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            1040,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, Some(&conn), None);
@@ -70,8 +66,8 @@ fn test_rerank_penalizes_fragmented_path() {
 #[test]
 fn test_rerank_no_conn_no_structure_penalty() {
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "き".into(),
                     surface: "木".into(),
@@ -87,24 +83,20 @@ fn test_rerank_no_conn_no_structure_penalty() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 1000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![RichSegment {
+            1000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "きの".into(),
                 surface: "木の".into(),
                 left_id: 1,
                 right_id: 1,
                 word_cost: 0,
             }],
-            viterbi_cost: 2000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            2000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     // Without conn, structure cost is 0; "木の" (reading "きの" = 2 chars)
@@ -116,19 +108,17 @@ fn test_rerank_no_conn_no_structure_penalty() {
 
 #[test]
 fn test_rerank_single_path_noop() {
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "あ".into(),
             surface: "亜".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 1000,
-        history_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        1000,
+        PathOrigin::Viterbi,
+    )];
 
     rerank(&mut paths, None, None);
     assert_eq!(paths.len(), 1);
@@ -148,8 +138,8 @@ fn test_rerank_penalizes_uneven_segments() {
     // Only script cost differentiates them.
     let mut paths = vec![
         // Uneven: readings 1 + 3 chars — no variance penalty (2-segment exempt)
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "で".into(),
                     surface: "で".into(),
@@ -165,14 +155,12 @@ fn test_rerank_penalizes_uneven_segments() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            5000,
+            PathOrigin::Viterbi,
+        ),
         // Even: readings 2 + 2 chars → sum_sq_dev=0, penalty=0
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "でき".into(),
                     surface: "出来".into(),
@@ -188,11 +176,9 @@ fn test_rerank_penalizes_uneven_segments() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 6500,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            6500,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, None, None);
@@ -216,33 +202,29 @@ fn test_rerank_applies_script_cost() {
     // favor of hiragana but must not override a clear dictionary-cost lead.
     let mut paths = vec![
         // Katakana path: タラ (katakana) → +150 script penalty
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "たら".into(),
                 surface: "タラ".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            3000,
+            PathOrigin::Viterbi,
+        ),
         // Hiragana path: たら (no script penalty), raw cost 100 higher
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "たら".into(),
                 surface: "たら".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 3100,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            3100,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, None, None);
@@ -265,32 +247,28 @@ fn test_history_rerank_unigram_boost_reorders() {
     h.record(&[("きょう".into(), "京".into())]);
 
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "きょう".into(),
                 surface: "今日".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![RichSegment {
+            3000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "きょう".into(),
                 surface: "京".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            5000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     history_rerank_at(&mut paths, &h, None, now_epoch());
@@ -306,8 +284,8 @@ fn test_history_rerank_bigram_boost() {
 
     let mut paths = vec![
         // Path without bigram match
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "きょう".into(),
                     surface: "京".into(),
@@ -323,14 +301,12 @@ fn test_history_rerank_bigram_boost() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            5000,
+            PathOrigin::Viterbi,
+        ),
         // Path with bigram match: "今日" → "は"
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "きょう".into(),
                     surface: "今日".into(),
@@ -346,11 +322,9 @@ fn test_history_rerank_bigram_boost() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 7000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            7000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     history_rerank_at(&mut paths, &h, None, now_epoch());
@@ -364,32 +338,28 @@ fn test_history_rerank_empty_history_preserves_order() {
     let h = UserHistory::new();
 
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "あ".into(),
                 surface: "亜".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 1000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![RichSegment {
+            1000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "あ".into(),
                 surface: "阿".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 2000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            2000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     history_rerank_at(&mut paths, &h, None, now_epoch());
@@ -421,19 +391,17 @@ fn test_history_rerank_at_matches_compute_history_boost() {
     h.record(&[("きょう".into(), "京".into())]);
     let now = 1_700_000_000;
 
-    let path_before = ScoredPath {
-        segments: vec![RichSegment {
+    let path_before = ScoredPath::new(
+        vec![RichSegment {
             reading: "きょう".into(),
             surface: "京".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 10_000,
-        history_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    };
+        10_000,
+        PathOrigin::Viterbi,
+    );
     let expected_applied =
         compute_history_boost(&path_before, &h, None, now).applied(path_before.segments.len());
 
@@ -471,8 +439,8 @@ fn test_compute_history_boost_skips_function_word_unigram() {
     }
     let now = now_epoch();
 
-    let path = ScoredPath {
-        segments: vec![
+    let path = ScoredPath::new(
+        vec![
             RichSegment {
                 reading: "だい".into(),
                 surface: "代".into(),
@@ -488,11 +456,9 @@ fn test_compute_history_boost_skips_function_word_unigram() {
                 word_cost: 0,
             },
         ],
-        viterbi_cost: 0,
-        history_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    };
+        0,
+        PathOrigin::Viterbi,
+    );
 
     let content_boost = h.unigram_boost("だい", "代", now);
     let particle_boost = h.unigram_boost("に", "に", now);
@@ -528,21 +494,19 @@ fn test_filter_drops_fragmented_paths() {
     let conn = uniform_conn(5000);
 
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "あいうえお".into(),
                 surface: "合言葉".into(),
                 left_id: 1,
                 right_id: 1,
                 word_cost: 0,
             }],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![
+            5000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "あい".into(),
                     surface: "愛".into(),
@@ -558,13 +522,11 @@ fn test_filter_drops_fragmented_paths() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 4000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![
+            4000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "あ".into(),
                     surface: "亜".into(),
@@ -601,11 +563,9 @@ fn test_filter_drops_fragmented_paths() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            3000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, Some(&conn), None);
@@ -637,30 +597,26 @@ fn test_filter_keeps_all_when_all_exceed() {
     };
 
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 seg("あ", "亜"),
                 seg("い", "位"),
                 seg("う", "鵜"),
                 seg("え", "絵"),
             ],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![
+            3000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![
                 seg("あ", "阿"),
                 seg("い", "胃"),
                 seg("う", "卯"),
                 seg("え", "江"),
             ],
-            viterbi_cost: 4000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            4000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, Some(&conn), None);
@@ -678,8 +634,8 @@ fn test_filter_preserves_minimum_path() {
     let conn = uniform_conn(5000);
 
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "あ".into(),
                     surface: "亜".into(),
@@ -709,24 +665,20 @@ fn test_filter_preserves_minimum_path() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 1000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![RichSegment {
+            1000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "あいうえ".into(),
                 surface: "合言葉".into(),
                 left_id: 1,
                 right_id: 1,
                 word_cost: 0,
             }],
-            viterbi_cost: 5000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            5000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, Some(&conn), None);
@@ -777,8 +729,8 @@ fn test_prefix_floor_prevents_low_baseline() {
 
     let mut paths = vec![
         // Path A: prefix → content (low prefix transition, floored to 3000)
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "お".into(),
                     surface: "御".into(),
@@ -794,16 +746,14 @@ fn test_prefix_floor_prevents_low_baseline() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            3000,
+            PathOrigin::Viterbi,
+        ),
         // Path B: content → content → content (sc = 8000)
         // Without floor this would be dropped (8000 > 6100).
         // With floor it survives (8000 ≤ 9000).
-        ScoredPath {
-            segments: vec![
+        ScoredPath::new(
+            vec![
                 RichSegment {
                     reading: "おくる".into(),
                     surface: "送る".into(),
@@ -826,11 +776,9 @@ fn test_prefix_floor_prevents_low_baseline() {
                     word_cost: 0,
                 },
             ],
-            viterbi_cost: 4000,
-            history_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            4000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     rerank(&mut paths, Some(&conn), None);
