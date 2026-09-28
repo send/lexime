@@ -364,7 +364,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
-- **Reranker**: Viterbi で over-generate（1-best: 10 候補、N-best: 3x）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
+- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
 - **Rewriters**: N-best パスに対して追加候補を生成
   - `KatakanaRewriter` — カタカナ候補追加
   - `HiraganaVariantRewriter` — 漢字セグメントをひらがなに置換した候補追加
@@ -502,7 +502,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 
 ### コミットログ（診断用）
 
-変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開、フォーカス喪失時の `settle_unconfirmed`）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
+変換確定イベントを JSONL で checkpoint と同じディレクトリ（`commit-log.jsonl`）に追記する（全セッション共有の Mutex で直列化）。identity な auto-commit（surface == reading）は学習はしないがログには載る（受容率の分母を欠かさないため）。対象は候補リストからの変換確定のみで、変換判断を伴わない確定（生かなの overflow commit、ABC パススルー、snippet 展開、フォーカス喪失時の `settle_unconfirmed`）は含まない。1 行 = 1 変換確定: `t`（epoch 秒）/ `reading` / `surface` / `rank`（確定時の選択候補 index。0 = top-1 受容、>0 = 手動選択 = 変換ミスの一次signal）/ `top1`（rank>0 のときのみ、その時の top-1 surface）/ `auto`（auto-commit 由来のときのみ true）。ローカル専用の診断データで、lextool によるオフライン集計（実使用 top-1 受容率の推移、ミス頻度）に使う。`lextool replay-commit-log` はこの節を読み取り側の契約とする（書き手は lex_engine、lex-cli からは依存できない）。フィールドを変えるときは両方を直す。履歴 `clear()` で一緒に削除される。書き込み失敗は警告ログのみ（確定経路を壊さない）。
 
 ## ユーザー辞書
 
@@ -675,11 +675,12 @@ macOS で動作する最小限の IME を構築。
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
 | `explain` | 変換パイプラインの説明出力 |
-| `snapshot` | 変換スナップショット生成 |
-| `diff-snapshot` | スナップショット差分比較 |
-| `accuracy` | 変換精度テスト（accuracy-corpus.toml） |
+| `snapshot` | 変換スナップショット生成（N-best。本番の候補列は `lextool snapshot --candidates` を直接呼ぶ — task は引数を渡さず出力先も N-best 用に固定） |
+| `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` を直接呼ぶ。種別の違うファイルはエラー） |
+| `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
 | `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
 | `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
+| `replay-commit-log` | コミットログの手動選択（rank>0）を現在のエンジンで再生し、選択された候補の頁 1 在否・順位・1 位とのコスト差を件数だけで集計。`--emit-baseline` / `--baseline` で変更前後の消失・降格を比較（baseline は行番号・時刻・順位のみ。読み・表記は含まないが、時刻は訂正のタイムラインなのでローカルに留め PR / issue に添付しない）。行番号と時刻 (秒) で突き合わせるので、clear して書き直したログも区別するが、同じ行番号の行が旧ログと同じ 1 秒内に書かれた場合だけは区別できない（内容由来のキーは baseline に個人入力を持ち込むので使わない）。再生は標準モードの候補列に対して行う（予測モードでの選択も標準モードの列で数える）。`--app-dir` でアプリのデータディレクトリの user_dict を重ね settings.toml を読み、アプリと同じ構成で再生する。ディレクトリは存在しなければならない（打ち間違いで未学習・既定の構成を測らないため）。ファイルが無ければアプリ同様に使わない（新規インストールと同じ）。読めない・不正ならアプリと同じく使わずに続行し、警告を出す（破損 user_dict はアプリなら隔離するが、ここではユーザデータに触れない）。mise タスクは既定で `--app-dir` を渡す。学習履歴はこれらの選択そのものから学んだものなので既定では渡さず、学習済みエンジンを測るときに `--history` を足す。システム辞書だけで測るときは lextool を直接呼ぶ。`--settings`（全サブコマンド共通、`--app-dir` とは排他）は明示指定なので、読めない・不正なら失敗する。どちらもどのコマンドの処理よりも先に読む。読めない行（追記途中の末尾など）は件数だけ数えて飛ばす。個人の入力内容は `--verbose` の stderr にしか出さない |
 | `bench` | criterion ベンチマーク |
 | `fetch-model` | Zenzai GGUF モデルダウンロード |
 | `neural-score` | ニューラルスコアリングベンチマーク |

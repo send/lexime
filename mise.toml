@@ -485,6 +485,23 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- history-audit \
   "$HOME/Library/Application Support/Lexime/user_history.lxud" "$@"
 """
 
+[tasks.replay-commit-log]
+description = "Replay rank>0 selections from the commit log (counts only)"
+depends = ["screen", "dict", "conn"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+# Replay under the configuration the app runs with (--app-dir: its
+# user_dict and settings.toml, with the app's fallbacks when one is missing,
+# unreadable or invalid). History is left out on purpose: it was learned
+# from these same selections, so it would rank them up by construction; add
+# --history to measure the learned engine. For a system-only measurement,
+# run lextool directly.
+lexime="$HOME/Library/Application Support/Lexime"
+cd engine && cargo run --release -p lex-cli --bin lextool -- replay-commit-log \
+  data/lexime.dict data/lexime.conn "$lexime/commit-log.jsonl" --app-dir "$lexime" "$@"
+"""
+
 [tasks.trace-log]
 description = "Stream trace JSONL output"
 run = "tail -f ~/Library/Logs/Lexime/lexime-trace.jsonl | python3 -m json.tool --no-ensure-ascii"

@@ -40,6 +40,17 @@ pub struct CandidateResponse {
     pub paths: Vec<Vec<ConvertedSegment>>,
 }
 
+/// A candidate list with the final cost of each N-best path, both from one
+/// pipeline run. For diagnostics that must describe the list as shipped:
+/// a second run to recover costs could see a different path population.
+pub struct PricedCandidates {
+    pub response: CandidateResponse,
+    /// `path_costs[i]` is the final cost of `response.paths[i]` (Viterbi +
+    /// rerank − history, as the list was ordered). Empty for punctuation
+    /// input, whose paths are not N-best paths.
+    pub path_costs: Vec<i64>,
+}
+
 /// Look up punctuation alternatives for a reading.
 fn punctuation_alternatives(reading: &str) -> Option<&'static [&'static str]> {
     PUNCTUATION_ALTERNATIVES
@@ -114,6 +125,25 @@ pub fn generate_candidates(
     }
     let lattice = build_lattice(dict, reading);
     standard::generate(dict, conn, history, reading, max_results, &lattice)
+}
+
+/// [`generate_candidates`] with each N-best path's final cost from the same
+/// run. Diagnostic entry point; the IME uses [`generate_candidates`].
+pub fn generate_candidates_priced(
+    dict: &dyn Dictionary,
+    conn: Option<&crate::dict::connection::ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+) -> PricedCandidates {
+    if reading.is_empty() || punctuation_alternatives(reading).is_some() {
+        return PricedCandidates {
+            response: generate_candidates(dict, conn, history, reading, max_results),
+            path_costs: Vec::new(),
+        };
+    }
+    let lattice = build_lattice(dict, reading);
+    standard::generate_normal_priced(dict, conn, history, reading, max_results, &lattice)
 }
 
 /// Unified candidate generation from a pre-built lattice.

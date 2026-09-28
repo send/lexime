@@ -254,9 +254,10 @@ fn explain_segments(
 
 /// Run the full conversion pipeline and capture detailed cost breakdown.
 ///
-/// Uses `postprocess_observed` to follow the exact same pipeline as
-/// production conversion, with an observer that records cost snapshots
-/// at each stage for diagnostic output.
+/// Uses `postprocess_observed` over the same oversample as production N-best
+/// (`nbest_oversample`) to follow the exact same pipeline as production
+/// conversion, with an observer that records cost snapshots at each stage
+/// for diagnostic output.
 pub fn explain(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -279,7 +280,7 @@ pub fn explain(
         .collect();
 
     let cost_fn = DefaultCostFunction::new(conn);
-    let oversample = (n * 3).max(50);
+    let oversample = super::nbest_oversample(n, history.is_some());
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
     let now = crate::user_history::now_epoch();
@@ -453,6 +454,8 @@ pub fn format_text(result: &ExplainResult) -> String {
 mod tests {
     use super::*;
     use crate::converter::testutil::test_dict;
+    use crate::dict::connection::ConnectionMatrix;
+    use crate::dict::{DictEntry, TrieDictionary};
     use crate::user_history::UserHistory;
 
     #[test]
@@ -467,6 +470,75 @@ mod tests {
         // Best path should have segments
         let best = &result.paths[0];
         assert!(!best.segments.is_empty());
+    }
+
+    /// A lattice whose top-1 depends on the oversample. The two cheapest
+    /// paths (可|な|や, 課|な|や) have two 4000 transitions (structure cost
+    /// 8000); カナ|や connects at 0 but is the 4th-cheapest path. Once the
+    /// population reaches カナ|や, rerank's structure threshold drops to
+    /// 0 + 6000 and filters the 3-segment paths, so the top-1 becomes 仮名屋.
+    fn oversample_sensitive() -> (TrieDictionary, ConnectionMatrix) {
+        let e = |surface: &str, cost: i16, id: u16| DictEntry {
+            surface: surface.into(),
+            cost,
+            left_id: id,
+            right_id: id,
+        };
+        let dict = TrieDictionary::from_entries(vec![
+            ("か".into(), vec![e("可", 0, 1), e("課", 100, 1)]),
+            ("な".into(), vec![e("な", 0, 2)]),
+            ("や".into(), vec![e("や", 0, 4)]),
+            ("かな".into(), vec![e("カナ", 16000, 3)]),
+            ("かなや".into(), vec![e("仮名屋", 20000, 5)]),
+        ]);
+        let mut costs = vec![0i16; 36];
+        costs[6 + 2] = 4000; // 1 → 2
+        costs[2 * 6 + 4] = 4000; // 2 → 4
+        (
+            dict,
+            ConnectionMatrix::new_owned(6, 0, 0, Vec::new(), costs),
+        )
+    }
+
+    /// explain describes the production N-best: same paths, same order, at
+    /// every n. The oversample decides which paths rerank sees, so a
+    /// different population can swap even the top-1.
+    #[test]
+    fn test_explain_paths_match_production_nbest() {
+        let (dict, conn) = oversample_sensitive();
+        let mut h = UserHistory::new();
+        h.record(&[("な".into(), "な".into())]);
+        for history in [None, Some(&h)] {
+            for n in 1..=6 {
+                let explained: Vec<String> = explain(&dict, Some(&conn), history, "かなや", n)
+                    .paths
+                    .iter()
+                    .map(|p| p.surface())
+                    .collect();
+                let production: Vec<String> = match history {
+                    Some(h) => crate::converter::convert_nbest_with_history(
+                        &dict,
+                        Some(&conn),
+                        h,
+                        "かなや",
+                        n,
+                    ),
+                    None => crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n),
+                }
+                .iter()
+                .map(|p| p.iter().map(|s| s.surface.as_str()).collect())
+                .collect();
+                assert_eq!(explained, production, "n={n} history={}", history.is_some());
+            }
+        }
+        // The fixture is sensitive: the two populations disagree on top-1.
+        let head = |n| {
+            crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]
+                .iter()
+                .map(|s| s.surface.as_str())
+                .collect::<String>()
+        };
+        assert_ne!(head(1), head(20));
     }
 
     #[test]

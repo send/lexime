@@ -3,19 +3,26 @@ use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
+use lex_cli::commands::rank_ops::{self, joined_surface, width_disagreements, WindowCheck};
 use lex_core::converter::tune;
 use lex_core::converter::{convert_nbest, convert_nbest_with_history};
 use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::TrieDictionary;
+use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use lex_core::user_history::UserHistory;
 
 #[derive(Parser)]
 #[command(name = "lextool", about = "Lexime conversion diagnostics")]
 struct Cli {
+    /// Path to a settings.toml to run under instead of the embedded
+    /// settings (any subcommand). An explicit file: unreadable or invalid
+    /// fails, where the app would fall back. Not with replay --app-dir
+    #[arg(long, global = true)]
+    settings: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -64,6 +71,10 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
+        /// Record the production candidate list (N-best + kana + predictions
+        /// + lookup) instead of the N-best paths
+        #[arg(long)]
+        candidates: bool,
     },
 
     /// Run conversion accuracy tests from a structured TOML corpus
@@ -149,6 +160,51 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
+        /// Compare production candidate lists (baseline must be a
+        /// `snapshot --candidates` file)
+        #[arg(long)]
+        candidates: bool,
+    },
+
+    /// Replay rank>0 selections from the commit log against the current
+    /// engine. Prints counts only; the log holds personal input.
+    ReplayCommitLog {
+        /// Path to the compiled dictionary file
+        dict_file: String,
+        /// Path to the compiled connection matrix file
+        conn_file: String,
+        /// Path to commit-log.jsonl
+        log_file: String,
+        /// Path to user history file (optional; default is no history)
+        #[arg(long)]
+        history: Option<String>,
+        /// The app's data directory (must exist): replay under the
+        /// configuration the app runs with — its user_dict.lxuw layered over
+        /// the system dictionary and its settings.toml — with the app's
+        /// fallbacks: a missing file is not used (as in a fresh install); an
+        /// unreadable or invalid one is not used either, with a warning, as
+        /// the app reports it. Without it: system dictionary and embedded
+        /// settings (not with --settings)
+        #[arg(long)]
+        app_dir: Option<String>,
+        /// Compare against a baseline written by --emit-baseline. Lines join
+        /// on (line index, timestamp in seconds): a log cleared and rewritten
+        /// is told apart unless its line at the same index lands in the same
+        /// second as the old one
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Write a baseline (line index, timestamp, rank — no reading or
+        /// surface). The timestamps still record when you corrected the IME:
+        /// keep the file local, do not attach it to a PR or issue
+        #[arg(long)]
+        emit_baseline: Option<String>,
+        /// Print each selection's reading and surface to stderr (local only;
+        /// never paste this output into a PR or issue)
+        #[arg(long)]
+        verbose: bool,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -157,11 +213,34 @@ enum Command {
 struct SnapshotEntry {
     reading: String,
     surfaces: Vec<String>,
+    /// What `surfaces` holds. Snapshots are regenerable dev artifacts, so a
+    /// file written before this field existed is regenerated, not defaulted.
+    kind: SnapshotKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SnapshotKind {
+    Nbest,
+    Candidates,
+}
+
+impl SnapshotKind {
+    fn from_flag(candidates: bool) -> Self {
+        if candidates {
+            Self::Candidates
+        } else {
+            Self::Nbest
+        }
+    }
 }
 
 // --- Accuracy types ---
 
+// deny_unknown_fields: a misspelled key or table (`[cases.windows]`) must
+// fail the load, not silently drop the check it meant to add.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccuracyCorpus {
     cases: Vec<AccuracyCase>,
     #[serde(default)]
@@ -169,6 +248,7 @@ struct AccuracyCorpus {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HistoryRecord {
     segments: Vec<(String, String)>,
     #[serde(default = "default_repeat")]
@@ -180,6 +260,7 @@ fn default_repeat() -> u32 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccuracyCase {
     reading: String,
     expected: String,
@@ -196,9 +277,19 @@ struct AccuracyCase {
     issue: Option<String>,
     #[serde(default)]
     pr: Option<String>,
+    /// Rank-2+ expectations on the production candidate list.
+    #[serde(default)]
+    window: Option<WindowCheck>,
+    /// The production list's #1 when it legitimately differs from
+    /// `expected` (history promoting learned kana to index 0).
+    #[serde(default)]
+    window_top1: Option<String>,
+    /// Known width disagreement: report it without failing the case.
+    #[serde(default)]
+    width_issue: Option<rank_ops::WidthIssue>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AccuracyResult {
     reading: String,
     expected: String,
@@ -215,9 +306,40 @@ struct AccuracyResult {
     issue: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr: Option<String>,
+    /// Which gate failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<Failure>,
+    /// Width disagreements and window violations, human-readable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    details: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// The gate a failing case tripped.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Failure {
+    /// The no-history `baseline` moved.
+    Baseline,
+    /// The N-best head at n=1 is not `expected`.
+    Top1,
+    /// Another display width disagrees on top-1.
+    Width,
+    /// A `[cases.window]` expectation is violated.
+    Window,
+}
+
+impl Failure {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Top1 => "top1",
+            Self::Width => "width",
+            Self::Window => "window",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum AccuracyStatus {
     Pass,
@@ -295,18 +417,31 @@ fn open_resources(
         })
     });
 
-    let hist = history.as_ref().map(|path| {
-        // open_with_wal: uncheckpointed commits live only in the WAL; a
-        // checkpoint-only read would ignore the most recent learning.
-        let (h, _wal) =
-            lex_core::user_history::wal::open_with_wal(Path::new(path)).unwrap_or_else(|e| {
-                eprintln!("Failed to open user history at {}: {}", path, e);
-                process::exit(1);
-            });
-        h
-    });
+    let hist = history.as_deref().map(open_history);
 
     (dict, conn, hist)
+}
+
+/// Open a user history the user named. `open_with_wal` returns an empty
+/// history for a missing checkpoint and WAL, so a mistyped path must fail
+/// here instead of measuring an unlearned engine as if it were the learned
+/// one. The WAL is replayed: uncheckpointed commits live only there.
+fn open_history(path: &str) -> UserHistory {
+    let checkpoint = Path::new(path);
+    let wal = checkpoint.with_extension("lxud.wal");
+    if !checkpoint.exists() && !wal.exists() {
+        eprintln!(
+            "User history not found: neither {} nor {} exists",
+            checkpoint.display(),
+            wal.display()
+        );
+        process::exit(1);
+    }
+    let (h, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint).unwrap_or_else(|e| {
+        eprintln!("Failed to open user history at {}: {}", path, e);
+        process::exit(1);
+    });
+    h
 }
 
 fn read_readings(input_file: &str) -> Vec<String> {
@@ -333,23 +468,113 @@ fn run_snapshot(
     hist: Option<&UserHistory>,
     reading: &str,
     n: usize,
+    kind: SnapshotKind,
 ) -> SnapshotEntry {
-    let paths = match hist {
-        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
-        None => convert_nbest(dict, Some(conn), reading, n),
+    let surfaces: Vec<String> = match kind {
+        SnapshotKind::Nbest => {
+            let paths = match hist {
+                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
+                None => convert_nbest(dict, Some(conn), reading, n),
+            };
+            paths.iter().map(|segs| joined_surface(segs)).collect()
+        }
+        SnapshotKind::Candidates => rank_ops::production_candidates(dict, conn, hist, reading)
+            .surfaces
+            .into_iter()
+            .take(n)
+            .collect(),
     };
-    let surfaces: Vec<String> = paths
-        .iter()
-        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-        .collect();
     SnapshotEntry {
         reading: reading.to_string(),
         surfaces,
+        kind,
+    }
+}
+
+/// The app's load policy for the files in its data directory, mirrored for
+/// `replay-commit-log --app-dir`: a missing file is not used; an unreadable
+/// or invalid one is not used either, and the app keeps running and reports
+/// it — here, a warning. Nothing is written: the app quarantines a corrupt
+/// user dictionary, a measurement tool never touches user data.
+///
+/// Mirrors Sources/AppContext.swift (settings.toml, loaded only when it
+/// exists; a load error leaves the embedded settings) and
+/// Sources/EngineContainer.swift `load` (user dictionary: corrupt → empty,
+/// unreadable → system dictionary only). Change them together.
+mod app_config {
+    use std::fs;
+    use std::io::ErrorKind;
+    use std::path::Path;
+
+    use lex_core::user_dict::UserDictionary;
+
+    fn warn(what: &Path, e: impl std::fmt::Display, fallback: &str) {
+        eprintln!(
+            "replay-commit-log: warning: {}: {e}; {fallback}, as the app does",
+            what.display()
+        );
+    }
+
+    /// `settings.toml`, if present and valid; otherwise the embedded settings.
+    pub fn settings(dir: &Path) {
+        let path = dir.join("settings.toml");
+        if !path.exists() {
+            return;
+        }
+        let loaded = fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|toml| lex_core::settings::init_custom(toml).map_err(|e| e.to_string()));
+        if let Err(e) = loaded {
+            warn(&path, e, "replaying with the embedded settings");
+        }
+    }
+
+    /// `user_dict.lxuw` (empty when missing or corrupt), or `None` when it
+    /// cannot be read (the app then runs on the system dictionary alone).
+    pub fn user_dict(dir: &Path) -> Option<UserDictionary> {
+        let path = dir.join("user_dict.lxuw");
+        match UserDictionary::open(&path) {
+            Ok(ud) => Some(ud),
+            Err(e) if e.kind() == ErrorKind::InvalidData => {
+                warn(&path, e, "replaying with an empty user dictionary");
+                Some(UserDictionary::new())
+            }
+            Err(e) => {
+                warn(&path, e, "replaying with the system dictionary only");
+                None
+            }
+        }
     }
 }
 
 fn main() {
     let cli = Cli::parse();
+    // Before any subcommand runs: settings() fixes on its first read, and a
+    // custom TOML set after that would be ignored without an error.
+    let app_dir = match &cli.command {
+        Command::ReplayCommitLog { app_dir, .. } => app_dir.as_deref(),
+        _ => None,
+    };
+    if cli.settings.is_some() && app_dir.is_some() {
+        eprintln!("--settings and --app-dir both name a settings file; pass one");
+        process::exit(2);
+    }
+    if let Some(path) = &cli.settings {
+        let loaded = fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|toml| lex_core::settings::init_custom(toml).map_err(|e| e.to_string()));
+        if let Err(e) = loaded {
+            eprintln!("--settings {path}: {e}");
+            process::exit(1);
+        }
+    } else if let Some(dir) = app_dir {
+        let dir = Path::new(dir);
+        if !dir.is_dir() {
+            eprintln!("--app-dir {}: not a directory", dir.display());
+            process::exit(1);
+        }
+        app_config::settings(dir);
+    }
 
     match cli.command {
         Command::Explain {
@@ -456,83 +681,50 @@ fn main() {
                 process::exit(1);
             }
 
-            // Run each case
-            let mut results: Vec<AccuracyResult> = Vec::new();
+            // Validate window checks before running anything: a malformed
+            // expectation must not read as a conversion failure.
             for case in &cases {
-                if case.skip {
-                    results.push(AccuracyResult {
-                        reading: case.reading.clone(),
-                        expected: case.expected.clone(),
-                        actual: String::new(),
-                        status: AccuracyStatus::Skip,
-                        category: case.category.clone(),
-                        baseline: case.baseline.clone(),
-                        baseline_actual: None,
-                        note: case.note.clone(),
-                        issue: case.issue.clone(),
-                        pr: case.pr.clone(),
+                // window_top1 exists for one thing: learned kana promoted to
+                // the list's #1. Anything else would be an unlinked width
+                // exemption, so it must be the reading itself, learned in
+                // this corpus's history.
+                if let Some(ref top) = case.window_top1 {
+                    let learned = corpus.history.iter().any(|rec| {
+                        rec.segments
+                            .iter()
+                            .any(|(r, s)| *r == case.reading && *s == case.reading)
                     });
-                    continue;
+                    if *top != case.reading || !learned {
+                        eprintln!(
+                            "window_top1 for {} must be the reading itself, learned as kana in \
+                             this corpus's [[history]]; use width_issue for any other width \
+                             disagreement",
+                            case.reading
+                        );
+                        process::exit(1);
+                    }
                 }
-
-                // If baseline is specified, first verify no-history conversion
-                let (baseline_actual, baseline_changed) =
-                    if let Some(ref expected_baseline) = case.baseline {
-                        let paths_no_hist = convert_nbest(&dict, Some(&conn), &case.reading, 1);
-                        let ba: String = paths_no_hist
-                            .first()
-                            .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                            .unwrap_or_default();
-                        let changed = ba != *expected_baseline;
-                        (Some(ba), changed)
-                    } else {
-                        (None, false)
-                    };
-
-                if baseline_changed {
-                    results.push(AccuracyResult {
-                        reading: case.reading.clone(),
-                        expected: case.expected.clone(),
-                        actual: String::new(),
-                        status: AccuracyStatus::Fail,
-                        category: case.category.clone(),
-                        baseline: case.baseline.clone(),
-                        baseline_actual: baseline_actual.clone(),
-                        note: case.note.clone(),
-                        issue: case.issue.clone(),
-                        pr: case.pr.clone(),
-                    });
-                    continue;
+                if let Some(ref w) = case.width_issue {
+                    let list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
+                    if let Err(e) = w.validate(&case.expected, list_top) {
+                        eprintln!("width_issue for {}: {e}", case.reading);
+                        process::exit(1);
+                    }
                 }
-
-                let paths = match hist.as_ref() {
-                    Some(h) => convert_nbest_with_history(&dict, Some(&conn), h, &case.reading, 1),
-                    None => convert_nbest(&dict, Some(&conn), &case.reading, 1),
-                };
-                let actual: String = paths
-                    .first()
-                    .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                    .unwrap_or_default();
-
-                let status = if actual == case.expected {
-                    AccuracyStatus::Pass
-                } else {
-                    AccuracyStatus::Fail
-                };
-
-                results.push(AccuracyResult {
-                    reading: case.reading.clone(),
-                    expected: case.expected.clone(),
-                    actual,
-                    status,
-                    category: case.category.clone(),
-                    baseline: case.baseline.clone(),
-                    baseline_actual,
-                    note: case.note.clone(),
-                    issue: case.issue.clone(),
-                    pr: case.pr.clone(),
-                });
+                if let Some(ref w) = case.window {
+                    // The no-history window is required where the corpus seeds
+                    // its own history, not when --history is merely supplied.
+                    if let Err(e) = w.validate(!corpus.history.is_empty()) {
+                        eprintln!("Invalid [cases.window] for {}: {}", case.reading, e);
+                        process::exit(1);
+                    }
+                }
             }
+
+            let results: Vec<AccuracyResult> = cases
+                .iter()
+                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case))
+                .collect();
 
             // Compute summary
             let total = results.len();
@@ -581,6 +773,11 @@ fn main() {
                     for r in group {
                         match r.status {
                             AccuracyStatus::Pass => {
+                                // Reported-only width disagreements stay
+                                // visible without failing the run.
+                                for d in &r.details {
+                                    println!("  ! {}: {}", r.reading, d);
+                                }
                                 if verbose {
                                     if let Some(ref bl) = r.baseline {
                                         println!(
@@ -608,10 +805,22 @@ fn main() {
                                         continue;
                                     }
                                 }
-                                println!(
-                                    "  \u{2717} {} \u{2192} {} (got: {})",
-                                    r.reading, r.expected, r.actual
-                                );
+                                if r.failure == Some(Failure::Top1) {
+                                    println!(
+                                        "  \u{2717} {} \u{2192} {} (got: {})",
+                                        r.reading, r.expected, r.actual
+                                    );
+                                } else {
+                                    println!(
+                                        "  \u{2717} {} \u{2192} {} [{}]",
+                                        r.reading,
+                                        r.expected,
+                                        r.failure.map_or("?", Failure::label)
+                                    );
+                                }
+                                for d in &r.details {
+                                    println!("      {}", d);
+                                }
                             }
                             AccuracyStatus::Skip => {
                                 let reason = r
@@ -649,25 +858,21 @@ fn main() {
             output_file,
             n,
             history,
+            candidates,
         } => {
+            let kind = SnapshotKind::from_flag(candidates);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
-            let file = fs::File::create(&output_file).unwrap_or_else(|e| {
-                eprintln!("Failed to create output file {}: {}", output_file, e);
+            let entries: Vec<SnapshotEntry> = readings
+                .iter()
+                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind))
+                .collect();
+            write_jsonl(&output_file, &entries).unwrap_or_else(|e| {
+                eprintln!("Failed to write snapshot: {}", e);
                 process::exit(1);
             });
-            let mut writer = BufWriter::new(file);
-
-            for reading in &readings {
-                let entry = run_snapshot(&dict, &conn, hist.as_ref(), reading, n);
-                let line = serde_json::to_string(&entry).expect("JSON serialization failed");
-                writeln!(writer, "{}", line).unwrap_or_else(|e| {
-                    eprintln!("Failed to write: {}", e);
-                    process::exit(1);
-                });
-            }
 
             eprintln!(
                 "Snapshot written: {} readings -> {}",
@@ -759,24 +964,7 @@ fn main() {
             let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
             let conn = conn.expect("connection matrix is required for history-audit");
 
-            // open_with_wal silently returns an empty history for a missing
-            // checkpoint; a mistyped path must fail instead of reporting a
-            // plausible-looking zero-reading audit.
-            let checkpoint_path = Path::new(&history_file);
-            let wal_path = checkpoint_path.with_extension("lxud.wal");
-            if !checkpoint_path.exists() && !wal_path.exists() {
-                eprintln!(
-                    "User history not found: neither {} nor {} exists",
-                    checkpoint_path.display(),
-                    wal_path.display()
-                );
-                process::exit(1);
-            }
-            let (hist, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint_path)
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to open user history at {}: {}", history_file, e);
-                    process::exit(1);
-                });
+            let hist = open_history(&history_file);
 
             // Group unigrams by reading
             let mut by_reading: HashMap<&str, Vec<(&str, u32, u64)>> = HashMap::new();
@@ -817,10 +1005,7 @@ fn main() {
                 }
 
                 let paths = convert_nbest(&dict, Some(&conn), reading, n);
-                let joined: Vec<String> = paths
-                    .iter()
-                    .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
-                    .collect();
+                let joined: Vec<String> = paths.iter().map(|segs| joined_surface(segs)).collect();
                 let raw_top1 = joined.first().cloned().unwrap_or_default();
                 if raw_top1 == dominant {
                     agree += 1;
@@ -838,7 +1023,7 @@ fn main() {
                 let hist_top1: String =
                     convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
                         .first()
-                        .map(|segs| segs.iter().map(|s| s.surface.as_str()).collect())
+                        .map(|segs| joined_surface(segs))
                         .unwrap_or_default();
 
                 misses.push(AuditMiss {
@@ -892,25 +1077,27 @@ fn main() {
             baseline_file,
             n,
             history,
+            candidates,
         } => {
+            let kind = SnapshotKind::from_flag(candidates);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
 
             // Load baseline
-            let baseline_content = fs::read_to_string(&baseline_file).unwrap_or_else(|e| {
-                eprintln!("Failed to read baseline file {}: {}", baseline_file, e);
+            let entries: Vec<SnapshotEntry> = read_jsonl(&baseline_file).unwrap_or_else(|e| {
+                eprintln!("Failed to load baseline: {}", e);
                 process::exit(1);
             });
             let mut baseline: HashMap<String, SnapshotEntry> = HashMap::new();
-            for line in baseline_content.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let entry: SnapshotEntry = serde_json::from_str(line).unwrap_or_else(|e| {
-                    eprintln!("Failed to parse baseline JSONL: {}", e);
+            for entry in entries {
+                if entry.kind != kind {
+                    eprintln!(
+                        "Baseline holds {:?} snapshots but {:?} was requested (toggle --candidates)",
+                        entry.kind, kind
+                    );
                     process::exit(1);
-                });
+                }
                 baseline.insert(entry.reading.clone(), entry);
             }
 
@@ -920,7 +1107,7 @@ fn main() {
             let total = readings.len();
 
             for reading in &readings {
-                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n);
+                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
 
                 match baseline.get(reading) {
                     Some(base) => {
@@ -985,6 +1172,267 @@ fn main() {
                 process::exit(1);
             }
         }
+
+        Command::ReplayCommitLog {
+            dict_file,
+            conn_file,
+            log_file,
+            history,
+            app_dir,
+            baseline,
+            emit_baseline,
+            verbose,
+            json,
+        } => {
+            let die = |e: String| -> ! {
+                eprintln!("replay-commit-log: {}", e);
+                process::exit(1);
+            };
+            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let conn = conn.expect("connection matrix is required for replay-commit-log");
+            // Same layering as LexDictionary::open_with_user_dict.
+            let dict: Box<dyn Dictionary> = match app_dir
+                .as_deref()
+                .and_then(|d| app_config::user_dict(Path::new(d)))
+            {
+                Some(ud) => Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)])),
+                None => Box::new(trie),
+            };
+            let (report, lines) =
+                rank_ops::replay(&*dict, &conn, hist.as_ref(), Path::new(&log_file), verbose)
+                    .unwrap_or_else(|e| die(e));
+            let diff = baseline.map(|path| {
+                let before: Vec<rank_ops::BaselineLine> =
+                    read_jsonl(&path).unwrap_or_else(|e| die(e));
+                rank_ops::diff_baseline(&before, &lines)
+            });
+            if let Some(path) = emit_baseline {
+                write_jsonl(&path, &lines).unwrap_or_else(|e| die(e));
+            }
+            if json {
+                #[derive(Serialize)]
+                struct Out<'a> {
+                    #[serde(flatten)]
+                    report: &'a rank_ops::ReplayReport,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    baseline: Option<&'a rank_ops::BaselineDiff>,
+                }
+                let out = Out {
+                    report: &report,
+                    baseline: diff.as_ref(),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&out).expect("JSON serialization failed")
+                );
+            } else {
+                print_replay_text(&report, diff.as_ref());
+            }
+        }
+    }
+}
+
+fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::BaselineDiff>) {
+    let row = |label: &str, n: usize| {
+        println!("  {:<20} {:>5} ({:.1}%)", label, n, pct(n, r.selections));
+    };
+    println!("=== Replay (rank>0 selections: {}) ===", r.selections);
+    row(&format!("On page 1 (< {})", rank_ops::PAGE_SIZE), r.in_page);
+    row("In list", r.in_list);
+    row("Absent", r.absent);
+    println!();
+    println!("=== Position in the candidate list ===");
+    for (rank, &n) in r.rank_hist.iter().enumerate().take(rank_ops::PAGE_SIZE) {
+        row(&format!("#{}", rank + 1), n);
+    }
+    row(
+        &format!("#{} or later", rank_ops::PAGE_SIZE + 1),
+        r.rank_hist.iter().skip(rank_ops::PAGE_SIZE).sum(),
+    );
+    println!();
+    println!("=== Cost gap to #1 (N-best path of the selected surface) ===");
+    for (i, &n) in r.gap_hist.iter().enumerate() {
+        let lower = i.checked_sub(1).map_or(0, |j| rank_ops::GAP_BIN_UPPER[j]);
+        let label = match rank_ops::GAP_BIN_UPPER.get(i) {
+            Some(upper) if i == 0 => format!("[0, {upper}]"),
+            Some(upper) => format!("({lower}, {upper}]"),
+            None => format!("> {lower}"),
+        };
+        row(&label, n);
+    }
+    row("no N-best path", r.gap_no_path);
+    if r.malformed_lines > 0 {
+        println!();
+        println!("  Unreadable log lines skipped: {}", r.malformed_lines);
+    }
+    if let Some(d) = diff {
+        println!();
+        println!("=== Against baseline ===");
+        for (label, n) in [
+            ("Lost", d.lost),
+            ("Demoted off page", d.demoted_off_page),
+            ("Demoted in page", d.demoted_in_page),
+            ("Demoted below page", d.demoted_below_page),
+            ("Improved", d.improved),
+            ("Unchanged", d.unchanged),
+            ("Only in current", d.only_current),
+            ("Only in baseline", d.only_baseline),
+        ] {
+            println!("  {:<20} {:>5}", label, n);
+        }
+    }
+}
+
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("{path} line {}: {e}", n + 1)))
+        .collect()
+}
+
+fn write_jsonl<T: Serialize>(path: &str, items: &[T]) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
+    let mut w = BufWriter::new(file);
+    for item in items {
+        let line = serde_json::to_string(item).expect("JSON serialization failed");
+        writeln!(w, "{line}").map_err(|e| format!("write {path}: {e}"))?;
+    }
+    w.flush().map_err(|e| format!("write {path}: {e}"))
+}
+
+/// Evaluate one accuracy case. Gates run in order and the first to fail
+/// decides the result: no-history `baseline`, top-1 at n=1, then the other
+/// display widths and the `[cases.window]` expectations.
+fn eval_case(
+    dict: &TrieDictionary,
+    conn: &ConnectionMatrix,
+    hist: Option<&UserHistory>,
+    case: &AccuracyCase,
+) -> AccuracyResult {
+    let base = AccuracyResult {
+        reading: case.reading.clone(),
+        expected: case.expected.clone(),
+        actual: String::new(),
+        status: AccuracyStatus::Skip,
+        category: case.category.clone(),
+        baseline: case.baseline.clone(),
+        baseline_actual: None,
+        note: case.note.clone(),
+        issue: case.issue.clone(),
+        pr: case.pr.clone(),
+        failure: None,
+        details: Vec::new(),
+    };
+    if case.skip {
+        return base;
+    }
+    let fail = |failure, actual, baseline_actual, details| AccuracyResult {
+        status: AccuracyStatus::Fail,
+        failure: Some(failure),
+        actual,
+        baseline_actual,
+        details,
+        ..base.clone()
+    };
+
+    // No-history baseline: every width must still agree on it.
+    let plain = case
+        .baseline
+        .as_ref()
+        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading));
+    let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
+    if let (Some(want), Some(w)) = (&case.baseline, &plain) {
+        if w.nbest_head != *want {
+            return fail(
+                Failure::Baseline,
+                String::new(),
+                baseline_actual,
+                Vec::new(),
+            );
+        }
+    }
+
+    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading);
+    let actual = widths.nbest_head.clone();
+    if actual != case.expected {
+        return fail(Failure::Top1, actual, baseline_actual, Vec::new());
+    }
+
+    let want_list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
+    let observed = width_disagreements(&widths, &case.expected, want_list_top);
+    let rank_ops::WidthVerdict {
+        unexempt: mut width,
+        known,
+        stale,
+    } = rank_ops::judge_widths(case.width_issue.as_ref(), &observed);
+    // The no-history baseline is never exempt: an exemption names a
+    // disagreement under the case's own history.
+    if let (Some(want), Some(w)) = (&case.baseline, &plain) {
+        width.extend(
+            width_disagreements(w, want, want)
+                .into_iter()
+                .map(|d| format!("baseline {d}")),
+        );
+    }
+
+    let mut window = Vec::new();
+    if let Some(ref w) = case.window {
+        window.extend(w.lists.violations(w.n, &widths.list));
+        if let Some(ref b) = w.baseline {
+            let list = match &plain {
+                Some(p) => b.violations(w.n, &p.list),
+                None => b.violations(
+                    w.n,
+                    &rank_ops::production_candidates(dict, conn, None, &case.reading),
+                ),
+            };
+            window.extend(list.into_iter().map(|v| format!("baseline: {v}")));
+        }
+    }
+
+    let failure = if !window.is_empty() {
+        Some(Failure::Window)
+    } else if !width.is_empty() || !stale.is_empty() {
+        Some(Failure::Width)
+    } else {
+        None
+    };
+    let issue = case.width_issue.as_ref().map_or("", |w| w.issue.as_str());
+    let details: Vec<String> = window
+        .into_iter()
+        .chain(width.into_iter().map(|w| format!("width: {w}")))
+        .chain(
+            known
+                .into_iter()
+                .map(|w| format!("width ({issue}, known): {w}")),
+        )
+        .chain(
+            stale
+                .into_iter()
+                .map(|s| format!("width_issue {issue}: {s} — update or remove it")),
+        )
+        .collect();
+    match failure {
+        Some(f) => fail(f, actual, baseline_actual, details),
+        None => AccuracyResult {
+            status: AccuracyStatus::Pass,
+            actual,
+            baseline_actual,
+            details,
+            ..base
+        },
+    }
+}
+
+/// Widths other than the n=1 head that disagree with the expected top-1.
+fn pct(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 * 100.0 / whole as f64
     }
 }
 

@@ -8,7 +8,9 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
+use super::{
+    generate_punctuation_candidates, punctuation_alternatives, CandidateResponse, PricedCandidates,
+};
 
 /// Generate candidates for normal (non-punctuation) input.
 pub(super) fn generate_normal_candidates(
@@ -18,6 +20,47 @@ pub(super) fn generate_normal_candidates(
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
+) -> CandidateResponse {
+    generate_normal(dict, conn, history, reading, max_results, lattice, None)
+}
+
+/// [`generate_normal_candidates`] with the final cost of each N-best path,
+/// taken from the same pipeline run that ordered the list.
+pub(super) fn generate_normal_priced(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+    lattice: &Lattice,
+) -> PricedCandidates {
+    let mut path_costs = Vec::new();
+    let response = generate_normal(
+        dict,
+        conn,
+        history,
+        reading,
+        max_results,
+        lattice,
+        Some(&mut path_costs),
+    );
+    PricedCandidates {
+        response,
+        path_costs,
+    }
+}
+
+/// The one Standard-mode generator. `path_costs`, when given, receives each
+/// N-best path's final cost (diagnostics); the IME passes `None` and pays
+/// nothing for it.
+fn generate_normal(
+    dict: &dyn Dictionary,
+    conn: Option<&ConnectionMatrix>,
+    history: Option<&UserHistory>,
+    reading: &str,
+    max_results: usize,
+    lattice: &Lattice,
+    path_costs: Option<&mut Vec<i64>>,
 ) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
@@ -32,15 +75,18 @@ pub(super) fn generate_normal_candidates(
         conn,
         history,
     };
-    let paths = ctx.convert_nbest_from_lattice(lattice, nbest);
+    let scored = ctx.convert_nbest_scored_from_lattice(lattice, nbest);
+    if let Some(costs) = path_costs {
+        costs.extend(scored.iter().map(|p| p.viterbi_cost));
+    }
 
-    let mut nbest_paths = Vec::new();
-    for path in &paths {
+    let mut nbest_paths = Vec::with_capacity(scored.len());
+    for path in scored.into_iter().map(|p| p.into_segments()) {
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
         if !joined.is_empty() && seen.insert(joined.clone()) {
             surfaces.push(joined);
         }
-        nbest_paths.push(path.clone());
+        nbest_paths.push(path);
     }
 
     // 1.5. Inject history-learned surfaces not in N-best.

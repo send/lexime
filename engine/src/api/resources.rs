@@ -1665,6 +1665,8 @@ enum CompactOutcome {
 
 /// Serialize one commit event as a JSONL line for the commit log.
 /// `top1` and `auto` are omitted at their defaults to keep lines lean.
+/// The format is SPEC §コミットログ; `lextool replay-commit-log` reads it
+/// (`CommitLine` in lex-cli's rank_ops) — change both together.
 fn commit_log_line(
     now: u64,
     reading: &str,
