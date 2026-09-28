@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::converter::PathOrigin;
 use crate::dict::{DictEntry, TrieDictionary};
 use crate::user_history::UserHistory;
 
@@ -270,16 +271,82 @@ fn test_priced_candidates_are_the_production_list() {
                 keys(&plain.paths),
                 "{reading}"
             );
+            let d = &priced.diagnostics;
             if punctuation_alternatives(reading).is_some() || reading.is_empty() {
-                assert!(priced.path_costs.is_empty(), "{reading}");
+                assert!(d.prices.is_empty() && d.injected.is_empty(), "{reading}");
             } else {
-                assert_eq!(
-                    priced.path_costs.len(),
-                    priced.response.paths.len(),
-                    "{reading}"
-                );
-                assert!(!priced.path_costs.is_empty(), "{reading}");
+                assert_eq!(d.prices.len(), priced.response.paths.len(), "{reading}");
+                assert!(!d.prices.is_empty(), "{reading}");
             }
         }
     }
+}
+
+fn joined(path: &[crate::converter::ConvertedSegment]) -> String {
+    path.iter().map(|s| s.surface.as_str()).collect()
+}
+
+/// Each price names the stage that set it: an offer that undercuts the
+/// real path's price owns its slot, the model owns the rest.
+#[test]
+fn test_diagnostics_record_who_priced_each_path() {
+    let e = |surface: &str, cost: i16| DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: 0,
+        right_id: 0,
+    };
+    // As converter/tests/offers.rs: 方 is priced far above ほう, so the
+    // KanjiVariant offer (≤ source + 2000) undercuts the real あった|方|が.
+    let dict = TrieDictionary::from_entries(vec![
+        ("あった".into(), vec![e("あった", 0), e("会った", 50)]),
+        ("ほう".into(), vec![e("ほう", 0), e("方", 6000)]),
+        ("が".into(), vec![e("が", 0), e("蛾", 100)]),
+    ]);
+    let priced = generate_candidates_priced(&dict, None, None, "あったほうが", 20);
+    let priced_by = |surface: &str| {
+        let i = priced
+            .response
+            .paths
+            .iter()
+            .position(|p| joined(p) == surface)
+            .unwrap_or_else(|| panic!("no path for {surface}"));
+        priced.diagnostics.prices[i].priced_by
+    };
+    assert_eq!(priced_by("あった方が"), PathOrigin::KanjiVariant);
+    assert_eq!(priced_by("あったほうが"), PathOrigin::Viterbi);
+}
+
+/// `injected` holds exactly the learned surfaces the injection stage put on
+/// the list: never one an N-best path already placed, even when a later
+/// stage moves it.
+#[test]
+fn test_diagnostics_record_injected_surfaces() {
+    let dict = make_dict();
+    let learned = |surfaces: &[&str]| {
+        let mut h = UserHistory::new();
+        for s in surfaces {
+            h.record(&[("きょう".into(), (*s).into())]);
+        }
+        h
+    };
+
+    // 卿 is not in the dictionary: only injection can list it, right after
+    // the N-best block. 京 is an N-best path, so injection adds nothing.
+    let h = learned(&["卿", "京"]);
+    let priced = generate_candidates_priced(&dict, None, Some(&h), "きょう", 20);
+    assert_eq!(priced.diagnostics.injected, vec!["卿".to_string()]);
+    let n = priced.response.paths.len();
+    assert_eq!(priced.response.surfaces[n], "卿");
+
+    // A learned kana an N-best path already placed is not injected, though
+    // the kana stage moves it to the front (a move, not an insertion).
+    let h = learned(&["きょう"]);
+    let priced = generate_candidates_priced(&dict, None, Some(&h), "きょう", 20);
+    assert!(priced.response.paths.iter().any(|p| joined(p) == "きょう"));
+    assert!(priced.diagnostics.injected.is_empty());
+    assert_eq!(priced.response.surfaces[0], "きょう");
+
+    let priced = generate_candidates_priced(&dict, None, None, "きょう", 20);
+    assert!(priced.diagnostics.injected.is_empty());
 }

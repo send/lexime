@@ -9,7 +9,8 @@ use crate::settings::settings;
 use crate::user_history::UserHistory;
 
 use super::{
-    generate_punctuation_candidates, punctuation_alternatives, CandidateResponse, PricedCandidates,
+    generate_punctuation_candidates, punctuation_alternatives, CandidateDiagnostics,
+    CandidateResponse, PathPrice, PricedCandidates,
 };
 
 /// Generate candidates for normal (non-punctuation) input.
@@ -24,8 +25,8 @@ pub(super) fn generate_normal_candidates(
     generate_normal(dict, conn, history, reading, max_results, lattice, None)
 }
 
-/// [`generate_normal_candidates`] with the final cost of each N-best path,
-/// taken from the same pipeline run that ordered the list.
+/// [`generate_normal_candidates`] with [`CandidateDiagnostics`] recorded by
+/// the same pipeline run that ordered the list.
 pub(super) fn generate_normal_priced(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -34,7 +35,7 @@ pub(super) fn generate_normal_priced(
     max_results: usize,
     lattice: &Lattice,
 ) -> PricedCandidates {
-    let mut path_costs = Vec::new();
+    let mut diagnostics = CandidateDiagnostics::default();
     let response = generate_normal(
         dict,
         conn,
@@ -42,17 +43,21 @@ pub(super) fn generate_normal_priced(
         reading,
         max_results,
         lattice,
-        Some(&mut path_costs),
+        Some(&mut diagnostics),
     );
     PricedCandidates {
         response,
-        path_costs,
+        diagnostics,
     }
 }
 
-/// The one Standard-mode generator. `path_costs`, when given, receives each
-/// N-best path's final cost (diagnostics); the IME passes `None` and pays
-/// nothing for it.
+/// The one Standard-mode generator. `diag`, when given, receives what built
+/// the list (each N-best path's price, the injected surfaces); the IME
+/// passes `None` and pays nothing for it.
+///
+/// `lextool replay-commit-log` names the stage that listed each surface from
+/// these records and the stage order below (N-best → injection → kana →
+/// predictions / lookup). A new stage that lists surfaces records them here.
 fn generate_normal(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -60,7 +65,7 @@ fn generate_normal(
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
-    path_costs: Option<&mut Vec<i64>>,
+    mut diag: Option<&mut CandidateDiagnostics>,
 ) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
@@ -76,8 +81,11 @@ fn generate_normal(
         history,
     };
     let scored = ctx.convert_nbest_scored_from_lattice(lattice, nbest);
-    if let Some(costs) = path_costs {
-        costs.extend(scored.iter().map(|p| p.viterbi_cost));
+    if let Some(d) = diag.as_deref_mut() {
+        d.prices.extend(scored.iter().map(|p| PathPrice {
+            cost: p.viterbi_cost,
+            priced_by: p.priced_by,
+        }));
     }
 
     let mut nbest_paths = Vec::with_capacity(scored.len());
@@ -94,6 +102,9 @@ fn generate_normal(
         let now = crate::user_history::now_epoch();
         for (surface, _boost) in h.learned_surfaces(reading, now) {
             if seen.insert(surface.clone()) {
+                if let Some(d) = diag.as_deref_mut() {
+                    d.injected.push(surface.clone());
+                }
                 surfaces.push(surface);
             }
         }
