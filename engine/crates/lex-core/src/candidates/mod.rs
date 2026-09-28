@@ -143,8 +143,9 @@ pub fn generate_candidates(
     standard::generate(dict, conn, history, reading, max_results, &lattice)
 }
 
-/// [`generate_candidates`] with each N-best path's final cost from the same
-/// run. Diagnostic entry point; the IME uses [`generate_candidates`].
+/// [`generate_candidates`] with the [`CandidateDiagnostics`] of the same run
+/// (each N-best path's price and the stage that set it, the injected learned
+/// surfaces). Diagnostic entry point; the IME uses [`generate_candidates`].
 pub fn generate_candidates_priced(
     dict: &dyn Dictionary,
     conn: Option<&crate::dict::connection::ConnectionMatrix>,

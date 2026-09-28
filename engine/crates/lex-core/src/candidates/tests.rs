@@ -343,11 +343,7 @@ fn test_diagnostics_record_injected_surfaces() {
     // the kana stage moves it to the front (a move, not an insertion).
     let h = learned(&["きょう"]);
     let priced = generate_candidates_priced(&dict, None, Some(&h), "きょう", 20);
-    assert!(priced.response.paths.iter().any(|p| p
-        .iter()
-        .map(|s| s.surface.as_str())
-        .collect::<String>()
-        == "きょう"));
+    assert!(priced.response.paths.iter().any(|p| joined(p) == "きょう"));
     assert!(priced.diagnostics.injected.is_empty());
     assert_eq!(priced.response.surfaces[0], "きょう");
 

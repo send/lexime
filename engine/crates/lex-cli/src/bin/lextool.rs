@@ -200,7 +200,9 @@ enum Command {
         emit_baseline: Option<String>,
         /// Replay only log lines from this 0-based index on (a window such as
         /// "the lines since a snapshot"). Indices stay absolute, so the
-        /// window still joins a full baseline
+        /// window compares against a full baseline's lines in the same
+        /// window. Past the end of the log is an error; not with
+        /// --emit-baseline
         #[arg(long, default_value = "0")]
         from_line: usize,
         /// Print each selection's reading and surface to stderr (local only;
@@ -1194,6 +1196,11 @@ fn main() {
                 eprintln!("replay-commit-log: {}", e);
                 process::exit(1);
             };
+            if from_line > 0 && emit_baseline.is_some() {
+                // A baseline records no window: a partial one would read as
+                // "every earlier selection is new" in a later full comparison.
+                die("--emit-baseline records the whole log; drop --from-line".into());
+            }
             let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
             // Same layering as LexDictionary::open_with_user_dict.
@@ -1216,7 +1223,7 @@ fn main() {
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
-                rank_ops::diff_baseline(&before, &lines)
+                rank_ops::diff_baseline(&before, &lines, from_line)
             });
             if let Some(path) = emit_baseline {
                 write_jsonl(&path, &lines).unwrap_or_else(|e| die(e));

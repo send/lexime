@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use lex_core::candidates::{
-    generate_candidates_priced, CandidateResponse, PathPrice, PricedCandidates,
+    generate_candidates, generate_candidates_priced, CandidateResponse, PathPrice, PricedCandidates,
 };
 use lex_core::converter::{
     convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment, PathOrigin,
@@ -50,11 +50,17 @@ pub fn production_candidates(
     history: Option<&UserHistory>,
     reading: &str,
 ) -> CandidateResponse {
-    production_candidates_priced(dict, conn, history, reading).response
+    generate_candidates(
+        dict,
+        Some(conn),
+        history,
+        reading,
+        settings().candidates.max_results,
+    )
 }
 
-/// [`production_candidates`] with each N-best path's final cost, from the
-/// same run — so a cost is always the price of the path the list shows.
+/// [`production_candidates`] with its [`lex_core::candidates::CandidateDiagnostics`] from the same
+/// run — so a price is always the price of the path the list shows.
 pub fn production_candidates_priced(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
@@ -357,8 +363,10 @@ struct Selections {
     malformed: usize,
 }
 
-/// Lines before 0-based index `from_line` are skipped unread; indices stay
-/// absolute, so a windowed run still joins a full baseline.
+/// Lines before 0-based index `from_line` are read but not parsed; indices
+/// stay absolute. A window starting at the end of the log is empty (no line
+/// written since); one starting past it is refused — a mistyped window must
+/// not measure as "nothing to replay".
 fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut reader = BufReader::new(file);
@@ -371,8 +379,13 @@ fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> 
         buf.clear();
         let n = reader
             .read_until(b'\n', &mut buf)
-            .map_err(|e| format!("read error at line {}: {e}", i + 1))?;
+            .map_err(|e| format!("read error at line index {i}: {e}"))?;
         if n == 0 {
+            if from_line > i {
+                return Err(format!(
+                    "--from-line {from_line} is past the end of the log ({i} lines)"
+                ));
+            }
             break;
         }
         if i < from_line {
@@ -447,11 +460,13 @@ pub struct ReplayReport {
     pub by_owner: BTreeMap<Owner, OwnerCounts>,
 }
 
-/// The stage that put a surface on the candidate list — the one whose
-/// insertion into the list's `seen` set succeeded. For an N-best path that is
-/// the stage that set its price (`priced_by`): the price placed it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Who placed a surface on the candidate list. Outside the N-best block it is
+/// the stage whose insertion into the list's `seen` set succeeded. Inside it,
+/// it is the stage that set the path's price (`priced_by`), not the one that
+/// produced the path: the price decided the rank. A model path repriced by a
+/// cheaper offer of the same surface is the offer's slot — the model did not
+/// deliver that surface at that rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owner {
     /// Viterbi / Resegment: the cost model.
     Model,
@@ -469,6 +484,12 @@ pub enum Owner {
     Tail,
 }
 
+impl Serialize for Owner {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
+    }
+}
+
 impl Owner {
     fn priced_by(origin: PathOrigin) -> Self {
         match origin {
@@ -482,7 +503,7 @@ impl Owner {
         }
     }
 
-    /// The name reports use (the JSON key's spelling).
+    /// The name every report uses (text, `--verbose`, JSON keys).
     pub fn name(self) -> &'static str {
         match self {
             Self::Model => "model",
@@ -721,9 +742,19 @@ fn count_rank(hist: &mut Vec<usize>, rank: usize) {
 /// same second as the old one still mis-joins — that takes several commits a
 /// second on both sides of the clear. A content-derived key would close it
 /// but would put personal input into the baseline file.
-pub fn diff_baseline(before: &[BaselineLine], after: &[BaselineLine]) -> BaselineDiff {
-    let before_map: HashMap<(usize, u64), Option<usize>> =
-        before.iter().map(|b| ((b.i, b.t), b.rank)).collect();
+///
+/// `from_line` is the replayed window's start: baseline lines before it are
+/// outside the comparison, not "only in baseline".
+pub fn diff_baseline(
+    before: &[BaselineLine],
+    after: &[BaselineLine],
+    from_line: usize,
+) -> BaselineDiff {
+    let before_map: HashMap<(usize, u64), Option<usize>> = before
+        .iter()
+        .filter(|b| b.i >= from_line)
+        .map(|b| ((b.i, b.t), b.rank))
+        .collect();
     let mut d = BaselineDiff::default();
     let mut matched = 0;
     for a in after {
@@ -877,7 +908,7 @@ absent = ["x"]"#
             line(9, 99, Some(1)), // new line
         ];
         assert_eq!(
-            diff_baseline(&before, &after),
+            diff_baseline(&before, &after, 0),
             BaselineDiff {
                 lost: 1,
                 demoted_off_page: 1,
@@ -894,7 +925,7 @@ absent = ["x"]"#
     #[test]
     fn baseline_join_needs_matching_timestamp() {
         // Same index, different time = the log was cleared and rewritten.
-        let d = diff_baseline(&[line(0, 10, Some(1))], &[line(0, 20, None)]);
+        let d = diff_baseline(&[line(0, 10, Some(1))], &[line(0, 20, None)], 0);
         assert_eq!(d.lost, 0);
         assert_eq!(d.only_current, 1);
         assert_eq!(d.only_baseline, 1);
@@ -1028,25 +1059,6 @@ absent = ["x"]"#
         assert_eq!(json["from_line"], 7);
         assert_eq!(json["by_owner"]["partial_hiragana"]["selections"], 1);
         assert_eq!(json["by_owner"]["partial_hiragana"]["page1_slots"], 1);
-
-        use Owner::*;
-        for o in [
-            Model,
-            KanjiVariant,
-            PartialHiragana,
-            Rescue,
-            Numeric,
-            Katakana,
-            Injected,
-            Kana,
-            Tail,
-        ] {
-            assert_eq!(
-                serde_json::to_value(o).unwrap(),
-                o.name(),
-                "text and JSON agree"
-            );
-        }
     }
 
     #[test]
@@ -1097,9 +1109,18 @@ absent = ["x"]"#
         assert_eq!(got, [(2, 3), (3, 4)]);
         assert_eq!(sels.malformed, 0, "skipped lines are not read");
 
-        let sels = read_selections(&path, 99).unwrap();
-        assert!(sels.lines.is_empty(), "past EOF is an empty window");
+        let sels = read_selections(&path, 4).unwrap();
+        assert!(sels.lines.is_empty(), "a window at EOF is empty");
+        assert!(read_selections(&path, 5).is_err(), "past EOF is refused");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn baseline_diff_ignores_lines_before_the_window() {
+        let before = [line(0, 10, Some(1)), line(5, 15, Some(2))];
+        let after = [line(5, 15, Some(2))];
+        let d = diff_baseline(&before, &after, 5);
+        assert_eq!((d.unchanged, d.only_baseline, d.only_current), (1, 0, 0));
     }
 
     fn issue(one_best: Option<&str>, list_top: Option<&str>) -> WidthIssue {
