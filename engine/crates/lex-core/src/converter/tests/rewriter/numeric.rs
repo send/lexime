@@ -26,20 +26,17 @@ fn test_numeric_rewriter_generates_candidates() {
         connection: None,
         anchor: 3000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "にじゅうさん".into(),
             surface: "に十三".into(),
             left_id: 10,
             right_id: 10,
             word_cost: 0,
         }],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "にじゅうさん");
 
@@ -59,20 +56,17 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         connection: None,
         anchor: 3000,
     };
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "にじゅうさん".into(),
             surface: "二十三".into(),
             left_id: 10,
             right_id: 10,
             word_cost: 0,
         }],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "にじゅうさん", RewriteStage::Override);
 
@@ -90,20 +84,17 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         connection: None,
         anchor: 3000,
     };
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "じゅう".into(),
             surface: "中".into(),
             left_id: 10,
             right_id: 10,
             word_cost: 0,
         }],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override);
 
@@ -120,20 +111,17 @@ fn test_numeric_rewriter_skips_non_numeric() {
         connection: None,
         anchor: 1000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "きょう".into(),
             surface: "今日".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 1000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        1000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "きょう");
 
@@ -150,20 +138,17 @@ fn test_numeric_rewriter_skips_duplicate() {
         connection: None,
         anchor: 1000,
     };
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "いち".into(),
             surface: "1".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 1000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        1000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override);
 
@@ -198,20 +183,17 @@ fn test_numeric_counter_generates_kanji_compound() {
         connection: Some(&conn),
         anchor: 5000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "さんぜんえん".into(),
             surface: "産前園".into(),
             left_id: 1,
             right_id: 1,
             word_cost: 0,
         }],
-        viterbi_cost: 5000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        5000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "さんぜんえん");
 
@@ -254,20 +236,17 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "ごえん".into(),
             surface: "ご縁".into(),
             left_id: 1,
             right_id: 1,
             word_cost: 0,
         }],
-        viterbi_cost: 4000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        4000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "ごえん");
 
@@ -293,20 +272,17 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "あいえん".into(),
             surface: "愛縁".into(),
             left_id: 1,
             right_id: 1,
             word_cost: 0,
         }],
-        viterbi_cost: 4000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        4000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "あいえん");
 
@@ -322,20 +298,17 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
         connection: None,
         anchor: 5000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "さんぜんえん".into(),
             surface: "産前園".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 5000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        5000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "さんぜんえん");
 
@@ -361,20 +334,17 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "ごねん".into(),
             surface: "ご年".into(),
             left_id: 1,
             right_id: 1,
             word_cost: 0,
         }],
-        viterbi_cost: 4000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        4000,
+        PathOrigin::Viterbi,
+    )];
 
     let mut emit_orders: Vec<Vec<String>> = Vec::new();
     for _ in 0..5 {
@@ -415,20 +385,17 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "ごえん".into(),
             surface: "ご縁".into(),
             left_id: 1,
             right_id: 1,
             word_cost: 0,
         }],
-        viterbi_cost: 4000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        4000,
+        PathOrigin::Viterbi,
+    )];
 
     // Should not panic; should still emit candidates for both counters.
     let result = rw.generate(&paths, "ごえん");

@@ -8,20 +8,17 @@ use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 #[test]
 fn test_run_rewriters_applies_all() {
     let rw = KatakanaRewriter;
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "あ".into(),
             surface: "亜".into(),
             left_id: 0,
             right_id: 0,
             word_cost: 0,
         }],
-        viterbi_cost: 1000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        1000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "あ", RewriteStage::Override);
 
@@ -105,20 +102,17 @@ fn test_run_rewriters_cost_ordered_insertion() {
         connection: None,
         anchor: 3000,
     };
-    let mut paths = vec![ScoredPath {
-        segments: vec![RichSegment {
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
             reading: "にじゅうさん".into(),
             surface: "に十三".into(),
             left_id: 10,
             right_id: 10,
             word_cost: 0,
         }],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     run_rewriters(&[&rw], &mut paths, "にじゅうさん", RewriteStage::Override);
 

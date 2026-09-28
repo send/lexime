@@ -4,8 +4,8 @@ use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 #[test]
 fn test_hiragana_variant_replaces_kanji() {
     let rw = HiraganaVariantRewriter;
-    let paths = vec![ScoredPath {
-        segments: vec![
+    let paths = vec![ScoredPath::new(
+        vec![
             RichSegment {
                 reading: "りだいれくと".into(),
                 surface: "リダイレクト".into(),
@@ -35,12 +35,9 @@ fn test_hiragana_variant_replaces_kanji() {
                 word_cost: 0,
             },
         ],
-        viterbi_cost: 3000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        3000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "りだいれくとされますか");
 
@@ -53,8 +50,8 @@ fn test_hiragana_variant_replaces_kanji() {
 #[test]
 fn test_hiragana_variant_skips_all_hiragana() {
     let rw = HiraganaVariantRewriter;
-    let paths = vec![ScoredPath {
-        segments: vec![
+    let paths = vec![ScoredPath::new(
+        vec![
             RichSegment {
                 reading: "され".into(),
                 surface: "され".into(),
@@ -70,12 +67,9 @@ fn test_hiragana_variant_skips_all_hiragana() {
                 word_cost: 0,
             },
         ],
-        viterbi_cost: 1000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        1000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "されます");
 
@@ -89,34 +83,28 @@ fn test_hiragana_variant_skips_all_hiragana() {
 fn test_hiragana_variant_dedup_via_run_rewriters() {
     let rw = HiraganaVariantRewriter;
     let mut paths = vec![
-        ScoredPath {
-            segments: vec![RichSegment {
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "され".into(),
                 surface: "去れ".into(),
                 left_id: 10,
                 right_id: 10,
                 word_cost: 0,
             }],
-            viterbi_cost: 3000,
-            history_boost: 0,
-            whole_path_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
-        ScoredPath {
-            segments: vec![RichSegment {
+            3000,
+            PathOrigin::Viterbi,
+        ),
+        ScoredPath::new(
+            vec![RichSegment {
                 reading: "され".into(),
                 surface: "され".into(),
                 left_id: 0,
                 right_id: 0,
                 word_cost: 0,
             }],
-            viterbi_cost: 4000,
-            history_boost: 0,
-            whole_path_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        },
+            4000,
+            PathOrigin::Viterbi,
+        ),
     ];
 
     run_rewriters(&[&rw], &mut paths, "され", RewriteStage::Model);
@@ -127,8 +115,8 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
 #[test]
 fn test_hiragana_variant_keeps_katakana() {
     let rw = HiraganaVariantRewriter;
-    let paths = vec![ScoredPath {
-        segments: vec![
+    let paths = vec![ScoredPath::new(
+        vec![
             RichSegment {
                 reading: "てすと".into(),
                 surface: "テスト".into(),
@@ -144,12 +132,9 @@ fn test_hiragana_variant_keeps_katakana() {
                 word_cost: 0,
             },
         ],
-        viterbi_cost: 2000,
-        history_boost: 0,
-        whole_path_boost: 0,
-        origin: PathOrigin::Viterbi,
-        priced_by: PathOrigin::Viterbi,
-    }];
+        2000,
+        PathOrigin::Viterbi,
+    )];
 
     let result = rw.generate(&paths, "てすとちゅう");
 

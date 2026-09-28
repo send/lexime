@@ -24,8 +24,9 @@ pub(crate) trait PostprocessObserver {
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
     /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
-    /// Called with the paths cost-gap admission kept, before the n cut.
-    fn after_admission(&mut self, _paths: &[ScoredPath]) {}
+    /// Called for each path cost-gap admission drops, with the gap's base
+    /// (the pre-history #1's cost).
+    fn dropped_by_cost_gap(&mut self, _path: &ScoredPath, _anchor: i64) {}
     /// Called on the final paths before `group_segments` merges morphemes
     /// into phrases, while segments are still the priced lattice nodes.
     fn before_group(&mut self, _paths: &[ScoredPath]) {}
@@ -149,8 +150,9 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
         reranker::history_rerank_at(paths, h, ctx.conn, ctx.now);
     }
 
-    admit_by_cost_gap(paths, anchor, ctx.max_cost_gap);
-    observer.after_admission(paths);
+    admit_by_cost_gap(paths, anchor, ctx.max_cost_gap, |p| {
+        observer.dropped_by_cost_gap(p, anchor)
+    });
 
     let mut top: Vec<ScoredPath> = paths.drain(..model_budget_end(paths, ctx.n)).collect();
 
@@ -200,12 +202,24 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
 /// The floor keeps the kana rescue's band (best + 4000) however the rescue's
 /// surface is priced. An offer is judged by its own price, which is never
 /// below its source's, so a dropped source takes its offers with it.
-pub(super) fn admit_by_cost_gap(paths: &mut Vec<ScoredPath>, anchor: i64, max_gap: i64) {
+/// `on_drop` sees each dropped path (explain lists them).
+pub(super) fn admit_by_cost_gap(
+    paths: &mut Vec<ScoredPath>,
+    anchor: i64,
+    max_gap: i64,
+    mut on_drop: impl FnMut(&ScoredPath),
+) {
     let limit = anchor.saturating_add(max_gap.max(rewriter::RESCUE_OFFSET));
-    let mut index = 0;
+    let mut first = true;
     paths.retain(|p| {
-        index += 1;
-        index == 1 || p.whole_path_boost > 0 || p.is_identity() || p.pre_history_cost() <= limit
+        let keep = std::mem::take(&mut first)
+            || p.pre_history_cost() <= limit
+            || p.whole_path_boost > 0
+            || p.is_identity();
+        if !keep {
+            on_drop(p);
+        }
+        keep
     });
 }
 

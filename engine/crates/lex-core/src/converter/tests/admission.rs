@@ -5,8 +5,9 @@ use crate::converter::postprocess::{
     admit_by_cost_gap, postprocess_observed, NoopObserver, PostprocessContext,
 };
 use crate::converter::rewriter::RESCUE_OFFSET;
+use crate::converter::testutil::{entry as e, taberu_dict as taberu};
 use crate::converter::viterbi::PathOrigin;
-use crate::dict::{DictEntry, TrieDictionary};
+use crate::dict::TrieDictionary;
 use crate::settings::DEFAULT_CANDIDATE_MAX_COST_GAP;
 use crate::user_history::UserHistory;
 
@@ -26,6 +27,13 @@ fn path(reading: &str, surface: &str, cost: i64) -> ScoredPath {
 
 fn keys(paths: &[ScoredPath]) -> Vec<String> {
     paths.iter().map(ScoredPath::surface_key).collect()
+}
+
+/// Admission, returning the surfaces it dropped.
+fn admit(paths: &mut Vec<ScoredPath>, anchor: i64, max_gap: i64) -> Vec<String> {
+    let mut dropped = Vec::new();
+    admit_by_cost_gap(paths, anchor, max_gap, |p| dropped.push(p.surface_key()));
+    dropped
 }
 
 /// The pipeline at a chosen T (production reads T from settings, which a
@@ -53,25 +61,6 @@ fn run(
     postprocess_observed(&mut raw, &ctx, &mut NoopObserver)
 }
 
-fn e(surface: &str, cost: i16) -> DictEntry {
-    DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    }
-}
-
-/// 食べる against the fragments 田|辺留 (two nodes, two segment penalties,
-/// far above 食べる) — the RC-2 田辺る shape.
-fn taberu() -> TrieDictionary {
-    TrieDictionary::from_entries(vec![
-        ("たべる".into(), vec![e("食べる", 0)]),
-        ("た".into(), vec![e("田", 3000)]),
-        ("べる".into(), vec![e("辺留", 3000)]),
-    ])
-}
-
 // ---------------------------------------------------------------------------
 // admit_by_cost_gap
 // ---------------------------------------------------------------------------
@@ -83,12 +72,13 @@ fn keeps_index_zero_and_paths_within_the_gap() {
         path("よみ", "内", 9000),
         path("よみ", "外", 9001),
     ];
-    admit_by_cost_gap(&mut paths, 1000, 8000);
+    let dropped = admit(&mut paths, 1000, 8000);
     assert_eq!(keys(&paths), ["一", "内"], "gap == T stays, T + 1 goes");
+    assert_eq!(dropped, ["外"], "the dropped path is reported");
 
     // Index 0 stays whatever its cost (a learned #1 can sit above the anchor).
     let mut paths = vec![path("よみ", "学", 50_000), path("よみ", "外", 20_000)];
-    admit_by_cost_gap(&mut paths, 1000, 8000);
+    admit(&mut paths, 1000, 8000);
     assert_eq!(keys(&paths), ["学"]);
 }
 
@@ -102,7 +92,7 @@ fn committed_surfaces_and_the_typed_kana_stay_whatever_their_gap() {
         path("よみ", "よみ", 90_000),
         path("よみ", "外", 90_000),
     ];
-    admit_by_cost_gap(&mut paths, 0, 8000);
+    admit(&mut paths, 0, 8000);
     assert_eq!(keys(&paths), ["一", "習", "よみ"]);
 }
 
@@ -114,7 +104,7 @@ fn the_gap_never_cuts_below_the_kana_rescue_band() {
             path("よみ", "救", 1000 + RESCUE_OFFSET),
             path("よみ", "外", 1000 + RESCUE_OFFSET + 1),
         ];
-        admit_by_cost_gap(&mut paths, 1000, t);
+        admit(&mut paths, 1000, t);
         assert_eq!(keys(&paths), ["一", "救"], "T = {t}");
     }
 }
@@ -122,13 +112,13 @@ fn the_gap_never_cuts_below_the_kana_rescue_band() {
 #[test]
 fn admission_is_a_no_op_on_empty_single_and_unbounded_lists() {
     let mut empty: Vec<ScoredPath> = Vec::new();
-    admit_by_cost_gap(&mut empty, 0, 0);
+    admit(&mut empty, 0, 0);
     assert!(empty.is_empty());
     let mut one = vec![path("よみ", "一", 0)];
-    admit_by_cost_gap(&mut one, 0, 0);
+    admit(&mut one, 0, 0);
     assert_eq!(keys(&one), ["一"]);
     let mut far = vec![path("よみ", "一", 0), path("よみ", "遠", i64::MAX - 1)];
-    admit_by_cost_gap(&mut far, i64::MAX - 10, i64::MAX);
+    admit(&mut far, i64::MAX - 10, i64::MAX);
     assert_eq!(keys(&far), ["一", "遠"], "the limit saturates");
 }
 

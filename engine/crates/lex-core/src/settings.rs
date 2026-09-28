@@ -605,36 +605,30 @@ max_results = 20
 
     #[test]
     fn max_cost_gap_defaults_when_omitted_and_rejects_negative() {
-        let base = r#"
-[cost]
-segment_penalty = 5000
-mixed_script_bonus = 3000
-katakana_penalty = 5000
-pure_kanji_bonus = 1000
-latin_penalty = 20000
-unknown_word_cost = 10000
-
-[reranker]
-length_variance_weight = 2000
-structure_cost_filter = 6000
-
-[history]
-boost_per_use = 3000
-max_boost = 15000
-half_life_hours = 168.0
-max_unigrams = 10000
-max_bigrams = 10000
-
-[candidates]
-nbest = 20
-max_results = 20
-"#;
-        // A settings.toml written before the key existed still loads.
-        let s = parse_settings_toml(base).unwrap();
+        // The shipped file without the key: a settings.toml written before
+        // the key existed.
+        let base: String = DEFAULT_SETTINGS_TOML
+            .lines()
+            .filter(|l| !l.starts_with("max_cost_gap"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(DEFAULT_SETTINGS_TOML.contains("\nmax_cost_gap = "));
+        assert!(
+            !base.contains("\nmax_cost_gap = "),
+            "fixture: the key was removed"
+        );
+        let s = parse_settings_toml(&base).unwrap();
         assert_eq!(s.candidates.max_cost_gap, DEFAULT_CANDIDATE_MAX_COST_GAP);
-        let s = parse_settings_toml(&format!("{base}max_cost_gap = 12000\n")).unwrap();
+        let with = |value: &str| {
+            base.replacen(
+                "max_results = 20\n",
+                &format!("max_results = 20\nmax_cost_gap = {value}\n"),
+                1,
+            )
+        };
+        let s = parse_settings_toml(&with("12000")).unwrap();
         assert_eq!(s.candidates.max_cost_gap, 12000);
-        let err = parse_settings_toml(&format!("{base}max_cost_gap = -1\n")).unwrap_err();
+        let err = parse_settings_toml(&with("-1")).unwrap_err();
         assert!(err.to_string().contains("candidates.max_cost_gap"));
     }
 

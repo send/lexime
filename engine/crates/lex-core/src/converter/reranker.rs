@@ -263,14 +263,7 @@ mod tests {
     }
 
     fn path(segments: Vec<RichSegment>, cost: i64) -> ScoredPath {
-        ScoredPath {
-            segments,
-            viterbi_cost: cost,
-            history_boost: 0,
-            whole_path_boost: 0,
-            origin: PathOrigin::Viterbi,
-            priced_by: PathOrigin::Viterbi,
-        }
+        ScoredPath::new(segments, cost, PathOrigin::Viterbi)
     }
 
     /// Build a minimal ConnectionMatrix with the given roles vector and
