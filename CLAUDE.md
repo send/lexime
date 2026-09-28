@@ -46,7 +46,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 4. `git push -u origin <branch>` で push する
 5. `gh pr create` で PR を作成する。未チェックのテストプランがある場合は先に済ますこと
 6. コードの変更を含む PR はレビュー対応後にマージする（後述）
-7. `gh pr merge <number> --merge` でマージする。`--delete-branch` は付けない — gh ≥2.99 はその branch を checkout している別 worktree を `git worktree remove` する (#354 で Orca ワークスペースごとセッションが消えた)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す
+7. `gh pr merge <number> --merge` でマージする。`--delete-branch` は付けない — gh ≥2.99 はその branch を checkout している別 worktree を `git worktree remove` する (#354 で Orca ワークスペースごとセッションが消えた)。remote branch はリポジトリ設定 `delete_branch_on_merge` が消す。ローカルの worktree と branch は、その worktree を使っているセッションが無いことを確かめてから `git worktree remove` / `git branch -D` で片付ける
 
 ### PR レビュー対応フロー
 
