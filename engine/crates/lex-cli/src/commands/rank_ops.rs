@@ -456,7 +456,8 @@ pub struct ReplayReport {
     /// selection, the population the user scanned.
     pub page1_slots: usize,
     /// Selections and first-page slots by the stage that put the surface on
-    /// the list. Sums to `in_list`, `in_page` and `page1_slots`.
+    /// the list, one entry per owner (zeros included). Sums to `in_list`,
+    /// `in_page` and `page1_slots`.
     pub by_owner: BTreeMap<Owner, OwnerCounts>,
 }
 
@@ -491,6 +492,18 @@ impl Serialize for Owner {
 }
 
 impl Owner {
+    const ALL: [Self; 9] = [
+        Self::Model,
+        Self::KanjiVariant,
+        Self::PartialHiragana,
+        Self::Rescue,
+        Self::Numeric,
+        Self::Katakana,
+        Self::Injected,
+        Self::Kana,
+        Self::Tail,
+    ];
+
     fn priced_by(origin: PathOrigin) -> Self {
         match origin {
             // The origins `PathOrigin::is_model` names.
@@ -624,7 +637,9 @@ impl Tally {
             rank_hist: vec![0; PAGE_SIZE],
             gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
             gap_no_path: 0,
-            by_owner: BTreeMap::new(),
+            // Every owner has a row, so an owner with nothing reads as 0,
+            // not as a missing key.
+            by_owner: Owner::ALL.map(|o| (o, OwnerCounts::default())).into(),
         }
     }
 
@@ -1057,6 +1072,14 @@ absent = ["x"]"#
         );
         let json = serde_json::to_value(t.into_report(1, 0, 7, 1)).unwrap();
         assert_eq!(json["from_line"], 7);
+        assert_eq!(
+            json["by_owner"]["kanji_variant"]["selections"], 0,
+            "zeros are listed"
+        );
+        assert_eq!(
+            json["by_owner"].as_object().unwrap().len(),
+            Owner::ALL.len()
+        );
         assert_eq!(json["by_owner"]["partial_hiragana"]["selections"], 1);
         assert_eq!(json["by_owner"]["partial_hiragana"]["page1_slots"], 1);
     }

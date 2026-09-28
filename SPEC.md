@@ -369,7 +369,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
 - **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、structure cost（累積遷移コスト）で再ランキング。セグメント数が少なく長いパスを優先
-- **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 3 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface はどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）
+- **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 3 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）
 - **表記ゆれ・かな救済**（`RewriteStage::Model`、履歴前に走る。index 0 は動かさない。n = 1 で学習が空のときは index 0 に届かないので省く — 出力は同じ）。段の全 rewriter が段に入ってきたリストから生成し、挿入はその後にまとめて行う（rewriter は互いの出力を見ない）
   - `HiraganaVariantRewriter` — best の漢字分節をすべてかなにした候補（かな救済 #263、best + 4000）
   - `PartialHiraganaRewriter` — 漢字分節を持つ上位 5 本の複数分節 model 経路について、漢字分節を 1 つかなにした提示。分節は同じ span・同じ語クラス（接続行列の role）の lattice かなノード（無ければ漢字ノードを読みのまま、上限価格で）。かなは常に正しい表記なので gap の上限なし
