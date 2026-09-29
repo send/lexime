@@ -13,6 +13,8 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 1000
+# Upper bound above the pre-history #1's structure cost (#353; before, above
+# the population's minimum — the same value is now the same or looser).
 structure_cost_filter = 6000
 te_form_kanji_penalty = 2000
 single_char_kanji_penalty = 0

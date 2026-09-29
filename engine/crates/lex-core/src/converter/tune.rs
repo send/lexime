@@ -106,7 +106,9 @@ pub struct TuneResult {
 // Pre-computation
 // ---------------------------------------------------------------------------
 
-/// Run Viterbi + resegment + hard filter + feature extraction for each case.
+/// Run Viterbi + resegment + feature extraction for each case. Every path
+/// is a candidate: the structure filter never drops the best-priced path,
+/// the only one tune scores.
 ///
 /// `cases` is a slice of `(reading, expected)` pairs.
 pub fn precompute_cases(
@@ -312,6 +314,23 @@ mod tests {
         assert!(
             result[0].candidates.iter().any(|c| c.surface == "今日"),
             "expected surface should be among candidates"
+        );
+    }
+
+    /// The structure filter drops 可なや in production, but tune keeps every
+    /// path: its top-1 is rerank's index 0 either way.
+    #[test]
+    fn tune_keeps_every_path_and_agrees_with_rerank_top1() {
+        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let cases = vec![("かなや".to_string(), "仮名屋".to_string())];
+        let tune = precompute_cases(&dict, &conn, &cases);
+        let surfaces: Vec<&str> = tune[0].candidates.iter().map(|c| c.surface.as_str()).collect();
+        assert!(surfaces.contains(&"可なや"), "{surfaces:?}");
+        let production = crate::converter::convert_nbest(&dict, Some(&conn), "かなや", 20);
+        let rerank_top: String = production[0].iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(
+            top1_surface(&tune[0].candidates, &FeatureWeights::from_settings()),
+            rerank_top
         );
     }
 

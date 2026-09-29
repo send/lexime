@@ -37,6 +37,25 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
+    /// Structure cost of the pre-history #1, which the structure filter
+    /// measures from.
+    pub structure_anchor_sc: i64,
+    /// The structure filter's threshold: the anchor's structure cost (a
+    /// single segment imputed at the prefix floor) + `structure_cost_filter`.
+    pub structure_threshold: i64,
+    /// Paths the structure filter dropped, by gap then surface.
+    pub dropped_by_structure: Vec<DroppedStructurePath>,
+}
+
+/// A path the structure filter dropped.
+#[derive(Debug, Serialize)]
+pub struct DroppedStructurePath {
+    pub surface: String,
+    pub structure_cost: i64,
+    /// Its price (Viterbi + features) above the pre-history #1's: at most
+    /// the cost-gap bound means admission alone would have kept it.
+    pub gap: i64,
+    pub origin: PathOrigin,
 }
 
 /// A path cost-gap admission dropped.
@@ -191,6 +210,9 @@ struct ExplainObserver<'a> {
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
     anchor: i64,
+    /// Paths the structure filter dropped, and its `(anchor sc, threshold)`.
+    dropped_by_structure: Vec<DroppedStructurePath>,
+    structure_filter: (i64, i64),
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -211,6 +233,8 @@ impl<'a> ExplainObserver<'a> {
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
             anchor: 0,
+            dropped_by_structure: Vec::new(),
+            structure_filter: (0, 0),
         }
     }
 }
@@ -223,9 +247,22 @@ impl PostprocessObserver for ExplainObserver<'_> {
             .collect();
     }
 
+    fn dropped_by_structure(&mut self, path: &ScoredPath, sc: i64, gap: i64) {
+        self.dropped_by_structure.push(DroppedStructurePath {
+            surface: path.surface_key(),
+            structure_cost: sc,
+            gap,
+            origin: path.origin,
+        });
+    }
+
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
         self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
+        // The Model stage keeps index 0, so it is still the filter's anchor.
+        if let Some(best) = paths.first() {
+            self.structure_filter = super::reranker::structure_filter_at(best, self.conn);
+        }
         for p in paths {
             let breakdown = match self.history {
                 Some(h) => compute_history_boost(p, h, self.conn, self.now),
@@ -376,6 +413,9 @@ pub fn explain(
             cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
+            structure_anchor_sc: 0,
+            structure_threshold: 0,
+            dropped_by_structure: Vec::new(),
         };
     }
 
@@ -403,6 +443,9 @@ pub fn explain(
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
     let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
+    let mut dropped_by_structure = std::mem::take(&mut observer.dropped_by_structure);
+    dropped_by_structure.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
+    let (structure_anchor_sc, structure_threshold) = observer.structure_filter;
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -480,6 +523,9 @@ pub fn explain(
         cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
+        structure_anchor_sc,
+        structure_threshold,
+        dropped_by_structure,
     }
 }
 
@@ -618,6 +664,21 @@ pub fn format_text(result: &ExplainResult) -> String {
         }
     }
 
+    if !result.dropped_by_structure.is_empty() {
+        out.push_str(&format!(
+            "\n=== Dropped by structure ({}; threshold={} = anchor sc {} + structure_cost_filter) ===\n",
+            result.dropped_by_structure.len(),
+            result.structure_threshold,
+            result.structure_anchor_sc,
+        ));
+        for d in &result.dropped_by_structure {
+            out.push_str(&format!(
+                "  {}  (sc={}, gap={}, {:?})\n",
+                d.surface, d.structure_cost, d.gap, d.origin
+            ));
+        }
+    }
+
     out
 }
 
@@ -643,12 +704,39 @@ mod tests {
         assert!(!best.segments.is_empty());
     }
 
-    /// A lattice whose top-1 depends on the oversample. The two cheapest
-    /// paths (可|な|や, 課|な|や) have two 4000 transitions (structure cost
-    /// 8000); カナ|や connects at 0 but is the 4th-cheapest path. Once the
-    /// population reaches カナ|や, rerank's structure threshold drops to
-    /// 0 + 6000 and filters the 3-segment paths, so the top-1 becomes 仮名屋.
+    /// A lattice whose top-1 depends on the oversample through rerank's
+    /// argmin (#361): the three cheapest Viterbi paths are katakana / Latin
+    /// spellings the script feature penalises; 金谷 is 4th in Viterbi order
+    /// but cheapest after features. An oversample of 3 (n=1) never sees it.
+    /// Every path is one segment, so the structure filter cannot act.
     fn oversample_sensitive() -> (TrieDictionary, ConnectionMatrix) {
+        let e = |surface: &str, cost: i16, id: u16| DictEntry {
+            surface: surface.into(),
+            cost,
+            left_id: id,
+            right_id: id,
+        };
+        let dict = TrieDictionary::from_entries(vec![(
+            "かなや".into(),
+            vec![
+                e("カナヤ", 0, 1),
+                e("KANAYA", 10, 2),
+                e("kanaya", 20, 3),
+                e("金谷", 30, 4),
+            ],
+        )]);
+        (
+            dict,
+            ConnectionMatrix::new_owned(5, 0, 0, Vec::new(), vec![0i16; 25]),
+        )
+    }
+
+    /// Before #353 the structure filter's threshold came from the
+    /// population's minimum: the two cheapest paths (可|な|や, 課|な|や) have
+    /// two 4000 transitions (structure cost 8000); カナ|や connects at 0 but
+    /// is the 4th-cheapest path, so once the population reached it the
+    /// threshold dropped to 0 + 6000 and filtered the cheapest paths.
+    fn filter_population_sensitive() -> (TrieDictionary, ConnectionMatrix) {
         let e = |surface: &str, cost: i16, id: u16| DictEntry {
             surface: surface.into(),
             cost,
@@ -735,6 +823,21 @@ mod tests {
                 .collect::<String>()
         };
         assert_ne!(head(1), head(20));
+    }
+
+    /// The structure filter measures from the #1, so a path that never wins
+    /// (カナ|や) cannot change which paths survive: every width and the
+    /// 1-best agree (#353; before, n=1 saw 可なや and n=20 仮名屋).
+    #[test]
+    fn filter_does_not_depend_on_paths_that_never_win() {
+        let (dict, conn) = filter_population_sensitive();
+        let joined = |p: &[crate::converter::ConvertedSegment]| {
+            p.iter().map(|s| s.surface.as_str()).collect::<String>()
+        };
+        let head = |n| joined(&crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]);
+        let one_best = joined(&crate::converter::convert(&dict, Some(&conn), "かなや"));
+        assert_eq!(head(1), head(20));
+        assert_eq!(one_best, head(20));
     }
 
     #[test]
@@ -950,4 +1053,25 @@ mod tests {
         assert!(gaps.windows(2).all(|w| w[0] <= w[1]), "by gap: {gaps:?}");
         assert!(format_text(&result).contains("Dropped by cost gap"));
     }
+
+    #[test]
+    fn dropped_by_structure_lists_what_the_filter_cut() {
+        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let result = explain(&dict, Some(&conn), None, "かなや", 20);
+        assert_eq!(result.structure_threshold, 3000 + 6000);
+        let dropped: Vec<(&str, i64)> = result
+            .dropped_by_structure
+            .iter()
+            .map(|d| (d.surface.as_str(), d.structure_cost))
+            .collect();
+        assert!(dropped.contains(&("可なや", 10000)), "{dropped:?}");
+        let listed: Vec<String> = result.paths.iter().map(ExplainPath::surface).collect();
+        for d in &result.dropped_by_structure {
+            assert!(d.structure_cost > result.structure_threshold);
+            assert!(d.gap >= 0, "the #1 is never dropped");
+            assert!(!listed.contains(&d.surface), "{} listed and dropped", d.surface);
+        }
+        assert!(format_text(&result).contains("Dropped by structure"));
+    }
 }
+

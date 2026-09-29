@@ -258,9 +258,9 @@ pub(crate) const RESCUE_OFFSET: i64 = 4000;
 
 /// The largest Viterbi-price increase a kanji spelling may add over its
 /// source and still be offered (したほうがいい's 方: 2357). Measured against the source,
-/// not the rest of the list: rerank's structure filter judges a path by the
-/// population's best, so a sound variant would come and go with the
-/// oversample.
+/// not the rest of the list: an offer is a spelling next to its source,
+/// judged by that source rather than by the #1 the structure filter
+/// measures from.
 const OFFER_MAX_MODEL_GAP: i64 = 6000;
 
 /// The first 5 multi-segment model-priced paths: the sources both variant

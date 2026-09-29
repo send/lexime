@@ -45,6 +45,32 @@ impl<'a> FeaturePricer<'a> {
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
         self.fcfg.extract(path, None).weighted_cost(&self.weights)
     }
+
+    /// `path`'s structure cost, as the structure filter measures it.
+    fn structure_cost(&self, path: &ScoredPath) -> i64 {
+        compute_structure_cost(
+            path,
+            self.fcfg.conn,
+            self.fcfg.structure_cap,
+            self.fcfg.prefix_floor,
+        )
+    }
+
+    /// The structure filter's threshold when `anchor` is the #1.
+    fn threshold_at(&self, anchor: &ScoredPath, anchor_sc: i64) -> i64 {
+        structure_threshold(anchor.segments.len(), anchor_sc, self.fcfg.prefix_floor)
+    }
+}
+
+/// `(structure cost, filter threshold)` of `anchor` — the pre-history #1
+/// the filter measured from. For diagnostics (explain).
+pub(crate) fn structure_filter_at(
+    anchor: &ScoredPath,
+    conn: Option<&ConnectionMatrix>,
+) -> (i64, i64) {
+    let features = FeaturePricer::new(conn, None);
+    let sc = features.structure_cost(anchor);
+    (sc, features.threshold_at(anchor, sc))
 }
 
 /// Structure-filter threshold measured from the anchor — the pre-history #1
@@ -85,7 +111,8 @@ pub(crate) fn structure_prefix_floor() -> i64 {
 /// The structure filter drops paths whose structure cost exceeds the
 /// anchor's (the cheapest path after features) by more than
 /// `structure_cost_filter`; `on_drop` sees each dropped path with its
-/// structure cost and the threshold. The anchor itself always survives.
+/// structure cost and its price's gap to the anchor. The anchor itself
+/// always survives.
 pub fn rerank(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
@@ -100,17 +127,7 @@ pub fn rerank(
 
     // Structure cost and price (Viterbi + features) per path; the threshold
     // is measured from the cheapest.
-    let structure_costs: Vec<i64> = paths
-        .iter()
-        .map(|p| {
-            compute_structure_cost(
-                p,
-                conn,
-                features.fcfg.structure_cap,
-                features.fcfg.prefix_floor,
-            )
-        })
-        .collect();
+    let structure_costs: Vec<i64> = paths.iter().map(|p| features.structure_cost(p)).collect();
     let prices: Vec<i64> = paths
         .iter()
         .zip(&structure_costs)
@@ -120,11 +137,8 @@ pub fn rerank(
     let Some(anchor) = (0..paths.len()).min_by_key(|&i| prices[i]) else {
         return;
     };
-    let threshold = structure_threshold(
-        paths[anchor].segments.len(),
-        structure_costs[anchor],
-        features.fcfg.prefix_floor,
-    );
+    let threshold = features.threshold_at(&paths[anchor], structure_costs[anchor]);
+    let anchor_price = prices[anchor];
 
     // Filter and price in one pass. Identity paths (surface == reading
     // throughout) are exempt from the filter: they are the user's typed input
@@ -137,7 +151,7 @@ pub fn rerank(
             return true;
         };
         if !p.is_identity() && sc > threshold {
-            on_drop(p, sc, threshold);
+            on_drop(p, sc, price - anchor_price);
             return false;
         }
         p.viterbi_cost = price;
