@@ -444,6 +444,11 @@ pub struct ReplayReport {
     /// Cost gap of the selected surface's N-best path to the #1 path,
     /// binned by [`GAP_BIN_UPPER`] plus an open last bin.
     pub gap_hist: Vec<usize>,
+    /// Selections priced below the #1 path. The #1 is then a learned
+    /// surface the user picked around (history puts the cheapest learned
+    /// path first, whatever cheaper unlearned paths follow it): a
+    /// re-correction, the count PR-G's post-ship revert trigger reads.
+    pub gap_below_top: usize,
     /// Selections with no N-best path (lookup / prediction / injection only).
     pub gap_no_path: usize,
     /// Log lines skipped as unreadable (see `Selections::malformed`).
@@ -566,8 +571,10 @@ pub struct BaselineDiff {
 struct ReadingView {
     /// The production candidate list.
     surfaces: Vec<String>,
-    /// The list's N-best paths as (surface, price), cheapest first — from
-    /// the same run as `surfaces`. Joined surfaces are unique among paths.
+    /// The list's N-best paths as (surface, price) in list order — the
+    /// cheapest learned path first, else the cheapest (so later paths can
+    /// cost less than the first) — from the same run as `surfaces`. Joined
+    /// surfaces are unique among paths.
     paths: Vec<(String, PathPrice)>,
     /// `owners[r]` put `surfaces[r]` on the list.
     owners: Vec<Owner>,
@@ -619,7 +626,8 @@ impl ReadingView {
 /// Where one selection landed in its reading's list.
 struct Landing {
     rank: Option<usize>,
-    /// Cost gap of the selected surface's N-best path to the #1 path.
+    /// Cost gap of the selected surface's N-best path to the #1 path;
+    /// negative when #1 is a learned path priced above it.
     gap: Option<i64>,
 }
 
@@ -627,6 +635,7 @@ struct Landing {
 struct Tally {
     rank_hist: Vec<usize>,
     gap_hist: Vec<usize>,
+    gap_below_top: usize,
     gap_no_path: usize,
     by_owner: BTreeMap<Owner, OwnerCounts>,
 }
@@ -636,6 +645,7 @@ impl Tally {
         Self {
             rank_hist: vec![0; PAGE_SIZE],
             gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
+            gap_below_top: 0,
             gap_no_path: 0,
             // Every owner has a row, so an owner with nothing reads as 0,
             // not as a missing key.
@@ -658,6 +668,7 @@ impl Tally {
             }
         }
         match landing.gap {
+            Some(g) if g < 0 => self.gap_below_top += 1,
             Some(g) => self.gap_hist[gap_bin(g)] += 1,
             None => self.gap_no_path += 1,
         }
@@ -682,6 +693,7 @@ impl Tally {
             absent: selections - in_list,
             rank_hist: self.rank_hist,
             gap_hist: self.gap_hist,
+            gap_below_top: self.gap_below_top,
             gap_no_path: self.gap_no_path,
             malformed_lines,
             from_line,
@@ -1061,6 +1073,36 @@ absent = ["x"]"#
             }
         );
         assert_eq!(r.by_owner[&Owner::Kana].page1_slots, 1);
+    }
+
+    /// A learned #1 priced above the path the user picks: the gap is
+    /// negative and is counted apart from the bins (a re-correction).
+    #[test]
+    fn selection_below_a_learned_top_is_counted_apart() {
+        let names = ["荷重", "二十", "二重"];
+        let v = ReadingView::new(
+            "にじゅう",
+            PricedCandidates {
+                response: resp(&names, &names),
+                diagnostics: CandidateDiagnostics {
+                    prices: [11456, 7334, 9000]
+                        .into_iter()
+                        .map(|cost| PathPrice {
+                            cost,
+                            priced_by: PathOrigin::Viterbi,
+                        })
+                        .collect(),
+                    injected: Vec::new(),
+                },
+            },
+        );
+        let mut t = Tally::new();
+        t.add(&v, "二十");
+        t.add(&v, "荷重");
+        let r = t.into_report(2, 0, 0, 1);
+        assert_eq!(r.gap_below_top, 1);
+        assert_eq!(r.gap_hist[0], 1, "the #1 itself is at gap 0");
+        assert_eq!(r.gap_hist.iter().sum::<usize>(), 1);
     }
 
     #[test]

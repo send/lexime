@@ -1279,6 +1279,7 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
         };
         row(&label, n);
     }
+    row("< 0 (below a learned #1)", r.gap_below_top);
     row("no N-best path", r.gap_no_path);
     println!();
     println!(

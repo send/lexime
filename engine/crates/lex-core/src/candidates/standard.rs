@@ -72,8 +72,10 @@ fn generate_normal(
 
     // 1. N-best Viterbi conversion with history-aware reranking.
     //    history_rerank is applied post-Viterbi on N-best paths (not during
-    //    lattice search), so it cannot cause fragmentation. Time-decayed
-    //    boosts (half-life 168h) prevent stale history from dominating.
+    //    lattice search), so it cannot cause fragmentation. The cheapest
+    //    learned path is #1; time decay (half-life 168h) orders learned
+    //    surfaces among themselves, not against unlearned ones (SPEC
+    //    §ブースト計算).
     let nbest = settings().candidates.nbest;
     let ctx = crate::converter::ConversionContext {
         dict,
@@ -115,6 +117,9 @@ fn generate_normal(
     //    but only above the N-best #1 when the #1 hasn't been explicitly
     //    learned. When the #1 has its own whole-path history boost, kana
     //    goes to position 1 instead so explicit kanji selection is respected.
+    //    A learned kana in the N-best is already placed by history reranking
+    //    (learned surfaces compete on price, the kana at its rescue price);
+    //    this step only moves a kana injected at 1.5 or absent from it.
     let now = crate::user_history::now_epoch();
     let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
     let top_has_boost = if !surfaces.is_empty() && surfaces[0] != reading {

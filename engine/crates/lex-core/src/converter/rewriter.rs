@@ -624,7 +624,8 @@ impl NumericRewriter<'_> {
     ///
     /// Counter ambiguity is resolved by the counter node's own word cost: the
     /// cheapest counter at the position anchors at `best_cost - 500` (so the
-    /// kanji compound surfaces above the existing top-1) and pricier counter
+    /// kanji compound surfaces above the existing top-1 unless that top-1 is
+    /// learned, [`RewriteStage::Override`]) and pricier counter
     /// homophones get penalised by their cost difference. This mirrors what
     /// Viterbi would do if a `<kanji_number><counter>` segmentation were
     /// representable in the lattice.
@@ -701,8 +702,9 @@ impl NumericRewriter<'_> {
         let best_cost = self.anchor;
         let base_cost = worst_cost(paths).saturating_add(5000);
         // Discount keeps the most-likely number+counter compound above the
-        // current Viterbi top-1, since this segmentation isn't representable
-        // in the lattice (no `三千` dictionary entry).
+        // current Viterbi top-1 (an unlearned one; a learned top-1 stays, see
+        // RewriteStage), since this segmentation isn't representable in the
+        // lattice (no `三千` dictionary entry).
         let kanji_anchor = best_cost.saturating_sub(500);
 
         for cand in &cands {
