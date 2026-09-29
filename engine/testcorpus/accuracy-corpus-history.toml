@@ -99,7 +99,7 @@ repeat = 1
 
 # PR-G: a surface learned once whose boost does not cover its price gap
 [[history]]
-segments = [["こむろてつや", "小室鉄弥"]]
+segments = [["おむろん", "OMRON"]]
 repeat = 1
 
 # ═══════════════════════════════════════════════════════════════════
@@ -231,16 +231,9 @@ absent = ["田辺留"]
 # ═══════════════════════════════════════════════════════════════════
 
 [[cases]]
-reading = "こむろてつや"
-expected = "小室鉄弥"
-baseline = "小室哲哉"
+reading = "おむろん"
+expected = "OMRON"
+baseline = "オムロン"
 category = "regression"
 tags = ["history", "whole-path", "learned-top1"]
-note = "小室鉄弥 は履歴なしで #1 (小室哲哉) との差 16077。読み全体を 1 回確定した whole ペアの boost (3000 × 5) では差を埋めきれず、以前は 小室哲哉 が #1 のままだった。学習済み (whole) の経路が在れば #1 はその中で最安 (PR-G)。差 > T なので履歴なしでは N-best に無い。小室鉄弥 は 1-best の母集団 (履歴あり oversample 30) にも在る — 3 幅とも #1。差が 15000 以下になったら (boost だけで #1 になり PR-G を守らない) 別の表記に選び直す"
-
-[cases.window]
-n = 20
-present_nbest = ["小室鉄弥"]
-
-[cases.window.baseline]
-absent = ["小室鉄弥"]
+note = "OMRON は 1 分節の辞書エントリで、履歴なしの #1 (オムロン) との差 29060 (admission の bound 8000 超なので N-best には無く、oversample 30 の母集団と辞書 lookup には在る。lookup が候補列の tail に入れるので、baseline の window は absent にできず、window は付けない — top-1 の 3 幅チェックが PR-G を守る)。読み全体を 1 回確定した whole ペアの boost (1 分節なので unigram 3000 + whole 3000 × 5 = 18000) では差を埋めきれず、PR-G 前は オムロン が #1 のままだった。学習済み (whole) の経路が在れば #1 はその中で最安 (PR-G)。1 分節なので確定の記録は whole ペアだけで、分節・bigram の副作用は無い。corpus の [[history]] は age を持てない (fresh 1 回) ので、差は 18000 を十分超える必要がある — boost だけで #1 になるほど差が縮んだら (18000 以下) 別の表記に選び直す"

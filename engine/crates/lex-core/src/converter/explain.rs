@@ -682,13 +682,34 @@ mod tests {
         // A whole-pair learning of a non-#1 surface moves it to index 0.
         let mut learned = UserHistory::new();
         learned.record(&[("かなや".into(), "仮名屋".into())]);
-        for history in [None, Some(&h), Some(&learned)] {
+        // カナや learned a year ago: its boost has decayed far short of its
+        // gap, so only the rotate can make it #1.
+        let mut stale = UserHistory::new();
+        stale.record_at(
+            &[("かなや".into(), "カナや".into())],
+            crate::user_history::now_epoch() - 3600 * 24 * 365,
+        );
+        let mut rotated_at = 0;
+        for (history, is_stale) in [
+            (None, false),
+            (Some(&h), false),
+            (Some(&learned), false),
+            (Some(&stale), true),
+        ] {
             for n in 1..=6 {
-                let explained: Vec<String> = explain(&dict, Some(&conn), history, "かなや", n)
-                    .paths
-                    .iter()
-                    .map(|p| p.surface())
-                    .collect();
+                let explanation = explain(&dict, Some(&conn), history, "かなや", n);
+                let explained: Vec<String> =
+                    explanation.paths.iter().map(|p| p.surface()).collect();
+                if let [first, second, ..] = explanation.paths.as_slice() {
+                    if is_stale && n >= 2 {
+                        assert!(first.history_breakdown.whole_path_boost > 0, "n={n}");
+                        assert!(
+                            first.final_cost > second.final_cost,
+                            "n={n}: the learned #1 was moved, not priced, to the front"
+                        );
+                        rotated_at += 1;
+                    }
+                }
                 let production: Vec<String> = match history {
                     Some(h) => crate::converter::convert_nbest_with_history(
                         &dict,
@@ -705,6 +726,7 @@ mod tests {
                 assert_eq!(explained, production, "n={n} history={}", history.is_some());
             }
         }
+        assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
         // The fixture is sensitive: the two populations disagree on top-1.
         let head = |n| {
             crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]

@@ -42,7 +42,14 @@ pub(super) fn complete_candidate_cycle(
     dict: &dyn Dictionary,
 ) -> Option<KeyResponse> {
     let reading = composing_reading(session)?.to_string();
-    let cand = lex_core::candidates::generate_candidates(dict, None, None, &reading, 20);
+    // The session's own history, as the async worker reads it.
+    let cand = {
+        let history = session
+            .history
+            .as_ref()
+            .map(|h| h.read().unwrap_or_else(|e| e.into_inner()));
+        lex_core::candidates::generate_candidates(dict, None, history.as_deref(), &reading, 20)
+    };
     // Simulate a fresh (non-stale) response: snapshot the current epoch.
     let epoch = session.epoch;
     session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)

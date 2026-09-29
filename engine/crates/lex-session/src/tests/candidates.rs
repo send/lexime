@@ -421,47 +421,65 @@ fn test_auto_commit_skips_single_kana_first_segment() {
     );
 }
 
-/// PR-G: with a learned whole pair for each prefix, the stability tracker
-/// follows the learned #1's first segment and auto-commit commits it.
+/// PR-G: the stability tracker follows the learned #1's first segment and
+/// auto-commit commits it, though the model #1 is segmented differently
+/// (first segment きょう, not きょうは) and the learned boost is far short of
+/// the gap. Under the model's ordering the tracker would count the model
+/// #1's きょう and auto-commit 今日.
 #[test]
 fn auto_commit_and_stability_follow_learned_top() {
-    let dict = make_test_dict();
-    let mut h = lex_core::user_history::UserHistory::new();
-    for (r, s) in [
-        ("きょう", "京"),
-        ("きょうは", "京は"),
-        ("きょうはいい", "京はいい"),
-        ("きょうはいいてんき", "京はいい天気"),
-    ] {
-        h.record(&[(r.into(), s.into())]);
-    }
-    let mut session = InputSession::new(dict.clone(), None, None);
-    session.set_defer_candidates(true);
-    let cycle = |session: &mut InputSession| {
-        let reading = composing_reading(session)?.to_string();
-        let cand = generate_candidates(&*dict, None, Some(&h), &reading, 20);
-        let epoch = session.epoch;
-        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
+    use lex_core::user_history::{now_epoch, UserHistory};
+    let e = |surface: &str, cost: i16| DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: 0,
+        right_id: 0,
     };
+    let dict: Arc<dyn Dictionary> = Arc::new(TrieDictionary::from_entries(vec![
+        ("きょう".into(), vec![e("今日", 3000)]),
+        ("きょうは".into(), vec![e("京派", 20000)]),
+        ("は".into(), vec![e("は", 2000)]),
+        ("いい".into(), vec![e("良い", 3500)]),
+        ("い".into(), vec![e("胃", 6000)]),
+    ]));
+    // Learned a year ago, so the boost cannot cover the ~20000 gap.
+    let year_ago = now_epoch() - 3600 * 24 * 365;
+    let mut h = UserHistory::new();
+    for (r, s) in [
+        ("きょうはい", "京派胃"),
+        ("きょうはいい", "京派胃胃"),
+        ("きょうはいいい", "京派胃胃胃"),
+    ] {
+        h.record_at(&[(r.into(), s.into())], year_ago);
+    }
+    let h = Arc::new(std::sync::RwLock::new(h));
+    let mut session = InputSession::new(dict.clone(), None, Some(h));
+    session.set_defer_candidates(true);
+    // The fixture: the model #1 is segmented from きょう.
+    let plain = generate_candidates(&*dict, None, None, "きょうはいいい", 20);
+    assert_eq!(plain.paths[0][0].reading, "きょう");
+
+    type_string(&mut session, "kyouha");
+    complete_candidate_cycle(&mut session, &*dict);
     let mut last = None;
-    for romaji in ["kyou", "ha", "ii", "tenki"] {
+    for romaji in ["i", "i", "i"] {
         type_string(&mut session, romaji);
-        last = cycle(&mut session);
-        let first = session
-            .comp()
-            .candidates
-            .paths
-            .first()
-            .map(|p| p[0].surface.clone());
+        last = complete_candidate_cycle(&mut session, &*dict);
         if last.as_ref().is_some_and(|r| r.commit.is_some()) {
             break;
         }
-        assert_eq!(first.as_deref(), Some("京"), "the learned #1 leads");
+        let first = &session.comp().candidates.paths[0][0];
+        assert_eq!(first.surface, "京派", "the learned #1 leads");
+        assert_eq!(
+            session.comp().stability.prev_first_seg_reading.as_deref(),
+            Some("きょうは"),
+            "the tracker follows the learned #1's first segment"
+        );
     }
     let resp = last.expect("a response");
     assert_eq!(
         resp.commit.as_deref(),
-        Some("京"),
-        "auto-commit commits the learned #1"
+        Some("京派"),
+        "auto-commit commits the learned #1's first segment"
     );
 }

@@ -180,8 +180,9 @@ fn test_viterbi_best_preserved_despite_history_boost() {
     // unigram (sub-phrase learning is skipped for single-segment grouped paths).
     h.record(&[("きがします".into(), "気がします".into())]);
 
-    // After a single explicit selection, the compound should become #1
-    // thanks to the ×5 whole-path boost weight.
+    // After a single explicit selection the compound is a learned whole
+    // path, so it takes #1 (PR-G) whatever the size of its boost. The boost's
+    // magnitude is tested in `test_history_rerank_unigram_boost_reorders`.
     let after_learn = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
     let learned_surfaces: Vec<String> = after_learn
         .iter()
