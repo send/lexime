@@ -29,22 +29,32 @@ fn worst_cost(paths: &[ScoredPath]) -> i64 {
 }
 
 /// Where a group of rewriters runs, which decides what it may override.
+/// Neither stage lets an unlearned path displace a learned index 0: history
+/// reranking put the cheapest learned path there, and a learned surface
+/// outranks policy. The Override stage prices the paths it creates with the
+/// same history boost, so a learned number compound or katakana competes
+/// with the learned index 0 on price.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RewriteStage {
     /// Alternatives to the model's ranking, before history: never touch
     /// index 0.
     Model,
     /// Rewriters whose policy is to override the model, index 0 included:
-    /// NumericRewriter puts a number compound first on purpose (#239).
+    /// NumericRewriter puts a number compound first on purpose (#239) —
+    /// unless index 0 is a surface the user has learned for this reading
+    /// and the compound is not, which outranks any policy.
     Override,
 }
 
 impl RewriteStage {
-    /// Leading entries this stage may neither displace nor reprice.
-    fn frozen_prefix(self) -> usize {
+    /// Whether index 0 is held apart from the stage's insertions: the Model
+    /// stage never touches it; the Override stage holds a learned index 0,
+    /// which no candidate displaces (a learned candidate competes with it on
+    /// price afterwards, [`super::reranker::learned_first`]).
+    fn holds_head(self, paths: &[ScoredPath]) -> bool {
         match self {
-            Self::Model => 1,
-            Self::Override => 0,
+            Self::Model => !paths.is_empty(),
+            Self::Override => paths.first().is_some_and(ScoredPath::is_learned),
         }
     }
 
@@ -52,7 +62,7 @@ impl RewriteStage {
     /// candidate is an alternative, so it follows the path it ties (an
     /// offer at its source's price stays below the source); an Override
     /// candidate is policy, so it leads (a number compound at the anchor's
-    /// price takes index 0, #239).
+    /// price takes index 0 when no learned path holds it, #239).
     fn precedes_ties(self) -> bool {
         match self {
             Self::Model => false,
@@ -62,19 +72,38 @@ impl RewriteStage {
 }
 
 /// Run a stage's rewriters, resolving duplicates and inserting in cost
-/// order below the stage's frozen prefix. Every rewriter generates from the
+/// order below a held index 0 ([`RewriteStage::holds_head`]). The head is
+/// held by identity — taken out of the list while candidates go in — so
+/// what it protects cannot shift when a path is removed and re-inserted.
+/// Every rewriter generates from the
 /// stage's input list before anything is inserted, so no rewriter sees
 /// another's output: an offer is never a source, and the rewriters' order
 /// does not change what they generate.
+///
+/// `boost` applies the history boost to a created path (the Override stage
+/// with history, [`super::reranker::apply_history_boost`]): its price is
+/// then the policy price minus the boost, and it is learned exactly when a
+/// history-reranked path with its surface would be. The stage then leaves
+/// the list in history reranking's form (the cheapest learned path first).
+/// The Model stage runs before history and passes `None`.
 pub(crate) fn run_rewriters(
     rewriters: &[&dyn Rewriter],
     paths: &mut Vec<ScoredPath>,
     reading: &str,
     stage: RewriteStage,
+    boost: Option<&dyn Fn(&mut ScoredPath)>,
 ) {
+    debug_assert!(boost.is_none() || stage == RewriteStage::Override);
+    let boosted = |mut p: ScoredPath| {
+        if let Some(b) = boost {
+            b(&mut p);
+        }
+        p
+    };
     let candidates: Vec<ScoredPath> = rewriters
         .iter()
         .flat_map(|rw| rw.generate(paths, reading))
+        .map(boosted)
         .collect();
     let rescue = PathOrigin::HiraganaVariant;
     let rescue_keys: Vec<String> = candidates
@@ -82,17 +111,36 @@ pub(crate) fn run_rewriters(
         .filter(|c| c.priced_by == rescue)
         .map(ScoredPath::surface_key)
         .collect();
+    // Decided on the stage's input.
+    let mut head = stage.holds_head(paths).then(|| paths.remove(0));
     for candidate in candidates {
         let key = candidate.surface_key();
+        if let Some(h) = head.as_mut().filter(|h| h.surface_key_eq(&key)) {
+            // A held Override head is learned, and so is a candidate with its
+            // surface: that one may reprice it in place. The Model stage
+            // leaves its head as it is.
+            if stage == RewriteStage::Override {
+                if let Some(resolved) = resolve_duplicate(stage, candidate, h) {
+                    *h = boosted(resolved);
+                }
+            }
+            continue;
+        }
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
             None => insert_by_cost(paths, candidate, stage),
             Some(i) => {
-                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i) {
+                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i]) {
                     paths.remove(i);
-                    insert_by_cost(paths, resolved, stage);
+                    insert_by_cost(paths, boosted(resolved), stage);
                 }
             }
         }
+    }
+    if let Some(h) = head {
+        paths.insert(0, h);
+    }
+    if stage == RewriteStage::Override {
+        super::reranker::learned_first(paths);
     }
     // The kana rescue's surface stays marked as the rescue whichever rewriter
     // priced it — the mark keeps it on the list (#263). Decided once the
@@ -106,27 +154,25 @@ pub(crate) fn run_rewriters(
     }
 }
 
-/// Insert before the first entry (past the frozen prefix) that costs more,
-/// or at least as much when the stage precedes ties. A linear scan, so the
-/// position is defined even where the list is not sorted (the Viterbi best
-/// is re-inserted at index 1 after history reranking).
+/// Insert before the first entry that costs more, or at least as much when
+/// the stage precedes ties. A linear scan, so the position is defined even
+/// where the list is not sorted (the Viterbi best is re-inserted at index 1
+/// after history reranking).
 fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
-    let fp = stage.frozen_prefix().min(paths.len());
     let precedes = stage.precedes_ties();
-    let pos = fp
-        + paths[fp..]
-            .iter()
-            .position(|p| {
-                p.viterbi_cost > path.viterbi_cost
-                    || (precedes && p.viterbi_cost == path.viterbi_cost)
-            })
-            .unwrap_or(paths.len() - fp);
+    let pos = paths
+        .iter()
+        .position(|p| {
+            p.viterbi_cost > path.viterbi_cost || (precedes && p.viterbi_cost == path.viterbi_cost)
+        })
+        .unwrap_or(paths.len());
     paths.insert(pos, path);
 }
 
 /// Decide what a candidate does to an existing path with the same surface.
-/// Returns the path to re-insert in the existing one's place, or `None` to
-/// leave the list as it is.
+/// Returns the path to re-insert in the existing one's place, priced before
+/// history (the caller boosts it again, so the boost matches its segments),
+/// or `None` to leave the list as it is.
 ///
 /// Every rewriter price is a standing contract (an offer ≤ source+2000, the
 /// kana rescue ≤ best+4000, Numeric #239), so the cheaper price wins and
@@ -138,11 +184,7 @@ fn resolve_duplicate(
     stage: RewriteStage,
     candidate: ScoredPath,
     existing: &ScoredPath,
-    i: usize,
 ) -> Option<ScoredPath> {
-    if i < stage.frozen_prefix() {
-        return None;
-    }
     // The Model stage runs before history: there is no boost to keep.
     debug_assert!(
         stage == RewriteStage::Override
@@ -151,7 +193,9 @@ fn resolve_duplicate(
                 && candidate.whole_path_boost == 0
                 && existing.whole_path_boost == 0)
     );
-    let cheaper = candidate.viterbi_cost < existing.viterbi_cost;
+    // Who sets the price is decided before history: the boost belongs to the
+    // segments, and the resolved path is boosted again on its own.
+    let cheaper = candidate.pre_history_cost() < existing.pre_history_cost();
     let take_segments = !existing.origin.is_lattice_path()
         && (candidate.origin.is_lattice_path()
             || candidate.segments.len() > existing.segments.len());
@@ -163,9 +207,9 @@ fn resolve_duplicate(
     // (no boosts yet) can.
     debug_assert!(cheaper || stage == RewriteStage::Model);
     let (cost, priced_by) = if cheaper {
-        (candidate.viterbi_cost, candidate.priced_by)
+        (candidate.pre_history_cost(), candidate.priced_by)
     } else {
-        (existing.viterbi_cost, existing.priced_by)
+        (existing.pre_history_cost(), existing.priced_by)
     };
     let mut resolved = if take_segments {
         candidate
@@ -174,8 +218,9 @@ fn resolve_duplicate(
     };
     resolved.viterbi_cost = cost;
     resolved.priced_by = priced_by;
-    // An Override price replaces the model's, so the boost it carried no
-    // longer describes it (F6). (The Model stage runs before history.)
+    // The boost belongs to the (reading, surface) and the segments, not to
+    // who set the price: the caller applies it again to the resolved path.
+    // (The Model stage runs before history.)
     resolved.history_boost = 0;
     resolved.whole_path_boost = 0;
     Some(resolved)
@@ -576,7 +621,8 @@ impl NumericRewriter<'_> {
     ///
     /// Counter ambiguity is resolved by the counter node's own word cost: the
     /// cheapest counter at the position anchors at `best_cost - 500` (so the
-    /// kanji compound surfaces above the existing top-1) and pricier counter
+    /// kanji compound surfaces above the existing top-1 unless that top-1 is
+    /// learned, [`RewriteStage::Override`]) and pricier counter
     /// homophones get penalised by their cost difference. This mirrors what
     /// Viterbi would do if a `<kanji_number><counter>` segmentation were
     /// representable in the lattice.
@@ -653,8 +699,9 @@ impl NumericRewriter<'_> {
         let best_cost = self.anchor;
         let base_cost = worst_cost(paths).saturating_add(5000);
         // Discount keeps the most-likely number+counter compound above the
-        // current Viterbi top-1, since this segmentation isn't representable
-        // in the lattice (no `三千` dictionary entry).
+        // current Viterbi top-1 (an unlearned one; a learned top-1 stays, see
+        // RewriteStage), since this segmentation isn't representable in the
+        // lattice (no `三千` dictionary entry).
         let kanji_anchor = best_cost.saturating_sub(500);
 
         for cand in &cands {

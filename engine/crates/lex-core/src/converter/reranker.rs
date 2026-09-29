@@ -196,6 +196,51 @@ pub fn compute_history_boost(
     }
 }
 
+/// Subtract `path`'s history boost from its price and record it on the path.
+/// The one place a path becomes "learned" (`whole_path_boost > 0`): history
+/// reranking calls it for the N-best, the Override stage for the paths it
+/// creates after that, so the predicate means the same on the whole list.
+pub(crate) fn apply_history_boost(
+    path: &mut ScoredPath,
+    history: &UserHistory,
+    conn: Option<&ConnectionMatrix>,
+    now: u64,
+) {
+    let breakdown = compute_history_boost(path, history, conn, now);
+    let applied = breakdown.applied(path.segments.len());
+    path.viterbi_cost -= applied;
+    // Remember the boost so candidate generators running after this step
+    // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
+    path.history_boost = applied;
+    path.whole_path_boost = breakdown.whole_path_boost;
+}
+
+/// Put the cheapest learned path (`is_learned`, ties to the earlier) at
+/// index 0; the others keep their order, except that a learned path it
+/// replaces there goes back to its price position (before paths of equal
+/// price, as the Override stage inserts). The one form both history
+/// reranking and the Override stage leave the list in.
+pub(crate) fn learned_first(paths: &mut [ScoredPath]) {
+    let Some(i) = (0..paths.len())
+        .filter(|&i| paths[i].is_learned())
+        .min_by_key(|&i| (paths[i].viterbi_cost, i))
+    else {
+        return;
+    };
+    if i == 0 {
+        return;
+    }
+    let demote = paths[0].is_learned();
+    paths[..=i].rotate_right(1);
+    if demote {
+        let cost = paths[1].viterbi_cost;
+        let k = (2..paths.len())
+            .find(|&k| paths[k].viterbi_cost >= cost)
+            .unwrap_or(paths.len());
+        paths[1..k].rotate_left(1);
+    }
+}
+
 /// Apply user-history boosts to N-best paths using the given `now`, then re-sort.
 ///
 /// Callers that also want to inspect the breakdown (e.g. `explain`) should pass
@@ -217,6 +262,12 @@ pub fn compute_history_boost(
 /// whole or as a phrase segment of a longer commit (unigrams are recorded
 /// per phrase segment too). It is also recorded on the path: cost-gap
 /// admission keeps such a path whatever its gap.
+///
+/// A learned path (`whole_path_boost > 0`) takes index 0: the cheapest of
+/// them is moved to the front, the rest keep their price order. Among
+/// learned paths price (and so decay) decides; a learned surface stays #1
+/// until another is learned cheaper or it is deleted (Fn+Delete) or
+/// evicted. The Override stage keeps that rule for the paths it adds.
 pub fn history_rerank_at(
     paths: &mut [ScoredPath],
     history: &UserHistory,
@@ -228,16 +279,11 @@ pub fn history_rerank_at(
         return;
     }
     for path in paths.iter_mut() {
-        let breakdown = compute_history_boost(path, history, conn, now);
-        let applied = breakdown.applied(path.segments.len());
-        path.viterbi_cost -= applied;
-        // Remember the boost so candidate generators running after this step
-        // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
-        path.history_boost = applied;
-        path.whole_path_boost = breakdown.whole_path_boost;
+        apply_history_boost(path, history, conn, now);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
-    debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
+    learned_first(paths);
+    debug!(top_cost = paths.first().map(|p| p.viterbi_cost));
 }
 
 #[cfg(test)]

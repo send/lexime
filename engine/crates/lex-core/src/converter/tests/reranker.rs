@@ -238,43 +238,63 @@ fn test_rerank_applies_script_cost() {
     assert_eq!(paths[1].viterbi_cost, 3150);
 }
 
+/// The boost's magnitude decides the order where nothing is learned as a
+/// whole: per-segment unigrams only, so the PR-G rotate never fires and
+/// two records lift a path past a rival that one record leaves behind.
 #[test]
 fn test_history_rerank_unigram_boost_reorders() {
-    let mut h = UserHistory::new();
-    // Record twice to get 6000 boost (BOOST_PER_USE=3000 × 2), enough to
-    // overcome the 2000 cost gap (5000 - 3000).
-    h.record(&[("きょう".into(), "京".into())]);
-    h.record(&[("きょう".into(), "京".into())]);
+    let seg = |r: &str, s: &str| RichSegment {
+        reading: r.into(),
+        surface: s.into(),
+        left_id: 0,
+        right_id: 0,
+        word_cost: 0,
+    };
+    let fixture = || {
+        vec![
+            ScoredPath::new(
+                vec![seg("がっこう", "楽考"), seg("へ", "辺")],
+                3000,
+                PathOrigin::Viterbi,
+            ),
+            ScoredPath::new(
+                vec![seg("がっこう", "学校"), seg("へ", "辺")],
+                5000,
+                PathOrigin::Viterbi,
+            ),
+        ]
+    };
+    let now = now_epoch();
+    let rerank_after = |records: usize| {
+        let mut h = UserHistory::new();
+        for _ in 0..records {
+            h.record_at(&[("がっこう".into(), "学校".into())], now);
+        }
+        let mut paths = fixture();
+        history_rerank_at(&mut paths, &h, None, now);
+        paths
+    };
 
-    let mut paths = vec![
-        ScoredPath::new(
-            vec![RichSegment {
-                reading: "きょう".into(),
-                surface: "今日".into(),
-                left_id: 0,
-                right_id: 0,
-                word_cost: 0,
-            }],
-            3000,
-            PathOrigin::Viterbi,
-        ),
-        ScoredPath::new(
-            vec![RichSegment {
-                reading: "きょう".into(),
-                surface: "京".into(),
-                left_id: 0,
-                right_id: 0,
-                word_cost: 0,
-            }],
-            5000,
-            PathOrigin::Viterbi,
-        ),
-    ];
+    // One record: BOOST_PER_USE (3000) over two segments = 1500, which
+    // leaves 学校 at 3500, above 3000.
+    let once = rerank_after(1);
+    assert!(once.iter().all(|p| p.whole_path_boost == 0));
+    assert_eq!(once[0].segments[0].surface, "楽考");
+    let cost_of = |paths: &[ScoredPath], s: &str| {
+        paths
+            .iter()
+            .find(|p| p.segments[0].surface == s)
+            .unwrap()
+            .viterbi_cost
+    };
+    assert_eq!(cost_of(&once, "学校"), 5000 - 1500);
 
-    history_rerank_at(&mut paths, &h, None, now_epoch());
-
-    // "京" should be boosted to first place
-    assert_eq!(paths[0].segments[0].surface, "京");
+    // Two records: 6000 over two segments = 3000, so 学校 (2000) passes.
+    let twice = rerank_after(2);
+    assert!(twice.iter().all(|p| p.whole_path_boost == 0));
+    assert_eq!(cost_of(&twice, "学校"), 5000 - 3000);
+    assert_eq!(cost_of(&twice, "楽考"), 3000, "unrecorded path untouched");
+    assert_eq!(twice[0].segments[0].surface, "学校");
 }
 
 #[test]
@@ -785,4 +805,113 @@ fn test_prefix_floor_prevents_low_baseline() {
 
     // Both paths survive thanks to the prefix floor raising the threshold.
     assert_eq!(paths.len(), 2);
+}
+
+/// A one-segment path `surface` over the reading かな, priced `cost`.
+fn kana_path(surface: &str, cost: i64) -> ScoredPath {
+    ScoredPath::single("かな".into(), surface.into(), cost, PathOrigin::Viterbi)
+}
+
+fn learned(surfaces: &[&str]) -> UserHistory {
+    let mut h = UserHistory::new();
+    for s in surfaces {
+        h.record(&[("かな".into(), (*s).into())]);
+    }
+    h
+}
+
+/// PR-G: the cheapest learned path takes index 0 even when its boost does
+/// not cover its price gap; the rest keep their price order.
+#[test]
+fn history_puts_cheapest_learned_first() {
+    let h = learned(&["可奈"]);
+    // 可奈 is 40000 above 仮名: far more than a fresh whole-path boost.
+    let mut paths = vec![
+        kana_path("仮名", 1000),
+        kana_path("加奈", 2000),
+        kana_path("可奈", 41000),
+    ];
+    history_rerank_at(&mut paths, &h, None, now_epoch());
+    let order: Vec<String> = paths.iter().map(|p| p.surface_key()).collect();
+    assert_eq!(order, ["可奈", "仮名", "加奈"]);
+    assert!(
+        paths[0].viterbi_cost > paths[1].viterbi_cost,
+        "moved, not priced below"
+    );
+}
+
+/// Among learned paths price decides, decay included.
+#[test]
+fn learned_paths_order_by_price() {
+    let now = now_epoch();
+    let mut h = UserHistory::new();
+    h.record_at(&[("かな".into(), "加奈".into())], now);
+    // 可奈 learned long ago: its boost has decayed.
+    h.record_at(&[("かな".into(), "可奈".into())], now - 3600 * 24 * 365);
+    let mut paths = vec![
+        kana_path("仮名", 1000),
+        kana_path("加奈", 30000),
+        kana_path("可奈", 30000),
+    ];
+    history_rerank_at(&mut paths, &h, None, now);
+    assert_eq!(paths[0].surface_key(), "加奈");
+}
+
+/// Among learned paths the price decides, not the boost: A has the larger
+/// boost (two records) but B is cheaper after its own (one record).
+#[test]
+fn learned_paths_order_by_price_not_by_boost() {
+    let now = now_epoch();
+    let mut h = UserHistory::new();
+    h.record_at(&[("かな".into(), "可奈".into())], now);
+    h.record_at(&[("かな".into(), "可奈".into())], now);
+    h.record_at(&[("かな".into(), "加奈".into())], now);
+    let mut paths = vec![
+        kana_path("仮名", 1000),
+        kana_path("可奈", 60000),
+        kana_path("加奈", 30000),
+    ];
+    history_rerank_at(&mut paths, &h, None, now);
+    let (a, b) = (
+        paths.iter().find(|p| p.surface_key() == "可奈").unwrap(),
+        paths.iter().find(|p| p.surface_key() == "加奈").unwrap(),
+    );
+    assert!(
+        a.whole_path_boost > b.whole_path_boost,
+        "fixture: A boosts more"
+    );
+    assert!(b.viterbi_cost < a.viterbi_cost, "fixture: B ends cheaper");
+    assert_eq!(paths[0].surface_key(), "加奈");
+    assert_eq!(paths[1].surface_key(), "仮名");
+    assert_eq!(paths[2].surface_key(), "可奈");
+}
+
+/// Without a whole-path boost (per-segment learning only), the order is
+/// the price order.
+#[test]
+fn no_learned_keeps_price_order() {
+    let mut h = UserHistory::new();
+    // A segment of a two-segment path, never the whole reading.
+    h.record(&[("か".into(), "可".into())]);
+    let seg = |r: &str, s: &str| RichSegment {
+        reading: r.into(),
+        surface: s.into(),
+        left_id: 0,
+        right_id: 0,
+        word_cost: 0,
+    };
+    let mut paths = vec![
+        kana_path("仮名", 1000),
+        ScoredPath::new(
+            vec![seg("か", "可"), seg("な", "名")],
+            50000,
+            PathOrigin::Viterbi,
+        ),
+    ];
+    history_rerank_at(&mut paths, &h, None, now_epoch());
+    assert!(paths.iter().all(|p| p.whole_path_boost == 0));
+    assert!(paths
+        .windows(2)
+        .all(|w| w[0].viterbi_cost <= w[1].viterbi_cost));
+    assert_eq!(paths[0].surface_key(), "仮名");
 }

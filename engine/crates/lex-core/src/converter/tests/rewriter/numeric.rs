@@ -68,7 +68,13 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "にじゅうさん", RewriteStage::Override);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "にじゅうさん",
+        RewriteStage::Override,
+        None,
+    );
 
     // Kanji already exists, only halfwidth + fullwidth added
     assert_eq!(paths.len(), 3);
@@ -96,7 +102,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override);
+    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override, None);
 
     // 十 is single-char → base_cost (not best_cost), all after 中
     assert_eq!(paths[0].surface_key(), "中");
@@ -150,7 +156,7 @@ fn test_numeric_rewriter_skips_duplicate() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override);
+    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override, None);
 
     // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
     assert_eq!(paths.len(), 3);
@@ -401,4 +407,115 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
     let result = rw.generate(&paths, "ごえん");
     assert!(result.iter().any(|p| p.surface_key() == "五円"));
     assert!(result.iter().any(|p| p.surface_key() == "五園"));
+}
+
+/// PR-G (G1′): a learned index 0 outranks the number compound, even when it
+/// costs more than the anchor the compound is priced at; with nothing
+/// learned the compound still takes index 0 (#239).
+#[test]
+fn learned_surface_outranks_number_compound() {
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+        anchor: 3000,
+    };
+    // Production boosts what the Override stage creates as history reranking
+    // boosted the list: a surface learned for the reading is learned wherever
+    // it comes from. Here に十三 and a learned 二十三 carry whole 1000.
+    let learned = |surface: &str| surface == "に十三" || surface == "二十三";
+    let path = |surface: &str, cost: i64, whole: i64| {
+        let mut p = ScoredPath::single(
+            "にじゅうさん".into(),
+            surface.into(),
+            cost,
+            PathOrigin::Viterbi,
+        );
+        p.whole_path_boost = whole;
+        p.history_boost = whole;
+        p
+    };
+    let run = |paths: &mut Vec<ScoredPath>, compound_learned: bool| {
+        let boost = |p: &mut ScoredPath| {
+            if compound_learned && learned(&p.surface_key()) {
+                p.viterbi_cost -= 1000;
+                p.history_boost = 1000;
+                p.whole_path_boost = 1000;
+            }
+        };
+        run_rewriters(
+            &[&rw as &dyn Rewriter],
+            paths,
+            "にじゅうさん",
+            RewriteStage::Override,
+            Some(&boost),
+        )
+    };
+
+    // Learned に十三 costs 5000 (> anchor 3000), the compound is not learned:
+    // に十三 keeps index 0.
+    let mut paths = vec![path("に十三", 5000, 1000)];
+    run(&mut paths, false);
+    assert_eq!(paths[0].surface_key(), "に十三");
+    assert_eq!(paths[1].surface_key(), "二十三");
+
+    // The learned surface is the compound the rewriter generates: learned on
+    // both sides, so the compound's price (anchor 3000 − boost) reprices it
+    // and it keeps its boost.
+    let mut paths = vec![path("二十三", 5000, 1000)];
+    run(&mut paths, true);
+    assert_eq!(paths[0].surface_key(), "二十三");
+    assert_eq!(paths[0].priced_by, PathOrigin::Numeric);
+    assert_eq!(
+        (paths[0].viterbi_cost, paths[0].whole_path_boost),
+        (2000, 1000)
+    );
+
+    // Nothing learned: the compound takes index 0.
+    let mut paths = vec![path("に十三", 5000, 0)];
+    run(&mut paths, false);
+    assert_eq!(paths[0].surface_key(), "二十三");
+}
+
+/// A learned index 0 takes the Override price of its own surface like any
+/// other position: adding another learned path must not change which
+/// learned surface is #1 (it did while index 0 was frozen for learned
+/// candidates too).
+#[test]
+fn learned_index0_takes_its_compound_price() {
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+        anchor: 3000,
+    };
+    let boost = |p: &mut ScoredPath| {
+        let b = match p.surface_key().as_str() {
+            "二十" | "荷重" => 1000,
+            "20" => 7000,
+            _ => return,
+        };
+        p.viterbi_cost -= b;
+        p.history_boost = b;
+        p.whole_path_boost = b;
+    };
+    let learned = |surface: &str, pre: i64| {
+        let mut p = ScoredPath::single("にじゅう".into(), surface.into(), pre, PathOrigin::Viterbi);
+        boost(&mut p);
+        p
+    };
+    let run = |mut paths: Vec<ScoredPath>| {
+        run_rewriters(
+            &[&rw as &dyn Rewriter],
+            &mut paths,
+            "にじゅう",
+            RewriteStage::Override,
+            Some(&boost),
+        );
+        paths.iter().map(|p| p.surface_key()).collect::<Vec<_>>()
+    };
+    // 二十 at index 0, alone or below another learned path: #1 either way.
+    assert_eq!(run(vec![learned("二十", 9000)])[0], "二十");
+    assert_eq!(
+        run(vec![learned("荷重", 5000), learned("二十", 9000)])[0],
+        "二十"
+    );
 }

@@ -167,9 +167,9 @@ struct PreHistorySnapshot {
 ///
 /// Keys are `ScoredPath::surface_key()` — i.e. the concatenated surface — so
 /// that lookups survive `group_segments` (which merges adjacent segments but
-/// preserves the overall surface). Paths that only appear after history_rerank
-/// (the Override stage: numeric, katakana) are absent from these maps and
-/// fall back to zero in the caller.
+/// preserves the overall surface). Paths priced by the Override stage
+/// (numeric, katakana) take their breakdown from `override_boosts` instead:
+/// that stage boosts them itself, after history_rerank.
 struct ExplainObserver<'a> {
     history: Option<&'a UserHistory>,
     /// Needed so the displayed breakdown matches `history_rerank`'s
@@ -180,6 +180,9 @@ struct ExplainObserver<'a> {
     original_costs: HashMap<String, i64>,
     /// State at the post-rerank / pre-history-rerank boundary.
     pre_history: HashMap<String, PreHistorySnapshot>,
+    /// Breakdown and segment count of each final Override-priced path, as
+    /// that stage boosted it.
+    override_boosts: HashMap<String, (HistoryBoostBreakdown, usize)>,
     /// `(Viterbi price, rerank features)` of each final path whose segments
     /// are lattice nodes, taken before `group_segments` merges morphemes (a
     /// grouped segment keeps only the first node's cost).
@@ -203,6 +206,7 @@ impl<'a> ExplainObserver<'a> {
             now,
             original_costs: HashMap::new(),
             pre_history: HashMap::new(),
+            override_boosts: HashMap::new(),
             model_costs: HashMap::new(),
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
@@ -251,6 +255,16 @@ impl PostprocessObserver for ExplainObserver<'_> {
     }
 
     fn before_group(&mut self, paths: &[ScoredPath]) {
+        if let Some(h) = self.history {
+            self.override_boosts = paths
+                .iter()
+                .filter(|p| is_override_priced(p))
+                .map(|p| {
+                    let b = compute_history_boost(p, h, self.conn, self.now);
+                    (p.surface_key(), (b, p.segments.len()))
+                })
+                .collect();
+        }
         // Offers carry node ids and costs (a Partial fallback, the kanji
         // node's under its reading); the kana rescue, Numeric and Katakana
         // are one synthetic segment.
@@ -266,6 +280,12 @@ impl PostprocessObserver for ExplainObserver<'_> {
             })
             .collect();
     }
+}
+
+/// Priced by the Override stage (Numeric / Katakana), which applies the
+/// history boost itself.
+fn is_override_priced(p: &ScoredPath) -> bool {
+    matches!(p.priced_by, PathOrigin::Numeric | PathOrigin::Katakana)
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +413,7 @@ pub fn explain(
             // the observer, its model cost) and the rerank delta. Any other
             // price is split into model cost + features + clamp/policy.
             // Numeric / Katakana are added after history_rerank, so they
-            // have no snapshot and no history boost.
+            // have no snapshot; their boost is the Override stage's.
             let model = observer.model_costs.get(&key).copied();
             let model_cost = model.map(|(m, _)| m);
             let pre = scored.pre_history_cost();
@@ -419,6 +439,17 @@ pub fn explain(
                     breakdown: HistoryBoostBreakdown::default(),
                     segment_count: scored.segments.len(),
                 });
+            // An Override price was boosted by that stage, on its own
+            // segments; the pre-history snapshot does not describe it.
+            let (history_breakdown, history_segment_count) = if is_override_priced(scored) {
+                observer
+                    .override_boosts
+                    .get(&key)
+                    .copied()
+                    .unwrap_or((HistoryBoostBreakdown::default(), scored.segments.len()))
+            } else {
+                (snapshot.breakdown, snapshot.segment_count)
+            };
             let rerank_delta = match (price_clamp, model) {
                 (Some(_), Some((_, adj))) => adj,
                 _ => snapshot.cost - original,
@@ -427,20 +458,9 @@ pub fn explain(
                 segments: explain_segments(scored, conn, dict),
                 viterbi_cost: original,
                 rerank_delta,
-                // An Override price (Numeric) cleared the boost; its
-                // pre-history breakdown no longer applies.
-                history_breakdown: if matches!(
-                    scored.priced_by,
-                    PathOrigin::Numeric | PathOrigin::Katakana
-                ) {
-                    HistoryBoostBreakdown::default()
-                } else {
-                    snapshot.breakdown
-                },
-                // The path's own boost: an Override price (Numeric) clears
-                // the one the snapshot recorded.
+                history_breakdown,
                 history_boost: scored.history_boost,
-                history_segment_count: snapshot.segment_count,
+                history_segment_count,
                 final_cost: scored.viterbi_cost,
                 origin: scored.origin,
                 priced_by: scored.priced_by,
@@ -659,13 +679,37 @@ mod tests {
         let (dict, conn) = oversample_sensitive();
         let mut h = UserHistory::new();
         h.record(&[("な".into(), "な".into())]);
-        for history in [None, Some(&h)] {
+        // A whole-pair learning of a non-#1 surface moves it to index 0.
+        let mut learned = UserHistory::new();
+        learned.record(&[("かなや".into(), "仮名屋".into())]);
+        // カナや learned a year ago: its boost has decayed far short of its
+        // gap, so only the rotate can make it #1.
+        let mut stale = UserHistory::new();
+        stale.record_at(
+            &[("かなや".into(), "カナや".into())],
+            crate::user_history::now_epoch() - 3600 * 24 * 365,
+        );
+        let mut rotated_at = 0;
+        for (history, is_stale) in [
+            (None, false),
+            (Some(&h), false),
+            (Some(&learned), false),
+            (Some(&stale), true),
+        ] {
             for n in 1..=6 {
-                let explained: Vec<String> = explain(&dict, Some(&conn), history, "かなや", n)
-                    .paths
-                    .iter()
-                    .map(|p| p.surface())
-                    .collect();
+                let explanation = explain(&dict, Some(&conn), history, "かなや", n);
+                let explained: Vec<String> =
+                    explanation.paths.iter().map(|p| p.surface()).collect();
+                if let [first, second, ..] = explanation.paths.as_slice() {
+                    if is_stale && n >= 2 {
+                        assert!(first.history_breakdown.whole_path_boost > 0, "n={n}");
+                        assert!(
+                            first.final_cost > second.final_cost,
+                            "n={n}: the learned #1 was moved, not priced, to the front"
+                        );
+                        rotated_at += 1;
+                    }
+                }
                 let production: Vec<String> = match history {
                     Some(h) => crate::converter::convert_nbest_with_history(
                         &dict,
@@ -682,6 +726,7 @@ mod tests {
                 assert_eq!(explained, production, "n={n} history={}", history.is_some());
             }
         }
+        assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
         // The fixture is sensitive: the two populations disagree on top-1.
         let head = |n| {
             crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]

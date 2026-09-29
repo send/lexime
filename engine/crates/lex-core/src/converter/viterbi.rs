@@ -62,7 +62,7 @@ impl PathOrigin {
 pub(crate) struct ScoredPath {
     pub segments: Vec<RichSegment>,
     pub viterbi_cost: i64,
-    /// History boost subtracted from `viterbi_cost` by `history_rerank_at`
+    /// History boost subtracted from `viterbi_cost` by `apply_history_boost`
     /// (0 before history reranking, or when no history is applied).
     ///
     /// Kept so that steps running *after* history_rerank (cost-gap
@@ -70,9 +70,9 @@ pub(crate) struct ScoredPath {
     /// [`Self::pre_history_cost`] instead of pricing from a boosted one.
     pub history_boost: i64,
     /// The whole-path part of `history_boost`: > 0 marks a surface committed
-    /// for this reading, which cost-gap admission always keeps. Recorded by
-    /// `history_rerank_at`; cleared with `history_boost` when an Override
-    /// price replaces the path's.
+    /// for this reading (`is_learned`), which cost-gap admission always
+    /// keeps. Recorded by `apply_history_boost` — in history reranking, and
+    /// in the Override stage for the paths it creates or reprices.
     pub whole_path_boost: i64,
     /// Who produced `segments`.
     pub origin: PathOrigin,
@@ -107,6 +107,12 @@ impl ScoredPath {
             cost,
             origin,
         )
+    }
+
+    /// The user has learned this surface for this reading
+    /// (`whole_path_boost > 0`, recorded by history reranking).
+    pub fn is_learned(&self) -> bool {
+        self.whole_path_boost > 0
     }
 
     /// Every segment's surface is its reading: the user's typed input.

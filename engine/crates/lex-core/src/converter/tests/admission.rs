@@ -338,3 +338,80 @@ fn the_pre_history_best_is_restored_at_the_floor() {
     let paths = keys(&run(&dict, Some(&h), "たべる", 2, 50, 0));
     assert_eq!(&paths[..2], ["田辺留", "食べる"], "{paths:?}");
 }
+
+/// PR-G: a fragment that per-segment boosts had put first, displaced by a
+/// learned whole-pair path, is judged by its pre-history gap at index 1 and
+/// dropped when it is over the bound (§24 (r)). Through the pipeline:
+/// without the learned path the fragment keeps index 0 unconditionally.
+#[test]
+fn displaced_fragment_top_is_dropped_by_admission() {
+    let entries = vec![
+        ("たべる".to_string(), vec![e("食べる", 0), e("旅留", 30000)]),
+        ("た".to_string(), vec![e("田", 3000)]),
+        ("べる".to_string(), vec![e("辺留", 3000)]),
+    ];
+    let dict = TrieDictionary::from_entries(entries);
+    let mut h = UserHistory::new();
+    for _ in 0..10 {
+        h.record(&[("た".into(), "田".into()), ("べる".into(), "辺留".into())]);
+    }
+    // Fixture: per-segment learning alone puts the fragment first, unlearned
+    // and 6000 above the pre-history best (bound 4000, the rescue floor).
+    let alone = run(&dict, Some(&h), "たべる", 20, 20, 0);
+    assert_eq!(alone[0].surface_key(), "田辺留");
+    assert_eq!(alone[0].whole_path_boost, 0);
+    assert!(alone[0].pre_history_cost() > alone[1].pre_history_cost() + 4000);
+
+    // A whole-pair learned surface far above both takes index 0; the
+    // displaced fragment is no longer exempt and goes, the pre-history
+    // #1 (gap 0) stays.
+    h.record(&[("たべる".into(), "旅留".into())]);
+    let paths = keys(&run(&dict, Some(&h), "たべる", 20, 20, 0));
+    assert_eq!(paths[0], "旅留", "{paths:?}");
+    assert!(paths.contains(&"食べる".to_string()), "{paths:?}");
+    assert!(!paths.contains(&"田辺留".to_string()), "{paths:?}");
+}
+
+/// PR-G: with a learned whole-pair path at index 0 and the pre-history #1
+/// pushed out of the n by per-segment boosts, the pre-history #1 comes back
+/// at index 1 (K4), below the learned path.
+#[test]
+fn viterbi_best_reinserted_below_learned_top() {
+    let entries = vec![
+        ("きがし".to_string(), vec![e("気がし", 8000)]),
+        (
+            "き".to_string(),
+            vec![
+                e("機", 0),
+                e("木", 500),
+                e("黄", 1000),
+                e("基", 1500),
+                e("樹", 2000),
+                e("記", 2500),
+                e("鬼", 30000),
+            ],
+        ),
+        ("がし".to_string(), vec![e("がし", 2000)]),
+        ("ます".to_string(), vec![e("ます", 2000)]),
+    ];
+    let dict = TrieDictionary::from_entries(entries);
+    let mut h = UserHistory::new();
+    for _ in 0..5 {
+        for s in ["機", "木", "黄", "基", "樹", "記"] {
+            h.record(&[("き".into(), s.into())]);
+        }
+    }
+    // Fixture: the boosted fragments fill the n and push the pre-history #1
+    // (気がします) out; with nothing learned as a whole it is re-inserted at 1.
+    let before = keys(&run(&dict, Some(&h), "きがします", 3, 50, i64::MAX));
+    assert_eq!(before[1], "気がします", "{before:?}");
+    assert_ne!(before[0], "気がします", "{before:?}");
+
+    // 鬼がします, far above everything, is learned as a whole: it takes
+    // index 0 and the pre-history #1 is still put back right below it.
+    h.record(&[("きがします".into(), "鬼がします".into())]);
+    let after = run(&dict, Some(&h), "きがします", 3, 50, i64::MAX);
+    let after = keys(&after);
+    assert_eq!(after[0], "鬼がします", "{after:?}");
+    assert_eq!(after[1], "気がします", "{after:?}");
+}

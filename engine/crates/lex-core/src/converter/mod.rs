@@ -58,8 +58,12 @@ impl ConversionContext<'_> {
 
     /// 1-best conversion from a pre-built lattice.
     pub fn convert_from_lattice(&self, lattice: &Lattice) -> Vec<ConvertedSegment> {
-        // 1-best uses a larger oversample floor than the N-best formula to give
-        // the reranker/history boost enough candidates to work with.
+        // A floor above n = 1's own share gives the reranker and history boost
+        // candidates to work with, kept below the N-best formula's (50 with
+        // history) because the 1-best runs on every keystroke. A learned path
+        // past 30 reaches the candidate list's #1 but not this one (#361):
+        // drawing the list's population (60) here, even only for readings
+        // with a history record, made this 1-best about 2.2× slower.
         let oversample = if self.history.is_some() { 30 } else { 10 };
         self.convert_lattice_impl(lattice, 1, oversample)
             .into_iter()
@@ -81,7 +85,8 @@ impl ConversionContext<'_> {
     }
 
     /// N-best paths with their final cost (after rerank, history and the
-    /// rewriters), for callers that need the price the list was ordered by.
+    /// rewriters), for callers that need the price the list was ordered by
+    /// (the cheapest learned path first, then by price).
     pub(crate) fn convert_nbest_scored_from_lattice(
         &self,
         lattice: &Lattice,

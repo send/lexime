@@ -62,7 +62,9 @@ pub struct CandidateDiagnostics {
 /// The final price of an N-best path and the stage that set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PathPrice {
-    /// Viterbi + rerank − history, as the list was ordered.
+    /// Viterbi + rerank − history. The list is in this order except that the
+    /// cheapest learned path is first (SPEC §ブースト計算), so a later path
+    /// can cost less than the first.
     pub cost: i64,
     pub priced_by: PathOrigin,
 }

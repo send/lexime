@@ -130,7 +130,13 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     } else {
         &[]
     };
-    rewriter::run_rewriters(variants, paths, ctx.kana, rewriter::RewriteStage::Model);
+    rewriter::run_rewriters(
+        variants,
+        paths,
+        ctx.kana,
+        rewriter::RewriteStage::Model,
+        None,
+    );
 
     observer.after_rerank(paths);
 
@@ -179,11 +185,17 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
         anchor,
     };
     let katakana_rw = rewriter::KatakanaRewriter;
+    // The paths this stage creates are learned on the same terms as the
+    // history-reranked ones (G7).
+    let boost = ctx
+        .history
+        .map(|h| move |p: &mut ScoredPath| reranker::apply_history_boost(p, h, ctx.conn, ctx.now));
     rewriter::run_rewriters(
         &[&numeric_rw, &katakana_rw],
         &mut top,
         ctx.kana,
         rewriter::RewriteStage::Override,
+        boost.as_ref().map(|b| b as &dyn Fn(&mut ScoredPath)),
     );
     observer.before_group(&top);
     if let Some(c) = ctx.conn {
@@ -214,7 +226,7 @@ pub(super) fn admit_by_cost_gap(
     paths.retain(|p| {
         let keep = std::mem::take(&mut first)
             || p.pre_history_cost() <= limit
-            || p.whole_path_boost > 0
+            || p.is_learned()
             || p.is_identity();
         if !keep {
             on_drop(p);

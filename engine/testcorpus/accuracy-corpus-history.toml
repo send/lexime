@@ -97,6 +97,11 @@ repeat = 1
 segments = [["た", "田"], ["べる", "辺留"]]
 repeat = 1
 
+# PR-G: a surface learned once whose boost does not cover its price gap
+[[history]]
+segments = [["おむろん", "OMRON"]]
+repeat = 1
+
 # ═══════════════════════════════════════════════════════════════════
 # Word-level history override
 # ═══════════════════════════════════════════════════════════════════
@@ -220,3 +225,15 @@ present_nbest = ["田辺留"]
 
 [cases.window.baseline]
 absent = ["田辺留"]
+
+# ═══════════════════════════════════════════════════════════════════
+# A learned surface is the #1 (PR-G)
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "おむろん"
+expected = "OMRON"
+baseline = "オムロン"
+category = "regression"
+tags = ["history", "whole-path", "learned-top1"]
+note = "OMRON は 1 分節の辞書エントリで、履歴なしの #1 (オムロン) との差 29060 (admission の bound 8000 超なので N-best には無く、oversample 30 の母集団と辞書 lookup には在る。lookup が候補列の tail に入れるので、baseline の window は absent にできず、window は付けない — top-1 の 3 幅チェックが PR-G を守る)。読み全体を 1 回確定した whole ペアの boost (1 分節なので unigram 3000 + whole 3000 × 5 = 18000) では差を埋めきれず、PR-G 前は オムロン が #1 のままだった。学習済み (whole) の経路が在れば #1 はその中で最安 (PR-G)。1 分節なので確定の記録は whole ペアだけで、分節・bigram の副作用は無い。corpus の [[history]] は age を持てない (fresh 1 回) ので、差は 18000 を十分超える必要がある — boost だけで #1 になるほど差が縮んだら (18000 以下) 別の表記に選び直す"
