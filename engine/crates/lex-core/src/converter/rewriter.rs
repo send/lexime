@@ -47,15 +47,14 @@ pub(crate) enum RewriteStage {
 }
 
 impl RewriteStage {
-    /// Leading entries of `paths` that `candidate` may neither displace nor
-    /// reprice: the Model stage never touches index 0; in the Override
-    /// stage an unlearned candidate leaves a learned index 0 alone.
-    fn frozen_prefix(self, paths: &[ScoredPath], candidate: &ScoredPath) -> usize {
+    /// Leading entries of `paths` this stage may neither displace nor
+    /// reprice: the Model stage never touches index 0; the Override stage
+    /// leaves a learned index 0 alone (a learned candidate that undercuts
+    /// it takes index 0 afterwards, [`super::reranker::learned_first`]).
+    fn frozen_prefix(self, paths: &[ScoredPath]) -> usize {
         match self {
             Self::Model => 1,
-            Self::Override => usize::from(
-                !candidate.is_learned() && paths.first().is_some_and(ScoredPath::is_learned),
-            ),
+            Self::Override => usize::from(paths.first().is_some_and(ScoredPath::is_learned)),
         }
     }
 
@@ -81,8 +80,9 @@ impl RewriteStage {
 /// `boost` applies the history boost to a created path (the Override stage
 /// with history, [`super::reranker::apply_history_boost`]): its price is
 /// then the policy price minus the boost, and it is learned exactly when a
-/// history-reranked path with its surface would be. The Model stage runs
-/// before history and passes `None`.
+/// history-reranked path with its surface would be. The stage then leaves
+/// the list in history reranking's form (the cheapest learned path first).
+/// The Model stage runs before history and passes `None`.
 pub(crate) fn run_rewriters(
     rewriters: &[&dyn Rewriter],
     paths: &mut Vec<ScoredPath>,
@@ -91,6 +91,8 @@ pub(crate) fn run_rewriters(
     boost: Option<&dyn Fn(&mut ScoredPath)>,
 ) {
     debug_assert!(boost.is_none() || stage == RewriteStage::Override);
+    // Decided on the stage's input, so inserting cannot change it.
+    let fp = stage.frozen_prefix(paths);
     let boosted = |mut p: ScoredPath| {
         if let Some(b) = boost {
             b(&mut p);
@@ -111,15 +113,17 @@ pub(crate) fn run_rewriters(
     for candidate in candidates {
         let key = candidate.surface_key();
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
-            None => insert_by_cost(paths, candidate, stage),
+            None => insert_by_cost(paths, candidate, stage, fp),
             Some(i) => {
-                let fp = stage.frozen_prefix(paths, &candidate);
                 if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i, fp) {
                     paths.remove(i);
-                    insert_by_cost(paths, boosted(resolved), stage);
+                    insert_by_cost(paths, boosted(resolved), stage, fp);
                 }
             }
         }
+    }
+    if stage == RewriteStage::Override {
+        super::reranker::learned_first(paths);
     }
     // The kana rescue's surface stays marked as the rescue whichever rewriter
     // priced it — the mark keeps it on the list (#263). Decided once the
@@ -138,25 +142,8 @@ pub(crate) fn run_rewriters(
 /// position is defined even where the list is not sorted (the Viterbi best
 /// is re-inserted at index 1 after history reranking, and a learned index 0
 /// may cost more than what follows it).
-///
-/// A learned Override path keeps history reranking's rule: it takes index 0
-/// from an unlearned path, or from a learned one it undercuts; otherwise it
-/// goes past index 0 in cost order.
-fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
-    if stage == RewriteStage::Override
-        && path.is_learned()
-        && paths
-            .first()
-            .is_none_or(|top| !top.is_learned() || path.viterbi_cost < top.viterbi_cost)
-    {
-        paths.insert(0, path);
-        return;
-    }
-    let fp = match stage {
-        RewriteStage::Override if path.is_learned() => 1,
-        _ => stage.frozen_prefix(paths, &path),
-    }
-    .min(paths.len());
+fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage, fp: usize) {
+    let fp = fp.min(paths.len());
     let precedes = stage.precedes_ties();
     let pos = fp
         + paths[fp..]
@@ -198,7 +185,9 @@ fn resolve_duplicate(
                 && candidate.whole_path_boost == 0
                 && existing.whole_path_boost == 0)
     );
-    let cheaper = candidate.viterbi_cost < existing.viterbi_cost;
+    // Who sets the price is decided before history: the boost belongs to the
+    // segments, and the resolved path is boosted again on its own.
+    let cheaper = candidate.pre_history_cost() < existing.pre_history_cost();
     let take_segments = !existing.origin.is_lattice_path()
         && (candidate.origin.is_lattice_path()
             || candidate.segments.len() > existing.segments.len());

@@ -117,9 +117,9 @@ fn generate_normal(
     //    but only above the N-best #1 when the #1 hasn't been explicitly
     //    learned. When the #1 has its own whole-path history boost, kana
     //    goes to position 1 instead so explicit kanji selection is respected.
-    //    A learned kana in the N-best is already placed by history reranking
-    //    (learned surfaces compete on price, the kana at its rescue price);
-    //    this step only moves a kana injected at 1.5 or absent from it.
+    //    This moves a learned kana wherever history reranking priced it (a
+    //    kana in the N-best competes there at its rescue price): to index 1
+    //    below a learned #1, else to index 0.
     let now = crate::user_history::now_epoch();
     let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
     let top_has_boost = if !surfaces.is_empty() && surfaces[0] != reading {

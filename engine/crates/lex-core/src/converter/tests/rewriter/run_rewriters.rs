@@ -145,6 +145,16 @@ fn path(surface: &str, cost: i64, origin: PathOrigin) -> ScoredPath {
     )
 }
 
+fn seg(reading: &str, surface: &str) -> RichSegment {
+    RichSegment {
+        reading: reading.into(),
+        surface: surface.into(),
+        left_id: 0,
+        right_id: 0,
+        word_cost: 0,
+    }
+}
+
 /// Emits fixed candidates, ignoring the list it is given.
 struct Fixed(Vec<ScoredPath>);
 
@@ -286,19 +296,95 @@ fn kana_rescue_adopts_its_price_on_a_model_path() {
     assert_eq!(hit.segments.len(), 2, "lattice segments kept (#271)");
 }
 
+/// An Override price the stage adopts is decided before history (policy vs
+/// model price) and the path is boosted again on its own segments.
 #[test]
-fn override_price_adoption_clears_boosts() {
+fn override_price_adoption_is_boosted_again() {
+    let boost = |p: &mut ScoredPath| {
+        if p.surface_key() == "十円" {
+            p.viterbi_cost -= 100;
+            p.history_boost = 100;
+            p.whole_path_boost = 60;
+        }
+    };
     let mut learned = path("十円", 3000, PathOrigin::Viterbi);
-    learned.history_boost = 100;
-    learned.whole_path_boost = 60;
-    learned.viterbi_cost -= 100;
+    boost(&mut learned);
     let mut paths = vec![path("一", 1000, PathOrigin::Viterbi), learned];
     let rw = Fixed(vec![path("十円", 500, PathOrigin::Numeric)]);
-    run_rewriters(&[&rw], &mut paths, "よみ", RewriteStage::Override, None);
-    let n = paths.iter().find(|p| p.surface_key() == "十円").unwrap();
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "よみ",
+        RewriteStage::Override,
+        Some(&boost),
+    );
+    let n = &paths[0];
+    assert_eq!(n.surface_key(), "十円", "the learned path takes index 0");
     assert_eq!(n.priced_by, PathOrigin::Numeric);
-    assert_eq!(n.history_boost, 0);
-    assert_eq!(n.whole_path_boost, 0);
+    assert_eq!(
+        (n.viterbi_cost, n.history_boost, n.whole_path_boost),
+        (400, 100, 60)
+    );
+}
+
+/// Who sets the price is decided before history: a candidate whose boost is
+/// larger only because it has fewer segments does not raise the path.
+#[test]
+fn override_price_is_chosen_before_history() {
+    // Per-segment boost only (not learned, so nothing is frozen): 600 over
+    // the path's segment count, so one segment earns 600 and two earn 300.
+    let boost = |p: &mut ScoredPath| {
+        let b = 600 / p.segments.len() as i64;
+        p.viterbi_cost -= b;
+        p.history_boost = b;
+    };
+    let mut existing = ScoredPath::new(
+        vec![seg("てれび", "テレビ"), seg("げーむ", "ゲーム")],
+        2000,
+        PathOrigin::Viterbi,
+    );
+    boost(&mut existing);
+    let mut paths = vec![existing];
+    // Pre-history 2100 > 2000, but boosted 1500 < 1700.
+    let rw = Fixed(vec![ScoredPath::single(
+        "てれびげーむ".into(),
+        "テレビゲーム".into(),
+        2100,
+        PathOrigin::Katakana,
+    )]);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "てれびげーむ",
+        RewriteStage::Override,
+        Some(&boost),
+    );
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].priced_by, PathOrigin::Viterbi);
+    assert_eq!(paths[0].viterbi_cost, 1700);
+}
+
+/// A learned candidate cheaper than the learned index 0 takes index 0; the
+/// one it replaces goes back to its price position, not to index 1.
+#[test]
+fn learned_candidate_undercutting_learned_top_demotes_it_to_its_price() {
+    let boost = |p: &mut ScoredPath| {
+        if p.surface_key() == "二十" {
+            p.whole_path_boost = 1;
+        }
+    };
+    let mut top = path("荷重", 9000, PathOrigin::Viterbi);
+    top.whole_path_boost = 1;
+    let mut paths = vec![top, path("二重", 3000, PathOrigin::Viterbi)];
+    let rw = Fixed(vec![path("二十", 2500, PathOrigin::Numeric)]);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "にじゅう",
+        RewriteStage::Override,
+        Some(&boost),
+    );
+    assert_eq!(surfaces(&paths), ["二十", "二重", "荷重"]);
 }
 
 #[test]

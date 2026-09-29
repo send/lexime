@@ -419,6 +419,10 @@ fn learned_surface_outranks_number_compound() {
         connection: None,
         anchor: 3000,
     };
+    // Production boosts what the Override stage creates as history reranking
+    // boosted the list: a surface learned for the reading is learned wherever
+    // it comes from. Here に十三 and a learned 二十三 carry whole 1000.
+    let learned = |surface: &str| surface == "に十三" || surface == "二十三";
     let path = |surface: &str, cost: i64, whole: i64| {
         let mut p = ScoredPath::single(
             "にじゅうさん".into(),
@@ -430,26 +434,34 @@ fn learned_surface_outranks_number_compound() {
         p.history_boost = whole;
         p
     };
-    let run = |paths: &mut Vec<ScoredPath>| {
+    let run = |paths: &mut Vec<ScoredPath>, compound_learned: bool| {
+        let boost = |p: &mut ScoredPath| {
+            if compound_learned && learned(&p.surface_key()) {
+                p.viterbi_cost -= 1000;
+                p.history_boost = 1000;
+                p.whole_path_boost = 1000;
+            }
+        };
         run_rewriters(
             &[&rw as &dyn Rewriter],
             paths,
             "にじゅうさん",
             RewriteStage::Override,
-            None,
+            Some(&boost),
         )
     };
 
-    // Learned に十三 costs 5000 (> anchor 3000): it keeps index 0.
+    // Learned に十三 costs 5000 (> anchor 3000), the compound is not learned:
+    // に十三 keeps index 0.
     let mut paths = vec![path("に十三", 5000, 1000)];
-    run(&mut paths);
+    run(&mut paths, false);
     assert_eq!(paths[0].surface_key(), "に十三");
     assert_eq!(paths[1].surface_key(), "二十三");
 
-    // A learned surface the rewriter also generates, cheaper: index 0 is not
-    // repriced and keeps its boost.
+    // The learned surface is the compound the rewriter generates: index 0 is
+    // not repriced and keeps its boost.
     let mut paths = vec![path("二十三", 5000, 1000)];
-    run(&mut paths);
+    run(&mut paths, true);
     assert_eq!(paths[0].surface_key(), "二十三");
     assert_eq!(
         (paths[0].viterbi_cost, paths[0].whole_path_boost),
@@ -458,6 +470,6 @@ fn learned_surface_outranks_number_compound() {
 
     // Nothing learned: the compound takes index 0.
     let mut paths = vec![path("に十三", 5000, 0)];
-    run(&mut paths);
+    run(&mut paths, false);
     assert_eq!(paths[0].surface_key(), "二十三");
 }

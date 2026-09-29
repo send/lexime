@@ -215,6 +215,31 @@ pub(crate) fn apply_history_boost(
     path.whole_path_boost = breakdown.whole_path_boost;
 }
 
+/// Put the cheapest learned path (`is_learned`, ties to the earlier) at
+/// index 0; the others keep their order, except that a learned path it
+/// replaces there goes back to its price position. The one form both
+/// history reranking and the Override stage leave the list in.
+pub(crate) fn learned_first(paths: &mut [ScoredPath]) {
+    let Some(i) = (0..paths.len())
+        .filter(|&i| paths[i].is_learned())
+        .min_by_key(|&i| (paths[i].viterbi_cost, i))
+    else {
+        return;
+    };
+    if i == 0 {
+        return;
+    }
+    let demote = paths[0].is_learned();
+    paths[..=i].rotate_right(1);
+    if demote {
+        let cost = paths[1].viterbi_cost;
+        let k = (2..paths.len())
+            .find(|&k| paths[k].viterbi_cost > cost)
+            .unwrap_or(paths.len());
+        paths[1..k].rotate_left(1);
+    }
+}
+
 /// Apply user-history boosts to N-best paths using the given `now`, then re-sort.
 ///
 /// Callers that also want to inspect the breakdown (e.g. `explain`) should pass
@@ -256,9 +281,7 @@ pub fn history_rerank_at(
         apply_history_boost(path, history, conn, now);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
-    if let Some(i) = paths.iter().position(ScoredPath::is_learned) {
-        paths[..=i].rotate_right(1);
-    }
+    learned_first(paths);
     debug!(top_cost = paths.first().map(|p| p.viterbi_cost));
 }
 

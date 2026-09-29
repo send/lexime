@@ -413,7 +413,7 @@ pub fn explain(
             // the observer, its model cost) and the rerank delta. Any other
             // price is split into model cost + features + clamp/policy.
             // Numeric / Katakana are added after history_rerank, so they
-            // have no snapshot and no history boost.
+            // have no snapshot; their boost is the Override stage's.
             let model = observer.model_costs.get(&key).copied();
             let model_cost = model.map(|(m, _)| m);
             let pre = scored.pre_history_cost();
