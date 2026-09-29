@@ -134,7 +134,7 @@ pub fn precompute_cases(
             // Resegment
             let reseg = resegment::resegment(&paths, &lattice, Some(conn));
             paths.extend(reseg);
-            let mut paired: Vec<(ScoredPath, PathFeatures)> = paths
+            let paired: Vec<(ScoredPath, PathFeatures)> = paths
                 .into_iter()
                 .map(|p| {
                     let f = fcfg.extract(&p, None);
@@ -142,10 +142,8 @@ pub fn precompute_cases(
                 })
                 .collect();
 
-            // Hard filter using structure_cost from features
-            hard_filter(&mut paired, prefix_floor);
-
-            // Build TuneCandidates from surviving paths
+            // No structure filter: it never drops the best-priced path, and
+            // tune scores top-1 only, so every path is a candidate.
             let candidates = paired
                 .iter()
                 .map(|(p, f)| TuneCandidate {
@@ -162,26 +160,6 @@ pub fn precompute_cases(
             }
         })
         .collect()
-}
-
-/// Apply the structure-cost hard filter (same logic as reranker step 1-2).
-///
-/// Removes pairs whose structure_cost exceeds `min_sc + filter`.
-fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64) {
-    if paired.len() <= 1 {
-        return;
-    }
-    let Some(threshold) = reranker::structure_threshold(
-        paired
-            .iter()
-            .map(|(p, f)| (p.segments.len(), f.structure_cost)),
-        prefix_floor,
-    ) else {
-        return;
-    };
-    // Identity paths are exempt, mirroring the production filter (#263) —
-    // the tuner must optimize against the same candidate set production keeps.
-    paired.retain(|(p, f)| p.is_identity() || f.structure_cost <= threshold);
 }
 
 // ---------------------------------------------------------------------------

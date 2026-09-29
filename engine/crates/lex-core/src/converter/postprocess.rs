@@ -104,7 +104,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     let reseg_paths = resegment::resegment(paths, ctx.lattice, ctx.conn);
     paths.extend(reseg_paths);
 
-    reranker::rerank(paths, ctx.conn, ctx.dict);
+    reranker::rerank(paths, ctx.conn, ctx.dict, |_, _, _| {});
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
     // user picked like any other path (whole-path boosts ×5 can promote a
