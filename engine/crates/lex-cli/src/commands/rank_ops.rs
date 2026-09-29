@@ -448,6 +448,9 @@ pub struct ReplayReport {
     /// surface the user picked around (history puts the cheapest learned
     /// path first, whatever cheaper unlearned paths follow it): a
     /// re-correction, the count PR-G's post-ship revert trigger reads.
+    /// Learned is as of the `--history` given: count re-corrections against
+    /// a copy of the history frozen at the window's start, since committing
+    /// the surface learns it and a current history reads 0 here.
     pub gap_below_top: usize,
     /// Selections with no N-best path (lookup / prediction / injection only).
     pub gap_no_path: usize,

@@ -62,7 +62,8 @@ impl ConversionContext<'_> {
         // candidates to work with, kept below the N-best formula's (50 with
         // history) because the 1-best runs on every keystroke. A learned path
         // past 30 reaches the candidate list's #1 but not this one (#361):
-        // drawing the list's population here doubles the cost (plan §24-18).
+        // drawing the list's population (60) here, even only for readings
+        // with a history record, made this 1-best about 2.2× slower.
         let oversample = if self.history.is_some() { 30 } else { 10 };
         self.convert_lattice_impl(lattice, 1, oversample)
             .into_iter()

@@ -47,10 +47,11 @@ pub(crate) enum RewriteStage {
 }
 
 impl RewriteStage {
-    /// Leading entries of `paths` this stage may neither displace nor
-    /// reprice: the Model stage never touches index 0; the Override stage
-    /// leaves a learned index 0 alone (a learned candidate that undercuts
-    /// it takes index 0 afterwards, [`super::reranker::learned_first`]).
+    /// Leading entries of `paths` an unlearned candidate may neither
+    /// displace nor reprice: the Model stage never touches index 0; the
+    /// Override stage leaves a learned index 0 alone. A learned Override
+    /// candidate competes with it on price instead
+    /// ([`super::reranker::learned_first`]).
     fn frozen_prefix(self, paths: &[ScoredPath]) -> usize {
         match self {
             Self::Model => 1,
@@ -115,6 +116,11 @@ pub(crate) fn run_rewriters(
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
             None => insert_by_cost(paths, candidate, stage, fp),
             Some(i) => {
+                // The frozen prefix keeps an unlearned candidate off a
+                // learned index 0. A same-surface candidate is learned
+                // exactly when that path is, so a learned one may reprice
+                // it; learned_first then puts the cheapest learned first.
+                let fp = if candidate.is_learned() { 0 } else { fp };
                 if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i, fp) {
                     paths.remove(i);
                     insert_by_cost(paths, boosted(resolved), stage, fp);

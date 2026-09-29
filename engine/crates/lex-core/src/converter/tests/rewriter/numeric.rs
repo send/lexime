@@ -458,18 +458,64 @@ fn learned_surface_outranks_number_compound() {
     assert_eq!(paths[0].surface_key(), "に十三");
     assert_eq!(paths[1].surface_key(), "二十三");
 
-    // The learned surface is the compound the rewriter generates: index 0 is
-    // not repriced and keeps its boost.
+    // The learned surface is the compound the rewriter generates: learned on
+    // both sides, so the compound's price (anchor 3000 − boost) reprices it
+    // and it keeps its boost.
     let mut paths = vec![path("二十三", 5000, 1000)];
     run(&mut paths, true);
     assert_eq!(paths[0].surface_key(), "二十三");
+    assert_eq!(paths[0].priced_by, PathOrigin::Numeric);
     assert_eq!(
         (paths[0].viterbi_cost, paths[0].whole_path_boost),
-        (5000, 1000)
+        (2000, 1000)
     );
 
     // Nothing learned: the compound takes index 0.
     let mut paths = vec![path("に十三", 5000, 0)];
     run(&mut paths, false);
     assert_eq!(paths[0].surface_key(), "二十三");
+}
+
+/// A learned index 0 takes the Override price of its own surface like any
+/// other position: adding another learned path must not change which
+/// learned surface is #1 (it did while index 0 was frozen for learned
+/// candidates too).
+#[test]
+fn learned_index0_takes_its_compound_price() {
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+        anchor: 3000,
+    };
+    let boost = |p: &mut ScoredPath| {
+        let b = match p.surface_key().as_str() {
+            "二十" | "荷重" => 1000,
+            "20" => 7000,
+            _ => return,
+        };
+        p.viterbi_cost -= b;
+        p.history_boost = b;
+        p.whole_path_boost = b;
+    };
+    let learned = |surface: &str, pre: i64| {
+        let mut p = ScoredPath::single("にじゅう".into(), surface.into(), pre, PathOrigin::Viterbi);
+        boost(&mut p);
+        p
+    };
+    let run = |mut paths: Vec<ScoredPath>| {
+        run_rewriters(
+            &[&rw as &dyn Rewriter],
+            &mut paths,
+            "にじゅう",
+            RewriteStage::Override,
+            Some(&boost),
+        );
+        paths.iter().map(|p| p.surface_key()).collect::<Vec<_>>()
+    };
+    // 二十 at index 0, alone or below another learned path: #1 either way.
+    assert_eq!(run(vec![learned("二十", 9000)])[0], "二十");
+    assert_eq!(
+        run(vec![learned("荷重", 5000), learned("二十", 9000)])[0],
+        "二十"
+    );
 }
