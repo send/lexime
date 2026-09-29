@@ -243,7 +243,7 @@ pub fn history_rerank_at(
         path.whole_path_boost = breakdown.whole_path_boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
-    if let Some(i) = paths.iter().position(|p| p.whole_path_boost > 0) {
+    if let Some(i) = paths.iter().position(ScoredPath::is_learned) {
         paths[..=i].rotate_right(1);
     }
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));

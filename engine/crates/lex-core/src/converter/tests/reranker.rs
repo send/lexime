@@ -789,17 +789,7 @@ fn test_prefix_floor_prevents_low_baseline() {
 
 /// A one-segment path `surface` over the reading かな, priced `cost`.
 fn kana_path(surface: &str, cost: i64) -> ScoredPath {
-    ScoredPath::new(
-        vec![RichSegment {
-            reading: "かな".into(),
-            surface: surface.into(),
-            left_id: 0,
-            right_id: 0,
-            word_cost: 0,
-        }],
-        cost,
-        PathOrigin::Viterbi,
-    )
+    ScoredPath::single("かな".into(), surface.into(), cost, PathOrigin::Viterbi)
 }
 
 fn learned(surfaces: &[&str]) -> UserHistory {

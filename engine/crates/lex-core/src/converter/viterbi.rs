@@ -109,6 +109,12 @@ impl ScoredPath {
         )
     }
 
+    /// The user has learned this surface for this reading
+    /// (`whole_path_boost > 0`, recorded by history reranking).
+    pub fn is_learned(&self) -> bool {
+        self.whole_path_boost > 0
+    }
+
     /// Every segment's surface is its reading: the user's typed input.
     pub fn is_identity(&self) -> bool {
         self.segments.iter().all(|s| s.surface == s.reading)

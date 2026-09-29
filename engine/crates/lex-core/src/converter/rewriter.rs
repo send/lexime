@@ -51,7 +51,7 @@ impl RewriteStage {
     fn frozen_prefix(self, paths: &[ScoredPath]) -> usize {
         match self {
             Self::Model => 1,
-            Self::Override => usize::from(paths.first().is_some_and(|p| p.whole_path_boost > 0)),
+            Self::Override => usize::from(paths.first().is_some_and(ScoredPath::is_learned)),
         }
     }
 

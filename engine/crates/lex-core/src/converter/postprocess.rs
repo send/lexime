@@ -214,7 +214,7 @@ pub(super) fn admit_by_cost_gap(
     paths.retain(|p| {
         let keep = std::mem::take(&mut first)
             || p.pre_history_cost() <= limit
-            || p.whole_path_boost > 0
+            || p.is_learned()
             || p.is_identity();
         if !keep {
             on_drop(p);
