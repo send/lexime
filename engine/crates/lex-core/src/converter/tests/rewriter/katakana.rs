@@ -38,7 +38,7 @@ fn test_katakana_dedup_via_run_rewriters() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "きょう", RewriteStage::Override);
+    run_rewriters(&[&rw], &mut paths, "きょう", RewriteStage::Override, None);
 
     assert_eq!(
         paths.len(),

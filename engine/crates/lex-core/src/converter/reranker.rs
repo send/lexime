@@ -196,6 +196,25 @@ pub fn compute_history_boost(
     }
 }
 
+/// Subtract `path`'s history boost from its price and record it on the path.
+/// The one place a path becomes "learned" (`whole_path_boost > 0`): history
+/// reranking calls it for the N-best, the Override stage for the paths it
+/// creates after that, so the predicate means the same on the whole list.
+pub(crate) fn apply_history_boost(
+    path: &mut ScoredPath,
+    history: &UserHistory,
+    conn: Option<&ConnectionMatrix>,
+    now: u64,
+) {
+    let breakdown = compute_history_boost(path, history, conn, now);
+    let applied = breakdown.applied(path.segments.len());
+    path.viterbi_cost -= applied;
+    // Remember the boost so candidate generators running after this step
+    // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
+    path.history_boost = applied;
+    path.whole_path_boost = breakdown.whole_path_boost;
+}
+
 /// Apply user-history boosts to N-best paths using the given `now`, then re-sort.
 ///
 /// Callers that also want to inspect the breakdown (e.g. `explain`) should pass
@@ -222,7 +241,7 @@ pub fn compute_history_boost(
 /// them is moved to the front, the rest keep their price order. Among
 /// learned paths price (and so decay) decides; a learned surface stays #1
 /// until another is learned cheaper or it is deleted (Fn+Delete) or
-/// evicted. The Override stage then leaves that index 0 alone.
+/// evicted. The Override stage keeps that rule for the paths it adds.
 pub fn history_rerank_at(
     paths: &mut [ScoredPath],
     history: &UserHistory,
@@ -234,19 +253,13 @@ pub fn history_rerank_at(
         return;
     }
     for path in paths.iter_mut() {
-        let breakdown = compute_history_boost(path, history, conn, now);
-        let applied = breakdown.applied(path.segments.len());
-        path.viterbi_cost -= applied;
-        // Remember the boost so candidate generators running after this step
-        // can recover the pre-boost cost (see `ScoredPath::pre_history_cost`).
-        path.history_boost = applied;
-        path.whole_path_boost = breakdown.whole_path_boost;
+        apply_history_boost(path, history, conn, now);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
     if let Some(i) = paths.iter().position(ScoredPath::is_learned) {
         paths[..=i].rotate_right(1);
     }
-    debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
+    debug!(top_cost = paths.first().map(|p| p.viterbi_cost));
 }
 
 #[cfg(test)]

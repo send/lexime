@@ -123,7 +123,7 @@ fn test_partial_hiragana_dedup_via_run_rewriters() {
         source(vec![seg("した", "した", 1), seg("ほう", "方", 20)], 9000),
     ];
 
-    run_rewriters(&[&rw], &mut paths, "したほう", RewriteStage::Model);
+    run_rewriters(&[&rw], &mut paths, "したほう", RewriteStage::Model, None);
 
     let same: Vec<_> = paths
         .iter()

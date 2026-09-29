@@ -68,7 +68,13 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "にじゅうさん", RewriteStage::Override);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "にじゅうさん",
+        RewriteStage::Override,
+        None,
+    );
 
     // Kanji already exists, only halfwidth + fullwidth added
     assert_eq!(paths.len(), 3);
@@ -96,7 +102,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override);
+    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override, None);
 
     // 十 is single-char → base_cost (not best_cost), all after 中
     assert_eq!(paths[0].surface_key(), "中");
@@ -150,7 +156,7 @@ fn test_numeric_rewriter_skips_duplicate() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override);
+    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override, None);
 
     // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
     assert_eq!(paths.len(), 3);
@@ -430,6 +436,7 @@ fn learned_surface_outranks_number_compound() {
             paths,
             "にじゅうさん",
             RewriteStage::Override,
+            None,
         )
     };
 

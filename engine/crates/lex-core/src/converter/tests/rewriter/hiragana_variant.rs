@@ -107,7 +107,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
         ),
     ];
 
-    run_rewriters(&[&rw], &mut paths, "され", RewriteStage::Model);
+    run_rewriters(&[&rw], &mut paths, "され", RewriteStage::Model, None);
 
     assert_eq!(paths.len(), 2, "should not add duplicate hiragana variant");
 }
