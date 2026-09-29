@@ -414,13 +414,23 @@ fn learned_surface_outranks_number_compound() {
         anchor: 3000,
     };
     let path = |surface: &str, cost: i64, whole: i64| {
-        let mut p = ScoredPath::single("にじゅうさん".into(), surface.into(), cost, PathOrigin::Viterbi);
+        let mut p = ScoredPath::single(
+            "にじゅうさん".into(),
+            surface.into(),
+            cost,
+            PathOrigin::Viterbi,
+        );
         p.whole_path_boost = whole;
         p.history_boost = whole;
         p
     };
     let run = |paths: &mut Vec<ScoredPath>| {
-        run_rewriters(&[&rw as &dyn Rewriter], paths, "にじゅうさん", RewriteStage::Override)
+        run_rewriters(
+            &[&rw as &dyn Rewriter],
+            paths,
+            "にじゅうさん",
+            RewriteStage::Override,
+        )
     };
 
     // Learned に十三 costs 5000 (> anchor 3000): it keeps index 0.
@@ -434,7 +444,10 @@ fn learned_surface_outranks_number_compound() {
     let mut paths = vec![path("二十三", 5000, 1000)];
     run(&mut paths);
     assert_eq!(paths[0].surface_key(), "二十三");
-    assert_eq!((paths[0].viterbi_cost, paths[0].whole_path_boost), (5000, 1000));
+    assert_eq!(
+        (paths[0].viterbi_cost, paths[0].whole_path_boost),
+        (5000, 1000)
+    );
 
     // Nothing learned: the compound takes index 0.
     let mut paths = vec![path("に十三", 5000, 0)];

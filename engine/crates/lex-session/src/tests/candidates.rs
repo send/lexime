@@ -437,7 +437,7 @@ fn auto_commit_and_stability_follow_learned_top() {
     }
     let mut session = InputSession::new(dict.clone(), None, None);
     session.set_defer_candidates(true);
-    let mut cycle = |session: &mut InputSession| {
+    let cycle = |session: &mut InputSession| {
         let reading = composing_reading(session)?.to_string();
         let cand = generate_candidates(&*dict, None, Some(&h), &reading, 20);
         let epoch = session.epoch;
@@ -447,12 +447,21 @@ fn auto_commit_and_stability_follow_learned_top() {
     for romaji in ["kyou", "ha", "ii", "tenki"] {
         type_string(&mut session, romaji);
         last = cycle(&mut session);
-        let first = session.comp().candidates.paths.first().map(|p| p[0].surface.clone());
+        let first = session
+            .comp()
+            .candidates
+            .paths
+            .first()
+            .map(|p| p[0].surface.clone());
         if last.as_ref().is_some_and(|r| r.commit.is_some()) {
             break;
         }
         assert_eq!(first.as_deref(), Some("京"), "the learned #1 leads");
     }
     let resp = last.expect("a response");
-    assert_eq!(resp.commit.as_deref(), Some("京"), "auto-commit commits the learned #1");
+    assert_eq!(
+        resp.commit.as_deref(),
+        Some("京"),
+        "auto-commit commits the learned #1"
+    );
 }

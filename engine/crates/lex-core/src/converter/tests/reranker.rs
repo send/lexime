@@ -824,7 +824,10 @@ fn history_puts_cheapest_learned_first() {
     history_rerank_at(&mut paths, &h, None, now_epoch());
     let order: Vec<String> = paths.iter().map(|p| p.surface_key()).collect();
     assert_eq!(order, ["可奈", "仮名", "加奈"]);
-    assert!(paths[0].viterbi_cost > paths[1].viterbi_cost, "moved, not priced below");
+    assert!(
+        paths[0].viterbi_cost > paths[1].viterbi_cost,
+        "moved, not priced below"
+    );
 }
 
 /// Among learned paths price decides, decay included.
@@ -860,10 +863,16 @@ fn no_learned_keeps_price_order() {
     };
     let mut paths = vec![
         kana_path("仮名", 1000),
-        ScoredPath::new(vec![seg("か", "可"), seg("な", "名")], 50000, PathOrigin::Viterbi),
+        ScoredPath::new(
+            vec![seg("か", "可"), seg("な", "名")],
+            50000,
+            PathOrigin::Viterbi,
+        ),
     ];
     history_rerank_at(&mut paths, &h, None, now_epoch());
     assert!(paths.iter().all(|p| p.whole_path_boost == 0));
-    assert!(paths.windows(2).all(|w| w[0].viterbi_cost <= w[1].viterbi_cost));
+    assert!(paths
+        .windows(2)
+        .all(|w| w[0].viterbi_cost <= w[1].viterbi_cost));
     assert_eq!(paths[0].surface_key(), "仮名");
 }
