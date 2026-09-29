@@ -338,3 +338,34 @@ fn the_pre_history_best_is_restored_at_the_floor() {
     let paths = keys(&run(&dict, Some(&h), "たべる", 2, 50, 0));
     assert_eq!(&paths[..2], ["田辺留", "食べる"], "{paths:?}");
 }
+
+/// PR-G: once a learned path takes index 0, admission's index-0 exemption
+/// is its; a displaced former #1 is judged by its own pre-history gap. A
+/// fragment that per-segment boosts had put first is dropped rather than
+/// kept at index 1 (§24 (r)); the pre-history #1 (gap 0) stays.
+#[test]
+fn displaced_fragment_top_is_dropped_by_admission() {
+    let path = |s: &str, cost: i64, boost: i64, whole: i64| {
+        let mut p = crate::converter::viterbi::ScoredPath::single(
+            "かな".into(),
+            s.into(),
+            cost,
+            PathOrigin::Viterbi,
+        );
+        p.history_boost = boost;
+        p.whole_path_boost = whole;
+        p
+    };
+    let anchor = 1000;
+    // After history: learned 可奈 moved to index 0, then the boosted fragment
+    // (pre-history 12000, above anchor + 8000) and the pre-history #1.
+    let mut paths = vec![
+        path("可奈", 41000 - 18000, 18000, 15000),
+        path("加名", 12000 - 11500, 11500, 0),
+        path("仮名", 1000, 0, 0),
+    ];
+    let dropped = admit(&mut paths, anchor, 8000);
+    assert_eq!(dropped, ["加名"]);
+    let kept: Vec<String> = paths.iter().map(|p| p.surface_key()).collect();
+    assert_eq!(kept, ["可奈", "仮名"]);
+}

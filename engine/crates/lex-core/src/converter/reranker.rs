@@ -217,6 +217,12 @@ pub fn compute_history_boost(
 /// whole or as a phrase segment of a longer commit (unigrams are recorded
 /// per phrase segment too). It is also recorded on the path: cost-gap
 /// admission keeps such a path whatever its gap.
+///
+/// A learned path (`whole_path_boost > 0`) takes index 0: the cheapest of
+/// them is moved to the front, the rest keep their price order. Among
+/// learned paths price (and so decay) decides; a learned surface stays #1
+/// until another is learned cheaper or it is deleted (Fn+Delete) or
+/// evicted. The Override stage then leaves that index 0 alone.
 pub fn history_rerank_at(
     paths: &mut [ScoredPath],
     history: &UserHistory,
@@ -237,6 +243,9 @@ pub fn history_rerank_at(
         path.whole_path_boost = breakdown.whole_path_boost;
     }
     paths.sort_by_key(|p| p.viterbi_cost);
+    if let Some(i) = paths.iter().position(|p| p.whole_path_boost > 0) {
+        paths[..=i].rotate_right(1);
+    }
     debug!(best_cost = paths.first().map(|p| p.viterbi_cost));
 }
 

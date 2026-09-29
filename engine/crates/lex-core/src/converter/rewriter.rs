@@ -29,22 +29,29 @@ fn worst_cost(paths: &[ScoredPath]) -> i64 {
 }
 
 /// Where a group of rewriters runs, which decides what it may override.
+/// Neither stage moves a learned index 0: history reranking put the
+/// cheapest learned path there, and a learned surface outranks policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RewriteStage {
     /// Alternatives to the model's ranking, before history: never touch
     /// index 0.
     Model,
     /// Rewriters whose policy is to override the model, index 0 included:
-    /// NumericRewriter puts a number compound first on purpose (#239).
+    /// NumericRewriter puts a number compound first on purpose (#239) —
+    /// unless index 0 is a surface the user has learned for this reading,
+    /// which outranks any policy.
     Override,
 }
 
 impl RewriteStage {
-    /// Leading entries this stage may neither displace nor reprice.
-    fn frozen_prefix(self) -> usize {
+    /// Leading entries of `paths` this stage may neither displace nor
+    /// reprice: the Model stage never touches index 0; the Override stage
+    /// leaves it alone only when it is learned (`whole_path_boost > 0`,
+    /// placed there by history reranking).
+    fn frozen_prefix(self, paths: &[ScoredPath]) -> usize {
         match self {
             Self::Model => 1,
-            Self::Override => 0,
+            Self::Override => usize::from(paths.first().is_some_and(|p| p.whole_path_boost > 0)),
         }
     }
 
@@ -72,6 +79,8 @@ pub(crate) fn run_rewriters(
     reading: &str,
     stage: RewriteStage,
 ) {
+    // Decided on the stage's input, so inserting cannot change it.
+    let fp = stage.frozen_prefix(paths);
     let candidates: Vec<ScoredPath> = rewriters
         .iter()
         .flat_map(|rw| rw.generate(paths, reading))
@@ -85,11 +94,11 @@ pub(crate) fn run_rewriters(
     for candidate in candidates {
         let key = candidate.surface_key();
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
-            None => insert_by_cost(paths, candidate, stage),
+            None => insert_by_cost(paths, candidate, stage, fp),
             Some(i) => {
-                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i) {
+                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i, fp) {
                     paths.remove(i);
-                    insert_by_cost(paths, resolved, stage);
+                    insert_by_cost(paths, resolved, stage, fp);
                 }
             }
         }
@@ -106,12 +115,12 @@ pub(crate) fn run_rewriters(
     }
 }
 
-/// Insert before the first entry (past the frozen prefix) that costs more,
+/// Insert before the first entry (past the frozen prefix `fp`) that costs more,
 /// or at least as much when the stage precedes ties. A linear scan, so the
 /// position is defined even where the list is not sorted (the Viterbi best
 /// is re-inserted at index 1 after history reranking).
-fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
-    let fp = stage.frozen_prefix().min(paths.len());
+fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage, fp: usize) {
+    let fp = fp.min(paths.len());
     let precedes = stage.precedes_ties();
     let pos = fp
         + paths[fp..]
@@ -139,8 +148,9 @@ fn resolve_duplicate(
     candidate: ScoredPath,
     existing: &ScoredPath,
     i: usize,
+    fp: usize,
 ) -> Option<ScoredPath> {
-    if i < stage.frozen_prefix() {
+    if i < fp {
         return None;
     }
     // The Model stage runs before history: there is no boost to keep.

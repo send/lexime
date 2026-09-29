@@ -402,3 +402,42 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
     assert!(result.iter().any(|p| p.surface_key() == "五円"));
     assert!(result.iter().any(|p| p.surface_key() == "五園"));
 }
+
+/// PR-G (G1′): a learned index 0 outranks the number compound, even when it
+/// costs more than the anchor the compound is priced at; with nothing
+/// learned the compound still takes index 0 (#239).
+#[test]
+fn learned_surface_outranks_number_compound() {
+    let rw = NumericRewriter {
+        lattice: None,
+        connection: None,
+        anchor: 3000,
+    };
+    let path = |surface: &str, cost: i64, whole: i64| {
+        let mut p = ScoredPath::single("にじゅうさん".into(), surface.into(), cost, PathOrigin::Viterbi);
+        p.whole_path_boost = whole;
+        p.history_boost = whole;
+        p
+    };
+    let run = |paths: &mut Vec<ScoredPath>| {
+        run_rewriters(&[&rw as &dyn Rewriter], paths, "にじゅうさん", RewriteStage::Override)
+    };
+
+    // Learned に十三 costs 5000 (> anchor 3000): it keeps index 0.
+    let mut paths = vec![path("に十三", 5000, 1000)];
+    run(&mut paths);
+    assert_eq!(paths[0].surface_key(), "に十三");
+    assert_eq!(paths[1].surface_key(), "二十三");
+
+    // A learned surface the rewriter also generates, cheaper: index 0 is not
+    // repriced and keeps its boost.
+    let mut paths = vec![path("二十三", 5000, 1000)];
+    run(&mut paths);
+    assert_eq!(paths[0].surface_key(), "二十三");
+    assert_eq!((paths[0].viterbi_cost, paths[0].whole_path_boost), (5000, 1000));
+
+    // Nothing learned: the compound takes index 0.
+    let mut paths = vec![path("に十三", 5000, 0)];
+    run(&mut paths);
+    assert_eq!(paths[0].surface_key(), "二十三");
+}

@@ -193,3 +193,24 @@ fn test_viterbi_best_preserved_despite_history_boost() {
         learned_surfaces,
     );
 }
+
+/// PR-G: a learned surface whose boost does not cover its price gap is the
+/// #1 of the 1-best and of the N-best alike.
+#[test]
+fn one_best_equals_nbest_head_with_learned_whole_pair() {
+    use crate::converter::testutil::entry;
+    use crate::dict::TrieDictionary;
+    let dict = TrieDictionary::from_entries(vec![(
+        "かな".into(),
+        vec![entry("仮名", 0), entry("可奈", 25000)],
+    )]);
+    let mut h = UserHistory::new();
+    h.record(&[("かな".into(), "可奈".into())]);
+    let joined = |p: &[ConvertedSegment]| p.iter().map(|s| s.surface.as_str()).collect::<String>();
+    let one_best = joined(&convert_with_history(&dict, None, &h, "かな"));
+    let nbest = convert_nbest_with_history(&dict, None, &h, "かな", 20);
+    assert_eq!(one_best, "可奈");
+    assert_eq!(joined(&nbest[0]), "可奈");
+    // Without the learning 仮名 is #1: the boost alone does not flip it.
+    assert_eq!(joined(&convert(&dict, None, "かな")), "仮名");
+}

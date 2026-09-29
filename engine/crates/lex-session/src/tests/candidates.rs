@@ -420,3 +420,39 @@ fn test_auto_commit_skips_single_kana_first_segment() {
         "composing kana should remain unchanged when auto-commit is skipped"
     );
 }
+
+/// PR-G: with a learned whole pair for each prefix, the stability tracker
+/// follows the learned #1's first segment and auto-commit commits it.
+#[test]
+fn auto_commit_and_stability_follow_learned_top() {
+    let dict = make_test_dict();
+    let mut h = lex_core::user_history::UserHistory::new();
+    for (r, s) in [
+        ("きょう", "京"),
+        ("きょうは", "京は"),
+        ("きょうはいい", "京はいい"),
+        ("きょうはいいてんき", "京はいい天気"),
+    ] {
+        h.record(&[(r.into(), s.into())]);
+    }
+    let mut session = InputSession::new(dict.clone(), None, None);
+    session.set_defer_candidates(true);
+    let mut cycle = |session: &mut InputSession| {
+        let reading = composing_reading(session)?.to_string();
+        let cand = generate_candidates(&*dict, None, Some(&h), &reading, 20);
+        let epoch = session.epoch;
+        session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)
+    };
+    let mut last = None;
+    for romaji in ["kyou", "ha", "ii", "tenki"] {
+        type_string(&mut session, romaji);
+        last = cycle(&mut session);
+        let first = session.comp().candidates.paths.first().map(|p| p[0].surface.clone());
+        if last.as_ref().is_some_and(|r| r.commit.is_some()) {
+            break;
+        }
+        assert_eq!(first.as_deref(), Some("京"), "the learned #1 leads");
+    }
+    let resp = last.expect("a response");
+    assert_eq!(resp.commit.as_deref(), Some("京"), "auto-commit commits the learned #1");
+}

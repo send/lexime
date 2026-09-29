@@ -659,7 +659,10 @@ mod tests {
         let (dict, conn) = oversample_sensitive();
         let mut h = UserHistory::new();
         h.record(&[("な".into(), "な".into())]);
-        for history in [None, Some(&h)] {
+        // A whole-pair learning of a non-#1 surface moves it to index 0.
+        let mut learned = UserHistory::new();
+        learned.record(&[("かなや".into(), "仮名屋".into())]);
+        for history in [None, Some(&h), Some(&learned)] {
             for n in 1..=6 {
                 let explained: Vec<String> = explain(&dict, Some(&conn), history, "かなや", n)
                     .paths
