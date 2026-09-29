@@ -47,15 +47,14 @@ pub(crate) enum RewriteStage {
 }
 
 impl RewriteStage {
-    /// Leading entries of `paths` an unlearned candidate may neither
-    /// displace nor reprice: the Model stage never touches index 0; the
-    /// Override stage leaves a learned index 0 alone. A learned Override
-    /// candidate competes with it on price instead
-    /// ([`super::reranker::learned_first`]).
-    fn frozen_prefix(self, paths: &[ScoredPath]) -> usize {
+    /// Whether index 0 is held apart from the stage's insertions: the Model
+    /// stage never touches it; the Override stage holds a learned index 0,
+    /// which no candidate displaces (a learned candidate competes with it on
+    /// price afterwards, [`super::reranker::learned_first`]).
+    fn holds_head(self, paths: &[ScoredPath]) -> bool {
         match self {
-            Self::Model => 1,
-            Self::Override => usize::from(paths.first().is_some_and(ScoredPath::is_learned)),
+            Self::Model => !paths.is_empty(),
+            Self::Override => paths.first().is_some_and(ScoredPath::is_learned),
         }
     }
 
@@ -73,7 +72,10 @@ impl RewriteStage {
 }
 
 /// Run a stage's rewriters, resolving duplicates and inserting in cost
-/// order below the stage's frozen prefix. Every rewriter generates from the
+/// order below a held index 0 ([`RewriteStage::holds_head`]). The head is
+/// held by identity — taken out of the list while candidates go in — so
+/// what it protects cannot shift when a path is removed and re-inserted.
+/// Every rewriter generates from the
 /// stage's input list before anything is inserted, so no rewriter sees
 /// another's output: an offer is never a source, and the rewriters' order
 /// does not change what they generate.
@@ -92,8 +94,6 @@ pub(crate) fn run_rewriters(
     boost: Option<&dyn Fn(&mut ScoredPath)>,
 ) {
     debug_assert!(boost.is_none() || stage == RewriteStage::Override);
-    // Decided on the stage's input, so inserting cannot change it.
-    let fp = stage.frozen_prefix(paths);
     let boosted = |mut p: ScoredPath| {
         if let Some(b) = boost {
             b(&mut p);
@@ -111,22 +111,33 @@ pub(crate) fn run_rewriters(
         .filter(|c| c.priced_by == rescue)
         .map(ScoredPath::surface_key)
         .collect();
+    // Decided on the stage's input.
+    let mut head = stage.holds_head(paths).then(|| paths.remove(0));
     for candidate in candidates {
         let key = candidate.surface_key();
+        if let Some(h) = head.as_mut().filter(|h| h.surface_key_eq(&key)) {
+            // A held Override head is learned, and so is a candidate with its
+            // surface: that one may reprice it in place. The Model stage
+            // leaves its head as it is.
+            if stage == RewriteStage::Override {
+                if let Some(resolved) = resolve_duplicate(stage, candidate, h) {
+                    *h = boosted(resolved);
+                }
+            }
+            continue;
+        }
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
-            None => insert_by_cost(paths, candidate, stage, fp),
+            None => insert_by_cost(paths, candidate, stage),
             Some(i) => {
-                // The frozen prefix keeps an unlearned candidate off a
-                // learned index 0. A same-surface candidate is learned
-                // exactly when that path is, so a learned one may reprice
-                // it; learned_first then puts the cheapest learned first.
-                let fp = if candidate.is_learned() { 0 } else { fp };
-                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i], i, fp) {
+                if let Some(resolved) = resolve_duplicate(stage, candidate, &paths[i]) {
                     paths.remove(i);
-                    insert_by_cost(paths, boosted(resolved), stage, fp);
+                    insert_by_cost(paths, boosted(resolved), stage);
                 }
             }
         }
+    }
+    if let Some(h) = head {
+        paths.insert(0, h);
     }
     if stage == RewriteStage::Override {
         super::reranker::learned_first(paths);
@@ -143,22 +154,18 @@ pub(crate) fn run_rewriters(
     }
 }
 
-/// Insert before the first entry (past the frozen prefix) that costs more,
-/// or at least as much when the stage precedes ties. A linear scan, so the
-/// position is defined even where the list is not sorted (the Viterbi best
-/// is re-inserted at index 1 after history reranking, and a learned index 0
-/// may cost more than what follows it).
-fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage, fp: usize) {
-    let fp = fp.min(paths.len());
+/// Insert before the first entry that costs more, or at least as much when
+/// the stage precedes ties. A linear scan, so the position is defined even
+/// where the list is not sorted (the Viterbi best is re-inserted at index 1
+/// after history reranking).
+fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
     let precedes = stage.precedes_ties();
-    let pos = fp
-        + paths[fp..]
-            .iter()
-            .position(|p| {
-                p.viterbi_cost > path.viterbi_cost
-                    || (precedes && p.viterbi_cost == path.viterbi_cost)
-            })
-            .unwrap_or(paths.len() - fp);
+    let pos = paths
+        .iter()
+        .position(|p| {
+            p.viterbi_cost > path.viterbi_cost || (precedes && p.viterbi_cost == path.viterbi_cost)
+        })
+        .unwrap_or(paths.len());
     paths.insert(pos, path);
 }
 
@@ -177,12 +184,7 @@ fn resolve_duplicate(
     stage: RewriteStage,
     candidate: ScoredPath,
     existing: &ScoredPath,
-    i: usize,
-    fp: usize,
 ) -> Option<ScoredPath> {
-    if i < fp {
-        return None;
-    }
     // The Model stage runs before history: there is no boost to keep.
     debug_assert!(
         stage == RewriteStage::Override

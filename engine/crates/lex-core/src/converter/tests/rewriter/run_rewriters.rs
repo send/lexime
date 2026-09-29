@@ -583,3 +583,100 @@ fn a_model_price_is_not_marked_as_the_rescue() {
     run_rewriters(&[&rescue], &mut paths, "よみ", RewriteStage::Model, None);
     assert_eq!(paths[1].priced_by, PathOrigin::Viterbi);
 }
+
+/// A learned duplicate repriced below the learned index 0 takes index 0
+/// through learned_first, so the index 0 it replaces goes back to its price
+/// instead of staying at index 1 (Codex R1 on #363).
+#[test]
+fn repriced_learned_duplicate_demotes_the_learned_top_to_its_price() {
+    let boost = |p: &mut ScoredPath| {
+        if matches!(p.surface_key().as_str(), "荷重" | "二十") {
+            p.viterbi_cost -= 1000;
+            p.history_boost = 1000;
+            p.whole_path_boost = 1000;
+        }
+    };
+    let learned = |surface: &str, pre: i64| {
+        let mut p = path(surface, pre, PathOrigin::Viterbi);
+        boost(&mut p);
+        p
+    };
+    let mut paths = vec![
+        learned("荷重", 5000),
+        path("二重", 3000, PathOrigin::Viterbi),
+        learned("二十", 9000),
+    ];
+    let rw = Fixed(vec![path("二十", 3000, PathOrigin::Numeric)]);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "にじゅう",
+        RewriteStage::Override,
+        Some(&boost),
+    );
+    assert_eq!(surfaces(&paths), ["二十", "二重", "荷重"]);
+    assert_eq!(paths[0].viterbi_cost, 2000);
+}
+
+/// Boost for the held-head tests: X, L1 are learned (1000).
+fn head_boost(p: &mut ScoredPath) {
+    if matches!(p.surface_key().as_str(), "X" | "L1") {
+        p.viterbi_cost -= 1000;
+        p.history_boost = 1000;
+        p.whole_path_boost = 1000;
+    }
+}
+
+/// A learned X held at index 0 (pre-history 5000, boosted 4000) above a
+/// cheaper unlearned B, as history reranking leaves it; run `rewriters` in
+/// the given order.
+fn run_on_learned_head(rewriters: &[&dyn Rewriter]) -> Vec<(String, i64)> {
+    let mut x = path("X", 5000, PathOrigin::Viterbi);
+    head_boost(&mut x);
+    let mut paths = vec![x, path("B", 3000, PathOrigin::Viterbi)];
+    run_rewriters(
+        rewriters,
+        &mut paths,
+        "よみ",
+        RewriteStage::Override,
+        Some(&head_boost),
+    );
+    paths
+        .iter()
+        .map(|p| (p.surface_key(), p.viterbi_cost))
+        .collect()
+}
+
+/// The held head is held by identity: repricing it does not hand its place
+/// to the next path, so the result does not depend on the rewriters' order.
+#[test]
+fn held_head_does_not_pass_to_the_next_path() {
+    let dup_x = Fixed(vec![path("X", 4500, PathOrigin::Numeric)]);
+    let u = Fixed(vec![path("U", 2000, PathOrigin::Numeric)]);
+    let want = [("X", 3500), ("U", 2000), ("B", 3000)].map(|(s, c)| (s.to_string(), c));
+    assert_eq!(run_on_learned_head(&[&dup_x, &u]), want);
+    assert_eq!(run_on_learned_head(&[&u, &dup_x]), want);
+
+    let dup_b = Fixed(vec![path("B", 2000, PathOrigin::Numeric)]);
+    let want = [("X", 3500), ("B", 2000)].map(|(s, c)| (s.to_string(), c));
+    assert_eq!(run_on_learned_head(&[&dup_x, &dup_b]), want);
+    assert_eq!(run_on_learned_head(&[&dup_b, &dup_x]), want);
+}
+
+/// A learned index 0 displaced by a cheaper learned candidate goes back to
+/// its price before paths of equal price, as the Override stage inserts.
+#[test]
+fn displaced_learned_head_precedes_equal_prices() {
+    let mut x = path("X", 1500, PathOrigin::Viterbi);
+    head_boost(&mut x);
+    let mut paths = vec![x, path("P", 500, PathOrigin::Viterbi)];
+    let l = Fixed(vec![path("L1", 0, PathOrigin::Numeric)]);
+    run_rewriters(
+        &[&l],
+        &mut paths,
+        "よみ",
+        RewriteStage::Override,
+        Some(&head_boost),
+    );
+    assert_eq!(surfaces(&paths), ["L1", "X", "P"]);
+}

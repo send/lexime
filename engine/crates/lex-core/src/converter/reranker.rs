@@ -217,8 +217,9 @@ pub(crate) fn apply_history_boost(
 
 /// Put the cheapest learned path (`is_learned`, ties to the earlier) at
 /// index 0; the others keep their order, except that a learned path it
-/// replaces there goes back to its price position. The one form both
-/// history reranking and the Override stage leave the list in.
+/// replaces there goes back to its price position (before paths of equal
+/// price, as the Override stage inserts). The one form both history
+/// reranking and the Override stage leave the list in.
 pub(crate) fn learned_first(paths: &mut [ScoredPath]) {
     let Some(i) = (0..paths.len())
         .filter(|&i| paths[i].is_learned())
@@ -234,7 +235,7 @@ pub(crate) fn learned_first(paths: &mut [ScoredPath]) {
     if demote {
         let cost = paths[1].viterbi_cost;
         let k = (2..paths.len())
-            .find(|&k| paths[k].viterbi_cost > cost)
+            .find(|&k| paths[k].viterbi_cost >= cost)
             .unwrap_or(paths.len());
         paths[1..k].rotate_left(1);
     }
