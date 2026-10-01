@@ -56,40 +56,37 @@ impl<'a> FeaturePricer<'a> {
         )
     }
 
-    /// The structure filter's threshold when `anchor` is the #1.
+    /// Structure-filter threshold measured from the anchor — the pre-history
+    /// #1 — given its structure cost: `sc + structure_cost_filter`, with a
+    /// single-segment anchor (0 transitions) imputed at `prefix_floor`.
+    ///
+    /// The anchor is the one path every other stage measures from (cost-gap
+    /// admission, Numeric), so the threshold depends on the population only
+    /// through its #1: a cheap-transition path that never wins (`カナ|や`)
+    /// cannot lower it (#353).
     fn threshold_at(&self, anchor: &ScoredPath, anchor_sc: i64) -> i64 {
-        structure_threshold(anchor.segments.len(), anchor_sc, self.fcfg.prefix_floor)
+        let sc = if anchor.segments.len() <= 1 {
+            self.fcfg.prefix_floor
+        } else {
+            anchor_sc
+        };
+        sc.saturating_add(settings().reranker.structure_cost_filter)
     }
 }
 
-/// `(structure cost, filter threshold)` of `anchor` — the pre-history #1
-/// the filter measured from. For diagnostics (explain).
-pub(crate) fn structure_filter_at(
-    anchor: &ScoredPath,
-    conn: Option<&ConnectionMatrix>,
-) -> (i64, i64) {
-    let features = FeaturePricer::new(conn, None);
-    let sc = features.structure_cost(anchor);
-    (sc, features.threshold_at(anchor, sc))
-}
-
-/// Structure-filter threshold measured from the anchor — the pre-history #1
-/// — given its segment count and structure cost: `sc + structure_cost_filter`,
-/// with a single-segment anchor (0 transitions) imputed at `prefix_floor`.
-///
-/// The anchor is the one path every other stage measures from (cost-gap
-/// admission, Numeric), so the threshold depends on the population only
-/// through its #1: a cheap-transition path that never wins (`カナ|や`)
-/// cannot lower it (#353).
-pub(crate) fn structure_threshold(segs: usize, sc: i64, prefix_floor: i64) -> i64 {
-    let anchor_sc = if segs <= 1 { prefix_floor } else { sc };
-    anchor_sc.saturating_add(settings().reranker.structure_cost_filter)
+/// What the structure filter measured from: the anchor's (pre-history #1's)
+/// structure cost and the threshold above which paths were dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StructureFilter {
+    pub anchor_sc: i64,
+    pub threshold: i64,
 }
 
 /// Transitions FROM a prefix POS (role == 3) get a floor of half the filter
 /// threshold. Without this, a prefix→content-word transition (e.g.
-/// 今[prefix]→デスネ with conn=256) can drag min_sc so low that the hard
-/// filter drops correct multi-segment paths like 今|です|ね.
+/// 今[prefix]→デスネ with conn=256) gives a multi-segment anchor such as
+/// 今|です|ね a structure cost so low that the hard filter drops the other
+/// correct multi-segment paths measured from it.
 pub(crate) fn structure_prefix_floor() -> i64 {
     let r = &settings().reranker;
     (r.structure_cost_filter / 2).min(r.structure_cost_transition_cap)
@@ -112,16 +109,17 @@ pub(crate) fn structure_prefix_floor() -> i64 {
 /// anchor's (the cheapest path after features) by more than
 /// `structure_cost_filter`; `on_drop` sees each dropped path with its
 /// structure cost and its price's gap to the anchor. The anchor itself
-/// always survives.
-pub fn rerank(
+/// always survives. Returns what the filter measured from, or `None` when
+/// there were fewer than two paths and nothing was filtered or priced.
+pub(crate) fn rerank(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
     dict: Option<&dyn Dictionary>,
     mut on_drop: impl FnMut(&ScoredPath, i64, i64),
-) {
+) -> Option<StructureFilter> {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
-        return;
+        return None;
     }
     let features = FeaturePricer::new(conn, dict);
 
@@ -134,10 +132,9 @@ pub fn rerank(
         .map(|(p, &sc)| p.viterbi_cost + features.adjustment_with_sc(p, sc))
         .collect();
     // First minimum: the path a stable sort puts at index 0.
-    let Some(anchor) = (0..paths.len()).min_by_key(|&i| prices[i]) else {
-        return;
-    };
-    let threshold = features.threshold_at(&paths[anchor], structure_costs[anchor]);
+    let anchor = (0..paths.len()).min_by_key(|&i| prices[i])?;
+    let anchor_sc = structure_costs[anchor];
+    let threshold = features.threshold_at(&paths[anchor], anchor_sc);
     let anchor_price = prices[anchor];
 
     // Filter and price in one pass. Identity paths (surface == reading
@@ -160,6 +157,10 @@ pub fn rerank(
 
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(paths_out = paths.len());
+    Some(StructureFilter {
+        anchor_sc,
+        threshold,
+    })
 }
 
 /// Breakdown of the history boost contributions for a single path.

@@ -14,7 +14,7 @@ pub use super::features::{FeatureWeights, PathFeatures};
 use super::lattice::build_lattice;
 use super::reranker;
 use super::resegment;
-use super::viterbi::{viterbi_nbest, ScoredPath};
+use super::viterbi::viterbi_nbest;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -136,22 +136,15 @@ pub fn precompute_cases(
             // Resegment
             let reseg = resegment::resegment(&paths, &lattice, Some(conn));
             paths.extend(reseg);
-            let paired: Vec<(ScoredPath, PathFeatures)> = paths
-                .into_iter()
-                .map(|p| {
-                    let f = fcfg.extract(&p, None);
-                    (p, f)
-                })
-                .collect();
 
             // No structure filter: it never drops the best-priced path, and
             // tune scores top-1 only, so every path is a candidate.
-            let candidates = paired
+            let candidates = paths
                 .iter()
-                .map(|(p, f)| TuneCandidate {
+                .map(|p| TuneCandidate {
                     surface: p.surface_key(),
                     base_cost: p.viterbi_cost,
-                    features: f.clone(),
+                    features: fcfg.extract(p, None),
                 })
                 .collect();
 

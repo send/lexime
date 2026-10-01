@@ -144,6 +144,15 @@ pub fn entry(surface: &str, cost: i16) -> DictEntry {
     }
 }
 
+/// A dictionary entry whose left and right POS id are both `id`.
+pub fn entry_with_id(surface: &str, cost: i16, id: u16) -> DictEntry {
+    DictEntry {
+        left_id: id,
+        right_id: id,
+        ..entry(surface, cost)
+    }
+}
+
 /// 食べる against the fragments 田|辺留 (two nodes, two segment penalties):
 /// the fragments sit far above the best, more than the default cost-gap
 /// bound (the RC-2 田辺る shape).
@@ -159,12 +168,7 @@ pub fn taberu_dict() -> TrieDictionary {
 /// transitions (structure cost 10000) exceed the structure filter's
 /// threshold measured from 仮名屋 (3000 imputed + 6000).
 pub fn filtered_kanaya() -> (TrieDictionary, ConnectionMatrix) {
-    let e = |surface: &str, cost: i16, id: u16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: id,
-        right_id: id,
-    };
+    let e = entry_with_id;
     let dict = TrieDictionary::from_entries(vec![
         ("か".into(), vec![e("可", 0, 1)]),
         ("な".into(), vec![e("な", 0, 2)]),

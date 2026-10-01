@@ -597,15 +597,10 @@ fn test_filter_drops_fragmented_paths() {
 }
 
 #[test]
-fn test_filter_keeps_all_when_all_exceed() {
-    // All paths have high structure_cost; none should be dropped.
-    // Transition cost = 2000. All paths have 4 segments → 3 transitions → sc = 6000.
-    // min_sc = 6000, threshold = 6000 + 6000 = 12000.
-    // All paths have sc = 6000 ≤ 12000, so all pass.
-    // But to truly test the "all exceed" safety, we need a scenario where
-    // min_sc itself is above the threshold relative to... Actually the safety
-    // is: if ALL paths have sc > threshold, keep all. Let's just verify
-    // that when all paths are equally fragmented, none are dropped.
+fn test_filter_keeps_equally_fragmented_paths() {
+    // A high structure cost alone drops nothing: the threshold is measured
+    // from the anchor. Transition cost = 2000, 4 segments → sc = 6000 for
+    // every path; anchor sc 6000 → threshold 12000, so all pass.
     let conn = uniform_conn(2000);
 
     let seg = |r: &str, s: &str| RichSegment {
@@ -711,8 +706,8 @@ fn test_filter_preserves_the_best() {
 
 #[test]
 fn test_prefix_floor_prevents_low_baseline() {
-    // Verifies that prefix floor raises min_sc enough to keep a path
-    // that would be dropped without it.
+    // Verifies that the prefix floor raises the anchor's sc (Path A, the
+    // cheapest) enough to keep a path that would be dropped without it.
     //
     // Setup: 4 POS IDs, ID 0 is prefix (role=3).
     // Connection costs: all 4000, except (0→any) = 100.
@@ -725,10 +720,10 @@ fn test_prefix_floor_prevents_low_baseline() {
     // Path B: [content(id=1)] → [content(id=1)] → [content(id=1)]  (2 transitions)
     //   sc = 4000 + 4000 = 8000
     //
-    // Without floor: min_sc = 100,  threshold = 100 + 6000 = 6100.
+    // Without floor: anchor sc = 100,  threshold = 100 + 6000 = 6100.
     //   Path B (8000 > 6100) → DROPPED.
     //
-    // With floor: min_sc = 3000, threshold = 3000 + 6000 = 9000.
+    // With floor: anchor sc = 3000, threshold = 3000 + 6000 = 9000.
     //   Path B (8000 ≤ 9000) → KEPT.
     let num_ids = 4u16;
     let mut costs = Vec::new();

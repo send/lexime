@@ -12,7 +12,7 @@ use super::cost::{conn_cost, score_path, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
-use super::reranker::{compute_history_boost, FeaturePricer};
+use super::reranker::{compute_history_boost, FeaturePricer, StructureFilter};
 use super::rewriter::RESCUE_OFFSET;
 use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
 
@@ -210,9 +210,9 @@ struct ExplainObserver<'a> {
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
     anchor: i64,
-    /// Paths the structure filter dropped, and its `(anchor sc, threshold)`.
+    /// Paths the structure filter dropped, and what it measured from.
     dropped_by_structure: Vec<DroppedStructurePath>,
-    structure_filter: (i64, i64),
+    structure_filter: Option<StructureFilter>,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -234,7 +234,7 @@ impl<'a> ExplainObserver<'a> {
             dropped: Vec::new(),
             anchor: 0,
             dropped_by_structure: Vec::new(),
-            structure_filter: (0, 0),
+            structure_filter: None,
         }
     }
 }
@@ -256,13 +256,13 @@ impl PostprocessObserver for ExplainObserver<'_> {
         });
     }
 
+    fn structure_filter(&mut self, filter: StructureFilter) {
+        self.structure_filter = Some(filter);
+    }
+
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
         self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
-        // The Model stage keeps index 0, so it is still the filter's anchor.
-        if let Some(best) = paths.first() {
-            self.structure_filter = super::reranker::structure_filter_at(best, self.conn);
-        }
         for p in paths {
             let breakdown = match self.history {
                 Some(h) => compute_history_boost(p, h, self.conn, self.now),
@@ -445,7 +445,9 @@ pub fn explain(
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
     let mut dropped_by_structure = std::mem::take(&mut observer.dropped_by_structure);
     dropped_by_structure.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
-    let (structure_anchor_sc, structure_threshold) = observer.structure_filter;
+    let (structure_anchor_sc, structure_threshold) = observer
+        .structure_filter
+        .map_or((0, 0), |f| (f.anchor_sc, f.threshold));
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -710,12 +712,7 @@ mod tests {
     /// but cheapest after features. An oversample of 3 (n=1) never sees it.
     /// Every path is one segment, so the structure filter cannot act.
     fn oversample_sensitive() -> (TrieDictionary, ConnectionMatrix) {
-        let e = |surface: &str, cost: i16, id: u16| DictEntry {
-            surface: surface.into(),
-            cost,
-            left_id: id,
-            right_id: id,
-        };
+        let e = crate::converter::testutil::entry_with_id;
         let dict = TrieDictionary::from_entries(vec![(
             "かなや".into(),
             vec![
@@ -737,12 +734,7 @@ mod tests {
     /// is the 4th-cheapest path, so once the population reached it the
     /// threshold dropped to 0 + 6000 and filtered the cheapest paths.
     fn filter_population_sensitive() -> (TrieDictionary, ConnectionMatrix) {
-        let e = |surface: &str, cost: i16, id: u16| DictEntry {
-            surface: surface.into(),
-            cost,
-            left_id: id,
-            right_id: id,
-        };
+        let e = crate::converter::testutil::entry_with_id;
         let dict = TrieDictionary::from_entries(vec![
             ("か".into(), vec![e("可", 0, 1), e("課", 100, 1)]),
             ("な".into(), vec![e("な", 0, 2)]),
