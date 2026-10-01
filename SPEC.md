@@ -368,7 +368,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
-- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。structure cost（累積遷移コスト）は hard filter にだけ効く: 閾値は**履歴前 #1**（特徴量込みの最安経路。コスト差 admission・数詞の基準と同じ経路）の structure cost（単一分節は prefix 床 3000 で補う）+ `structure_cost_filter`。#1 は必ず残り、閾値が母集団に依存するのは #1 を通してだけ（勝たない経路が閾値を下げない — #353）。かな読みそのままの経路（identity）は免除
+- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。structure cost（累積遷移コスト）は hard filter にだけ効く: 閾値は**履歴前 #1**（特徴量込みの最安経路。コスト差 admission・数詞の基準と同じ経路）の structure cost（単一分節は prefix 床 = 既定 3000 で補う。式は設定表の `structure_cost_filter`）+ `structure_cost_filter`。#1 は必ず残り、閾値が母集団に依存するのは #1 を通してだけ（勝たない経路が閾値を下げない — #353）。かな読みそのままの経路（identity）は免除
 - **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 3 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）
 - **表記ゆれ・かな救済**（`RewriteStage::Model`、履歴前に走る。index 0 は動かさない。n = 1 で学習が空のときは index 0 に届かないので省く — 出力は同じ）。段の全 rewriter が段に入ってきたリストから生成し、挿入はその後にまとめて行う（rewriter は互いの出力を見ない）
   - `HiraganaVariantRewriter` — best の漢字分節をすべてかなにした候補（かな救済 #263、best + 4000）
@@ -693,7 +693,7 @@ macOS で動作する最小限の IME を構築。
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
-| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。structure filter で落ちた経路は `dropped_by_structure`（text では `Dropped by structure`）に gap 順で、`structure_cost` と `gap`（特徴量込み価格の #1 からの差。コスト差の上限以下なら admission だけなら残った経路）を添えて出し、`structure_anchor_sc`（#1 の structure cost）・`structure_threshold` も出す |
+| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。structure filter で落ちた経路は `dropped_by_structure`（text では `Dropped by structure`）に gap 順で、`structure_cost` と `gap`（特徴量込み価格の #1 からの差。コスト差の上限以下なら admission だけなら残った経路）を添えて出し、`structure_filter`（`anchor_sc` = #1 の structure cost（単一分節は prefix 床）、`threshold`。rerank が 2 本未満で filter が走らなければ null）も出す |
 | `snapshot` | 変換スナップショット生成（N-best。本番の候補列は `lextool snapshot --candidates` を直接呼ぶ — task は引数を渡さず出力先も N-best 用に固定） |
 | `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` を直接呼ぶ。種別の違うファイルはエラー） |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |

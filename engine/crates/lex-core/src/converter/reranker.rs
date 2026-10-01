@@ -81,8 +81,8 @@ impl<'a> FeaturePricer<'a> {
 /// structure cost — `prefix_floor` for a single-segment anchor — and the
 /// threshold, `anchor_sc + structure_cost_filter`, above which paths were
 /// dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StructureFilter {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct StructureFilter {
     pub anchor_sc: i64,
     pub threshold: i64,
 }

@@ -37,13 +37,11 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
-    /// Structure cost the structure filter measured from: the pre-history
-    /// #1's (a single segment imputed at the prefix floor). `None` when
-    /// rerank saw fewer than two paths and did not filter.
-    pub structure_anchor_sc: Option<i64>,
-    /// The structure filter's threshold, `structure_anchor_sc +
-    /// structure_cost_filter`. `None` when the filter did not run.
-    pub structure_threshold: Option<i64>,
+    /// What the structure filter measured from: the pre-history #1's
+    /// structure cost (a single segment imputed at the prefix floor) and the
+    /// threshold, `anchor_sc + structure_cost_filter`. `None` when rerank
+    /// saw fewer than two paths and did not filter.
+    pub structure_filter: Option<StructureFilter>,
     /// Paths the structure filter dropped, by gap then surface.
     pub dropped_by_structure: Vec<DroppedStructurePath>,
 }
@@ -414,8 +412,7 @@ pub fn explain(
             cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
-            structure_anchor_sc: None,
-            structure_threshold: None,
+            structure_filter: None,
             dropped_by_structure: Vec::new(),
         };
     }
@@ -446,8 +443,6 @@ pub fn explain(
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
     let mut dropped_by_structure = std::mem::take(&mut observer.dropped_by_structure);
     dropped_by_structure.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
-    let structure_anchor_sc = observer.structure_filter.map(|f| f.anchor_sc);
-    let structure_threshold = observer.structure_filter.map(|f| f.threshold);
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -525,8 +520,7 @@ pub fn explain(
         cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
-        structure_anchor_sc,
-        structure_threshold,
+        structure_filter: observer.structure_filter,
         dropped_by_structure,
     }
 }
@@ -674,12 +668,17 @@ fn format_dropped(result: &ExplainResult, out: &mut String) {
         }
     }
 
-    if !result.dropped_by_structure.is_empty() {
+    // Paths are dropped only when the filter ran, so `structure_filter` is
+    // set whenever the list is non-empty.
+    if let Some(filter) = result
+        .structure_filter
+        .filter(|_| !result.dropped_by_structure.is_empty())
+    {
         out.push_str(&format!(
             "\n=== Dropped by structure ({}; threshold={} = anchor sc {} + structure_cost_filter) ===\n",
             result.dropped_by_structure.len(),
-            result.structure_threshold.unwrap_or_default(),
-            result.structure_anchor_sc.unwrap_or_default(),
+            filter.threshold,
+            filter.anchor_sc,
         ));
         for d in &result.dropped_by_structure {
             out.push_str(&format!(
@@ -1074,8 +1073,9 @@ mod tests {
     fn dropped_by_structure_lists_what_the_filter_cut() {
         let (dict, conn) = crate::converter::testutil::filtered_kanaya();
         let result = explain(&dict, Some(&conn), None, "かなや", 20);
-        assert_eq!(result.structure_anchor_sc, Some(3000), "imputed");
-        assert_eq!(result.structure_threshold, Some(3000 + 6000));
+        let filter = result.structure_filter.expect("the filter ran");
+        assert_eq!(filter.anchor_sc, 3000, "imputed");
+        assert_eq!(filter.threshold, 3000 + 6000);
         let dropped: Vec<(&str, i64)> = result
             .dropped_by_structure
             .iter()
@@ -1084,7 +1084,7 @@ mod tests {
         assert!(dropped.contains(&("可なや", 10000)), "{dropped:?}");
         let listed: Vec<String> = result.paths.iter().map(ExplainPath::surface).collect();
         for d in &result.dropped_by_structure {
-            assert!(Some(d.structure_cost) > result.structure_threshold);
+            assert!(d.structure_cost > filter.threshold);
             assert!(d.gap >= 0, "the #1 is never dropped");
             assert!(
                 !listed.contains(&d.surface),
@@ -1111,7 +1111,6 @@ mod tests {
         )]);
         let result = explain(&dict, None, None, "あ", 5);
         assert!(!result.paths.is_empty());
-        assert_eq!(result.structure_anchor_sc, None);
-        assert_eq!(result.structure_threshold, None);
+        assert_eq!(result.structure_filter, None);
     }
 }
