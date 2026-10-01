@@ -761,10 +761,12 @@ mod tests {
 
     /// explain describes the production N-best: same paths, same order, at
     /// every n. The oversample decides which paths rerank sees, so a
-    /// different population can swap even the top-1.
+    /// different population can swap even the top-1. The learned arms run
+    /// on the multi-segment fixture, whose 仮名屋 / カナや are not the #1.
     #[test]
     fn test_explain_paths_match_production_nbest() {
-        let (dict, conn) = oversample_sensitive();
+        let sensitive = oversample_sensitive();
+        let multi_segment = filter_population_sensitive();
         let mut h = UserHistory::new();
         h.record(&[("な".into(), "な".into())]);
         // A whole-pair learning of a non-#1 surface moves it to index 0.
@@ -778,14 +780,16 @@ mod tests {
             crate::user_history::now_epoch() - 3600 * 24 * 365,
         );
         let mut rotated_at = 0;
-        for (history, is_stale) in [
-            (None, false),
-            (Some(&h), false),
-            (Some(&learned), false),
-            (Some(&stale), true),
+        for ((dict, conn), history, is_stale) in [
+            (&sensitive, None, false),
+            (&sensitive, Some(&h), false),
+            (&multi_segment, None, false),
+            (&multi_segment, Some(&h), false),
+            (&multi_segment, Some(&learned), false),
+            (&multi_segment, Some(&stale), true),
         ] {
             for n in 1..=6 {
-                let explanation = explain(&dict, Some(&conn), history, "かなや", n);
+                let explanation = explain(dict, Some(conn), history, "かなや", n);
                 let explained: Vec<String> =
                     explanation.paths.iter().map(|p| p.surface()).collect();
                 if let [first, second, ..] = explanation.paths.as_slice() {
@@ -800,13 +804,13 @@ mod tests {
                 }
                 let production: Vec<String> = match history {
                     Some(h) => crate::converter::convert_nbest_with_history(
-                        &dict,
-                        Some(&conn),
+                        dict,
+                        Some(conn),
                         h,
                         "かなや",
                         n,
                     ),
-                    None => crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n),
+                    None => crate::converter::convert_nbest(dict, Some(conn), "かなや", n),
                 }
                 .iter()
                 .map(|p| p.iter().map(|s| s.surface.as_str()).collect())
@@ -816,6 +820,7 @@ mod tests {
         }
         assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
         // The fixture is sensitive: the two populations disagree on top-1.
+        let (dict, conn) = sensitive;
         let head = |n| {
             crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]
                 .iter()
@@ -1069,9 +1074,12 @@ mod tests {
         for d in &result.dropped_by_structure {
             assert!(d.structure_cost > result.structure_threshold);
             assert!(d.gap >= 0, "the #1 is never dropped");
-            assert!(!listed.contains(&d.surface), "{} listed and dropped", d.surface);
+            assert!(
+                !listed.contains(&d.surface),
+                "{} listed and dropped",
+                d.surface
+            );
         }
         assert!(format_text(&result).contains("Dropped by structure"));
     }
 }
-

@@ -972,10 +972,19 @@ fn threshold_depends_on_the_population_only_through_the_best() {
     let mut with_g = p();
     with_g.push(kanji_path("蚊名", &[3, 4], 5000));
     rerank(&mut with_g, Some(&conn), None, |_, _, _| {});
-    let p_part: Vec<_> = with_g.iter().filter(|q| q.surface_key() != "蚊名").collect();
+    let p_part: Vec<_> = with_g
+        .iter()
+        .filter(|q| q.surface_key() != "蚊名")
+        .collect();
     assert_eq!(
-        p_part.iter().map(|q| (q.surface_key(), q.viterbi_cost)).collect::<Vec<_>>(),
-        alone.iter().map(|q| (q.surface_key(), q.viterbi_cost)).collect::<Vec<_>>(),
+        p_part
+            .iter()
+            .map(|q| (q.surface_key(), q.viterbi_cost))
+            .collect::<Vec<_>>(),
+        alone
+            .iter()
+            .map(|q| (q.surface_key(), q.viterbi_cost))
+            .collect::<Vec<_>>(),
     );
 
     // (b) G wins: the threshold is 0 + 6000, so 亜位宇 and 吾以卯江 go.
@@ -988,7 +997,10 @@ fn threshold_depends_on_the_population_only_through_the_best() {
     assert_eq!(surfaces(&g_best), ["蚊名", "阿伊"]);
     assert_eq!(
         dropped,
-        [("亜位宇".to_string(), 8000), ("吾以卯江".to_string(), 12000)]
+        [
+            ("亜位宇".to_string(), 8000),
+            ("吾以卯江".to_string(), 12000)
+        ]
     );
 }
 
@@ -1014,9 +1026,9 @@ fn filter_never_drops_the_best() {
         p
     };
     let mut paths = vec![
-        identity(&[1, 2, 2, 2], 1000),               // sc 12000 → threshold 18000
-        kanji_path("阿伊宇", &[1, 2, 2], 2000),      // sc 8000, kept
-        kanji_path("蚊名", &[3, 4], 3000),           // sc 0, kept
+        identity(&[1, 2, 2, 2], 1000),          // sc 12000 → threshold 18000
+        kanji_path("阿伊宇", &[1, 2, 2], 2000), // sc 8000, kept
+        kanji_path("蚊名", &[3, 4], 3000),      // sc 0, kept
     ];
     let mut dropped = 0;
     rerank(&mut paths, Some(&conn), None, |_, _, _| dropped += 1);

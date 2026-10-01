@@ -174,5 +174,8 @@ pub fn filtered_kanaya() -> (TrieDictionary, ConnectionMatrix) {
     let mut costs = vec![0i16; 36];
     costs[6 + 2] = 5000; // 1 → 2
     costs[2 * 6 + 4] = 5000; // 2 → 4
-    (dict, ConnectionMatrix::new_owned(6, 0, 0, Vec::new(), costs))
+    (
+        dict,
+        ConnectionMatrix::new_owned(6, 0, 0, Vec::new(), costs),
+    )
 }

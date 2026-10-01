@@ -324,7 +324,11 @@ mod tests {
         let (dict, conn) = crate::converter::testutil::filtered_kanaya();
         let cases = vec![("かなや".to_string(), "仮名屋".to_string())];
         let tune = precompute_cases(&dict, &conn, &cases);
-        let surfaces: Vec<&str> = tune[0].candidates.iter().map(|c| c.surface.as_str()).collect();
+        let surfaces: Vec<&str> = tune[0]
+            .candidates
+            .iter()
+            .map(|c| c.surface.as_str())
+            .collect();
         assert!(surfaces.contains(&"可なや"), "{surfaces:?}");
         let production = crate::converter::convert_nbest(&dict, Some(&conn), "かなや", 20);
         let rerank_top: String = production[0].iter().map(|s| s.surface.as_str()).collect();
