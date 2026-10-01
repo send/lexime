@@ -56,26 +56,31 @@ impl<'a> FeaturePricer<'a> {
         )
     }
 
-    /// Structure-filter threshold measured from the anchor — the pre-history
-    /// #1 — given its structure cost: `sc + structure_cost_filter`, with a
-    /// single-segment anchor (0 transitions) imputed at `prefix_floor`.
+    /// The structure filter measured from the anchor — the pre-history #1 —
+    /// given its structure cost: a single-segment anchor (0 transitions) is
+    /// imputed at `prefix_floor`.
     ///
     /// The anchor is the one path every other stage measures from (cost-gap
     /// admission, Numeric), so the threshold depends on the population only
     /// through its #1: a cheap-transition path that never wins (`カナ|や`)
     /// cannot lower it (#353).
-    fn threshold_at(&self, anchor: &ScoredPath, anchor_sc: i64) -> i64 {
-        let sc = if anchor.segments.len() <= 1 {
+    fn filter_at(&self, anchor: &ScoredPath, sc: i64) -> StructureFilter {
+        let anchor_sc = if anchor.segments.len() <= 1 {
             self.fcfg.prefix_floor
         } else {
-            anchor_sc
+            sc
         };
-        sc.saturating_add(settings().reranker.structure_cost_filter)
+        StructureFilter {
+            anchor_sc,
+            threshold: anchor_sc.saturating_add(settings().reranker.structure_cost_filter),
+        }
     }
 }
 
 /// What the structure filter measured from: the anchor's (pre-history #1's)
-/// structure cost and the threshold above which paths were dropped.
+/// structure cost — `prefix_floor` for a single-segment anchor — and the
+/// threshold, `anchor_sc + structure_cost_filter`, above which paths were
+/// dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StructureFilter {
     pub anchor_sc: i64,
@@ -84,9 +89,9 @@ pub(crate) struct StructureFilter {
 
 /// Transitions FROM a prefix POS (role == 3) get a floor of half the filter
 /// threshold. Without this, a prefix→content-word transition (e.g.
-/// 今[prefix]→デスネ with conn=256) gives a multi-segment anchor such as
-/// 今|です|ね a structure cost so low that the hard filter drops the other
-/// correct multi-segment paths measured from it.
+/// 今[prefix]→デスネ with conn=256) gives a path a structure cost so low
+/// that, as the anchor, it would put the threshold below correct
+/// multi-segment paths like 今|です|ね (53d207c).
 pub(crate) fn structure_prefix_floor() -> i64 {
     let r = &settings().reranker;
     (r.structure_cost_filter / 2).min(r.structure_cost_transition_cap)
@@ -98,19 +103,20 @@ pub(crate) fn structure_prefix_floor() -> i64 {
 /// The reranker adds features that are ranking preferences rather than
 /// search-quality parameters:
 ///
-/// - **Structure cost**: sum of transition costs along the path (Mozc-inspired);
-///   paths with high accumulated transition costs tend to be fragmented
 /// - **Length variance**: penalises uneven segment splits so that more uniform
 ///   segmentations are preferred when Viterbi costs are close
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
 ///
-/// The structure filter drops paths whose structure cost exceeds the
-/// anchor's (the cheapest path after features) by more than
-/// `structure_cost_filter`; `on_drop` sees each dropped path with its
-/// structure cost and its price's gap to the anchor. The anchor itself
-/// always survives. Returns what the filter measured from, or `None` when
-/// there were fewer than two paths and nothing was filtered or priced.
+/// Structure cost (the sum of transition costs along the path,
+/// Mozc-inspired; fragmented paths accumulate it) is not priced: it only
+/// drives a hard filter, which drops paths whose structure cost exceeds the
+/// anchor's (the cheapest path after features; a single-segment anchor
+/// counts as `prefix_floor`) by more than `structure_cost_filter`.
+/// `on_drop` sees each dropped path, priced, with its structure cost and
+/// its price's gap to the anchor. The anchor itself always survives.
+/// Returns what the filter measured from, or `None` when there were fewer
+/// than two paths and nothing was filtered or priced.
 pub(crate) fn rerank(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
@@ -123,44 +129,44 @@ pub(crate) fn rerank(
     }
     let features = FeaturePricer::new(conn, dict);
 
-    // Structure cost and price (Viterbi + features) per path; the threshold
-    // is measured from the cheapest.
-    let structure_costs: Vec<i64> = paths.iter().map(|p| features.structure_cost(p)).collect();
-    let prices: Vec<i64> = paths
-        .iter()
-        .zip(&structure_costs)
-        .map(|(p, &sc)| p.viterbi_cost + features.adjustment_with_sc(p, sc))
+    // Price every path (Viterbi + features), each carried with its
+    // structure cost; the threshold is measured from the cheapest.
+    let mut priced: Vec<(ScoredPath, i64)> = paths
+        .drain(..)
+        .map(|mut p| {
+            let sc = features.structure_cost(&p);
+            p.viterbi_cost += features.adjustment_with_sc(&p, sc);
+            (p, sc)
+        })
         .collect();
     // First minimum: the path a stable sort puts at index 0.
-    let anchor = (0..paths.len()).min_by_key(|&i| prices[i])?;
-    let anchor_sc = structure_costs[anchor];
-    let threshold = features.threshold_at(&paths[anchor], anchor_sc);
-    let anchor_price = prices[anchor];
-
-    // Filter and price in one pass. Identity paths (surface == reading
-    // throughout) are exempt from the filter: they are the user's typed input
-    // and must stay selectable so history learning can rescue readings the
-    // cost model gets wrong (#263). Their fragmented FW chains otherwise trip
-    // the structure filter. The anchor passes by construction (its own sc).
-    let mut priced = structure_costs.into_iter().zip(prices);
-    paths.retain_mut(|p| {
-        let Some((sc, price)) = priced.next() else {
-            return true;
-        };
-        if !p.is_identity() && sc > threshold {
-            on_drop(p, sc, price - anchor_price);
-            return false;
+    let anchor = (1..priced.len()).fold(0, |best, i| {
+        if priced[i].0.viterbi_cost < priced[best].0.viterbi_cost {
+            i
+        } else {
+            best
         }
-        p.viterbi_cost = price;
-        true
     });
+    let (anchor_path, anchor_sc) = &priced[anchor];
+    let filter = features.filter_at(anchor_path, *anchor_sc);
+    let anchor_price = anchor_path.viterbi_cost;
+
+    // Identity paths (surface == reading throughout) are exempt from the
+    // filter: they are the user's typed input and must stay selectable so
+    // history learning can rescue readings the cost model gets wrong (#263).
+    // Their fragmented FW chains otherwise trip the structure filter. The
+    // anchor passes by construction (its own sc).
+    paths.extend(priced.drain(..).filter_map(|(p, sc)| {
+        if !p.is_identity() && sc > filter.threshold {
+            on_drop(&p, sc, p.viterbi_cost - anchor_price);
+            return None;
+        }
+        Some(p)
+    }));
 
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(paths_out = paths.len());
-    Some(StructureFilter {
-        anchor_sc,
-        threshold,
-    })
+    Some(filter)
 }
 
 /// Breakdown of the history boost contributions for a single path.

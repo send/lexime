@@ -545,7 +545,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 | セクション | パラメータ |
 |---|---|
 | `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty, pure_kanji_bonus, latin_penalty, unknown_word_cost |
-| `[reranker]` | length_variance_weight, structure_cost_filter（履歴前 #1 の structure cost からの上限。#353 以前は母集団の最小からの上限で、同じ値なら今の方が同じか緩い — ユーザ設定の値は意味がこの向きに変わる） |
+| `[reranker]` | length_variance_weight, structure_cost_filter（履歴前 #1 の structure cost からの上限。#1 が単一分節なら structure cost を min(structure_cost_filter / 2, structure_cost_transition_cap) とみなす。#353 以前は母集団の最小からの上限で、同じ値なら今の方が同じか緩い — ユーザ設定の値は意味がこの向きに変わる） |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results, max_cost_gap（履歴前 #1 からのコスト差の上限。4000 未満は 4000 として働く。`i64::MAX` で無効化。省略時は既定値） |
 | `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |

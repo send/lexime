@@ -192,10 +192,12 @@ pub struct HistorySettings {
 /// ((T−2000, T]) ≤ 0.5%, and (b3) both accuracy corpora, the 3-width top-1
 /// check and every window pass (windows that pin admission are re-picked
 /// first). On 2026-09-28: 447 selections, 4 lost at 8000 (5 at 6000), 1 in
-/// (6000, 8000].
+/// (6000, 8000]. Re-run on 2026-10-01 with the structure filter measured
+/// from the #1 (#353): 505 selections, (b1) 1 at 8000 (3 at 6000), 2 in
+/// (6000, 8000] (19 in (4000, 6000]), and (b3) passes only at 8000 — still
+/// 8000.
 /// Re-run the rule when rank>0 selections grow by 200, when a change to T
-/// is proposed, when the structure-filter fix (#353) lands, and when the
-/// Mozc pin moves (#273).
+/// is proposed, and when the Mozc pin moves (#273).
 pub const DEFAULT_CANDIDATE_MAX_COST_GAP: i64 = 8000;
 
 #[derive(Debug, Clone, Deserialize)]

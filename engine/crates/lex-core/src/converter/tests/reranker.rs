@@ -1,4 +1,4 @@
-use crate::converter::reranker::{history_rerank_at, rerank};
+use crate::converter::reranker::{history_rerank_at, rerank, StructureFilter};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::{now_epoch, UserHistory};
@@ -707,7 +707,8 @@ fn test_filter_preserves_the_best() {
 #[test]
 fn test_prefix_floor_prevents_low_baseline() {
     // Verifies that the prefix floor raises the anchor's sc (Path A, the
-    // cheapest) enough to keep a path that would be dropped without it.
+    // cheapest after features) enough to keep a path that would be dropped
+    // without it.
     //
     // Setup: 4 POS IDs, ID 0 is prefix (role=3).
     // Connection costs: all 4000, except (0→any) = 100.
@@ -792,14 +793,23 @@ fn test_prefix_floor_prevents_low_baseline() {
                     word_cost: 0,
                 },
             ],
-            4000,
+            // Priced above Path A, so A is the anchor.
+            5000,
             PathOrigin::Viterbi,
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
     // Both paths survive thanks to the prefix floor raising the threshold.
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 3000,
+            threshold: 9000
+        })
+    );
+    assert_eq!(paths[0].surface_key(), "御車");
     assert_eq!(paths.len(), 2);
 }
 
@@ -923,7 +933,7 @@ fn filter_conn() -> ConnectionMatrix {
 
 /// A path of one-char kanji segments over `ids`, priced `cost`.
 fn kanji_path(surfaces: &str, ids: &[u16], cost: i64) -> ScoredPath {
-    let readings = ["あ", "い", "う", "え"];
+    let readings = ["あ", "い", "う", "え", "お"];
     let segs = surfaces
         .chars()
         .zip(ids)
@@ -1024,9 +1034,44 @@ fn filter_never_drops_the_best() {
         identity(&[1, 2, 2, 2], 1000),          // sc 12000 → threshold 18000
         kanji_path("阿伊宇", &[1, 2, 2], 2000), // sc 8000, kept
         kanji_path("蚊名", &[3, 4], 3000),      // sc 0, kept
+        // sc 16000: kept only because the identity is the anchor (the best
+        // non-identity path, 阿伊宇, would put the threshold at 14000).
+        kanji_path("吾以卯江尾", &[1, 2, 2, 2, 2], 8000),
     ];
     let mut dropped = 0;
-    rerank(&mut paths, Some(&conn), None, |_, _, _| dropped += 1);
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| dropped += 1);
     assert_eq!(paths[0].surface_key(), "あいうえ");
-    assert_eq!((paths.len(), dropped), (3, 0));
+    assert_eq!((paths.len(), dropped), (4, 0));
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 12000,
+            threshold: 18000
+        })
+    );
+}
+
+/// The anchor is the cheapest path after features, not the cheapest Viterbi
+/// path: ab has the lowest Viterbi cost but the Latin penalty prices it far
+/// above 亜位宇, so the threshold is measured from 亜位宇.
+#[test]
+fn anchor_is_the_cheapest_after_features() {
+    let conn = filter_conn();
+    let mut paths = vec![
+        kanji_path("ab", &[3, 4], 1000),        // sc 0, Latin
+        kanji_path("亜位宇", &[1, 2, 2], 2000), // sc 8000 → threshold 14000
+        // sc 12000: kept under 亜位宇; a Viterbi-cost anchor (ab, sc 0)
+        // would put the threshold at 6000 and drop it.
+        kanji_path("吾以卯江", &[1, 2, 2, 2], 3000),
+    ];
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+    assert_eq!(paths[0].surface_key(), "亜位宇");
+    assert_eq!(paths.len(), 3);
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 8000,
+            threshold: 14000
+        })
+    );
 }
