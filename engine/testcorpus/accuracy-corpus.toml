@@ -48,8 +48,8 @@
 #
 # Top-1 is checked at three widths and all must equal `expected`: the N-best
 # head (n=1), the synchronous 1-best shown while candidates are pending, and
-# the production candidate list's #1. They oversample differently, so the
-# structure filter sees different populations. A disagreement fails the case
+# the production candidate list's #1. They oversample differently, so rerank's
+# argmin can differ between the populations (#361). A disagreement fails the case
 # as "width"; `skip` would also silence the top-1 gate, so use width_issue.
 #
 # [cases.window] (optional) - Rank-2+ expectations on the production candidate

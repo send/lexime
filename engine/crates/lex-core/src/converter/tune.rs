@@ -14,7 +14,7 @@ pub use super::features::{FeatureWeights, PathFeatures};
 use super::lattice::build_lattice;
 use super::reranker;
 use super::resegment;
-use super::viterbi::{viterbi_nbest, ScoredPath};
+use super::viterbi::viterbi_nbest;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -106,7 +106,9 @@ pub struct TuneResult {
 // Pre-computation
 // ---------------------------------------------------------------------------
 
-/// Run Viterbi + resegment + hard filter + feature extraction for each case.
+/// Run Viterbi + resegment + feature extraction for each case. Every path
+/// is a candidate: the structure filter never drops the best-priced path,
+/// the only one tune scores.
 ///
 /// `cases` is a slice of `(reading, expected)` pairs.
 pub fn precompute_cases(
@@ -134,24 +136,15 @@ pub fn precompute_cases(
             // Resegment
             let reseg = resegment::resegment(&paths, &lattice, Some(conn));
             paths.extend(reseg);
-            let mut paired: Vec<(ScoredPath, PathFeatures)> = paths
-                .into_iter()
-                .map(|p| {
-                    let f = fcfg.extract(&p, None);
-                    (p, f)
-                })
-                .collect();
 
-            // Hard filter using structure_cost from features
-            hard_filter(&mut paired, prefix_floor);
-
-            // Build TuneCandidates from surviving paths
-            let candidates = paired
+            // No structure filter: it never drops the best-priced path, and
+            // tune scores top-1 only, so every path is a candidate.
+            let candidates = paths
                 .iter()
-                .map(|(p, f)| TuneCandidate {
+                .map(|p| TuneCandidate {
                     surface: p.surface_key(),
                     base_cost: p.viterbi_cost,
-                    features: f.clone(),
+                    features: fcfg.extract(p, None),
                 })
                 .collect();
 
@@ -162,26 +155,6 @@ pub fn precompute_cases(
             }
         })
         .collect()
-}
-
-/// Apply the structure-cost hard filter (same logic as reranker step 1-2).
-///
-/// Removes pairs whose structure_cost exceeds `min_sc + filter`.
-fn hard_filter(paired: &mut Vec<(ScoredPath, PathFeatures)>, prefix_floor: i64) {
-    if paired.len() <= 1 {
-        return;
-    }
-    let Some(threshold) = reranker::structure_threshold(
-        paired
-            .iter()
-            .map(|(p, f)| (p.segments.len(), f.structure_cost)),
-        prefix_floor,
-    ) else {
-        return;
-    };
-    // Identity paths are exempt, mirroring the production filter (#263) —
-    // the tuner must optimize against the same candidate set production keeps.
-    paired.retain(|(p, f)| p.is_identity() || f.structure_cost <= threshold);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +307,27 @@ mod tests {
         assert!(
             result[0].candidates.iter().any(|c| c.surface == "今日"),
             "expected surface should be among candidates"
+        );
+    }
+
+    /// The structure filter drops 可なや in production, but tune keeps every
+    /// path: its top-1 is rerank's index 0 either way.
+    #[test]
+    fn tune_keeps_every_path_and_agrees_with_rerank_top1() {
+        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let cases = vec![("かなや".to_string(), "仮名屋".to_string())];
+        let tune = precompute_cases(&dict, &conn, &cases);
+        let surfaces: Vec<&str> = tune[0]
+            .candidates
+            .iter()
+            .map(|c| c.surface.as_str())
+            .collect();
+        assert!(surfaces.contains(&"可なや"), "{surfaces:?}");
+        let production = crate::converter::convert_nbest(&dict, Some(&conn), "かなや", 20);
+        let rerank_top: String = production[0].iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(
+            top1_surface(&tune[0].candidates, &FeatureWeights::from_settings()),
+            rerank_top
         );
     }
 

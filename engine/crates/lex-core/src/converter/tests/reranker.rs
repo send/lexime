@@ -1,4 +1,4 @@
-use crate::converter::reranker::{history_rerank_at, rerank};
+use crate::converter::reranker::{history_rerank_at, rerank, StructureFilter};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::{now_epoch, UserHistory};
@@ -57,7 +57,7 @@ fn test_rerank_penalizes_fragmented_path() {
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None);
+    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
     // Fragmented: 1000 + 50 = 1050 > Single: 1040 + 0 = 1040
     assert_eq!(paths[0].segments[0].surface, "木の葉");
@@ -101,7 +101,7 @@ fn test_rerank_no_conn_no_structure_penalty() {
 
     // Without conn, structure cost is 0; "木の" (reading "きの" = 2 chars)
     // gets script_cost -3000 * 2/3 = -2000 (mixed kanji+kana bonus scaled).
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, None, None, |_, _, _| {});
     assert_eq!(paths[0].segments[0].surface, "木の");
     assert_eq!(paths[0].viterbi_cost, 2000 - 2000);
 }
@@ -120,7 +120,7 @@ fn test_rerank_single_path_noop() {
         PathOrigin::Viterbi,
     )];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, None, None, |_, _, _| {});
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "亜");
 }
@@ -128,7 +128,7 @@ fn test_rerank_single_path_noop() {
 #[test]
 fn test_rerank_empty_noop() {
     let mut paths: Vec<ScoredPath> = Vec::new();
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, None, None, |_, _, _| {});
     assert!(paths.is_empty());
 }
 
@@ -181,7 +181,7 @@ fn test_rerank_penalizes_uneven_segments() {
         ),
     ];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, None, None, |_, _, _| {});
 
     // script_cost (scaled by reading length, capped at 2):
     //   "来たり" (reading "きたり" = 3 chars, cap 2) → mixed bonus -3000 * 2/3 = -2000
@@ -227,7 +227,7 @@ fn test_rerank_applies_script_cost() {
         ),
     ];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, None, None, |_, _, _| {});
 
     // Katakana: 3000 + 150 = 3150
     // Hiragana: 3100 + 0   = 3100
@@ -506,11 +506,11 @@ fn uniform_conn(cost: i16) -> ConnectionMatrix {
 #[test]
 fn test_filter_drops_fragmented_paths() {
     // Transition cost = 5000 each.
-    // Path A: 1 segment → sc = 0 (imputed to 3000 for min_sc)
-    // Path B: 2 segments → sc = 5000
+    // Path A: 1 segment → sc = 0
+    // Path B: 2 segments → sc = 5000, the cheapest: the anchor
     // Path C: 5 segments → sc = 20000
-    // min_sc = 3000 (imputed), threshold = 3000 + 6000 = 9000.
-    // Path C (20000 > 9000) should be dropped; A and B survive.
+    // threshold = 5000 + 6000 = 11000.
+    // Path C (20000 > 11000) should be dropped; A and B survive.
     let conn = uniform_conn(5000);
 
     let mut paths = vec![
@@ -583,29 +583,24 @@ fn test_filter_drops_fragmented_paths() {
                     word_cost: 0,
                 },
             ],
-            3000,
+            9000,
             PathOrigin::Viterbi,
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None);
+    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
-    // Path C should have been filtered out (sc=20000 > threshold=9000);
+    // Path C should have been filtered out (sc=20000 > threshold=11000);
     // paths A and B survive.
     assert_eq!(paths.len(), 2);
     assert!(paths.iter().all(|p| p.segments.len() <= 2));
 }
 
 #[test]
-fn test_filter_keeps_all_when_all_exceed() {
-    // All paths have high structure_cost; none should be dropped.
-    // Transition cost = 2000. All paths have 4 segments → 3 transitions → sc = 6000.
-    // min_sc = 6000, threshold = 6000 + 6000 = 12000.
-    // All paths have sc = 6000 ≤ 12000, so all pass.
-    // But to truly test the "all exceed" safety, we need a scenario where
-    // min_sc itself is above the threshold relative to... Actually the safety
-    // is: if ALL paths have sc > threshold, keep all. Let's just verify
-    // that when all paths are equally fragmented, none are dropped.
+fn test_filter_keeps_equally_fragmented_paths() {
+    // A high structure cost alone drops nothing: the threshold is measured
+    // from the anchor. Transition cost = 2000, 4 segments → sc = 6000 for
+    // every path; anchor sc 6000 → threshold 12000, so all pass.
     let conn = uniform_conn(2000);
 
     let seg = |r: &str, s: &str| RichSegment {
@@ -639,18 +634,20 @@ fn test_filter_keeps_all_when_all_exceed() {
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None);
+    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
     // Both have identical structure_cost, so neither is filtered
     assert_eq!(paths.len(), 2);
 }
 
 #[test]
-fn test_filter_preserves_minimum_path() {
-    // The path with minimum structure_cost always survives.
-    // Path A: 4 segments → sc = 15000
-    // Path B: 1 segment → sc = 0 (imputed to 3000 for min_sc)
-    // min_sc = 3000, threshold = 3000 + 6000 = 9000. Path A (15000 > 9000) → filtered.
+fn test_filter_preserves_the_best() {
+    // The cheapest path is the anchor and always survives, however
+    // fragmented (#353: a population-min threshold dropped it).
+    // Path A: 4 segments → sc = 15000, the cheapest: the anchor
+    // Path B: 1 segment → sc = 0 (imputed to 3000)
+    // threshold = 15000 + 6000 = 21000: both survive, A first. (Measured
+    // from B, the threshold would be 9000 and drop A.)
     let conn = uniform_conn(5000);
 
     let mut paths = vec![
@@ -701,17 +698,17 @@ fn test_filter_preserves_minimum_path() {
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None);
+    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
-    // Only the single-segment path (sc=0) should survive
-    assert_eq!(paths.len(), 1);
-    assert_eq!(paths[0].segments[0].surface, "合言葉");
+    assert_eq!(paths.len(), 2);
+    assert_eq!(paths[0].segments.len(), 4, "the best stays at index 0");
 }
 
 #[test]
 fn test_prefix_floor_prevents_low_baseline() {
-    // Verifies that prefix floor raises min_sc enough to keep a path
-    // that would be dropped without it.
+    // Verifies that the prefix floor raises the anchor's sc (Path A, the
+    // cheapest after features) enough to keep a path that would be dropped
+    // without it.
     //
     // Setup: 4 POS IDs, ID 0 is prefix (role=3).
     // Connection costs: all 4000, except (0→any) = 100.
@@ -724,10 +721,10 @@ fn test_prefix_floor_prevents_low_baseline() {
     // Path B: [content(id=1)] → [content(id=1)] → [content(id=1)]  (2 transitions)
     //   sc = 4000 + 4000 = 8000
     //
-    // Without floor: min_sc = 100,  threshold = 100 + 6000 = 6100.
+    // Without floor: anchor sc = 100,  threshold = 100 + 6000 = 6100.
     //   Path B (8000 > 6100) → DROPPED.
     //
-    // With floor: min_sc = 3000, threshold = 3000 + 6000 = 9000.
+    // With floor: anchor sc = 3000, threshold = 3000 + 6000 = 9000.
     //   Path B (8000 ≤ 9000) → KEPT.
     let num_ids = 4u16;
     let mut costs = Vec::new();
@@ -796,14 +793,23 @@ fn test_prefix_floor_prevents_low_baseline() {
                     word_cost: 0,
                 },
             ],
-            4000,
+            // Priced above Path A, so A is the anchor.
+            5000,
             PathOrigin::Viterbi,
         ),
     ];
 
-    rerank(&mut paths, Some(&conn), None);
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
     // Both paths survive thanks to the prefix floor raising the threshold.
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 3000,
+            threshold: 9000
+        })
+    );
+    assert_eq!(paths[0].surface_key(), "御車");
     assert_eq!(paths.len(), 2);
 }
 
@@ -914,4 +920,158 @@ fn no_learned_keeps_price_order() {
         .windows(2)
         .all(|w| w[0].viterbi_cost <= w[1].viterbi_cost));
     assert_eq!(paths[0].surface_key(), "仮名");
+}
+
+/// Paths over ids 1..=4: 1→2 and 2→2 cost 4000, 3→4 costs 0 (a
+/// `カナ|や`-shaped path: cheap transitions, expensive words).
+fn filter_conn() -> ConnectionMatrix {
+    let mut costs = vec![0i16; 25];
+    costs[5 + 2] = 4000; // 1 → 2
+    costs[2 * 5 + 2] = 4000; // 2 → 2
+    ConnectionMatrix::new_owned(5, 0, 0, Vec::new(), costs)
+}
+
+/// A path of one-char kanji segments over `ids`, priced `cost`.
+fn kanji_path(surfaces: &str, ids: &[u16], cost: i64) -> ScoredPath {
+    let readings = ["あ", "い", "う", "え", "お"];
+    let segs = surfaces
+        .chars()
+        .zip(ids)
+        .enumerate()
+        .map(|(i, (c, &id))| RichSegment {
+            reading: readings[i].into(),
+            surface: c.to_string(),
+            left_id: id,
+            right_id: id,
+            word_cost: 0,
+        })
+        .collect();
+    ScoredPath::new(segs, cost, PathOrigin::Viterbi)
+}
+
+fn surfaces(paths: &[ScoredPath]) -> Vec<String> {
+    paths.iter().map(|p| p.surface_key()).collect()
+}
+
+/// #353: the threshold depends on the population only through its #1. A
+/// cheap-transition path G changes nothing while it does not win; once it
+/// is the #1, the threshold is measured from it.
+#[test]
+fn threshold_depends_on_the_population_only_through_the_best() {
+    let conn = filter_conn();
+    // sc: 亜位宇 8000 (the #1), 阿伊 4000, 吾以卯江 12000 → threshold 14000.
+    let p = || {
+        vec![
+            kanji_path("亜位宇", &[1, 2, 2], 1000),
+            kanji_path("阿伊", &[1, 2], 2000),
+            kanji_path("吾以卯江", &[1, 2, 2, 2], 3000),
+        ]
+    };
+    let mut alone = p();
+    rerank(&mut alone, Some(&conn), None, |_, _, _| {});
+    assert_eq!(alone.len(), 3);
+
+    // (a) G (sc 0) never wins: P's survivors, prices and order are
+    // unchanged. (A population minimum would put the threshold at 6000 and
+    // drop 亜位宇 and 吾以卯江.)
+    let mut with_g = p();
+    with_g.push(kanji_path("蚊名", &[3, 4], 5000));
+    rerank(&mut with_g, Some(&conn), None, |_, _, _| {});
+    let p_part: Vec<_> = with_g
+        .iter()
+        .filter(|q| q.surface_key() != "蚊名")
+        .collect();
+    assert_eq!(
+        p_part
+            .iter()
+            .map(|q| (q.surface_key(), q.viterbi_cost))
+            .collect::<Vec<_>>(),
+        alone
+            .iter()
+            .map(|q| (q.surface_key(), q.viterbi_cost))
+            .collect::<Vec<_>>(),
+    );
+
+    // (b) G wins: the threshold is 0 + 6000, so 亜位宇 and 吾以卯江 go.
+    let mut g_best = p();
+    g_best.push(kanji_path("蚊名", &[3, 4], 500));
+    let mut dropped = Vec::new();
+    rerank(&mut g_best, Some(&conn), None, |q, sc, _| {
+        dropped.push((q.surface_key(), sc))
+    });
+    assert_eq!(surfaces(&g_best), ["蚊名", "阿伊"]);
+    assert_eq!(
+        dropped,
+        [
+            ("亜位宇".to_string(), 8000),
+            ("吾以卯江".to_string(), 12000)
+        ]
+    );
+}
+
+/// The #1 survives however fragmented, identity or not; everything is
+/// measured from it.
+#[test]
+fn filter_never_drops_the_best() {
+    let conn = filter_conn();
+    // The #1 (sc 12000) is far above the population minimum (蚊名, 0).
+    let mut paths = vec![
+        kanji_path("吾以卯江", &[1, 2, 2, 2], 1000),
+        kanji_path("蚊名", &[3, 4], 6000),
+    ];
+    rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+    assert_eq!(surfaces(&paths), ["吾以卯江", "蚊名"]);
+
+    // A multi-segment identity #1 anchors too: threshold = its sc + 6000.
+    let identity = |ids: &[u16], cost: i64| {
+        let mut p = kanji_path("あいうえ", ids, cost);
+        for s in &mut p.segments {
+            s.surface = s.reading.clone();
+        }
+        p
+    };
+    let mut paths = vec![
+        identity(&[1, 2, 2, 2], 1000),          // sc 12000 → threshold 18000
+        kanji_path("阿伊宇", &[1, 2, 2], 2000), // sc 8000, kept
+        kanji_path("蚊名", &[3, 4], 3000),      // sc 0, kept
+        // sc 16000: kept only because the identity is the anchor (the best
+        // non-identity path, 阿伊宇, would put the threshold at 14000).
+        kanji_path("吾以卯江尾", &[1, 2, 2, 2, 2], 8000),
+    ];
+    let mut dropped = 0;
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| dropped += 1);
+    assert_eq!(paths[0].surface_key(), "あいうえ");
+    assert_eq!((paths.len(), dropped), (4, 0));
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 12000,
+            threshold: 18000
+        })
+    );
+}
+
+/// The anchor is the cheapest path after features, not the cheapest Viterbi
+/// path: ab has the lowest Viterbi cost but the Latin penalty prices it far
+/// above 亜位宇, so the threshold is measured from 亜位宇.
+#[test]
+fn anchor_is_the_cheapest_after_features() {
+    let conn = filter_conn();
+    let mut paths = vec![
+        kanji_path("ab", &[3, 4], 1000),        // sc 0, Latin
+        kanji_path("亜位宇", &[1, 2, 2], 2000), // sc 8000 → threshold 14000
+        // sc 12000: kept under 亜位宇; a Viterbi-cost anchor (ab, sc 0)
+        // would put the threshold at 6000 and drop it.
+        kanji_path("吾以卯江", &[1, 2, 2, 2], 3000),
+    ];
+    let filter = rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+    assert_eq!(paths[0].surface_key(), "亜位宇");
+    assert_eq!(paths.len(), 3);
+    assert_eq!(
+        filter,
+        Some(StructureFilter {
+            anchor_sc: 8000,
+            threshold: 14000
+        })
+    );
 }

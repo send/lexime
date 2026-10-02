@@ -24,6 +24,11 @@ pub(crate) trait PostprocessObserver {
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
     /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
+    /// Called for each path the structure filter drops, with its structure
+    /// cost and its price's gap to the pre-history #1.
+    fn dropped_by_structure(&mut self, _path: &ScoredPath, _sc: i64, _gap: i64) {}
+    /// Called once rerank has filtered, with what the filter measured from.
+    fn structure_filter(&mut self, _filter: reranker::StructureFilter) {}
     /// Called for each path cost-gap admission drops, with the gap's base
     /// (the pre-history #1's cost).
     fn dropped_by_cost_gap(&mut self, _path: &ScoredPath, _anchor: i64) {}
@@ -104,7 +109,12 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     let reseg_paths = resegment::resegment(paths, ctx.lattice, ctx.conn);
     paths.extend(reseg_paths);
 
-    reranker::rerank(paths, ctx.conn, ctx.dict);
+    let filter = reranker::rerank(paths, ctx.conn, ctx.dict, |p, sc, gap| {
+        observer.dropped_by_structure(p, sc, gap)
+    });
+    if let Some(filter) = filter {
+        observer.structure_filter(filter);
+    }
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
     // user picked like any other path (whole-path boosts ×5 can promote a

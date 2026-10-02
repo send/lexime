@@ -12,7 +12,7 @@ use super::cost::{conn_cost, score_path, script_cost, DefaultCostFunction};
 use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
-use super::reranker::{compute_history_boost, FeaturePricer};
+use super::reranker::{compute_history_boost, FeaturePricer, StructureFilter};
 use super::rewriter::RESCUE_OFFSET;
 use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
 
@@ -37,6 +37,24 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
+    /// What the structure filter measured from: the pre-history #1's
+    /// structure cost (a single segment imputed at the prefix floor) and the
+    /// threshold, `anchor_sc + structure_cost_filter`. `None` when rerank
+    /// saw fewer than two paths and did not filter.
+    pub structure_filter: Option<StructureFilter>,
+    /// Paths the structure filter dropped, by gap then surface.
+    pub dropped_by_structure: Vec<DroppedStructurePath>,
+}
+
+/// A path the structure filter dropped.
+#[derive(Debug, Serialize)]
+pub struct DroppedStructurePath {
+    pub surface: String,
+    pub structure_cost: i64,
+    /// Its price (Viterbi + features) above the pre-history #1's: at most
+    /// the cost-gap bound means admission alone would have kept it.
+    pub gap: i64,
+    pub origin: PathOrigin,
 }
 
 /// A path cost-gap admission dropped.
@@ -191,6 +209,9 @@ struct ExplainObserver<'a> {
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
     anchor: i64,
+    /// Paths the structure filter dropped, and what it measured from.
+    dropped_by_structure: Vec<DroppedStructurePath>,
+    structure_filter: Option<StructureFilter>,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -211,6 +232,8 @@ impl<'a> ExplainObserver<'a> {
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
             anchor: 0,
+            dropped_by_structure: Vec::new(),
+            structure_filter: None,
         }
     }
 }
@@ -221,6 +244,19 @@ impl PostprocessObserver for ExplainObserver<'_> {
             .iter()
             .map(|p| (p.surface_key(), p.viterbi_cost))
             .collect();
+    }
+
+    fn dropped_by_structure(&mut self, path: &ScoredPath, sc: i64, gap: i64) {
+        self.dropped_by_structure.push(DroppedStructurePath {
+            surface: path.surface_key(),
+            structure_cost: sc,
+            gap,
+            origin: path.origin,
+        });
+    }
+
+    fn structure_filter(&mut self, filter: StructureFilter) {
+        self.structure_filter = Some(filter);
     }
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
@@ -376,6 +412,8 @@ pub fn explain(
             cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
+            structure_filter: None,
+            dropped_by_structure: Vec::new(),
         };
     }
 
@@ -403,6 +441,8 @@ pub fn explain(
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
     let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
+    let mut dropped_by_structure = std::mem::take(&mut observer.dropped_by_structure);
+    dropped_by_structure.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -480,6 +520,8 @@ pub fn explain(
         cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
+        structure_filter: observer.structure_filter,
+        dropped_by_structure,
     }
 }
 
@@ -527,6 +569,8 @@ pub fn format_text(result: &ExplainResult) -> String {
 
     if result.paths.is_empty() {
         out.push_str("\nNo paths found.\n");
+        // What was dropped is the answer to "why is X not here".
+        format_dropped(result, &mut out);
         return out;
     }
 
@@ -600,6 +644,12 @@ pub fn format_text(result: &ExplainResult) -> String {
         }
     }
 
+    format_dropped(result, &mut out);
+    out
+}
+
+/// The paths the structure filter and cost-gap admission dropped.
+fn format_dropped(result: &ExplainResult, out: &mut String) {
     if !result.dropped_by_cost_gap.is_empty() {
         out.push_str(&format!(
             "\n=== Dropped by cost gap ({}; bound={} above anchor={}, max_cost_gap={}) ===\n",
@@ -618,7 +668,25 @@ pub fn format_text(result: &ExplainResult) -> String {
         }
     }
 
-    out
+    // Paths are dropped only when the filter ran, so `structure_filter` is
+    // set whenever the list is non-empty.
+    if let Some(filter) = result
+        .structure_filter
+        .filter(|_| !result.dropped_by_structure.is_empty())
+    {
+        out.push_str(&format!(
+            "\n=== Dropped by structure ({}; threshold={} = anchor sc {} + structure_cost_filter) ===\n",
+            result.dropped_by_structure.len(),
+            filter.threshold,
+            filter.anchor_sc,
+        ));
+        for d in &result.dropped_by_structure {
+            out.push_str(&format!(
+                "  {}  (sc={}, gap={}, {:?})\n",
+                d.surface, d.structure_cost, d.gap, d.origin
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -643,18 +711,36 @@ mod tests {
         assert!(!best.segments.is_empty());
     }
 
-    /// A lattice whose top-1 depends on the oversample. The two cheapest
-    /// paths (可|な|や, 課|な|や) have two 4000 transitions (structure cost
-    /// 8000); カナ|や connects at 0 but is the 4th-cheapest path. Once the
-    /// population reaches カナ|や, rerank's structure threshold drops to
-    /// 0 + 6000 and filters the 3-segment paths, so the top-1 becomes 仮名屋.
+    /// A lattice whose top-1 depends on the oversample through rerank's
+    /// argmin (#361): the three cheapest Viterbi paths are katakana / Latin
+    /// spellings the script feature penalises; 金谷 is 4th in Viterbi order
+    /// but cheapest after features. An oversample of 3 (n=1) never sees it.
+    /// Every dictionary path is one segment (the kana fallback is identity,
+    /// exempt), so the structure filter cannot act.
     fn oversample_sensitive() -> (TrieDictionary, ConnectionMatrix) {
-        let e = |surface: &str, cost: i16, id: u16| DictEntry {
-            surface: surface.into(),
-            cost,
-            left_id: id,
-            right_id: id,
-        };
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "かなや".into(),
+            vec![
+                e("カナヤ", 0, 1),
+                e("KANAYA", 10, 2),
+                e("kanaya", 20, 3),
+                e("金谷", 30, 4),
+            ],
+        )]);
+        (
+            dict,
+            ConnectionMatrix::new_owned(5, 0, 0, Vec::new(), vec![0i16; 25]),
+        )
+    }
+
+    /// Before #353 the structure filter's threshold came from the
+    /// population's minimum: the two cheapest paths (可|な|や, 課|な|や) have
+    /// two 4000 transitions (structure cost 8000); カナ|や connects at 0 but
+    /// is the 4th-cheapest path, so once the population reached it the
+    /// threshold dropped to 0 + 6000 and filtered the cheapest paths.
+    fn filter_population_sensitive() -> (TrieDictionary, ConnectionMatrix) {
+        let e = crate::converter::testutil::entry_with_id;
         let dict = TrieDictionary::from_entries(vec![
             ("か".into(), vec![e("可", 0, 1), e("課", 100, 1)]),
             ("な".into(), vec![e("な", 0, 2)]),
@@ -673,10 +759,15 @@ mod tests {
 
     /// explain describes the production N-best: same paths, same order, at
     /// every n. The oversample decides which paths rerank sees, so a
-    /// different population can swap even the top-1.
+    /// different population can swap even the top-1. The learned arms run
+    /// on the multi-segment fixture, whose 仮名屋 / カナや are not the #1.
     #[test]
     fn test_explain_paths_match_production_nbest() {
-        let (dict, conn) = oversample_sensitive();
+        let sensitive = oversample_sensitive();
+        let multi_segment = filter_population_sensitive();
+        // The structure filter drops 可|な|や here: explain must observe the
+        // same drops production makes.
+        let filtered = crate::converter::testutil::filtered_kanaya();
         let mut h = UserHistory::new();
         h.record(&[("な".into(), "な".into())]);
         // A whole-pair learning of a non-#1 surface moves it to index 0.
@@ -690,14 +781,18 @@ mod tests {
             crate::user_history::now_epoch() - 3600 * 24 * 365,
         );
         let mut rotated_at = 0;
-        for (history, is_stale) in [
-            (None, false),
-            (Some(&h), false),
-            (Some(&learned), false),
-            (Some(&stale), true),
+        for ((dict, conn), history, is_stale) in [
+            (&sensitive, None, false),
+            (&sensitive, Some(&h), false),
+            (&multi_segment, None, false),
+            (&multi_segment, Some(&h), false),
+            (&multi_segment, Some(&learned), false),
+            (&multi_segment, Some(&stale), true),
+            (&filtered, None, false),
+            (&filtered, Some(&h), false),
         ] {
             for n in 1..=6 {
-                let explanation = explain(&dict, Some(&conn), history, "かなや", n);
+                let explanation = explain(dict, Some(conn), history, "かなや", n);
                 let explained: Vec<String> =
                     explanation.paths.iter().map(|p| p.surface()).collect();
                 if let [first, second, ..] = explanation.paths.as_slice() {
@@ -712,13 +807,13 @@ mod tests {
                 }
                 let production: Vec<String> = match history {
                     Some(h) => crate::converter::convert_nbest_with_history(
-                        &dict,
-                        Some(&conn),
+                        dict,
+                        Some(conn),
                         h,
                         "かなや",
                         n,
                     ),
-                    None => crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n),
+                    None => crate::converter::convert_nbest(dict, Some(conn), "かなや", n),
                 }
                 .iter()
                 .map(|p| p.iter().map(|s| s.surface.as_str()).collect())
@@ -727,7 +822,15 @@ mod tests {
             }
         }
         assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
+        let (dict, conn) = &filtered;
+        assert!(
+            !explain(dict, Some(conn), None, "かなや", 6)
+                .dropped_by_structure
+                .is_empty(),
+            "the filtered arm drops"
+        );
         // The fixture is sensitive: the two populations disagree on top-1.
+        let (dict, conn) = sensitive;
         let head = |n| {
             crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]
                 .iter()
@@ -735,6 +838,21 @@ mod tests {
                 .collect::<String>()
         };
         assert_ne!(head(1), head(20));
+    }
+
+    /// The structure filter measures from the #1, so a path that never wins
+    /// (カナ|や) cannot change which paths survive: every width and the
+    /// 1-best agree (#353; before, n=1 saw 可なや and n=20 仮名屋).
+    #[test]
+    fn filter_does_not_depend_on_paths_that_never_win() {
+        let (dict, conn) = filter_population_sensitive();
+        let joined = |p: &[crate::converter::ConvertedSegment]| {
+            p.iter().map(|s| s.surface.as_str()).collect::<String>()
+        };
+        let head = |n| joined(&crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]);
+        let one_best = joined(&crate::converter::convert(&dict, Some(&conn), "かなや"));
+        assert_eq!(head(1), head(20));
+        assert_eq!(one_best, head(20));
     }
 
     #[test]
@@ -949,5 +1067,50 @@ mod tests {
         let gaps: Vec<i64> = result.dropped_by_cost_gap.iter().map(|d| d.gap).collect();
         assert!(gaps.windows(2).all(|w| w[0] <= w[1]), "by gap: {gaps:?}");
         assert!(format_text(&result).contains("Dropped by cost gap"));
+    }
+
+    #[test]
+    fn dropped_by_structure_lists_what_the_filter_cut() {
+        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let result = explain(&dict, Some(&conn), None, "かなや", 20);
+        let filter = result.structure_filter.expect("the filter ran");
+        assert_eq!(filter.anchor_sc, 3000, "imputed");
+        assert_eq!(filter.threshold, 3000 + 6000);
+        let dropped: Vec<(&str, i64)> = result
+            .dropped_by_structure
+            .iter()
+            .map(|d| (d.surface.as_str(), d.structure_cost))
+            .collect();
+        assert!(dropped.contains(&("可なや", 10000)), "{dropped:?}");
+        let listed: Vec<String> = result.paths.iter().map(ExplainPath::surface).collect();
+        for d in &result.dropped_by_structure {
+            assert!(d.structure_cost > filter.threshold);
+            assert!(d.gap >= 0, "the #1 is never dropped");
+            assert!(
+                !listed.contains(&d.surface),
+                "{} listed and dropped",
+                d.surface
+            );
+        }
+        assert!(format_text(&result).contains("Dropped by structure"));
+        // Asking why a surface is missing can leave no paths; the dropped
+        // sections still answer it.
+        let mut none_listed = result;
+        none_listed.paths.clear();
+        let text = format_text(&none_listed);
+        assert!(text.contains("No paths found") && text.contains("Dropped by structure"));
+    }
+
+    /// With fewer than two paths rerank neither prices nor filters: explain
+    /// reports no threshold rather than 0.
+    #[test]
+    fn no_structure_filter_below_two_paths() {
+        let dict = TrieDictionary::from_entries(vec![(
+            "あ".into(),
+            vec![crate::converter::testutil::entry("亜", 0)],
+        )]);
+        let result = explain(&dict, None, None, "あ", 5);
+        assert!(!result.paths.is_empty());
+        assert_eq!(result.structure_filter, None);
     }
 }

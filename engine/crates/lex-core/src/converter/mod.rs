@@ -229,7 +229,7 @@ pub(crate) fn convert_nbest_constrained(
     let lattice = build_lattice(ctx.dict, kana);
     let oversample = n * 3;
     let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    reranker::rerank(&mut paths, ctx.conn, Some(ctx.dict));
+    reranker::rerank(&mut paths, ctx.conn, Some(ctx.dict), |_, _, _| {});
     paths.truncate(n);
     paths
 }

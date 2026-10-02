@@ -77,8 +77,8 @@ pub fn production_candidates_priced(
 }
 
 /// Top-1 at each width the user can see. They oversample differently, so
-/// the reranker's structure filter sees different populations and the
-/// top-1 can diverge between them.
+/// rerank's argmin can differ between the populations and so can the top-1
+/// (#361).
 pub struct Top1Widths {
     /// N-best head at n=1 — the historical accuracy gate.
     pub nbest_head: String,

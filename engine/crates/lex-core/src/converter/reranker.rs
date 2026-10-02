@@ -45,26 +45,53 @@ impl<'a> FeaturePricer<'a> {
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
         self.fcfg.extract(path, None).weighted_cost(&self.weights)
     }
+
+    /// `path`'s structure cost, as the structure filter measures it.
+    fn structure_cost(&self, path: &ScoredPath) -> i64 {
+        compute_structure_cost(
+            path,
+            self.fcfg.conn,
+            self.fcfg.structure_cap,
+            self.fcfg.prefix_floor,
+        )
+    }
+
+    /// The structure filter measured from the anchor — the pre-history #1 —
+    /// given its structure cost: a single-segment anchor (0 transitions) is
+    /// imputed at `prefix_floor`.
+    ///
+    /// The anchor is the one path every other stage measures from (cost-gap
+    /// admission, Numeric), so the threshold depends on the population only
+    /// through its #1: a cheap-transition path that never wins (`カナ|や`)
+    /// cannot lower it (#353).
+    fn filter_at(&self, anchor: &ScoredPath, sc: i64) -> StructureFilter {
+        let anchor_sc = if anchor.segments.len() <= 1 {
+            self.fcfg.prefix_floor
+        } else {
+            sc
+        };
+        StructureFilter {
+            anchor_sc,
+            threshold: anchor_sc.saturating_add(settings().reranker.structure_cost_filter),
+        }
+    }
 }
 
-/// Structure-filter threshold over `(segment count, structure cost)` pairs:
-/// `min + structure_cost_filter`, with single-segment paths (0 transitions)
-/// imputed at `prefix_floor` so they cannot set an artificially low
-/// baseline. Shared by rerank and tune.
-pub(crate) fn structure_threshold(
-    items: impl Iterator<Item = (usize, i64)>,
-    prefix_floor: i64,
-) -> Option<i64> {
-    items
-        .map(|(segs, sc)| if segs <= 1 { prefix_floor } else { sc })
-        .min()
-        .map(|min_sc| min_sc + settings().reranker.structure_cost_filter)
+/// What the structure filter measured from: the anchor's (pre-history #1's)
+/// structure cost — `prefix_floor` for a single-segment anchor — and the
+/// threshold, `anchor_sc + structure_cost_filter`, above which paths were
+/// dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct StructureFilter {
+    pub anchor_sc: i64,
+    pub threshold: i64,
 }
 
 /// Transitions FROM a prefix POS (role == 3) get a floor of half the filter
 /// threshold. Without this, a prefix→content-word transition (e.g.
-/// 今[prefix]→デスネ with conn=256) can drag min_sc so low that the hard
-/// filter drops correct multi-segment paths like 今|です|ね.
+/// 今[prefix]→デスネ with conn=256) gives a path a structure cost so low
+/// that, as the anchor, it would put the threshold below correct
+/// multi-segment paths like 今|です|ね (53d207c).
 pub(crate) fn structure_prefix_floor() -> i64 {
     let r = &settings().reranker;
     (r.structure_cost_filter / 2).min(r.structure_cost_transition_cap)
@@ -76,62 +103,70 @@ pub(crate) fn structure_prefix_floor() -> i64 {
 /// The reranker adds features that are ranking preferences rather than
 /// search-quality parameters:
 ///
-/// - **Structure cost**: sum of transition costs along the path (Mozc-inspired);
-///   paths with high accumulated transition costs tend to be fragmented
 /// - **Length variance**: penalises uneven segment splits so that more uniform
 ///   segmentations are preferred when Viterbi costs are close
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
-pub fn rerank(
+///
+/// Structure cost (the sum of transition costs along the path,
+/// Mozc-inspired; fragmented paths accumulate it) is not priced: it only
+/// drives a hard filter, which drops paths whose structure cost exceeds the
+/// anchor's (the cheapest path after features; a single-segment anchor
+/// counts as `prefix_floor`) by more than `structure_cost_filter`.
+/// `on_drop` sees each dropped path, priced, with its structure cost and
+/// its price's gap to the anchor. The anchor itself always survives.
+/// Returns what the filter measured from, or `None` when there were fewer
+/// than two paths and nothing was filtered or priced.
+pub(crate) fn rerank(
     paths: &mut Vec<ScoredPath>,
     conn: Option<&ConnectionMatrix>,
     dict: Option<&dyn Dictionary>,
-) {
+    mut on_drop: impl FnMut(&ScoredPath, i64, i64),
+) -> Option<StructureFilter> {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
-        return;
+        return None;
     }
     let features = FeaturePricer::new(conn, dict);
 
-    // Structure cost per path, then the hard-filter threshold over them.
-    let structure_costs: Vec<i64> = paths
-        .iter()
-        .map(|p| {
-            compute_structure_cost(
-                p,
-                conn,
-                features.fcfg.structure_cap,
-                features.fcfg.prefix_floor,
-            )
+    // Price every path (Viterbi + features), each carried with its
+    // structure cost; the threshold is measured from the cheapest.
+    let mut priced: Vec<(ScoredPath, i64)> = paths
+        .drain(..)
+        .map(|mut p| {
+            let sc = features.structure_cost(&p);
+            p.viterbi_cost += features.adjustment_with_sc(&p, sc);
+            (p, sc)
         })
         .collect();
-    let Some(threshold) = structure_threshold(
-        paths
-            .iter()
-            .zip(&structure_costs)
-            .map(|(p, &sc)| (p.segments.len(), sc)),
-        features.fcfg.prefix_floor,
-    ) else {
-        return;
-    };
-
-    // Filter and price in one pass. Identity paths (surface == reading
-    // throughout) are exempt from the filter: they are the user's typed input
-    // and must stay selectable so history learning can rescue readings the
-    // cost model gets wrong (#263). Their fragmented FW chains otherwise trip
-    // the structure filter.
-    let mut sc = structure_costs.into_iter();
-    paths.retain_mut(|p| {
-        let sc = sc.next().expect("one structure cost per path");
-        if !p.is_identity() && sc > threshold {
-            return false;
+    // First minimum: the path a stable sort puts at index 0.
+    let anchor = (1..priced.len()).fold(0, |best, i| {
+        if priced[i].0.viterbi_cost < priced[best].0.viterbi_cost {
+            i
+        } else {
+            best
         }
-        p.viterbi_cost += features.adjustment_with_sc(p, sc);
-        true
     });
+    let (anchor_path, anchor_sc) = &priced[anchor];
+    let filter = features.filter_at(anchor_path, *anchor_sc);
+    let anchor_price = anchor_path.viterbi_cost;
+
+    // Identity paths (surface == reading throughout) are exempt from the
+    // filter: they are the user's typed input and must stay selectable so
+    // history learning can rescue readings the cost model gets wrong (#263).
+    // Their fragmented FW chains otherwise trip the structure filter. The
+    // anchor passes by construction (its own sc).
+    paths.extend(priced.drain(..).filter_map(|(p, sc)| {
+        if !p.is_identity() && sc > filter.threshold {
+            on_drop(&p, sc, p.viterbi_cost - anchor_price);
+            return None;
+        }
+        Some(p)
+    }));
 
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(paths_out = paths.len());
+    Some(filter)
 }
 
 /// Breakdown of the history boost contributions for a single path.
@@ -341,8 +376,8 @@ mod tests {
             path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 99999), // dummy
         ];
 
-        rerank(&mut with_kanji, Some(&conn), None);
-        rerank(&mut without_kanji, Some(&conn), None);
+        rerank(&mut with_kanji, Some(&conn), None, |_, _, _| {});
+        rerank(&mut without_kanji, Some(&conn), None, |_, _, _| {});
 
         let kanji_cost = with_kanji
             .iter()
@@ -356,7 +391,7 @@ mod tests {
             path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
             path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 99999),
         ];
-        rerank(&mut baseline_kanji, Some(&conn), None);
+        rerank(&mut baseline_kanji, Some(&conn), None, |_, _, _| {});
         let baseline_kanji_cost = baseline_kanji
             .iter()
             .find(|p| p.segments[1].surface == "見る")
@@ -403,7 +438,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
         // The FW path should rank first (lower cost) because its 2-char
         // particle is excluded from the variance calculation.
@@ -446,7 +481,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
         // Path A should rank better: its 1-char segments are all excluded,
         // leaving no variance. Path B has [4, 2] with nonzero variance.
@@ -512,7 +547,7 @@ mod tests {
             path(vec![seg("かくにんね", "確認ね", 1)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
         // The path with 根 should have penalty applied
         let root_path = paths
@@ -547,7 +582,7 @@ mod tests {
                 path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), Some(&dict));
+            rerank(&mut p, Some(&conn), Some(&dict), |_, _, _| {});
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -560,7 +595,7 @@ mod tests {
                 path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), None);
+            rerank(&mut p, Some(&conn), None, |_, _, _| {});
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -592,7 +627,7 @@ mod tests {
                 path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), Some(&dict));
+            rerank(&mut p, Some(&conn), Some(&dict), |_, _, _| {});
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -604,7 +639,7 @@ mod tests {
                 path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), None);
+            rerank(&mut p, Some(&conn), None, |_, _, _| {});
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -661,7 +696,7 @@ mod tests {
             path(vec![seg("ね", "根", 1)], 100),   // 1-char reading
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
 
         let multi = paths
             .iter()
