@@ -60,32 +60,19 @@ pub struct Settings {
     pub snippets: SnippetSettings,
     #[serde(default)]
     keymap: HashMap<String, Vec<String>>,
-    #[serde(flatten)]
-    unknown: Unknown,
     /// The keymap the engine actually reads, in canonical form: one entry per
     /// key code, sides that are not remaps already dropped. `parse_keymap` is
     /// the only thing that builds it.
     #[serde(skip)]
     keymap_parsed: BTreeMap<u16, KeyRemap>,
     /// What the loader kept but will not act on, phrased for a human: keys no
-    /// field reads (`unknown_key_warnings`) and what `parse_keymap` dropped while
+    /// field reads (`parse_settings_toml`) and what `parse_keymap` dropped while
     /// building `keymap_parsed`. Each is recorded by the pass that made the
     /// decision rather than re-derived here, so the report cannot disagree with
     /// the settings about what the file does.
     #[serde(skip)]
     load_warnings: Vec<String>,
 }
-
-/// Keys in a table that no field of its struct reads, with their values.
-///
-/// Every section struct carries one under `#[serde(flatten)]`, so serde fills it
-/// with whatever did not match a field — the struct stays the single statement
-/// of what a section accepts, with no separate list of known keys to keep in
-/// step. Without it serde drops such keys silently, and a retired setting, a
-/// typo or a key for a newer version would quietly do nothing. `toml::Value`
-/// takes any value, so an unread key never rejects the file (`init_custom` is
-/// all-or-nothing; one unread key must not revert every other custom value).
-type Unknown = BTreeMap<String, toml::Value>;
 
 /// One key code's remap, as resolved by `parse_keymap`. `None` on a side means
 /// that side is not remapped — never "remap to nothing", which would commit `""`
@@ -134,8 +121,9 @@ impl Settings {
     ///
     /// Three kinds:
     ///
-    /// - a key no setting reads (`unknown_key_warnings`) — a retired setting, a
-    ///   typo, or one from a newer version. Its value is not looked at;
+    /// - a key no setting reads — a retired setting, a typo, or one from a newer
+    ///   version — at any depth, named by its dotted path. Its value is not
+    ///   looked at;
     /// - an empty mapping, which `keymap_get` reports as unmapped;
     /// - several table entries naming the same key code. `u16::from_str` accepts
     ///   `10`, `010` and `+10` alike, and the raw TOML table is keyed on the
@@ -158,8 +146,6 @@ pub struct CostSettings {
     pub pure_kanji_bonus: i64,
     pub latin_penalty: i64,
     pub unknown_word_cost: i16,
-    #[serde(flatten)]
-    unknown: Unknown,
 }
 
 /// Default length variance weight (shared with FeatureWeights::default()).
@@ -181,8 +167,6 @@ pub struct RerankerSettings {
     pub single_char_kanji_penalty: i64,
     #[serde(default = "default_structure_cost_transition_cap")]
     pub structure_cost_transition_cap: i64,
-    #[serde(flatten)]
-    unknown: Unknown,
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
@@ -204,8 +188,6 @@ pub struct HistorySettings {
     pub half_life_hours: f64,
     pub max_unigrams: usize,
     pub max_bigrams: usize,
-    #[serde(flatten)]
-    unknown: Unknown,
 }
 
 /// Default upper bound on a candidate's cost above the pre-history #1.
@@ -230,8 +212,6 @@ pub struct CandidateSettings {
     pub max_results: usize,
     #[serde(default = "default_candidate_max_cost_gap")]
     pub max_cost_gap: i64,
-    #[serde(flatten)]
-    unknown: Unknown,
 }
 
 fn default_candidate_max_cost_gap() -> i64 {
@@ -248,8 +228,6 @@ pub struct SnippetSettings {
     pub trigger: String,
     #[serde(default)]
     pub variables: HashMap<String, SnippetVariable>,
-    #[serde(flatten)]
-    unknown: Unknown,
 }
 
 /// Parsed trigger key descriptor for character-based matching.
@@ -309,40 +287,31 @@ fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
 }
 
 pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
+    // serde drops keys that no field reads without a word, so a retired
+    // setting, a typo or a key from a newer version would quietly do nothing.
+    // `serde_ignored` sees every key the derive skips, at any depth, from this
+    // one call: the structs stay the only statement of what the file accepts,
+    // and a section or nested table added later is covered without a list to
+    // keep in step. The one blind spot is an internally tagged enum: serde
+    // buffers it before picking the variant, so a stray key inside a
+    // `[snippets.variables.<name>]` entry (`SnippetVariable`) is still dropped
+    // unreported, as it was before. An ignored key never rejects the file — `init_custom` is
+    // all-or-nothing, and one unread key must not revert every other custom
+    // value to the defaults.
+    let mut ignored = Vec::new();
     let mut s: Settings =
-        toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
+        serde_ignored::deserialize(toml::Deserializer::new(toml_str), |path| {
+            ignored.push(format!(
+                "{path} is not a setting this version reads, so it has no effect; remove it from settings.toml"
+            ))
+        })
+        .map_err(|e| SettingsError::Parse(e.to_string()))?;
     validate(&s)?;
     let (parsed, keymap_warnings) = parse_keymap(&s.keymap)?;
     s.keymap_parsed = parsed;
-    let mut warnings = unknown_key_warnings(&s);
-    warnings.extend(keymap_warnings);
-    s.load_warnings = warnings;
+    s.load_warnings = ignored;
+    s.load_warnings.extend(keymap_warnings);
     Ok(s)
-}
-
-/// One warning per key that no setting reads, named the way the file spells
-/// it (`section.key`, or `key` at the top level), in section then key order.
-fn unknown_key_warnings(s: &Settings) -> Vec<String> {
-    let sections: [(Option<&str>, &Unknown); 6] = [
-        (None, &s.unknown),
-        (Some("cost"), &s.cost.unknown),
-        (Some("reranker"), &s.reranker.unknown),
-        (Some("history"), &s.history.unknown),
-        (Some("candidates"), &s.candidates.unknown),
-        (Some("snippets"), &s.snippets.unknown),
-    ];
-    sections
-        .into_iter()
-        .flat_map(|(section, unknown)| {
-            unknown.keys().map(move |key| {
-                let name = match section {
-                    Some(section) => format!("{section}.{key}"),
-                    None => key.clone(),
-                };
-                format!("{name} is not a setting this version reads, so it has no effect; remove it from settings.toml")
-            })
-        })
-        .collect()
 }
 
 /// The one place the `[keymap]` table's rules are applied: which entry a key
@@ -969,11 +938,11 @@ unknown_word_cost = 10000
 
     #[test]
     fn unknown_keys_warn_and_do_not_reject() {
-        // One key no field reads in every table, top level included, with values
-        // of every shape — none of them may take the file down, and each must
-        // be named. The real fields around them keep their values: `flatten`
-        // routes the table through serde's buffer, so this also pins that every
-        // field type still parses through it.
+        // One key no field reads in every table, top level and an unknown
+        // table included, with values of every shape — none of them may take
+        // the file down, each must be named by its dotted path, and the real
+        // fields around them keep their values. (A stray key inside a snippet
+        // variable is the documented blind spot, see `parse_settings_toml`.)
         let toml = r#"
 stray = "top level"
 
@@ -1038,13 +1007,13 @@ anything = 1
         assert_eq!(
             named,
             [
-                "future",
                 "stray",
                 "cost.segment_penalti",
                 "reranker.retired_weight",
                 "history.decay",
                 "candidates.paging",
                 "snippets.colour",
+                "future",
             ]
         );
     }
