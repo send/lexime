@@ -279,7 +279,7 @@ keymap に登録されたキーはリマップ後のテキストとして処理�
 
 TOML テーブルは**文字列**キーなので `10` / `010` / `"+10"` は同じ key_code を指す別エントリになる。1 つの key_code が解決するエントリは 1 つだけで、**キー文字列の辞書順で最小のものが勝つ**（起動ごとに変わらない）。負けたエントリの値は照合に使われない — 勝ったエントリの側が空文字なら、その側はリマップ無しのままで、負けたエントリが代わりを供給することはない（ただし妥当性検査は全エントリに適用される。key_code として解釈できない / 要素数が 2 でないエントリは、勝敗に関わらずファイル全体を reject する。空文字を許すのは「値が空」であって「壊れたファイル」ではない）。この解決は `parse_keymap` の 1 パスで行われ、`keymap_get` が読む map と WARN の両方をそこで作る（照合と診断が別々に導出して食い違わないようにするため）。
 
-WARN は `settings_keymap_warnings` で FFI を渡り、設定読み込み成功後に frontend が報告する（`dictool settings-validate` でも同じ内容が出る）。engine の `tracing` は出荷ビルドに届かないため、ログのみの診断はサイレント失敗になる。
+WARN は `settings_load_warnings` で FFI を渡り、設定読み込み成功後に frontend が報告する（`dictool settings-validate` と、`--settings` / `--app-dir` で設定を読む lextool でも同じ内容が出る）。engine の `tracing` は出荷ビルドに届かないため、ログのみの診断はサイレント失敗になる。
 かなモードではリマップ後のテキストがローマ字 trie・通常入力パスを経由する（例: `]` → `」`）。
 trie にマッチしない文字（例: `\`）は直接確定。ABC モードでは常に直接確定。
 `settings.toml` の `[keymap]` セクションで追加・変更可能。
@@ -550,6 +550,8 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 | `[candidates]` | nbest, max_results, max_cost_gap（履歴前 #1 からのコスト差の上限。4000 未満は 4000 として働く。`i64::MAX` で無効化。省略時は既定値） |
 | `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
 | `[keymap]` | key_code = ["normal", "shifted"]（オプショナル、デフォルト: 10→]/}, 93→\\/\|） |
+
+表にないキー（退役した設定・typo・新しい版のキー）はファイルを reject せず受理して無視し、`section.key` の名前で WARN を出す（値の型は問わない）。WARN の経路は keymap と同じ `settings_load_warnings`（§キーリマップ）。各セクションの struct が `#[serde(flatten)]` で読まなかったキーを受け取るので、受理するキーの一覧は struct 1 つにしか書かれていない。
 
 `mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。
 

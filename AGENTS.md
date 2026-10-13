@@ -477,7 +477,7 @@ what a generic reviewer misses:
   defaults. A *malformed* entry — unparseable key_code, wrong arity — is a
   different case and still rejects the file. Both drops are reported, over the
   FFI, because engine `tracing` does not reach the shipped build
-  (`settings_keymap_warnings`, `LexSnippetStore::unusable_keys`); the rules are
+  (`settings_load_warnings`, `LexSnippetStore::unusable_keys`); the rules are
   in SPEC.md § キーリマップ. Findings proposing to reject on an empty value, or
   to log the drop instead of returning it, re-litigate this — do not raise them.
 - Prioritize conversion correctness and boundary safety over naming/style

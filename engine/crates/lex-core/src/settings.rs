@@ -60,17 +60,32 @@ pub struct Settings {
     pub snippets: SnippetSettings,
     #[serde(default)]
     keymap: HashMap<String, Vec<String>>,
+    #[serde(flatten)]
+    unknown: Unknown,
     /// The keymap the engine actually reads, in canonical form: one entry per
     /// key code, sides that are not remaps already dropped. `parse_keymap` is
     /// the only thing that builds it.
     #[serde(skip)]
     keymap_parsed: BTreeMap<u16, KeyRemap>,
-    /// What `parse_keymap` dropped while building `keymap_parsed`, phrased for a
-    /// human. Recorded there rather than re-derived here, so the report cannot
-    /// disagree with the map about what the file does.
+    /// What the loader kept but will not act on, phrased for a human: keys no
+    /// field reads (`unknown_key_warnings`) and what `parse_keymap` dropped while
+    /// building `keymap_parsed`. Each is recorded by the pass that made the
+    /// decision rather than re-derived here, so the report cannot disagree with
+    /// the settings about what the file does.
     #[serde(skip)]
-    keymap_warnings: Vec<String>,
+    load_warnings: Vec<String>,
 }
+
+/// Keys in a table that no field of its struct reads, with their values.
+///
+/// Every section struct carries one under `#[serde(flatten)]`, so serde fills it
+/// with whatever did not match a field — the struct stays the single statement
+/// of what a section accepts, with no separate list of known keys to keep in
+/// step. Without it serde drops such keys silently, and a retired setting, a
+/// typo or a key for a newer version would quietly do nothing. `toml::Value`
+/// takes any value, so an unread key never rejects the file (`init_custom` is
+/// all-or-nothing; one unread key must not revert every other custom value).
+type Unknown = BTreeMap<String, toml::Value>;
 
 /// One key code's remap, as resolved by `parse_keymap`. `None` on a side means
 /// that side is not remapped — never "remap to nothing", which would commit `""`
@@ -110,14 +125,17 @@ impl Settings {
     ///
     /// Same shape as `SnippetStore::unusable_keys`, down to the crossing: the
     /// load path keeps the file and drops what it cannot use, and a separate
-    /// query makes the drop visible. `settings_keymap_warnings` puts this over
+    /// query makes the drop visible. `settings_load_warnings` puts this over
     /// the FFI and the frontend reports it after a successful load — engine
     /// `tracing` does not reach the shipped build, so logging here would be the
     /// silent failure this exists to prevent. `dictool settings-validate`
-    /// prints the same list for a file the user has not loaded yet.
+    /// prints the same list for a file the user has not loaded yet, and lextool
+    /// prints it for the file it loads.
     ///
-    /// Two kinds:
+    /// Three kinds:
     ///
+    /// - a key no setting reads (`unknown_key_warnings`) — a retired setting, a
+    ///   typo, or one from a newer version. Its value is not looked at;
     /// - an empty mapping, which `keymap_get` reports as unmapped;
     /// - several table entries naming the same key code. `u16::from_str` accepts
     ///   `10`, `010` and `+10` alike, and the raw TOML table is keyed on the
@@ -127,8 +145,8 @@ impl Settings {
     /// `parse_keymap` records both as it makes each decision. Nothing here
     /// re-derives which entry won or which side was dropped, which is why the
     /// report and `keymap_get` cannot describe different files.
-    pub fn keymap_warnings(&self) -> &[String] {
-        &self.keymap_warnings
+    pub fn load_warnings(&self) -> &[String] {
+        &self.load_warnings
     }
 }
 
@@ -140,6 +158,8 @@ pub struct CostSettings {
     pub pure_kanji_bonus: i64,
     pub latin_penalty: i64,
     pub unknown_word_cost: i16,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 /// Default length variance weight (shared with FeatureWeights::default()).
@@ -161,6 +181,8 @@ pub struct RerankerSettings {
     pub single_char_kanji_penalty: i64,
     #[serde(default = "default_structure_cost_transition_cap")]
     pub structure_cost_transition_cap: i64,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
@@ -182,6 +204,8 @@ pub struct HistorySettings {
     pub half_life_hours: f64,
     pub max_unigrams: usize,
     pub max_bigrams: usize,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 /// Default upper bound on a candidate's cost above the pre-history #1.
@@ -206,6 +230,8 @@ pub struct CandidateSettings {
     pub max_results: usize,
     #[serde(default = "default_candidate_max_cost_gap")]
     pub max_cost_gap: i64,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 fn default_candidate_max_cost_gap() -> i64 {
@@ -222,6 +248,8 @@ pub struct SnippetSettings {
     pub trigger: String,
     #[serde(default)]
     pub variables: HashMap<String, SnippetVariable>,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 /// Parsed trigger key descriptor for character-based matching.
@@ -284,10 +312,37 @@ pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
     let mut s: Settings =
         toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
     validate(&s)?;
-    let (parsed, warnings) = parse_keymap(&s.keymap)?;
+    let (parsed, keymap_warnings) = parse_keymap(&s.keymap)?;
     s.keymap_parsed = parsed;
-    s.keymap_warnings = warnings;
+    let mut warnings = unknown_key_warnings(&s);
+    warnings.extend(keymap_warnings);
+    s.load_warnings = warnings;
     Ok(s)
+}
+
+/// One warning per key that no setting reads, named the way the file spells
+/// it (`section.key`, or `key` at the top level), in section then key order.
+fn unknown_key_warnings(s: &Settings) -> Vec<String> {
+    let sections: [(Option<&str>, &Unknown); 6] = [
+        (None, &s.unknown),
+        (Some("cost"), &s.cost.unknown),
+        (Some("reranker"), &s.reranker.unknown),
+        (Some("history"), &s.history.unknown),
+        (Some("candidates"), &s.candidates.unknown),
+        (Some("snippets"), &s.snippets.unknown),
+    ];
+    sections
+        .into_iter()
+        .flat_map(|(section, unknown)| {
+            unknown.keys().map(move |key| {
+                let name = match section {
+                    Some(section) => format!("{section}.{key}"),
+                    None => key.clone(),
+                };
+                format!("{name} is not a setting this version reads, so it has no effect; remove it from settings.toml")
+            })
+        })
+        .collect()
 }
 
 /// The one place the `[keymap]` table's rules are applied: which entry a key
@@ -752,7 +807,7 @@ max_results = 20
             assert_eq!(s.candidates.nbest, 5);
             // ...and the drop is reportable rather than silent.
             assert!(
-                s.keymap_warnings().iter().any(|w| w.contains("empty")),
+                s.load_warnings().iter().any(|w| w.contains("empty")),
                 "{entry:?} should warn about the empty side",
             );
         }
@@ -783,7 +838,7 @@ max_results = 20
             assert_eq!(s.keymap_get(10, true), first.keymap_get(10, true));
         }
 
-        let warnings = first.keymap_warnings();
+        let warnings = first.load_warnings();
         assert!(
             warnings
                 .iter()
@@ -797,7 +852,7 @@ max_results = 20
         // The two rules meet here. `"+10"` sorts first, so it is the entry that
         // resolves key code 10 — including its empty normal side, which means
         // "not remapped". The shadowed `10 = ["b", "B"]` must not supply a
-        // normal mapping in its place: `keymap_warnings` says only `"+10"` is
+        // normal mapping in its place: `load_warnings` says only `"+10"` is
         // used, and `keymap_get` has to be describing that same file.
         let base = KEYMAP_TEST_BASE;
         let toml = format!("{base}\"+10\" = [\"\", \"A\"]\n10 = [\"b\", \"B\"]\n");
@@ -814,7 +869,7 @@ max_results = 20
             "the winner supplies the side it does map",
         );
 
-        let warnings = s.keymap_warnings();
+        let warnings = s.load_warnings();
         assert!(
             warnings.iter().any(|w| w.contains("only \"+10\" is used")),
             "the shadowing must name the winner, got {warnings:?}",
@@ -910,5 +965,111 @@ unknown_word_cost = 10000
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(matches!(err, SettingsError::Parse(_)));
+    }
+
+    #[test]
+    fn unknown_keys_warn_and_do_not_reject() {
+        // One key no field reads in every table, top level included, with values
+        // of every shape — none of them may take the file down, and each must
+        // be named. The real fields around them keep their values: `flatten`
+        // routes the table through serde's buffer, so this also pins that every
+        // field type still parses through it.
+        let toml = r#"
+stray = "top level"
+
+[cost]
+segment_penalty = 1000
+mixed_script_bonus = 500
+katakana_penalty = 2000
+pure_kanji_bonus = 200
+latin_penalty = 10000
+unknown_word_cost = 5000
+segment_penalti = 7
+
+[reranker]
+length_variance_weight = 1000
+structure_cost_filter = 2000
+retired_weight = "abc"
+
+[history]
+boost_per_use = 1500
+max_boost = 8000
+half_life_hours = 72.0
+max_unigrams = 5000
+max_bigrams = 5000
+decay = 0.5
+
+[candidates]
+nbest = 10
+max_results = 30
+max_cost_gap = 6000
+paging = [1, 2]
+
+[snippets]
+trigger = "ctrl+;"
+colour = true
+
+[snippets.variables.today]
+type = "date"
+format = "%Y-%m-%d"
+
+[future]
+anything = 1
+
+[keymap]
+10 = ["]", "}"]
+"#;
+        let s = parse_settings_toml(toml).unwrap();
+        assert_eq!(s.cost.segment_penalty, 1000);
+        assert_eq!(s.cost.unknown_word_cost, 5000);
+        assert_eq!(s.reranker.structure_cost_filter, 2000);
+        assert!((s.history.half_life_hours - 72.0).abs() < f64::EPSILON);
+        assert_eq!(s.history.max_unigrams, 5000);
+        assert_eq!(s.candidates.max_cost_gap, 6000);
+        assert_eq!(s.snippets.trigger, "ctrl+;");
+        assert!(s.snippets.variables.contains_key("today"));
+        assert_eq!(s.keymap_get(10, true), Some("}"));
+
+        let named: Vec<&str> = s
+            .load_warnings()
+            .iter()
+            .map(|w| w.split_once(' ').unwrap().0)
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "future",
+                "stray",
+                "cost.segment_penalti",
+                "reranker.retired_weight",
+                "history.decay",
+                "candidates.paging",
+                "snippets.colour",
+            ]
+        );
+    }
+
+    #[test]
+    fn default_toml_has_no_load_warnings() {
+        // The shipped defaults (also what `settings-export` writes) must not
+        // carry a key the struct no longer reads.
+        let s = parse_settings_toml(DEFAULT_SETTINGS_TOML).unwrap();
+        assert_eq!(s.load_warnings(), &[] as &[String]);
+    }
+
+    #[test]
+    fn unknown_key_and_keymap_warnings_share_one_report() {
+        // One list over the FFI: the frontend, dictool and lextool each read
+        // `load_warnings` and nothing else.
+        let toml = format!("{KEYMAP_TEST_BASE}10 = [\"\", \"}}\"]\n")
+            .replace("[history]", "typo_key = 1\n\n[history]");
+        let s = parse_settings_toml(&toml).unwrap();
+        let warnings = s.load_warnings();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("reranker.typo_key "),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("empty"), "{warnings:?}");
     }
 }
