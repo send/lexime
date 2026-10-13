@@ -480,6 +480,15 @@ what a generic reviewer misses:
   (`settings_load_warnings`, `LexSnippetStore::unusable_keys`); the rules are
   in SPEC.md § キーリマップ. Findings proposing to reject on an empty value, or
   to log the drop instead of returning it, re-litigate this — do not raise them.
+- **Unread settings keys warn, not reject (settled)**: a key in settings.toml
+  that no field reads (a retired setting, a typo, a key from a newer version) is
+  accepted and reported through the same `settings_load_warnings` list, found by
+  `serde_ignored` at the one deserialize call (SPEC.md § settings.toml). Same
+  reason as above: `init_custom` is all-or-nothing, and settings keys do get
+  retired, so `deny_unknown_fields` would revert every custom value on upgrade.
+  The corpus files use `deny_unknown_fields` on purpose (a misspelled corpus
+  key must fail); that is not a precedent for settings.toml. Known gap: keys
+  inside a `[snippets.variables.<name>]` entry are not reported.
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

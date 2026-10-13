@@ -551,7 +551,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 | `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
 | `[keymap]` | key_code = ["normal", "shifted"]（オプショナル、デフォルト: 10→]/}, 93→\\/\|） |
 
-表にないキー（退役した設定・typo・新しい版のキー）はファイルを reject せず受理して無視し、`section.key` の名前で WARN を出す（値の型は問わない）。WARN の経路は keymap と同じ `settings_load_warnings`（§キーリマップ）。検出はデシリアライズの 1 か所（`serde_ignored`）で行い、どの深さのキーも struct が読まなかったものとして拾うので、受理するキーの一覧は struct にしか書かれていない。例外は `[snippets.variables.<name>]` の中（internally tagged enum は serde が先に buffer するため見えない）で、そこの余分なキーは従来どおり黙って無視される。
+struct のどのフィールドも読まないキー（退役した設定・typo・新しい版のキー）はファイルを reject せず受理して無視し、TOML で書いたとおりのキーパス（`section.key`、引用付きキーは引用付き）で WARN を出す（値の型は問わない）。WARN の経路は keymap と同じ `settings_load_warnings`（§キーリマップ）。検出はデシリアライズの 1 か所（`serde_ignored`）で行い、どの深さのキーも struct が読まなかったものとして拾うので、受理するキーの一覧は struct にしか書かれていない。例外は `[snippets.variables.<name>]` の中（internally tagged enum は serde が先に buffer するため見えない）で、そこの余分なキーは WARN なしで無視される。
 
 `mise run settings-export` でデフォルトをエクスポート。`dictool settings-validate` で検証。
 
