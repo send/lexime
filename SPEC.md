@@ -346,7 +346,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
   → 統一候補生成 (lex-core/candidates)
     → ラティス構築 (common_prefix_search + 1文字フォールバック)
     → Viterbi N-best 探索
-    → Reranker (structure filter + 特徴量)
+    → Reranker (特徴量)
     → 表記ゆれ・かな救済 (ひらがな / 部分ひらがな / 漢字、学習前)
     → 学習ブースト (history rerank。#1 の選び方は §ブースト計算)
     → コスト差 admission (履歴前 #1 + max(max_cost_gap, 4000)。#1 / この読みで確定したことのある表記 / かなは常に残る)
@@ -368,15 +368,15 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
-- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。structure cost（累積遷移コスト）は hard filter にだけ効く: 閾値は**履歴前 #1**（特徴量込みの最安経路。コスト差 admission・数詞の基準と同じ経路）の structure cost（単一分節は prefix 床 = 既定 3000 で補う。式は設定表の `structure_cost_filter`）+ `structure_cost_filter`。#1 は必ず残り、閾値が母集団に依存するのは #1 を通してだけ（勝たない経路が閾値を下げない — #353）。かな読みそのままの経路（identity）は免除
+- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。rerank は経路を落とさない（価格を付けて並べるだけ）。本番パイプラインで候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ。かな読みそのままの経路（identity）も rerank では落ちない（neural 経路は admission を通らず、rerank → n 本の切りだけ。出荷ビルドには無い）
 - **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 3 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）
 - **表記ゆれ・かな救済**（`RewriteStage::Model`、履歴前に走る。index 0 は動かさない。n = 1 で学習が空のときは index 0 に届かないので省く — 出力は同じ）。段の全 rewriter が段に入ってきたリストから生成し、挿入はその後にまとめて行う（rewriter は互いの出力を見ない）
   - `HiraganaVariantRewriter` — best の漢字分節をすべてかなにした候補（かな救済 #263、best + 4000）
   - `PartialHiraganaRewriter` — 漢字分節を持つ上位 5 本の複数分節 model 経路について、漢字分節を 1 つかなにした提示。分節は同じ span・同じ語クラス（接続行列の role）の lattice かなノード（無ければ漢字ノードを読みのまま、上限価格で）。かなは常に正しい表記なので gap の上限なし
   - `KanjiVariantRewriter` — 上位 5 本の複数分節 model 経路の 2 文字以上のかな分節を、同じ span ちょうど・同じ語クラス（role。助詞を名詞に置き換えない）の漢字ノードのうち Viterbi（辞書 + 接続コスト）が最も安く値付けする 1 つに置換した提示（`ください` → `下さい`）。同値は lattice 順（= 辞書順）の先頭。Viterbi 上の増分が 6000 を超える置換は出さない
-  - 提示価格 = rerank がその分節列に付ける価格を `[源, 源 + 2000]` に収めたもの。源より安くならない（学習の並べ替えで #1 を奪わない）、辞書が大きく高く値付けする表記（補助動詞・形式名詞の漢字）でも源のそばに出る。価格は源と自身の分節だけで決まり、母集団に依らない（同じ surface が母集団に実経路として在れば、そこでは model 価格）。同価格なら源の後ろに並ぶ（Override 段は逆に同価格の前 — 学習済みの #1 が無ければ、数詞複合語が anchor と同価格で index 0 を取る）。採否は源との差で決める（源の近傍という契約。#1 相対の structure filter とは別の基準）
+  - 提示価格 = rerank がその分節列に付ける価格を `[源, 源 + 2000]` に収めたもの。源より安くならない（学習の並べ替えで #1 を奪わない）、辞書が大きく高く値付けする表記（補助動詞・形式名詞の漢字）でも源のそばに出る。価格は源と自身の分節だけで決まり、母集団に依らない（同じ surface が母集団に実経路として在れば、そこでは model 価格）。同価格なら源の後ろに並ぶ（Override 段は逆に同価格の前 — 学習済みの #1 が無ければ、数詞複合語が anchor と同価格で index 0 を取る）。採否は源との差で決める（源の近傍という契約。admission とは別の基準）
   - 履歴前に走るので、選んだ表記ゆれは他の経路と同じく学習で上がる。源は model 価格の経路だけ（提示からも、提示が価格を付け直した経路からも作らない）
-- **コスト差 admission**（`[candidates] max_cost_gap`、学習ブーストの後・n 本に絞る前）: 候補列に残るのは、履歴前の #1（rerank best）からのコスト差（履歴前の価格で測る）が `max(max_cost_gap, 4000)` 以内の経路と、#1 / この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0）/ かな（identity、#263/#271）。かな救済（best + 4000）は差の床で常に残る。提示は自分の価格で判定する（源より安くならないので、源が落ちれば提示も落ちる）。数字・カタカナはこの後に足すので、worst 基準の価格（非複合語の漢数字・半角・全角・カタカナ）は admission 後の最悪値で決まる。落ちた枠は候補列の後続（学習済み注入 / かな / 予測 / 辞書 lookup）が埋める。既定値の決め方と再評価の条件は `DEFAULT_CANDIDATE_MAX_COST_GAP` のコメント
+- **コスト差 admission**（`[candidates] max_cost_gap`、学習ブーストの後・n 本に絞る前）: 候補列に残るのは、履歴前の #1（rerank best）からのコスト差（履歴前の価格で測る）が `max(max_cost_gap, 4000)` 以内の経路と、#1 / この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0）/ かな（identity、#263/#271）。かな救済（best + 4000）は差の床で常に残る。identity の免除と救済の床が #263/#271 の守り（rerank は経路を落とさないので、母集団に入った identity 経路は admission まで必ず届く）。提示は自分の価格で判定する（源より安くならないので、源が落ちれば提示も落ちる）。数字・カタカナはこの後に足すので、worst 基準の価格（非複合語の漢数字・半角・全角・カタカナ）は admission 後の最悪値で決まる。落ちた枠は候補列の後続（学習済み注入 / かな / 予測 / 辞書 lookup）が埋める。既定値の決め方と再評価の条件は `DEFAULT_CANDIDATE_MAX_COST_GAP` のコメント
 - **n 本に絞る**: model 価格の経路を n 本数え、その間に並ぶ提示・かな救済は枠を使わずに残る（提示が model 経路を押し出さない）。学習で履歴前の #1 が n 本から外れたら、n 本目の model 経路と入れ替えて 2 番目に戻す（n ≥ 2。間に並ぶ提示は残る。この後の Rewriters が #1 の前後に入ると 3 番目以降になる）
 - **Rewriters**（`RewriteStage::Override`、n 本に絞った後）
   - `NumericRewriter` — 数詞の漢数字・半角・全角候補、助数詞つき複合語。漢数字の複合語（`二十三`）は履歴前の #1 の価格（anchor）、助数詞つき複合語は anchor − 500（助数詞の辞書コスト差を加算）で値付けし、index 0 も取れる（#239）。1-best と N-best で同じ anchor を使う
@@ -458,8 +458,8 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 - 半減期: 1 週間（168 時間）
 - 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
-- **学習済みの #1**: 学習済み = この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0。候補選択・そのまま確定・自動確定のどれで記録されたかは区別しない）。学習ブースト段の経路（N-best の母集団に在り structure filter を通ったもの）と Rewriters の生成物（数字・カタカナ、同じブーストを受ける）に学習済みがあれば、その中で最安（価格 = model または policy 価格 − ブースト）を #1 に置き、残りは価格順のまま。ブーストが価格差に届かなくても学習済みが #1 になる。この段より後の Rewriters は、未学習の候補で学習済みの #1 を動かさない
-  - 母集団の外（oversample / structure filter で落ちた）学習済みは、注入（候補列の 2.）で列には入るが #1 にはならない。1-best（打鍵ごとの同期表示）は母集団が候補列より小さいので、候補列だけが学習済みを #1 にする読みがある（候補到着時に表示が変わる、#361）。数字（非複合語）・カタカナの方針価格は n 本に絞った後の最悪値が基準なので、それらが学習済み同士で #1 を争う読みでは 1-best と候補列で勝者が割れることもある
+- **学習済みの #1**: 学習済み = この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0。候補選択・そのまま確定・自動確定のどれで記録されたかは区別しない）。学習ブースト段の経路（N-best の母集団に在るもの）と Rewriters の生成物（数字・カタカナ、同じブーストを受ける）に学習済みがあれば、その中で最安（価格 = model または policy 価格 − ブースト）を #1 に置き、残りは価格順のまま。ブーストが価格差に届かなくても学習済みが #1 になる。この段より後の Rewriters は、未学習の候補で学習済みの #1 を動かさない
+  - 母集団の外（oversample の外）の学習済みは、注入（候補列の 2.）で列には入るが #1 にはならない。母集団に在る学習済みは #1 になる（#366 で structure filter を削除する前は、filter が落とした学習済み経路は母集団の外と同じ扱いで #1 になれなかった。今は母集団に残り #1 になる）。1-best（打鍵ごとの同期表示）は母集団が候補列より小さいので、候補列だけが学習済みを #1 にする読みがある（候補到着時に表示が変わる、#361。1-best（10 / 30）と候補列（60）の母集団差は残るが、filter 由来の差は消えた）。数字（非複合語）・カタカナの方針価格は n 本に絞った後の最悪値が基準なので、それらが学習済み同士で #1 を争う読みでは 1-best と候補列で勝者が割れることもある
   - ユーザ辞書の登録語は学習済み扱いではない（学習済みがあればその下に並ぶ。登録語を 1 回確定すれば学習済み同士として価格で争う）
   - かなは救済価格（best + 4000）− ブーストで学習済みの漢字と争う（同じくらい古い 1 回ずつの学習なら漢字が #1）。候補列では、学習済みのかなは #1 が学習済みならその直下（2 番目）に移る（価格によらない、候補列の 3.）
   - 自動確定は候補列 #1 の先頭フレーズを確定し、それも学習として記録する: 学習済みの #1 を自動確定すると、その学習は新しくなる
@@ -545,7 +545,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 | セクション | パラメータ |
 |---|---|
 | `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty, pure_kanji_bonus, latin_penalty, unknown_word_cost |
-| `[reranker]` | length_variance_weight, structure_cost_filter（履歴前 #1 の structure cost からの上限。#1 が単一分節なら structure cost を min(structure_cost_filter / 2, structure_cost_transition_cap) とみなす。#353 以前は母集団の最小からの上限で、同じ値なら今の方が同じか緩い — ユーザ設定の値は意味がこの向きに変わる） |
+| `[reranker]` | length_variance_weight |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results, max_cost_gap（履歴前 #1 からのコスト差の上限。4000 未満は 4000 として働く。`i64::MAX` で無効化。省略時は既定値） |
 | `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
@@ -695,7 +695,7 @@ macOS で動作する最小限の IME を構築。
 | `trace-log` | トレース JSONL ストリーミング |
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
-| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。structure filter で落ちた経路は `dropped_by_structure`（text では `Dropped by structure`）に gap 順で、`structure_cost` と `gap`（特徴量込み価格の #1 からの差。コスト差の上限以下なら admission だけなら残った経路）を添えて出し、`structure_filter`（`anchor_sc` = #1 の structure cost（単一分節は prefix 床）、`threshold`。rerank が 2 本未満で filter が走らなければ null）も出す |
+| `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。 |
 | `snapshot` | 変換スナップショット生成（N-best。本番の候補列は `lextool snapshot --candidates` を直接呼ぶ — task は引数を渡さず出力先も N-best 用に固定） |
 | `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` を直接呼ぶ。種別の違うファイルはエラー） |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
