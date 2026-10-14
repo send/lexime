@@ -159,6 +159,38 @@ fn a_rescue_surface_the_model_already_prices_stays_at_the_floor() {
 }
 
 #[test]
+fn a_far_multi_segment_identity_path_stays_by_the_identity_exemption() {
+    // #263 / #271: the typed kana kept as separate segments (the shape a
+    // per-segment kana commit leaves) is a candidate however dear. Here the
+    // kana rescue cannot cover it (the best keeps a katakana segment, so
+    // the rescue spells テストされます, not the reading), it is not #1 and
+    // not learned, and it is priced far above best + 4000: only the
+    // identity exemption keeps it at T = 0.
+    let dict = TrieDictionary::from_entries(vec![
+        ("てすと".into(), vec![e("テスト", 0), e("てすと", 9000)]),
+        ("され".into(), vec![e("去れ", 0), e("され", 9000)]),
+        ("ます".into(), vec![e("ます", 0)]),
+    ]);
+    let paths = run(&dict, None, "てすとされます", 20, 60, 0);
+    assert_eq!(paths[0].surface_key(), "テスト去れます");
+    assert!(
+        paths[0].segments.iter().any(|s| s.surface == "テスト"),
+        "fixture: the best has a katakana segment"
+    );
+    let identity = paths
+        .iter()
+        .find(|p| p.is_identity() && p.segments.len() > 1)
+        .unwrap_or_else(|| panic!("the identity path stays: {:?}", keys(&paths)));
+    let anchor = paths[0].pre_history_cost();
+    assert!(
+        identity.pre_history_cost() > anchor + RESCUE_OFFSET,
+        "fixture: beyond the rescue floor ({} vs {anchor})",
+        identity.pre_history_cost()
+    );
+    assert!(!identity.is_learned());
+}
+
+#[test]
 fn a_whole_pair_commit_keeps_a_far_surface_and_segments_alone_do_not() {
     let dict = taberu();
     let far = |h: &UserHistory| keys(&run(&dict, Some(h), "たべる", 20, 60, 0));

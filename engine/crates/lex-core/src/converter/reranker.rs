@@ -2,15 +2,13 @@ use tracing::{debug, debug_span};
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
-use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::features::{compute_structure_cost, FeatureConfig, FeatureWeights};
+use super::features::{FeatureConfig, FeatureWeights};
 use super::viterbi::ScoredPath;
 
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
-/// cost, apart from its structure filter. Depends on the path alone, not on
-/// the population rerank saw — so a path synthesised later (a variant offer)
+/// cost. Depends on the path alone, not on the population rerank saw — so a path synthesised later (a variant offer)
 /// is priced exactly as rerank would price the same segments.
 pub(crate) struct FeaturePricer<'a> {
     fcfg: FeatureConfig<'a>,
@@ -26,75 +24,15 @@ impl<'a> FeaturePricer<'a> {
             fcfg: FeatureConfig {
                 conn,
                 dict: if need_dict { dict } else { None },
-                structure_cap: settings().reranker.structure_cost_transition_cap,
-                prefix_floor: structure_prefix_floor(),
             },
             weights,
         }
     }
 
-    /// Feature adjustment rerank adds to `path`'s Viterbi cost, given its
-    /// structure cost.
-    fn adjustment_with_sc(&self, path: &ScoredPath, sc: i64) -> i64 {
-        self.fcfg
-            .extract(path, Some(sc))
-            .weighted_cost(&self.weights)
-    }
-
     /// Feature adjustment rerank adds to `path`'s Viterbi cost.
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
-        self.fcfg.extract(path, None).weighted_cost(&self.weights)
+        self.fcfg.extract(path).weighted_cost(&self.weights)
     }
-
-    /// `path`'s structure cost, as the structure filter measures it.
-    fn structure_cost(&self, path: &ScoredPath) -> i64 {
-        compute_structure_cost(
-            path,
-            self.fcfg.conn,
-            self.fcfg.structure_cap,
-            self.fcfg.prefix_floor,
-        )
-    }
-
-    /// The structure filter measured from the anchor — the pre-history #1 —
-    /// given its structure cost: a single-segment anchor (0 transitions) is
-    /// imputed at `prefix_floor`.
-    ///
-    /// The anchor is the one path every other stage measures from (cost-gap
-    /// admission, Numeric), so the threshold depends on the population only
-    /// through its #1: a cheap-transition path that never wins (`カナ|や`)
-    /// cannot lower it (#353).
-    fn filter_at(&self, anchor: &ScoredPath, sc: i64) -> StructureFilter {
-        let anchor_sc = if anchor.segments.len() <= 1 {
-            self.fcfg.prefix_floor
-        } else {
-            sc
-        };
-        StructureFilter {
-            anchor_sc,
-            threshold: anchor_sc.saturating_add(settings().reranker.structure_cost_filter),
-        }
-    }
-}
-
-/// What the structure filter measured from: the anchor's (pre-history #1's)
-/// structure cost — `prefix_floor` for a single-segment anchor — and the
-/// threshold, `anchor_sc + structure_cost_filter`, above which paths were
-/// dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct StructureFilter {
-    pub anchor_sc: i64,
-    pub threshold: i64,
-}
-
-/// Transitions FROM a prefix POS (role == 3) get a floor of half the filter
-/// threshold. Without this, a prefix→content-word transition (e.g.
-/// 今[prefix]→デスネ with conn=256) gives a path a structure cost so low
-/// that, as the anchor, it would put the threshold below correct
-/// multi-segment paths like 今|です|ね (53d207c).
-pub(crate) fn structure_prefix_floor() -> i64 {
-    let r = &settings().reranker;
-    (r.structure_cost_filter / 2).min(r.structure_cost_transition_cap)
 }
 
 /// Rerank N-best Viterbi paths by applying post-hoc features.
@@ -108,65 +46,23 @@ pub(crate) fn structure_prefix_floor() -> i64 {
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
 ///
-/// Structure cost (the sum of transition costs along the path,
-/// Mozc-inspired; fragmented paths accumulate it) is not priced: it only
-/// drives a hard filter, which drops paths whose structure cost exceeds the
-/// anchor's (the cheapest path after features; a single-segment anchor
-/// counts as `prefix_floor`) by more than `structure_cost_filter`.
-/// `on_drop` sees each dropped path, priced, with its structure cost and
-/// its price's gap to the anchor. The anchor itself always survives.
-/// Returns what the filter measured from, or `None` when there were fewer
-/// than two paths and nothing was filtered or priced.
+/// Rerank never drops a path (it takes a slice): the stages that select
+/// candidates are cost-gap admission and the cut to n.
 pub(crate) fn rerank(
-    paths: &mut Vec<ScoredPath>,
+    paths: &mut [ScoredPath],
     conn: Option<&ConnectionMatrix>,
     dict: Option<&dyn Dictionary>,
-    mut on_drop: impl FnMut(&ScoredPath, i64, i64),
-) -> Option<StructureFilter> {
+) {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
-        return None;
+        return;
     }
     let features = FeaturePricer::new(conn, dict);
-
-    // Price every path (Viterbi + features), each carried with its
-    // structure cost; the threshold is measured from the cheapest.
-    let mut priced: Vec<(ScoredPath, i64)> = paths
-        .drain(..)
-        .map(|mut p| {
-            let sc = features.structure_cost(&p);
-            p.viterbi_cost += features.adjustment_with_sc(&p, sc);
-            (p, sc)
-        })
-        .collect();
-    // First minimum: the path a stable sort puts at index 0.
-    let anchor = (1..priced.len()).fold(0, |best, i| {
-        if priced[i].0.viterbi_cost < priced[best].0.viterbi_cost {
-            i
-        } else {
-            best
-        }
-    });
-    let (anchor_path, anchor_sc) = &priced[anchor];
-    let filter = features.filter_at(anchor_path, *anchor_sc);
-    let anchor_price = anchor_path.viterbi_cost;
-
-    // Identity paths (surface == reading throughout) are exempt from the
-    // filter: they are the user's typed input and must stay selectable so
-    // history learning can rescue readings the cost model gets wrong (#263).
-    // Their fragmented FW chains otherwise trip the structure filter. The
-    // anchor passes by construction (its own sc).
-    paths.extend(priced.drain(..).filter_map(|(p, sc)| {
-        if !p.is_identity() && sc > filter.threshold {
-            on_drop(&p, sc, p.viterbi_cost - anchor_price);
-            return None;
-        }
-        Some(p)
-    }));
-
+    for p in paths.iter_mut() {
+        p.viterbi_cost += features.adjustment(p);
+    }
     paths.sort_by_key(|p| p.viterbi_cost);
     debug!(paths_out = paths.len());
-    Some(filter)
 }
 
 /// Breakdown of the history boost contributions for a single path.
@@ -327,6 +223,7 @@ mod tests {
     use crate::converter::viterbi::{PathOrigin, RichSegment};
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, Dictionary, SearchResult};
+    use crate::settings::settings;
 
     /// Build a minimal ConnectionMatrix with the given roles vector.
     fn conn_with_roles(roles: Vec<u8>) -> ConnectionMatrix {
@@ -376,8 +273,8 @@ mod tests {
             path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 99999), // dummy
         ];
 
-        rerank(&mut with_kanji, Some(&conn), None, |_, _, _| {});
-        rerank(&mut without_kanji, Some(&conn), None, |_, _, _| {});
+        rerank(&mut with_kanji, Some(&conn), None);
+        rerank(&mut without_kanji, Some(&conn), None);
 
         let kanji_cost = with_kanji
             .iter()
@@ -391,7 +288,7 @@ mod tests {
             path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
             path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 99999),
         ];
-        rerank(&mut baseline_kanji, Some(&conn), None, |_, _, _| {});
+        rerank(&mut baseline_kanji, Some(&conn), None);
         let baseline_kanji_cost = baseline_kanji
             .iter()
             .find(|p| p.segments[1].surface == "見る")
@@ -438,7 +335,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+        rerank(&mut paths, Some(&conn), None);
 
         // The FW path should rank first (lower cost) because its 2-char
         // particle is excluded from the variance calculation.
@@ -481,7 +378,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+        rerank(&mut paths, Some(&conn), None);
 
         // Path A should rank better: its 1-char segments are all excluded,
         // leaving no variance. Path B has [4, 2] with nonzero variance.
@@ -547,7 +444,7 @@ mod tests {
             path(vec![seg("かくにんね", "確認ね", 1)], 100),
         ];
 
-        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+        rerank(&mut paths, Some(&conn), None);
 
         // The path with 根 should have penalty applied
         let root_path = paths
@@ -582,7 +479,7 @@ mod tests {
                 path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), Some(&dict), |_, _, _| {});
+            rerank(&mut p, Some(&conn), Some(&dict));
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -595,7 +492,7 @@ mod tests {
                 path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), None, |_, _, _| {});
+            rerank(&mut p, Some(&conn), None);
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -627,7 +524,7 @@ mod tests {
                 path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), Some(&dict), |_, _, _| {});
+            rerank(&mut p, Some(&conn), Some(&dict));
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -639,7 +536,7 @@ mod tests {
                 path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
                 dummy.clone(),
             ];
-            rerank(&mut p, Some(&conn), None, |_, _, _| {});
+            rerank(&mut p, Some(&conn), None);
             p.iter()
                 .find(|pp| pp.segments.len() == 2)
                 .unwrap()
@@ -658,18 +555,14 @@ mod tests {
         // regardless of the configured penalty weight.
         // ID 2 has role=1 (FW) so extract_features skips it (role != 0).
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 1], 2, 2);
-        let cap = settings().reranker.structure_cost_transition_cap;
-        let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
 
         // CW single-char kanji — should count
         let cw_path = path(vec![seg("ね", "根", 1)], 100);
         let fcfg = FeatureConfig {
             conn: Some(&conn),
             dict: None,
-            structure_cap: cap,
-            prefix_floor,
         };
-        let cw_features = fcfg.extract(&cw_path, None);
+        let cw_features = fcfg.extract(&cw_path);
         assert_eq!(
             cw_features.single_kanji_count, 1,
             "CW single-char kanji should be counted"
@@ -677,7 +570,7 @@ mod tests {
 
         // FW single-char — should NOT count (role checked)
         let fw_path = path(vec![seg("ね", "根", 2)], 100); // FW POS
-        let fw_features = fcfg.extract(&fw_path, None);
+        let fw_features = fcfg.extract(&fw_path);
         assert_eq!(
             fw_features.single_kanji_count, 0,
             "FW should not trigger single-char kanji feature"
@@ -696,7 +589,7 @@ mod tests {
             path(vec![seg("ね", "根", 1)], 100),   // 1-char reading
         ];
 
-        rerank(&mut paths, Some(&conn), None, |_, _, _| {});
+        rerank(&mut paths, Some(&conn), None);
 
         let multi = paths
             .iter()
@@ -719,18 +612,14 @@ mod tests {
     fn te_form_kanji_feature_not_counted_for_non_te_function_word() {
         // Verify that te_kanji_count is 0 when the preceding FW is not て/で.
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 0], 2, 2);
-        let cap = settings().reranker.structure_cost_transition_cap;
-        let prefix_floor = (settings().reranker.structure_cost_filter / 2).min(cap);
 
         // "は" (FW, not て/で) + "見る" (kanji) — should NOT trigger te-form
         let ha_path = path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100);
         let fcfg = FeatureConfig {
             conn: Some(&conn),
             dict: None,
-            structure_cap: cap,
-            prefix_floor,
         };
-        let ha_features = fcfg.extract(&ha_path, None);
+        let ha_features = fcfg.extract(&ha_path);
         assert_eq!(
             ha_features.te_kanji_count, 0,
             "は is not て/で — no te-form kanji"
@@ -738,7 +627,7 @@ mod tests {
 
         // "で" (FW, て/で) + "見る" (kanji) — should trigger te-form
         let de_path = path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 100);
-        let de_features = fcfg.extract(&de_path, None);
+        let de_features = fcfg.extract(&de_path);
         assert_eq!(
             de_features.te_kanji_count, 1,
             "で + kanji should trigger te-form"

@@ -155,19 +155,14 @@ pub const DEFAULT_LENGTH_VARIANCE_WEIGHT: i64 = 1000;
 pub const DEFAULT_TE_FORM_KANJI_PENALTY: i64 = 2000;
 /// Default single-char kanji penalty (shared with FeatureWeights::default()).
 pub const DEFAULT_SINGLE_CHAR_KANJI_PENALTY: i64 = 0;
-/// Default structure cost transition cap.
-pub const DEFAULT_STRUCTURE_COST_TRANSITION_CAP: i64 = 5000;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RerankerSettings {
     pub length_variance_weight: i64,
-    pub structure_cost_filter: i64,
     #[serde(default = "default_te_form_kanji_penalty")]
     pub te_form_kanji_penalty: i64,
     #[serde(default = "default_single_char_kanji_penalty")]
     pub single_char_kanji_penalty: i64,
-    #[serde(default = "default_structure_cost_transition_cap")]
-    pub structure_cost_transition_cap: i64,
 }
 
 fn default_te_form_kanji_penalty() -> i64 {
@@ -176,10 +171,6 @@ fn default_te_form_kanji_penalty() -> i64 {
 
 fn default_single_char_kanji_penalty() -> i64 {
     DEFAULT_SINGLE_CHAR_KANJI_PENALTY
-}
-
-fn default_structure_cost_transition_cap() -> i64 {
-    DEFAULT_STRUCTURE_COST_TRANSITION_CAP
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -472,10 +463,8 @@ fn validate(s: &Settings) -> Result<(), SettingsError> {
     check_non_negative!(cost.unknown_word_cost);
 
     check_non_negative!(reranker.length_variance_weight);
-    check_non_negative!(reranker.structure_cost_filter);
     check_non_negative!(reranker.te_form_kanji_penalty);
     check_non_negative!(reranker.single_char_kanji_penalty);
-    check_non_negative!(reranker.structure_cost_transition_cap);
 
     check_non_negative!(history.boost_per_use);
     check_non_negative!(history.max_boost);
@@ -519,10 +508,8 @@ mod tests {
         assert_eq!(s.cost.latin_penalty, 20000);
         assert_eq!(s.cost.unknown_word_cost, 10000);
         assert_eq!(s.reranker.length_variance_weight, 1000);
-        assert_eq!(s.reranker.structure_cost_filter, 6000);
         assert_eq!(s.reranker.te_form_kanji_penalty, 2000);
         assert_eq!(s.reranker.single_char_kanji_penalty, 0);
-        assert_eq!(s.reranker.structure_cost_transition_cap, 5000);
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);
         assert!((s.history.half_life_hours - 168.0).abs() < f64::EPSILON);
@@ -576,6 +563,13 @@ max_results = 30
         let s = parse_settings_toml(toml).unwrap();
         assert_eq!(s.cost.segment_penalty, 1000);
         assert_eq!(s.candidates.nbest, 10);
+        // A key an earlier version read: accepted, reported, never read.
+        let warnings = s.load_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("reranker.structure_cost_filter"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -591,7 +585,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -622,7 +615,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -652,7 +644,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -711,7 +702,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -742,7 +732,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -775,7 +764,6 @@ unknown_word_cost = 10000
 
 [reranker]
 length_variance_weight = 2000
-structure_cost_filter = 6000
 
 [history]
 boost_per_use = 3000
@@ -998,7 +986,6 @@ segment_penalti = 7
 
 [reranker]
 length_variance_weight = 1000
-structure_cost_filter = 2000
 retired_weight = "abc"
 
 [history]
@@ -1033,7 +1020,6 @@ anything = 1
         let s = parse_settings_toml(toml).unwrap();
         assert_eq!(s.cost.segment_penalty, 1000);
         assert_eq!(s.cost.unknown_word_cost, 5000);
-        assert_eq!(s.reranker.structure_cost_filter, 2000);
         assert!((s.history.half_life_hours - 72.0).abs() < f64::EPSILON);
         assert_eq!(s.history.max_unigrams, 5000);
         assert_eq!(s.candidates.max_cost_gap, 6000);

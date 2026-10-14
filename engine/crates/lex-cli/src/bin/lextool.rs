@@ -1659,7 +1659,6 @@ fn print_tune_text(result: &tune::TuneResult) {
 fn print_tune_json(result: &tune::TuneResult) {
     let weight_json = |w: &tune::FeatureWeights| -> serde_json::Value {
         serde_json::json!({
-            "structure": w.structure,
             "length_variance": w.length_variance,
             "te_kanji": w.te_kanji,
             "single_kanji": w.single_kanji,
