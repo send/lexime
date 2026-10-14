@@ -97,13 +97,13 @@ final class AppContext {
             do {
                 try settingsLoadConfig(path: settingsPath)
                 NSLog("Lexime: Custom settings loaded from %@", settingsPath)
-                // Entries the loader kept but will not act on — an empty side,
-                // or a spelling shadowed by another naming the same key code.
-                // The load succeeded, so without this the key just quietly
-                // stops remapping with no explanation anywhere. Same treatment
+                // Entries the loader kept but will not act on (the kinds are on
+                // `settingsLoadWarnings`). The load succeeded, so without this
+                // the setting just quietly does nothing with no explanation
+                // anywhere. Same treatment
                 // `ConfigStore.reloadSnippets` gives an unusable snippet body.
-                let keymapWarnings = settingsKeymapWarnings()
-                for warning in keymapWarnings {
+                let loadWarnings = settingsLoadWarnings()
+                for warning in loadWarnings {
                     NSLog("Lexime: settings at %@: %@", settingsPath, warning)
                 }
             } catch {

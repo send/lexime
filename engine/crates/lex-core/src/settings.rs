@@ -65,11 +65,13 @@ pub struct Settings {
     /// the only thing that builds it.
     #[serde(skip)]
     keymap_parsed: BTreeMap<u16, KeyRemap>,
-    /// What `parse_keymap` dropped while building `keymap_parsed`, phrased for a
-    /// human. Recorded there rather than re-derived here, so the report cannot
-    /// disagree with the map about what the file does.
+    /// What the loader kept but will not act on, phrased for a human: keys no
+    /// field reads (`parse_settings_toml`) and what `parse_keymap` dropped while
+    /// building `keymap_parsed`. Each is recorded by the pass that made the
+    /// decision rather than re-derived here, so the report cannot disagree with
+    /// the settings about what the file does.
     #[serde(skip)]
-    keymap_warnings: Vec<String>,
+    load_warnings: Vec<String>,
 }
 
 /// One key code's remap, as resolved by `parse_keymap`. `None` on a side means
@@ -110,25 +112,30 @@ impl Settings {
     ///
     /// Same shape as `SnippetStore::unusable_keys`, down to the crossing: the
     /// load path keeps the file and drops what it cannot use, and a separate
-    /// query makes the drop visible. `settings_keymap_warnings` puts this over
+    /// query makes the drop visible. `settings_load_warnings` puts this over
     /// the FFI and the frontend reports it after a successful load — engine
     /// `tracing` does not reach the shipped build, so logging here would be the
     /// silent failure this exists to prevent. `dictool settings-validate`
-    /// prints the same list for a file the user has not loaded yet.
+    /// prints the same list for a file the user has not loaded yet, and lextool
+    /// prints it for the file it loads.
     ///
-    /// Two kinds:
+    /// Three kinds:
     ///
+    /// - a key no setting reads — a retired setting, a typo, or one from a newer
+    ///   version — named by its TOML key path. Its value is not looked at.
+    ///   `parse_settings_toml` records these, at any depth except inside a
+    ///   snippet variable entry;
     /// - an empty mapping, which `keymap_get` reports as unmapped;
     /// - several table entries naming the same key code. `u16::from_str` accepts
     ///   `10`, `010` and `+10` alike, and the raw TOML table is keyed on the
     ///   *string*, so those are three distinct entries resolving to one code.
     ///   Only one can win; `parse_keymap` picks it and this says which.
     ///
-    /// `parse_keymap` records both as it makes each decision. Nothing here
+    /// `parse_keymap` records the last two as it makes each decision. Nothing here
     /// re-derives which entry won or which side was dropped, which is why the
     /// report and `keymap_get` cannot describe different files.
-    pub fn keymap_warnings(&self) -> &[String] {
-        &self.keymap_warnings
+    pub fn load_warnings(&self) -> &[String] {
+        &self.load_warnings
     }
 }
 
@@ -280,14 +287,70 @@ fn parse_trigger_string(s: &str) -> Option<TriggerKey> {
     })
 }
 
+/// Parse and validate a settings file. Keys no setting reads are accepted and
+/// reported through [`Settings::load_warnings`], never rejected — except inside
+/// a `[snippets.variables.<name>]` entry, where they are dropped unreported
+/// (see the body).
 pub fn parse_settings_toml(toml_str: &str) -> Result<Settings, SettingsError> {
-    let mut s: Settings =
-        toml::from_str(toml_str).map_err(|e| SettingsError::Parse(e.to_string()))?;
+    // serde drops keys that no field reads without a word, so a retired
+    // setting, a typo or a key from a newer version would quietly do nothing.
+    // `serde_ignored` sees every key the derive skips, at any depth, from this
+    // one call: the structs stay the only statement of what the file accepts,
+    // and a section or nested table added later is covered without a list to
+    // keep in step. The one blind spot is an internally tagged enum: serde
+    // buffers it before picking the variant, so a stray key inside a
+    // `[snippets.variables.<name>]` entry (`SnippetVariable`) is dropped
+    // unreported. An ignored key never rejects the file — `init_custom` is
+    // all-or-nothing, and one unread key must not revert every other custom
+    // value to the defaults.
+    let mut ignored = Vec::new();
+    let mut s: Settings = serde_ignored::deserialize(toml::Deserializer::new(toml_str), |path| {
+        ignored.push(format!(
+            "{} is not a setting this version reads; it has no effect",
+            toml_key_path(&path)
+        ))
+    })
+    .map_err(|e| SettingsError::Parse(e.to_string()))?;
     validate(&s)?;
-    let (parsed, warnings) = parse_keymap(&s.keymap)?;
+    let (parsed, keymap_warnings) = parse_keymap(&s.keymap)?;
     s.keymap_parsed = parsed;
-    s.keymap_warnings = warnings;
+    s.load_warnings = ignored;
+    s.load_warnings.extend(keymap_warnings);
     Ok(s)
+}
+
+/// A key's path spelled the way TOML would write it, so the warning names the
+/// key the user wrote: `"reranker.x" = 1` at the top level is one quoted key,
+/// not `reranker.x`, which would point at a real setting.
+fn toml_key_path(path: &serde_ignored::Path) -> String {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => String::new(),
+        Path::Seq { parent, index } => join_key(toml_key_path(parent), &index.to_string()),
+        Path::Map { parent, key } => {
+            let bare = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            let key = if bare {
+                key.clone()
+            } else {
+                toml::Value::String(key.clone()).to_string()
+            };
+            join_key(toml_key_path(parent), &key)
+        }
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => toml_key_path(parent),
+    }
+}
+
+fn join_key(parent: String, key: &str) -> String {
+    if parent.is_empty() {
+        key.to_string()
+    } else {
+        format!("{parent}.{key}")
+    }
 }
 
 /// The one place the `[keymap]` table's rules are applied: which entry a key
@@ -752,7 +815,7 @@ max_results = 20
             assert_eq!(s.candidates.nbest, 5);
             // ...and the drop is reportable rather than silent.
             assert!(
-                s.keymap_warnings().iter().any(|w| w.contains("empty")),
+                s.load_warnings().iter().any(|w| w.contains("empty")),
                 "{entry:?} should warn about the empty side",
             );
         }
@@ -783,7 +846,7 @@ max_results = 20
             assert_eq!(s.keymap_get(10, true), first.keymap_get(10, true));
         }
 
-        let warnings = first.keymap_warnings();
+        let warnings = first.load_warnings();
         assert!(
             warnings
                 .iter()
@@ -797,7 +860,7 @@ max_results = 20
         // The two rules meet here. `"+10"` sorts first, so it is the entry that
         // resolves key code 10 — including its empty normal side, which means
         // "not remapped". The shadowed `10 = ["b", "B"]` must not supply a
-        // normal mapping in its place: `keymap_warnings` says only `"+10"` is
+        // normal mapping in its place: `load_warnings` says only `"+10"` is
         // used, and `keymap_get` has to be describing that same file.
         let base = KEYMAP_TEST_BASE;
         let toml = format!("{base}\"+10\" = [\"\", \"A\"]\n10 = [\"b\", \"B\"]\n");
@@ -814,7 +877,7 @@ max_results = 20
             "the winner supplies the side it does map",
         );
 
-        let warnings = s.keymap_warnings();
+        let warnings = s.load_warnings();
         assert!(
             warnings.iter().any(|w| w.contains("only \"+10\" is used")),
             "the shadowing must name the winner, got {warnings:?}",
@@ -910,5 +973,107 @@ unknown_word_cost = 10000
 "#;
         let err = parse_settings_toml(toml).unwrap_err();
         assert!(matches!(err, SettingsError::Parse(_)));
+    }
+
+    #[test]
+    fn unknown_keys_warn_and_do_not_reject() {
+        // One key no field reads in every table, top level and an unknown
+        // table included — none of them may take the file down, each must be
+        // named the way the file spells it, and the real fields around them
+        // keep their values. The keymap's own drop lands in the same list: one
+        // report over the FFI, which the frontend, dictool and lextool read.
+        let toml = r#"
+stray = "top level"
+"reranker.length_variance_weight" = 500
+"a b" = 1
+
+[cost]
+segment_penalty = 1000
+mixed_script_bonus = 500
+katakana_penalty = 2000
+pure_kanji_bonus = 200
+latin_penalty = 10000
+unknown_word_cost = 5000
+segment_penalti = 7
+
+[reranker]
+length_variance_weight = 1000
+structure_cost_filter = 2000
+retired_weight = "abc"
+
+[history]
+boost_per_use = 1500
+max_boost = 8000
+half_life_hours = 72.0
+max_unigrams = 5000
+max_bigrams = 5000
+decay = 0.5
+
+[candidates]
+nbest = 10
+max_results = 30
+max_cost_gap = 6000
+paging = [1, 2]
+
+[snippets]
+trigger = "ctrl+;"
+colour = true
+
+[snippets.variables.today]
+type = "date"
+format = "%Y-%m-%d"
+timezone = "UTC"
+
+[future]
+anything = 1
+
+[keymap]
+10 = ["", "}"]
+"#;
+        let s = parse_settings_toml(toml).unwrap();
+        assert_eq!(s.cost.segment_penalty, 1000);
+        assert_eq!(s.cost.unknown_word_cost, 5000);
+        assert_eq!(s.reranker.structure_cost_filter, 2000);
+        assert!((s.history.half_life_hours - 72.0).abs() < f64::EPSILON);
+        assert_eq!(s.history.max_unigrams, 5000);
+        assert_eq!(s.candidates.max_cost_gap, 6000);
+        assert_eq!(s.snippets.trigger, "ctrl+;");
+        assert!(s.snippets.variables.contains_key("today"));
+        assert_eq!(s.keymap_get(10, true), Some("}"));
+        assert_eq!(s.keymap_get(10, false), None);
+
+        let warnings = s.load_warnings();
+        let unread = [
+            "stray",
+            r#""reranker.length_variance_weight""#,
+            r#""a b""#,
+            "cost.segment_penalti",
+            "reranker.retired_weight",
+            "history.decay",
+            "candidates.paging",
+            "snippets.colour",
+            "future",
+        ];
+        assert_eq!(warnings.len(), unread.len() + 1, "{warnings:?}");
+        for (warning, name) in warnings.iter().zip(unread) {
+            assert_eq!(
+                warning,
+                &format!("{name} is not a setting this version reads; it has no effect")
+            );
+        }
+        assert!(warnings[unread.len()].contains("empty"), "{warnings:?}");
+        // The documented blind spot (`parse_settings_toml`): `timezone` inside
+        // the tagged `SnippetVariable` entry is dropped unreported. Pinned so
+        // that a serde or representation change that closes it — or turns it
+        // into a rejection — shows up here and SPEC gets updated.
+        assert!(!warnings.iter().any(|w| w.contains("timezone")));
+    }
+
+    #[test]
+    fn default_toml_has_no_load_warnings() {
+        // The shipped defaults (also what `settings-export` writes) must not
+        // carry a key the struct no longer reads.
+        let s = parse_settings_toml(DEFAULT_SETTINGS_TOML).unwrap();
+        assert_eq!(s.load_warnings(), &[] as &[String]);
     }
 }

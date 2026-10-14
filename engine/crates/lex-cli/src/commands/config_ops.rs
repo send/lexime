@@ -36,7 +36,7 @@ pub fn settings_validate(file: &str) {
     );
     // Entries the loader keeps but will not act on. Not errors — the file is
     // still valid — but the user gets no other signal that they do nothing.
-    for warning in s.keymap_warnings() {
+    for warning in s.load_warnings() {
         println!("WARN: {warning}");
     }
 }

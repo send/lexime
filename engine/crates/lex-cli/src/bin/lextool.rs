@@ -582,6 +582,13 @@ fn main() {
         }
         app_config::settings(dir);
     }
+    // What the loaded file has that no setting acts on — the list the app
+    // reports after a load. Without it a measurement run on a file with a
+    // retired key would quietly differ from what its author meant. The
+    // embedded defaults have none.
+    for warning in lex_core::settings::settings().load_warnings() {
+        eprintln!("settings: {warning}");
+    }
 
     match cli.command {
         Command::Explain {
