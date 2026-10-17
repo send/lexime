@@ -34,8 +34,7 @@ use cost::DefaultCostFunction;
 use postprocess::postprocess;
 
 pub use lattice::{build_lattice, Lattice};
-#[allow(unused_imports)]
-pub(crate) use viterbi::{viterbi_nbest, RichSegment, ScoredPath};
+use viterbi::{viterbi_nbest, ScoredPath};
 pub use viterbi::{ConvertedSegment, PathOrigin};
 
 /// Shared conversion resources: dictionary, connection matrix, and user history.

@@ -15,7 +15,7 @@
 //! Here we use the **same fetch+parse code** but route output to the candidate
 //! pool instead of the build dict — see `candidates/mod.rs` rationale.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
@@ -293,14 +293,26 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
         io::copy(&mut body_reader, &mut tmp)?;
     }
 
-    let mut archive = zip::ZipArchive::new(fs::File::open(&tmp_path)?).map_err(zip_err)?;
-    let mut count = 0;
+    extract_entries(fs::File::open(&tmp_path)?, suffix, dest)
+}
+
+/// Write each entry of `archive` whose name ends with `suffix` to
+/// `dest/<its basename>`, returning how many were written.
+fn extract_entries<R: io::Read + io::Seek>(
+    archive: R,
+    suffix: &str,
+    dest: &Path,
+) -> Result<usize, CandidateError> {
+    let mut archive = zip::ZipArchive::new(archive).map_err(zip_err)?;
+    let mut written = HashSet::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(zip_err)?;
-        let raw_name = file.name().map_err(zip_err)?.into_owned();
-        if !raw_name.ends_with(suffix) {
+        // Filter on the raw bytes first: decoding a name can fail, and an
+        // entry we do not want (a README, a directory) must not abort the run.
+        if !file.name_raw().ends_with(suffix.as_bytes()) {
             continue;
         }
+        let raw_name = file.name().map_err(zip_err)?.into_owned();
         // Use basename only — defends against zip-slip even though Sudachi
         // ZIPs are first-party.
         let basename = Path::new(&raw_name)
@@ -308,6 +320,13 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
             .ok_or_else(|| CandidateError::Parse(format!("invalid ZIP entry: {raw_name}")))?
             .to_string_lossy()
             .into_owned();
+        // Flattening to the basename would let a second entry of the same
+        // name overwrite the first.
+        if !written.insert(basename.clone()) {
+            return Err(CandidateError::Parse(format!(
+                "two ZIP entries share the basename {basename}"
+            )));
+        }
         let out_path = dest.join(&basename);
         // Stage the extraction to a per-process unique temp file then
         // atomically rename so two parallel `mine` runs against the same
@@ -324,9 +343,8 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
         }
         fs::rename(&extract_tmp, &out_path)?;
         eprintln!("    → {basename}");
-        count += 1;
     }
-    Ok(count)
+    Ok(written.len())
 }
 
 /// Removes the staged ZIP on drop so a panic / error on extraction doesn't
@@ -369,6 +387,53 @@ fn is_hiragana(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zip_of(entries: &[(&str, &[u8])]) -> io::Cursor<Vec<u8>> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, body) in entries {
+            w.start_file(*name, opts).unwrap();
+            w.write_all(body).unwrap();
+        }
+        let mut cursor = w.finish().unwrap();
+        cursor.set_position(0);
+        cursor
+    }
+
+    fn fresh_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extract_entries_writes_matching_entries_by_basename() {
+        let dir = fresh_dir("lexime_test_sudachi_extract");
+        let archive = zip_of(&[
+            ("sudachi/small_lex.csv", b"a,b\n"),
+            ("sudachi/README.md", b"skip me"),
+            ("../escape/core_lex.csv", b"c,d\n"),
+        ]);
+        assert_eq!(extract_entries(archive, ".csv", &dir).unwrap(), 2);
+        assert_eq!(fs::read(dir.join("small_lex.csv")).unwrap(), b"a,b\n");
+        assert_eq!(fs::read(dir.join("core_lex.csv")).unwrap(), b"c,d\n");
+        assert!(!dir.join("README.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_entries_rejects_two_entries_with_one_basename() {
+        let dir = fresh_dir("lexime_test_sudachi_extract_dup");
+        let archive = zip_of(&[("a/core_lex.csv", b"1"), ("b/core_lex.csv", b"2")]);
+        assert!(matches!(
+            extract_entries(archive, ".csv", &dir),
+            Err(CandidateError::Parse(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_kata_to_hira() {

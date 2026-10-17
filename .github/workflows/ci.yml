@@ -229,8 +229,7 @@ jobs:
       # Enforce the declared MSRV. Keep this version in sync with
       # `rust-version` in engine/Cargo.toml ([workspace.package]): a dependency
       # bump or code change that needs a newer Rust fails here even though every
-      # other job builds on stable. Default features only — uniffi-cli and
-      # trace are dev / debug tooling that never ships — and
+      # other job builds on stable. Default features only, and
       # default targets only — do NOT propagate the `lint` job's --all-targets
       # (mise.toml [tasks.lint]) here, or criterion / proptest and bench source come under the MSRV
       # constraint and a dev-dep bump turns CI red over code that never ships.
