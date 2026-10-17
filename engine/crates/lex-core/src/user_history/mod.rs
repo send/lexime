@@ -536,7 +536,7 @@ impl UserHistory {
     }
 
     /// Compute unigram boost for a (reading, surface) pair.
-    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    /// `now` is the value the entry point read once (`HistoryAt::now`).
     pub fn unigram_boost(&self, reading: &str, surface: &str, now: u64) -> i64 {
         self.unigrams
             .get(reading)
@@ -545,7 +545,7 @@ impl UserHistory {
     }
 
     /// Compute bigram boost for (prev_surface → next_reading, next_surface).
-    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    /// `now` is the value the entry point read once (`HistoryAt::now`).
     pub fn bigram_boost(
         &self,
         prev_surface: &str,
