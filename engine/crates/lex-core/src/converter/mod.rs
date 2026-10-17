@@ -11,8 +11,6 @@
 //! Separating these steps allows callers to reuse a lattice across multiple
 //! conversions (e.g. sync 1-best + async N-best in deferred candidate mode).
 
-#[cfg(feature = "neural")]
-pub(crate) mod constrained;
 pub(crate) mod cost;
 pub mod explain;
 pub(crate) mod features;
@@ -36,8 +34,7 @@ use cost::DefaultCostFunction;
 use postprocess::postprocess;
 
 pub use lattice::{build_lattice, Lattice};
-#[allow(unused_imports)]
-pub(crate) use viterbi::{viterbi_nbest, RichSegment, ScoredPath};
+use viterbi::{viterbi_nbest, ScoredPath};
 pub use viterbi::{ConvertedSegment, PathOrigin};
 
 /// Shared conversion resources: dictionary, connection matrix, and user history.
@@ -208,28 +205,4 @@ pub fn convert_nbest_with_history(
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_nbest_from_lattice(&lattice, n)
-}
-
-// ---------------------------------------------------------------------------
-// Internal — constrained decoding (neural feature)
-// ---------------------------------------------------------------------------
-
-/// N-best Viterbi with a prefix constraint (for speculative decoding).
-#[cfg(feature = "neural")]
-pub(crate) fn convert_nbest_constrained(
-    ctx: &ConversionContext<'_>,
-    kana: &str,
-    constraint: &constrained::PrefixConstraint,
-    n: usize,
-) -> Vec<ScoredPath> {
-    if kana.is_empty() || n == 0 {
-        return Vec::new();
-    }
-    let cost_fn = constrained::PrefixConstrainedCost::new(ctx.conn, constraint);
-    let lattice = build_lattice(ctx.dict, kana);
-    let oversample = n * 3;
-    let mut paths = viterbi_nbest(&lattice, &cost_fn, oversample);
-    reranker::rerank(&mut paths, ctx.conn, Some(ctx.dict), |_, _, _| {});
-    paths.truncate(n);
-    paths
 }

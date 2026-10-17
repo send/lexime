@@ -33,7 +33,6 @@ required-features = ["uniffi-cli"]
 default = []
 uniffi-cli = ["uniffi/cli"]
 trace = ["lex-core/trace", "lex-session/trace", "tracing/max_level_debug", "tracing-subscriber", "tracing-appender"]
-neural = ["lex-core/neural"]
 
 [dependencies]
 lex-core = { path = "crates/lex-core" }

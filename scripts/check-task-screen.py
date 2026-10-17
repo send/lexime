@@ -46,7 +46,6 @@ NO_BUILD = {
     "log": "log stream",
     "trace-log": "tail",
     "icon": "scripts/icon.sh (sips / iconutil)",
-    "fetch-model": "curl",
     "test-read-pin": "shell tests of the pin readers",
     "test-check-sources": "cargo generate-lockfile / metadata on fixtures with no registry dependency",
     "test-task-screen": "this check and its tests",

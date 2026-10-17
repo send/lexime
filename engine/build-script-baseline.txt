@@ -1,4 +1,3 @@
-ahash
 anyhow
 bzip2-sys
 camino
@@ -7,17 +6,12 @@ crossbeam-deque
 crossbeam-epoch
 crossbeam-utils
 crunchy
-esaxx-rs
 fs-err
 getrandom
 httparse
 libc
-libm
 num-traits
-onig_sys
-paste
 proc-macro2
-pulp
 quote
 rayon-core
 ring

@@ -4,8 +4,6 @@ compile_error!("lex-core requires a little-endian platform");
 pub mod candidates;
 pub mod converter;
 pub mod dict;
-#[cfg(feature = "neural")]
-pub mod neural;
 pub(crate) mod numeric;
 pub(crate) mod persist;
 pub mod romaji;

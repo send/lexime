@@ -22,7 +22,7 @@ generated/
 engine/data/*
 # ... except the in-repo Mozc snapshot pin (source of truth for fetch-dict-mozc)
 !engine/data/mozc-pin.txt
-# Neural model files
+# Local model files (the neural experiment, since removed, downloaded here)
 /data/
 
 # macOS
