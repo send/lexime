@@ -129,8 +129,11 @@ pub struct SingleKanjiSegment {
     pub left_id: u16,
     /// Connection-matrix role of `left_id` (0 = content word).
     pub role: u8,
-    /// The single-char kanji penalty applies to it, at any weight: the
-    /// predicate rerank uses, with the dictionary for the compound exemption.
+    /// The single-char kanji penalty's predicate holds for it (rerank's
+    /// predicate, with the dictionary for the compound exemption), whatever
+    /// the weight. Whether this path's price includes it is another matter:
+    /// a lone path, an Override price and the kana rescue are not priced by
+    /// the features.
     pub penalised: bool,
 }
 
@@ -654,6 +657,20 @@ pub fn format_text(result: &ExplainResult) -> String {
                 -hb.unigram_sum, -hb.bigram_sum, -hb.whole_path_boost, path.history_segment_count,
             ));
         }
+        if !path.single_kanji_segments.is_empty() {
+            let listed: Vec<String> = path
+                .single_kanji_segments
+                .iter()
+                .map(|s| {
+                    let mark = if s.penalised { " penalised" } else { "" };
+                    format!("{}({}) role={}{mark}", s.surface, s.reading, s.role)
+                })
+                .collect();
+            out.push_str(&format!(
+                "      1-char kanji (ungrouped): {}\n",
+                listed.join(", ")
+            ));
+        }
     }
 
     format_dropped(result, &mut out);
@@ -726,6 +743,25 @@ mod tests {
         let p = path_by_surface(&result, "確認史");
         assert_eq!(p.segments.len(), 1, "the suffix is grouped into 確認");
         assert_eq!(listed(p), [("史", 2, false)]);
+    }
+
+    #[test]
+    fn single_kanji_segments_apply_the_compound_exemption() {
+        // 京|都 with 京都 in the dictionary: 都 is a content word, exempt.
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![
+            ("きょう".into(), vec![e("京", 0, 1)]),
+            ("と".into(), vec![e("都", 0, 1)]),
+            ("きょうと".into(), vec![e("京都", 20000, 1)]),
+        ]);
+        let conn = crate::converter::testutil::zero_conn_with_roles(2, vec![0, 0]);
+        let result = explain(&dict, Some(&conn), None, "きょうと", 5);
+        let p = result
+            .paths
+            .iter()
+            .find(|p| p.segments.len() == 2)
+            .expect("京|都 is a path");
+        assert_eq!(listed(p), [("都", 0, false)]);
     }
 
     #[test]
