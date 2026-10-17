@@ -151,62 +151,57 @@ pub struct FeatureConfig<'a> {
 impl FeatureConfig<'_> {
     /// Extract features from a path.
     pub fn extract(&self, path: &ScoredPath) -> PathFeatures {
-        extract_features(path, self)
-    }
-}
+        let mut f = PathFeatures::default();
 
-/// Extract features from a path.
-pub fn extract_features(path: &ScoredPath, cfg: &FeatureConfig<'_>) -> PathFeatures {
-    let mut f = PathFeatures::default();
+        // Length variance (excluding FW and single-char segments)
+        if path.segments.len() >= 3 {
+            let lengths: Vec<i64> = path
+                .segments
+                .iter()
+                .filter_map(|s| {
+                    let len = s.reading.chars().count() as i64;
+                    if len > 1 && !self.conn.is_some_and(|c| c.is_function_word(s.left_id)) {
+                        Some(len)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let n = lengths.len() as i64;
+            if n >= 2 {
+                let sum: i64 = lengths.iter().sum();
+                let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
+                f.length_variance_raw = n * sum_sq - sum * sum;
+                f.length_variance_n = n;
+            }
+        }
 
-    // Length variance (excluding FW and single-char segments)
-    if path.segments.len() >= 3 {
-        let lengths: Vec<i64> = path
+        // Script cost
+        f.script_cost = path
             .segments
             .iter()
-            .filter_map(|s| {
-                let len = s.reading.chars().count() as i64;
-                if len > 1 && !cfg.conn.is_some_and(|c| c.is_function_word(s.left_id)) {
-                    Some(len)
+            .map(|s| script_cost(&s.surface, s.reading.chars().count()))
+            .sum();
+
+        // Per-segment features
+        if let Some(c) = self.conn {
+            for (i, seg) in path.segments.iter().enumerate() {
+                // Te-form kanji
+                let prev = if i > 0 {
+                    Some(&path.segments[i - 1])
                 } else {
                     None
+                };
+                if is_te_form_kanji_penalised(seg, prev, c) {
+                    f.te_kanji_count += 1;
                 }
-            })
-            .collect();
-        let n = lengths.len() as i64;
-        if n >= 2 {
-            let sum: i64 = lengths.iter().sum();
-            let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
-            f.length_variance_raw = n * sum_sq - sum * sum;
-            f.length_variance_n = n;
-        }
-    }
-
-    // Script cost
-    f.script_cost = path
-        .segments
-        .iter()
-        .map(|s| script_cost(&s.surface, s.reading.chars().count()))
-        .sum();
-
-    // Per-segment features
-    if let Some(c) = cfg.conn {
-        for (i, seg) in path.segments.iter().enumerate() {
-            // Te-form kanji
-            let prev = if i > 0 {
-                Some(&path.segments[i - 1])
-            } else {
-                None
-            };
-            if is_te_form_kanji_penalised(seg, prev, c) {
-                f.te_kanji_count += 1;
-            }
-            // Single-char kanji content word
-            if is_single_char_kanji_penalised(seg, i, &path.segments, c, cfg.dict) {
-                f.single_kanji_count += 1;
+                // Single-char kanji content word
+                if is_single_char_kanji_penalised(seg, i, &path.segments, c, self.dict) {
+                    f.single_kanji_count += 1;
+                }
             }
         }
-    }
 
-    f
+        f
+    }
 }

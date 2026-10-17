@@ -8,8 +8,9 @@ use super::features::{FeatureConfig, FeatureWeights};
 use super::viterbi::ScoredPath;
 
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
-/// cost. Depends on the path alone, not on the population rerank saw — so a path synthesised later (a variant offer)
-/// is priced exactly as rerank would price the same segments.
+/// cost. Depends on the path alone, not on the population rerank saw — so a
+/// path synthesised later (a variant offer) is priced exactly as rerank would
+/// price the same segments.
 pub(crate) struct FeaturePricer<'a> {
     fcfg: FeatureConfig<'a>,
     weights: FeatureWeights,
@@ -62,7 +63,6 @@ pub(crate) fn rerank(
         p.viterbi_cost += features.adjustment(p);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
-    debug!(paths_out = paths.len());
 }
 
 /// Breakdown of the history boost contributions for a single path.
@@ -553,7 +553,7 @@ mod tests {
     fn single_char_kanji_feature_not_counted_for_function_word() {
         // Verify that single-char kanji feature count is 0 for FW segments
         // regardless of the configured penalty weight.
-        // ID 2 has role=1 (FW) so extract_features skips it (role != 0).
+        // ID 2 has role=1 (FW) so feature extraction skips it (role != 0).
         let conn = conn_with_roles_and_fw(vec![0u8, 0, 1], 2, 2);
 
         // CW single-char kanji — should count

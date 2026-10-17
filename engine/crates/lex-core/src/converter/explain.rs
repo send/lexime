@@ -81,7 +81,7 @@ impl ExplainNode {
 pub struct ExplainPath {
     pub segments: Vec<ExplainSegment>,
     pub viterbi_cost: i64,
-    /// Cost delta from structure reranking.
+    /// Feature adjustment rerank added to the Viterbi cost.
     pub rerank_delta: i64,
     /// Per-component history boost (raw sums + whole-path × 5).
     pub history_breakdown: HistoryBoostBreakdown,
@@ -703,7 +703,7 @@ mod tests {
         let multi_segment = multi_segment_kanaya();
         // Admission drops 可|な|や here: explain must observe the same drops
         // production makes.
-        let filtered = crate::converter::testutil::filtered_kanaya();
+        let far = crate::converter::testutil::far_multi_segment_kanaya();
         let mut h = UserHistory::new();
         h.record(&[("な".into(), "な".into())]);
         // A whole-pair learning of a non-#1 surface moves it to index 0.
@@ -724,8 +724,8 @@ mod tests {
             (&multi_segment, Some(&h), false),
             (&multi_segment, Some(&learned), false),
             (&multi_segment, Some(&stale), true),
-            (&filtered, None, false),
-            (&filtered, Some(&h), false),
+            (&far, None, false),
+            (&far, Some(&h), false),
         ] {
             for n in 1..=6 {
                 let explanation = explain(dict, Some(conn), history, "かなや", n);
@@ -758,14 +758,14 @@ mod tests {
             }
         }
         assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
-        let (dict, conn) = &filtered;
+        let (dict, conn) = &far;
         let result = explain(dict, Some(conn), None, "かなや", 6);
         assert!(
             result
                 .dropped_by_cost_gap
                 .iter()
                 .any(|d| d.surface == "可なや"),
-            "the filtered arm drops"
+            "the far arm has an admission drop, so explain == production is checked across one"
         );
         // The fixture is sensitive: the two populations disagree on top-1.
         let (dict, conn) = sensitive;
@@ -1012,7 +1012,7 @@ mod tests {
     /// it is listed under the cost gap, not among the paths.
     #[test]
     fn multi_segment_path_is_dropped_by_admission_not_rerank() {
-        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let (dict, conn) = crate::converter::testutil::far_multi_segment_kanaya();
         let result = explain(&dict, Some(&conn), None, "かなや", 20);
         let dropped = result
             .dropped_by_cost_gap

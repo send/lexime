@@ -167,7 +167,7 @@ pub fn taberu_dict() -> TrieDictionary {
 /// `かなや`: 仮名屋 (one segment, the #1) and 可|な|や, whose two 5000
 /// transitions (10000 in its Viterbi price) put it far above 仮名屋 —
 /// cost-gap admission drops it.
-pub fn filtered_kanaya() -> (TrieDictionary, ConnectionMatrix) {
+pub fn far_multi_segment_kanaya() -> (TrieDictionary, ConnectionMatrix) {
     let e = entry_with_id;
     let dict = TrieDictionary::from_entries(vec![
         ("か".into(), vec![e("可", 0, 1)]),

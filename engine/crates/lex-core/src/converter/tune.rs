@@ -306,7 +306,7 @@ mod tests {
     /// same population).
     #[test]
     fn tune_keeps_every_path_and_agrees_with_rerank_top1() {
-        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let (dict, conn) = crate::converter::testutil::far_multi_segment_kanaya();
         let cases = vec![("かなや".to_string(), "仮名屋".to_string())];
         let tune = precompute_cases(&dict, &conn, &cases);
         let surfaces: Vec<&str> = tune[0]
