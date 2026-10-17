@@ -540,7 +540,9 @@ impl UserHistory {
             .map_or(0, |entry| entry.boost(now))
     }
 
-    /// Return successor words for a given previous surface, sorted by boost descending.
+    /// Return successor words for a given previous surface, sorted by boost
+    /// descending, then by (reading, surface) — boosts tie often (they cap at
+    /// `max_boost`), and the map's own order changes from run to run.
     /// Used by predictive mode to chain bigram phrases (Copilot-like completions).
     pub fn bigram_successors(&self, prev_surface: &str) -> Vec<(String, String, i64)> {
         let now = now_epoch();
@@ -552,12 +554,13 @@ impl UserHistory {
             .map(|((reading, surface), entry)| (reading.clone(), surface.clone(), entry.boost(now)))
             .filter(|(_, _, boost)| *boost > 0)
             .collect();
-        results.sort_by_key(|b| std::cmp::Reverse(b.2));
+        results.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| (&a.0, &a.1).cmp(&(&b.0, &b.1))));
         results
     }
 
     /// Return surfaces the user has previously confirmed for this reading,
-    /// sorted by boost descending. Only returns entries with positive boost.
+    /// sorted by boost descending, then by surface (see [`Self::bigram_successors`]
+    /// on ties). Only returns entries with positive boost.
     pub fn learned_surfaces(&self, reading: &str, now: u64) -> Vec<(String, i64)> {
         let Some(inner) = self.unigrams.get(reading) else {
             return Vec::new();
@@ -567,7 +570,7 @@ impl UserHistory {
             .map(|(surface, entry)| (surface.clone(), entry.boost(now)))
             .filter(|(_, boost)| *boost > 0)
             .collect();
-        results.sort_by_key(|b| std::cmp::Reverse(b.1));
+        results.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         results
     }
 

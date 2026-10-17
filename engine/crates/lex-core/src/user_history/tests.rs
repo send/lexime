@@ -288,6 +288,40 @@ fn test_bigram_successors() {
     assert!(succs3.is_empty());
 }
 
+// Equal boosts must come out in one fixed order: the maps are HashMaps, whose
+// iteration order differs between processes, so a boost-only sort let the
+// Predictive chain and the learned-surface injection change across launches.
+#[test]
+fn equal_boosts_are_ordered_by_key_not_by_map_order() {
+    let mut h = UserHistory::new();
+    let now = now_epoch();
+    let surfaces = ["ア", "イ", "ウ", "エ", "オ", "カ", "キ", "ク", "ケ", "コ"];
+    for s in surfaces {
+        h.record_at(
+            &[("まえ".into(), "前".into()), ("あと".into(), s.into())],
+            now,
+        );
+        h.record_at(&[("よみ".into(), s.into())], now);
+    }
+
+    let succs = h.bigram_successors("前");
+    assert_eq!(succs.len(), surfaces.len());
+    assert!(
+        succs.windows(2).all(|w| w[0].2 == w[1].2),
+        "boosts should tie"
+    );
+    let got: Vec<&str> = succs.iter().map(|s| s.1.as_str()).collect();
+    assert_eq!(got, surfaces);
+
+    let learned = h.learned_surfaces("よみ", now);
+    assert!(
+        learned.windows(2).all(|w| w[0].1 == w[1].1),
+        "boosts should tie"
+    );
+    let got: Vec<&str> = learned.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(got, surfaces);
+}
+
 #[test]
 fn test_bigram_successors_empty_history() {
     let h = UserHistory::new();
