@@ -71,10 +71,15 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
-        /// Record the production candidate list (N-best + kana + predictions
-        /// + lookup) instead of the N-best paths
+        /// Record the Standard mode's production candidate list (N-best +
+        /// kana + predictions + lookup) instead of the N-best paths
         #[arg(long)]
         candidates: bool,
+        /// Record the Predictive conversion mode's candidate list instead of
+        /// the N-best paths. It differs from --candidates only through the
+        /// history's bigrams, so pass --history
+        #[arg(long, conflicts_with = "candidates")]
+        predictive: bool,
     },
 
     /// Run conversion accuracy tests from a structured TOML corpus
@@ -164,6 +169,10 @@ enum Command {
         /// `snapshot --candidates` file)
         #[arg(long)]
         candidates: bool,
+        /// Compare Predictive-mode candidate lists (baseline must be a
+        /// `snapshot --predictive` file; pass --history, as for snapshot)
+        #[arg(long, conflicts_with = "candidates")]
+        predictive: bool,
     },
 
     /// Replay rank>0 selections from the commit log against the current
@@ -230,15 +239,28 @@ struct SnapshotEntry {
 enum SnapshotKind {
     Nbest,
     Candidates,
+    Predictive,
 }
 
 impl SnapshotKind {
-    fn from_flag(candidates: bool) -> Self {
+    /// clap rejects both flags together (`conflicts_with`).
+    fn from_flags(candidates: bool, predictive: bool) -> Self {
         if candidates {
             Self::Candidates
+        } else if predictive {
+            Self::Predictive
         } else {
             Self::Nbest
         }
+    }
+}
+
+/// Without history Predictive mode returns the Standard list (it chains the
+/// history's bigrams onto it), so a `--predictive` run without `--history`
+/// records nothing --candidates would not.
+fn warn_predictive_without_history(kind: SnapshotKind, history: &Option<String>) {
+    if kind == SnapshotKind::Predictive && history.is_none() {
+        eprintln!("warning: --predictive without --history gives the --candidates list");
     }
 }
 
@@ -485,11 +507,14 @@ fn run_snapshot(
             };
             paths.iter().map(|segs| joined_surface(segs)).collect()
         }
-        SnapshotKind::Candidates => rank_ops::production_candidates(dict, conn, hist, reading)
-            .surfaces
-            .into_iter()
-            .take(n)
-            .collect(),
+        SnapshotKind::Candidates | SnapshotKind::Predictive => {
+            let list = if kind == SnapshotKind::Candidates {
+                rank_ops::production_candidates(dict, conn, hist, reading)
+            } else {
+                rank_ops::production_prediction_candidates(dict, conn, hist, reading)
+            };
+            list.surfaces.into_iter().take(n).collect()
+        }
     };
     SnapshotEntry {
         reading: reading.to_string(),
@@ -873,8 +898,10 @@ fn main() {
             n,
             history,
             candidates,
+            predictive,
         } => {
-            let kind = SnapshotKind::from_flag(candidates);
+            let kind = SnapshotKind::from_flags(candidates, predictive);
+            warn_predictive_without_history(kind, &history);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
@@ -1092,8 +1119,10 @@ fn main() {
             n,
             history,
             candidates,
+            predictive,
         } => {
-            let kind = SnapshotKind::from_flag(candidates);
+            let kind = SnapshotKind::from_flags(candidates, predictive);
+            warn_predictive_without_history(kind, &history);
             let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
             let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
@@ -1107,7 +1136,7 @@ fn main() {
             for entry in entries {
                 if entry.kind != kind {
                     eprintln!(
-                        "Baseline holds {:?} snapshots but {:?} was requested (toggle --candidates)",
+                        "Baseline holds {:?} snapshots but {:?} was requested (toggle --candidates / --predictive)",
                         entry.kind, kind
                     );
                     process::exit(1);
@@ -1709,4 +1738,47 @@ fn print_tune_json(result: &tune::TuneResult) {
         "{}",
         serde_json::to_string_pretty(&report).expect("JSON serialization failed")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn snapshot_kind_follows_the_flags_and_names_itself_in_the_file() {
+        assert_eq!(SnapshotKind::from_flags(false, false), SnapshotKind::Nbest);
+        assert_eq!(
+            SnapshotKind::from_flags(true, false),
+            SnapshotKind::Candidates
+        );
+        assert_eq!(
+            SnapshotKind::from_flags(false, true),
+            SnapshotKind::Predictive
+        );
+        assert_eq!(
+            serde_json::to_string(&SnapshotKind::Predictive).unwrap(),
+            "\"predictive\""
+        );
+    }
+
+    #[test]
+    fn candidates_and_predictive_are_exclusive() {
+        for sub in ["snapshot", "diff-snapshot"] {
+            let base = ["lextool", sub, "d", "c", "in", "out"];
+            for flag in ["--candidates", "--predictive"] {
+                let args = base.iter().copied().chain([flag]);
+                assert!(Cli::try_parse_from(args).is_ok(), "{sub} {flag} alone");
+            }
+            let both = base.iter().copied().chain(["--candidates", "--predictive"]);
+            let err = Cli::try_parse_from(both)
+                .err()
+                .expect("both flags accepted");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{sub}"
+            );
+        }
+    }
 }
