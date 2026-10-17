@@ -193,7 +193,10 @@ pub struct HistorySettings {
 /// (6000, 8000]. Re-run on 2026-10-01 with the structure filter measured
 /// from the #1 (#353): 505 selections, (b1) 1 at 8000 (3 at 6000), 2 in
 /// (6000, 8000] (19 in (4000, 6000]), and (b3) passes only at 8000 — still
-/// 8000.
+/// 8000. Re-run on 2026-10-14 after the structure filter was removed (#366):
+/// 589 selections, (b1) 0 at 8000, but 3 in (6000, 8000] — over (b2′) — and
+/// (b3) still fails above 8000, so no T passes; the filter's removal changed
+/// none of these counts. 8000 stays until the rule is re-decided (#375).
 /// Re-run the rule when rank>0 selections grow by 200, when a change to T
 /// is proposed, and when the Mozc pin moves (#273).
 pub const DEFAULT_CANDIDATE_MAX_COST_GAP: i64 = 8000;
