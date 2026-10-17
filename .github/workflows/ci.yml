@@ -64,6 +64,7 @@ jobs:
               # mise-using job ORs `core`, so a bump runs all of them.
               - 'scripts/mise-version.sh'
               - '.github/actions/setup-mise/**'
+              - '.github/actions/setup-shoutx/**'
             session:
               - 'engine/crates/lex-session/**'
             # Root `lex_engine` package. examples/ and uniffi-bindgen.rs are
@@ -140,14 +141,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: bash scripts/read-pin-test.sh
-
       # claude.yml installs mise by sha256 without running anything from the
       # checkout, so the hash cannot be read from the pin. Installing the pin
       # here fetches the same linux-x64 binary that hash names, so a PR that
       # moves either the pin or the hash alone fails here, not at the bot's
       # next run. Not in read-pin-test.sh: locally that would hash a macOS mise.
       - uses: ./.github/actions/setup-mise
+
+      - run: bash scripts/read-pin-test.sh
+
+      - name: Test GitHub Actions output serialization
+        run: bash scripts/github-output-test.sh
 
       - name: claude.yml's mise sha256 is the pinned binary's
         run: |
@@ -156,7 +160,7 @@ jobs:
           echo "claude.yml: $want"
           echo "installed:  $got"
           [[ -n $want && $want == "$got" ]] || {
-            echo "::error file=.github/workflows/claude.yml::sha256 is not the linux-x64 bin/mise of the pinned release"
+            shoutx github-actions:error --file .github/workflows/claude.yml 'sha256 is not the linux-x64 bin/mise of the pinned release'
             exit 1
           }
 
@@ -190,11 +194,13 @@ jobs:
       # installs the pin and runs on it by itself; CI reads it only for the
       # cache key below. The assignment is on its own line so a failing read
       # fails the step (`echo "…$(cmd)"` would not).
+      - uses: ./.github/actions/setup-mise
+
       - name: Read the pinned lint toolchain
         id: toolchain
         run: |
           version=$(bash scripts/lint-toolchain.sh)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          shoutx github-actions:output version "$version" >> "$GITHUB_OUTPUT"
 
       # The pin is spelled into shared-key because rust-cache's own hash cannot
       # see it: that hash covers the toolchains installed when the cache
@@ -206,8 +212,6 @@ jobs:
         with:
           workspaces: engine -> target
           shared-key: lint-${{ steps.toolchain.outputs.version }}
-
-      - uses: ./.github/actions/setup-mise
 
       # The lint commands and the toolchain install live only in mise.toml.
       # It screens again ([tasks.screen]); the screen job is the pass that
@@ -366,7 +370,7 @@ jobs:
         id: mozc-pin
         run: |
           sha=$(bash scripts/mozc-pin.sh)
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          shoutx github-actions:output sha "$sha" >> "$GITHUB_OUTPUT"
 
       - name: Restore Mozc dictionary snapshot
         id: mozc-restore

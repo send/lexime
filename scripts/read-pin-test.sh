@@ -105,8 +105,12 @@ for f in commented hex39 hex41 trailing-text empty missing; do
   mozc_case "$f" "" "$tmp/$f"
 done
 
-expect_refusal "mozc: ::error annotation under GITHUB_ACTIONS" \
-  "::error file=$tmp/empty::read-pin: no 40-hex SHA line in $tmp/empty" \
+annotation="read-pin: no 40-hex SHA line in $tmp/empty"
+if command -v shoutx >/dev/null 2>&1; then
+  annotation="::error file=$tmp/empty::$annotation"
+fi
+expect_refusal "mozc: CI diagnostic (annotation when shoutx is installed)" \
+  "$annotation" \
   env GITHUB_ACTIONS=true bash scripts/mozc-pin.sh "$tmp/empty"
 
 # --- lint-toolchain.sh ------------------------------------------------------

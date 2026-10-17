@@ -92,6 +92,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup-shoutx
+
       - name: Open, update or close the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,5 +108,5 @@ jobs:
       - name: Fail the run when stable is behind
         if: needs.canary.outputs.state == 'behind'
         run: |
-          echo "::error::stable fails the lint gate; see the tracking issue"
+          shoutx github-actions:error 'stable fails the lint gate; see the tracking issue'
           exit 1

@@ -1,0 +1,10 @@
+name: Set up shoutx (pinned)
+description: Install the verified shoutx release used to serialize GitHub Actions records.
+runs:
+  using: composite
+  steps:
+    - uses: send/setup-shoutx@eb61a2361c6c0e0d37ab9cca1c50e998b4a94c24 # v0.1.0
+      with:
+        shoutx-version: '1.0.0'
+        checksums-sha256: a6336c0e538c54e1fe4e35025983694e4f60ba9ab8aefda740796ab95ee13875
+        github-token: ${{ github.token }}
