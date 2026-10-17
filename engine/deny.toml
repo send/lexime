@@ -10,6 +10,18 @@ unmaintained = "workspace"
 ignore = [
     # bincode 1.3.3 is unmaintained but stable; migrate to postcard later
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is stable, migration planned" },
+    # zip 7.2.0: all three advisories are in ZipArchive / ZipStreamReader
+    # extract() (symlinks and permission bits applied on extraction). lexime
+    # never calls extract(): candle-core 0.10.2 uses zip under the `neural`
+    # feature only (not shipped), and lex-cli's dev-only Sudachi miner
+    # (candidates/sudachi.rs) reads entries by index and writes each to a
+    # basename it chooses. The fix needs zip >= 9; candle (0.11 too) still
+    # requires zip < 9, so bumping lex-cli alone would leave 7.2.0 in the tree.
+    # Remove these lines when candle allows zip >= 9 (then bump lex-cli too),
+    # or when the neural feature is removed and lex-cli has moved.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
 ]
 
 [licenses]
