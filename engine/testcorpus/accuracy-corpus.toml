@@ -348,7 +348,7 @@ expected = "確認しますね"
 category = "regression"
 tags = ["single-char-kanji", "particle"]
 issue = "#189"
-note = "値・根 が助詞位置に割り込む問題 — single_char_kanji_penalty で修正"
+note = "値・根 が助詞位置に割り込む問題。single_char_kanji_penalty は 0 (68645ea) で、罰則なしで通る — #362"
 
 [[cases]]
 reading = "してからにしましょう"

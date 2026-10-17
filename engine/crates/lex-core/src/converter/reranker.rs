@@ -54,6 +54,9 @@ impl<'a> FeaturePricer<'a> {
 ///   segmentations are preferred when Viterbi costs are close
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
+/// - **Te-form kanji**: penalises a kanji segment right after a て/で function word
+/// - **Single-char kanji**: penalises a one-character-reading kanji content word
+///   that is not part of a dictionary compound with a neighbour
 ///
 /// Rerank never drops a path (it takes a slice): the stages that select
 /// candidates are cost-gap admission and the cut to n.

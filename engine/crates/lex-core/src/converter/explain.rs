@@ -116,7 +116,9 @@ pub struct ExplainPath {
     pub repriced: bool,
     /// The path's one-character-reading segments with kanji in the surface,
     /// taken before `group_segments` merges them into a neighbour (the
-    /// `segments` above are grouped). Empty without a connection matrix.
+    /// `segments` above are grouped, which is why the single-kanji penalty
+    /// is shown here and not per segment). Empty without a connection
+    /// matrix.
     pub single_kanji_segments: Vec<SingleKanjiSegment>,
 }
 
@@ -155,8 +157,6 @@ pub struct ExplainSegment {
     pub connection_cost: i64,
     /// Te-form kanji penalty applied.
     pub te_form_kanji_penalty: i64,
-    /// Single-char kanji content-word penalty applied.
-    pub single_char_kanji_penalty: i64,
     pub left_id: u16,
     pub right_id: u16,
 }
@@ -349,11 +349,7 @@ fn is_override_priced(p: &ScoredPath) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Build per-segment cost breakdown from a ScoredPath.
-fn explain_segments(
-    scored: &ScoredPath,
-    conn: Option<&ConnectionMatrix>,
-    dict: &dyn Dictionary,
-) -> Vec<ExplainSegment> {
+fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec<ExplainSegment> {
     scored
         .segments
         .iter()
@@ -379,15 +375,6 @@ fn explain_segments(
             } else {
                 0
             };
-            let sc_penalty = if let Some(c) = conn {
-                if is_single_char_kanji_penalised(seg, i, &scored.segments, c, Some(dict)) {
-                    settings().reranker.single_char_kanji_penalty
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
             ExplainSegment {
                 reading: seg.reading.clone(),
                 surface: seg.surface.clone(),
@@ -396,7 +383,6 @@ fn explain_segments(
                 script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
                 te_form_kanji_penalty: te_penalty,
-                single_char_kanji_penalty: sc_penalty,
                 left_id: seg.left_id,
                 right_id: seg.right_id,
             }
@@ -511,7 +497,7 @@ pub fn explain(
                 _ => snapshot.cost - original,
             };
             ExplainPath {
-                segments: explain_segments(scored, conn, dict),
+                segments: explain_segments(scored, conn),
                 viterbi_cost: original,
                 rerank_delta,
                 history_breakdown,
@@ -624,13 +610,8 @@ pub fn format_text(result: &ExplainResult) -> String {
             } else {
                 String::new()
             };
-            let single_char_str = if seg.single_char_kanji_penalty > 0 {
-                format!(" 1charK={:<+6}", seg.single_char_kanji_penalty)
-            } else {
-                String::new()
-            };
             out.push_str(&format!(
-                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}{}\n",
+                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}\n",
                 j,
                 padded,
                 seg.word_cost,
@@ -639,7 +620,6 @@ pub fn format_text(result: &ExplainResult) -> String {
                 conn_label,
                 seg.connection_cost,
                 te_str,
-                single_char_str,
             ));
         }
 
