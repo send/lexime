@@ -1205,9 +1205,8 @@ impl LexUserHistory {
                 // apply_batch records the residue for any tombstone whose
                 // frame never landed: the entry leaves memory but stays in
                 // the checkpoint with nothing to neutralise it.
-                // A write path: capacity eviction dates itself at the wall clock.
-                write_recover(&self.inner)
-                    .apply_batch(&sequenced, crate::user_history::now_epoch());
+                // Eviction scores at the same `now` the frames were dated with.
+                write_recover(&self.inner).apply_batch(&sequenced, now);
             }
             // Still holding the wal mutex, and after the apply above — see
             // `raise_unpersisted` for why both matter. A `None` seq means the

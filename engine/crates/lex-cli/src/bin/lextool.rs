@@ -26,7 +26,9 @@ struct Cli {
     /// The Unix time (seconds) that history decay is measured against, for
     /// every subcommand that reads a history. Without it lextool reads the
     /// wall clock once at startup. Pass it to make two runs comparable
-    /// byte for byte, or to measure at a chosen moment
+    /// byte for byte. It does not reconstruct the history as it was at that
+    /// moment: entries used after it count as undecayed, and eviction on
+    /// open still ranks the whole file at this time
     #[arg(long, global = true, value_name = "EPOCH")]
     now: Option<u64>,
     #[command(subcommand)]

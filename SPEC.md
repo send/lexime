@@ -707,7 +707,7 @@ macOS で動作する最小限の IME を構築。
 | `romaji-export` | デフォルトローマ字テーブルを `~/Library/Application Support/Lexime/romaji.toml` にエクスポート |
 | `settings-export` | デフォルト設定を `~/Library/Application Support/Lexime/settings.toml` にエクスポート |
 
-`lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻（履歴を開くときの容量 evict の採点を含む）を指定できる。省略時は起動時に壁時計を 1 回読む。`dictool` にも同じグローバル `--now` があり、`convert --history` が使う。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。
+`lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻（履歴を開くときの容量 evict の採点を含む）を指定できる。省略時は起動時に壁時計を 1 回読む。`dictool` にも同じグローバル `--now` があり、`convert --history` が使う。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。`--now` は減衰の基準時刻を決めるだけで、その時点の履歴を再現しない — それより後に記録された学習も含まれ、減衰なし（経過 0）として数えられる。過去の状態は凍結コピーで再現する。
 
 ### CI
 
