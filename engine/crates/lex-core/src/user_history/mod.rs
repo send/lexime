@@ -350,12 +350,27 @@ fn decay(last_used: u64, now: u64) -> f64 {
     1.0 / (1.0 + hours / settings().history.half_life_hours)
 }
 
+/// Order for ranked history lookups: higher boost, then the more recently
+/// used, then the key. The entries come from HashMaps, whose iteration order
+/// differs from process to process, and boosts tie — entries recorded in the
+/// same commit share frequency and last_used — so without the key a tie
+/// (e.g. which successor the Predictive chain takes) would change between
+/// launches.
+fn by_boost_then_recency<K: Ord>(
+    a: (&K, &HistoryEntry, i64),
+    b: (&K, &HistoryEntry, i64),
+) -> std::cmp::Ordering {
+    b.2.cmp(&a.2)
+        .then_with(|| b.1.last_used.cmp(&a.1.last_used))
+        .then_with(|| a.0.cmp(b.0))
+}
+
 /// Evict lowest-score entries from a nested HashMap when exceeding capacity.
 /// Returns the evicted keys: eviction is the one mutation that removes an
 /// entry from memory without removing it from disk, so the caller has to
 /// record them (see [`DurableResidue`]). Selection is unchanged — only the
 /// reporting is new.
-fn evict_map<K: Clone + Eq + std::hash::Hash>(
+fn evict_map<K: Clone + Eq + Ord + std::hash::Hash>(
     map: &mut HashMap<String, HashMap<K, HistoryEntry>>,
     max: usize,
     now: u64,
@@ -374,8 +389,13 @@ fn evict_map<K: Clone + Eq + std::hash::Hash>(
     let to_remove = count - max;
     // Partial sort: partition so the lowest-score `to_remove` entries are in all[..to_remove].
     // O(n) average vs O(n log n) for a full sort.
+    // Ties (common: one commit's entries share frequency and last_used) fall
+    // back to the key, so which entries survive does not depend on the
+    // HashMap's per-process iteration order.
     all.select_nth_unstable_by(to_remove - 1, |a, b| {
-        a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| (&a.0, &a.1).cmp(&(&b.0, &b.1)))
     });
     let mut evicted = Vec::with_capacity(to_remove);
     for (outer_key, inner_key, _) in all.drain(..to_remove) {
@@ -540,35 +560,43 @@ impl UserHistory {
             .map_or(0, |entry| entry.boost(now))
     }
 
-    /// Return successor words for a given previous surface, sorted by boost descending.
+    /// Return successor words for a given previous surface, sorted by boost
+    /// descending (see [`by_boost_then_recency`] for ties).
     /// Used by predictive mode to chain bigram phrases (Copilot-like completions).
     pub fn bigram_successors(&self, prev_surface: &str) -> Vec<(String, String, i64)> {
         let now = now_epoch();
         let Some(inner) = self.bigrams.get(prev_surface) else {
             return Vec::new();
         };
-        let mut results: Vec<(String, String, i64)> = inner
+        let mut ranked: Vec<(&(String, String), &HistoryEntry, i64)> = inner
             .iter()
-            .map(|((reading, surface), entry)| (reading.clone(), surface.clone(), entry.boost(now)))
+            .map(|(key, entry)| (key, entry, entry.boost(now)))
             .filter(|(_, _, boost)| *boost > 0)
             .collect();
-        results.sort_by_key(|b| std::cmp::Reverse(b.2));
-        results
+        ranked.sort_unstable_by(|a, b| by_boost_then_recency((a.0, a.1, a.2), (b.0, b.1, b.2)));
+        ranked
+            .into_iter()
+            .map(|((reading, surface), _, boost)| (reading.clone(), surface.clone(), boost))
+            .collect()
     }
 
     /// Return surfaces the user has previously confirmed for this reading,
-    /// sorted by boost descending. Only returns entries with positive boost.
+    /// sorted by boost descending (see [`by_boost_then_recency`] for ties).
+    /// Only returns entries with positive boost.
     pub fn learned_surfaces(&self, reading: &str, now: u64) -> Vec<(String, i64)> {
         let Some(inner) = self.unigrams.get(reading) else {
             return Vec::new();
         };
-        let mut results: Vec<(String, i64)> = inner
+        let mut ranked: Vec<(&String, &HistoryEntry, i64)> = inner
             .iter()
-            .map(|(surface, entry)| (surface.clone(), entry.boost(now)))
-            .filter(|(_, boost)| *boost > 0)
+            .map(|(surface, entry)| (surface, entry, entry.boost(now)))
+            .filter(|(_, _, boost)| *boost > 0)
             .collect();
-        results.sort_by_key(|b| std::cmp::Reverse(b.1));
-        results
+        ranked.sort_unstable_by(|a, b| by_boost_then_recency((a.0, a.1, a.2), (b.0, b.1, b.2)));
+        ranked
+            .into_iter()
+            .map(|(surface, _, boost)| (surface.clone(), boost))
+            .collect()
     }
 
     /// Whether this history holds nothing at all.
