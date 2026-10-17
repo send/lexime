@@ -44,10 +44,11 @@ pub fn script_cost(surface: &str, reading_chars: usize) -> i64 {
 
 /// Trait for scoring lattice paths during Viterbi search.
 ///
-/// `word_cost` receives `(&Lattice, usize)` so a cost can look at the whole
-/// node; the other three methods take raw IDs, because they only need
-/// `left_id` / `right_id` and `transition_cost` is the most frequent call
-/// (O(P*Q) per position). `DefaultCostFunction` is the one implementation.
+/// `DefaultCostFunction` is the one implementation, and its `word_cost` reads
+/// only the node's cost and `left_id`; the `(&Lattice, usize)` signature is
+/// left from a removed prefix-constrained cost that looked at the whole node.
+/// The other three methods take raw IDs because `transition_cost` is the
+/// most frequent call (O(P*Q) per position).
 pub(crate) trait CostFunction: Send + Sync {
     fn word_cost(&self, lattice: &Lattice, idx: usize) -> i64;
     fn transition_cost(&self, prev_right_id: u16, next_left_id: u16) -> i64;

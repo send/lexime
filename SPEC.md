@@ -660,7 +660,7 @@ macOS で動作する最小限の IME を構築。
 
 ### Phase 6+ (今後)
 
-- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし変換精度を向上（IME 統合は速度課題のため未定。lex-core の実験モジュール（candle ベース、`--features neural`）は削除済み — candle が展開 API に脆弱性のある zip 7.x を必須で引き込み、zip ≥ 9 を許さなかったため。再開するなら zip ≥ 9 で組める推論ライブラリで作り直す）
+- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし変換精度を向上（IME 統合は速度課題のため未定。lex-core の実験モジュール（candle ベース、`--features neural`）は削除済み — candle が展開 API に脆弱性のある zip 7.x を必須で引き込み、zip ≥ 9 を許さなかったため。再検討するのは、accuracy コーパスで Viterbi N-best に正解があるのに top-1 に上がらない失敗が reranker の調整で直らないと計測できた時。その際は zip ≥ 9 で組める推論ライブラリで作り直す。削除前のコードは commit b220f95 の親にある）
 
 ## ビルド・CI
 
