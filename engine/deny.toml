@@ -23,12 +23,17 @@ ignore = [
     # (candidates/sudachi.rs) reads entries with by_index + io::copy and writes
     # each to dest/<the entry's basename>. What keeps "nothing calls it" true:
     # - workspace code: engine/clippy.toml's disallowed-methods fails the lint
-    #   on a call, and mise.toml's [tasks.lint] fails on anything that would
-    #   hide a call from that clippy run (a nested clippy config, or a
-    #   target-specific cfg in a crate that depends on zip — CI lints on Linux);
+    #   on a call in the code CI's clippy compiles (Linux, --all-features,
+    #   debug), and [tasks.lint] in mise.toml fails on a nested clippy config,
+    #   which would drop the ban. Code that run does not compile (another
+    #   target's cfg, cfg(not(feature)), cfg(not(debug_assertions))) and an
+    #   explicit allow of the lint are left to review;
     # - registry code: clippy does not lint it, so [bans] below admits no
-    #   registry crate but candle-core as a direct zip dependent, and
-    #   lex-core pins candle-core to the inspected =0.10.2. The fix needs zip >= 9; candle (0.10.2: ^7.2,
+    #   registry crate but candle-core as a direct zip dependent, lex-core pins
+    #   candle-core to the inspected =0.10.2, and [bans] admits one
+    #   candle-core version only.
+    #
+    # The fix needs zip >= 9; candle (0.10.2: ^7.2,
     # 0.11: ^8.6) does not allow it yet, so bumping lex-cli alone would leave
     # 7.2.0 in the tree. Remove these lines once no 7.x zip is left in the
     # lock: candle allows zip >= 9 (or the neural feature is removed) AND
@@ -81,6 +86,9 @@ deny = [
     # Workspace crates are not wrappers: cargo-deny admits them as direct
     # dependents, and clippy covers their code.
     { crate = "zip", wrappers = ["candle-core"], reason = "RUSTSEC-2026-0367/0368/0369 are ignored on the premise that nothing calls zip's extraction API; a new registry dependent's source has not been inspected" },
+    # wrappers cannot name a version: a second candle-core (pulled in beside
+    # lex-core's =0.10.2 pin) would be an uninspected zip dependent.
+    { crate = "candle-core", deny-multiple-versions = true, reason = "only the inspected candle-core (lex-core's =0.10.2 pin) may depend on zip; see the zip ignores above" },
 ]
 
 [sources]
