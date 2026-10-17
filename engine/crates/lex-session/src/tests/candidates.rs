@@ -216,7 +216,14 @@ fn test_stale_epoch_response_does_not_rewind_selection() {
         .epoch;
 
     // The response arrives while the epoch is unchanged: accepted.
-    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let cand = generate_candidates(
+        &*dict,
+        None,
+        None,
+        "きょう",
+        20,
+        lex_core::user_history::now_epoch(),
+    );
     let r = session.receive_candidates(
         stale_epoch,
         "きょう",
@@ -266,7 +273,14 @@ fn test_stale_epoch_response_does_not_reshow_hidden_panel() {
     assert!(session.comp().candidates.is_empty());
 
     // The in-flight response now arrives: epoch mismatch → discarded.
-    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let cand = generate_candidates(
+        &*dict,
+        None,
+        None,
+        "きょう",
+        20,
+        lex_core::user_history::now_epoch(),
+    );
     let r = session.receive_candidates(stale_epoch, "きょう", cand.surfaces, cand.paths);
     assert!(
         r.is_none(),
@@ -345,7 +359,14 @@ fn test_provisional_cleared_by_async_response() {
     type_string(&mut session, "kyou");
     assert!(session.comp().candidates.provisional);
 
-    let cand = generate_candidates(&*dict, None, None, "きょう", 20);
+    let cand = generate_candidates(
+        &*dict,
+        None,
+        None,
+        "きょう",
+        20,
+        lex_core::user_history::now_epoch(),
+    );
     let epoch = session.epoch;
     let r = session.receive_candidates(epoch, "きょう", cand.surfaces, cand.paths);
     assert!(r.is_some());
@@ -456,7 +477,14 @@ fn auto_commit_and_stability_follow_learned_top() {
     let mut session = InputSession::new(dict.clone(), None, Some(h));
     session.set_defer_candidates(true);
     // The fixture: the model #1 is segmented from きょう.
-    let plain = generate_candidates(&*dict, None, None, "きょうはいいい", 20);
+    let plain = generate_candidates(
+        &*dict,
+        None,
+        None,
+        "きょうはいいい",
+        20,
+        lex_core::user_history::now_epoch(),
+    );
     assert_eq!(plain.paths[0][0].reading, "きょう");
 
     type_string(&mut session, "kyouha");

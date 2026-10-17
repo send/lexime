@@ -178,6 +178,9 @@ fn candidate_worker(
         let conn_ref = conn.as_deref();
 
         let max_results = settings().candidates.max_results;
+        // Entry point of the candidate list: its one clock read (the 1-best
+        // reads its own, in `make_deferred_candidates_response`).
+        let now = crate::user_history::now_epoch();
         let response = if let Some(ref lattice) = latest.lattice {
             match latest.dispatch {
                 CandidateDispatch::Predictive => {
@@ -187,6 +190,7 @@ fn candidate_worker(
                         conn_ref,
                         hist_ref,
                         max_results,
+                        now,
                     )
                 }
                 CandidateDispatch::Standard => crate::candidates::generate_candidates_from_lattice(
@@ -195,6 +199,7 @@ fn candidate_worker(
                     conn_ref,
                     hist_ref,
                     max_results,
+                    now,
                 ),
             }
         } else {
@@ -205,6 +210,7 @@ fn candidate_worker(
                     hist_ref,
                     &latest.reading,
                     max_results,
+                    now,
                 ),
                 CandidateDispatch::Standard => crate::candidates::generate_candidates(
                     &*dict,
@@ -212,6 +218,7 @@ fn candidate_worker(
                     hist_ref,
                     &latest.reading,
                     max_results,
+                    now,
                 ),
             }
         };

@@ -1,5 +1,6 @@
 use lex_core::candidates::CandidateResponse;
 use lex_core::converter::{ConversionContext, ConvertedSegment};
+use lex_core::user_history::now_epoch;
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
@@ -30,6 +31,8 @@ impl InputSession {
                 history_ref,
                 &reading,
                 MAX_CANDIDATES,
+                // Entry point of this synchronous candidate list: its one clock read.
+                now_epoch(),
             )
         };
         let c = self.comp();
@@ -54,6 +57,8 @@ impl InputSession {
                 dict: &*self.dict,
                 conn: self.conn.as_deref(),
                 history: h_guard.as_deref(),
+                // Entry point of the 1-best: its one clock read.
+                now: now_epoch(),
             };
             let segments = ctx.convert_from_lattice(&lattice);
             drop(h_guard);

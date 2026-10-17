@@ -320,7 +320,15 @@ fn bench_convert_1best_history(c: &mut Criterion) {
     let mut group = c.benchmark_group("converter/convert_1best_history");
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
-            b.iter(|| convert_with_history(&dict, None, &history, kana));
+            b.iter(|| {
+                convert_with_history(
+                    &dict,
+                    None,
+                    &history,
+                    kana,
+                    lex_core::user_history::now_epoch(),
+                )
+            });
         });
     }
     group.finish();

@@ -40,11 +40,15 @@ pub use viterbi::{ConvertedSegment, PathOrigin};
 /// Shared conversion resources: dictionary, connection matrix, and user history.
 ///
 /// Groups the `(dict, conn, history)` triple that appears across conversion
-/// and candidate generation APIs.
+/// and candidate generation APIs, plus the `now` every history read decays
+/// against. The read path never reads the wall clock: the entry point
+/// (IME session, worker, `lextool`) reads it once and hands it down here.
+/// `now` is unused when `history` is `None`.
 pub struct ConversionContext<'a> {
     pub dict: &'a dyn Dictionary,
     pub conn: Option<&'a ConnectionMatrix>,
     pub history: Option<&'a UserHistory>,
+    pub now: u64,
 }
 
 impl ConversionContext<'_> {
@@ -104,15 +108,7 @@ impl ConversionContext<'_> {
         }
         let cost_fn = DefaultCostFunction::new(self.conn);
         let mut paths = viterbi_nbest(lattice, &cost_fn, oversample);
-        postprocess(
-            &mut paths,
-            lattice,
-            self.conn,
-            Some(self.dict),
-            self.history,
-            &lattice.input,
-            n,
-        )
+        postprocess(&mut paths, lattice, self, n)
     }
 }
 
@@ -144,6 +140,7 @@ pub fn convert(
         dict,
         conn,
         history: None,
+        now: 0,
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_from_lattice(&lattice)
@@ -155,6 +152,7 @@ pub fn convert_with_history(
     conn: Option<&ConnectionMatrix>,
     history: &UserHistory,
     kana: &str,
+    now: u64,
 ) -> Vec<ConvertedSegment> {
     if kana.is_empty() {
         return Vec::new();
@@ -163,6 +161,7 @@ pub fn convert_with_history(
         dict,
         conn,
         history: Some(history),
+        now,
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_from_lattice(&lattice)
@@ -182,6 +181,7 @@ pub fn convert_nbest(
         dict,
         conn,
         history: None,
+        now: 0,
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_nbest_from_lattice(&lattice, n)
@@ -194,6 +194,7 @@ pub fn convert_nbest_with_history(
     history: &UserHistory,
     kana: &str,
     n: usize,
+    now: u64,
 ) -> Vec<Vec<ConvertedSegment>> {
     if kana.is_empty() || n == 0 {
         return Vec::new();
@@ -202,6 +203,7 @@ pub fn convert_nbest_with_history(
         dict,
         conn,
         history: Some(history),
+        now,
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_nbest_from_lattice(&lattice, n)

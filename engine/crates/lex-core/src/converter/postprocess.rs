@@ -9,6 +9,7 @@ use super::reranker;
 use super::resegment;
 use super::rewriter;
 use super::viterbi::{RichSegment, ScoredPath};
+use super::ConversionContext;
 
 // ---------------------------------------------------------------------------
 // Observer trait — allows explain to capture intermediate cost snapshots
@@ -67,21 +68,18 @@ pub(crate) struct PostprocessContext<'a> {
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
-    conn: Option<&ConnectionMatrix>,
-    dict: Option<&dyn Dictionary>,
-    history: Option<&UserHistory>,
-    kana: &str,
+    conv: &ConversionContext<'_>,
     n: usize,
 ) -> Vec<ScoredPath> {
     let ctx = PostprocessContext {
         lattice,
-        conn,
-        dict,
-        history,
-        kana,
+        conn: conv.conn,
+        dict: Some(conv.dict),
+        history: conv.history,
+        kana: &lattice.input,
         n,
         max_cost_gap: crate::settings::settings().candidates.max_cost_gap,
-        now: crate::user_history::now_epoch(),
+        now: conv.now,
     };
     postprocess_observed(paths, &ctx, &mut NoopObserver)
 }

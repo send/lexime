@@ -27,11 +27,12 @@ impl ConversionMode {
         history: Option<&UserHistory>,
         reading: &str,
         max_results: usize,
+        now: u64,
     ) -> CandidateResponse {
         match self {
-            Self::Standard => generate_candidates(dict, conn, history, reading, max_results),
+            Self::Standard => generate_candidates(dict, conn, history, reading, max_results, now),
             Self::Predictive => {
-                generate_prediction_candidates(dict, conn, history, reading, max_results)
+                generate_prediction_candidates(dict, conn, history, reading, max_results, now)
             }
         }
     }

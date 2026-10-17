@@ -5,13 +5,15 @@
 
 use std::collections::HashSet;
 
-use crate::converter::{build_lattice, ConvertedSegment, Lattice, PathOrigin};
+use crate::converter::{build_lattice, ConversionContext, ConvertedSegment, Lattice, PathOrigin};
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
 pub mod predictive;
 pub mod standard;
 
+#[cfg(test)]
+mod now_tests;
 #[cfg(test)]
 mod tests;
 
@@ -79,13 +81,13 @@ fn generate_punctuation_candidates(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    now: u64,
 ) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
     // Learned predictions first
     if let Some(h) = history {
-        let now = crate::user_history::now_epoch();
         let fetch_limit = max_results.max(200);
         let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
@@ -133,12 +135,19 @@ pub fn generate_candidates(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    now: u64,
 ) -> CandidateResponse {
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history,
+        now,
+    };
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
-        return standard::generate(dict, conn, history, reading, max_results, &Lattice::empty());
+        return standard::generate(&ctx, reading, max_results, &Lattice::empty());
     }
     let lattice = build_lattice(dict, reading);
-    standard::generate(dict, conn, history, reading, max_results, &lattice)
+    standard::generate(&ctx, reading, max_results, &lattice)
 }
 
 /// [`generate_candidates`] with the [`CandidateDiagnostics`] of the same run
@@ -150,15 +159,22 @@ pub fn generate_candidates_priced(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    now: u64,
 ) -> PricedCandidates {
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
         return PricedCandidates {
-            response: generate_candidates(dict, conn, history, reading, max_results),
+            response: generate_candidates(dict, conn, history, reading, max_results, now),
             diagnostics: CandidateDiagnostics::default(),
         };
     }
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history,
+        now,
+    };
     let lattice = build_lattice(dict, reading);
-    standard::generate_normal_priced(dict, conn, history, reading, max_results, &lattice)
+    standard::generate_normal_priced(&ctx, reading, max_results, &lattice)
 }
 
 /// Unified candidate generation from a pre-built lattice.
@@ -170,8 +186,15 @@ pub fn generate_candidates_from_lattice(
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
     max_results: usize,
+    now: u64,
 ) -> CandidateResponse {
-    standard::generate(dict, conn, history, &lattice.input, max_results, lattice)
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history,
+        now,
+    };
+    standard::generate(&ctx, &lattice.input, max_results, lattice)
 }
 
 /// Generate prediction candidates with bigram chaining.
@@ -181,12 +204,19 @@ pub fn generate_prediction_candidates(
     history: Option<&UserHistory>,
     reading: &str,
     max_results: usize,
+    now: u64,
 ) -> CandidateResponse {
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
-        return generate_candidates(dict, conn, history, reading, max_results);
+        return generate_candidates(dict, conn, history, reading, max_results, now);
     }
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history,
+        now,
+    };
     let lattice = build_lattice(dict, reading);
-    predictive::generate(dict, conn, history, reading, max_results, &lattice)
+    predictive::generate(&ctx, reading, max_results, &lattice)
 }
 
 /// Generate prediction candidates from a pre-built lattice.
@@ -198,6 +228,13 @@ pub fn generate_prediction_candidates_from_lattice(
     conn: Option<&crate::dict::connection::ConnectionMatrix>,
     history: Option<&UserHistory>,
     max_results: usize,
+    now: u64,
 ) -> CandidateResponse {
-    predictive::generate(dict, conn, history, &lattice.input, max_results, lattice)
+    let ctx = ConversionContext {
+        dict,
+        conn,
+        history,
+        now,
+    };
+    predictive::generate(&ctx, &lattice.input, max_results, lattice)
 }

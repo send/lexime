@@ -563,8 +563,7 @@ impl UserHistory {
     /// Return successor words for a given previous surface, sorted by boost
     /// descending (see [`by_boost_then_recency`] for ties).
     /// Used by predictive mode to chain bigram phrases (Copilot-like completions).
-    pub fn bigram_successors(&self, prev_surface: &str) -> Vec<(String, String, i64)> {
-        let now = now_epoch();
+    pub fn bigram_successors(&self, prev_surface: &str, now: u64) -> Vec<(String, String, i64)> {
         let Some(inner) = self.bigrams.get(prev_surface) else {
             return Vec::new();
         };
@@ -620,8 +619,12 @@ impl UserHistory {
     }
 
     /// Reorder dictionary candidates so learned entries appear first.
-    pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
-        let now = now_epoch();
+    pub fn reorder_candidates(
+        &self,
+        reading: &str,
+        entries: &[DictEntry],
+        now: u64,
+    ) -> Vec<DictEntry> {
         let mut with_boost: Vec<(i64, usize, &DictEntry)> = entries
             .iter()
             .enumerate()

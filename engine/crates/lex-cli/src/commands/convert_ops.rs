@@ -36,9 +36,11 @@ pub fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, histo
         h
     });
 
+    // This command is its own entry point: its one clock read.
+    let now = lex_core::user_history::now_epoch();
     if n <= 1 {
         let result = if let Some(ref h) = user_history {
-            convert_with_history(&dict, Some(&conn), h, kana)
+            convert_with_history(&dict, Some(&conn), h, kana, now)
         } else {
             convert(&dict, Some(&conn), kana)
         };
@@ -49,7 +51,7 @@ pub fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, histo
         println!("{}", segs.join(" | "));
     } else {
         let nbest = if let Some(ref h) = user_history {
-            convert_nbest_with_history(&dict, Some(&conn), h, kana, n)
+            convert_nbest_with_history(&dict, Some(&conn), h, kana, n, now)
         } else {
             convert_nbest(&dict, Some(&conn), kana, n)
         };

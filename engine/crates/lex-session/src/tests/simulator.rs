@@ -89,6 +89,7 @@ impl HeadlessIME {
             None,
             &reading,
             MAX_CANDIDATES,
+            lex_core::user_history::now_epoch(),
         );
         // Simulate a fresh (non-stale) response: snapshot the current epoch.
         let epoch = self.session.epoch;

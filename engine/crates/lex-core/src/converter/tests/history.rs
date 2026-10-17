@@ -14,7 +14,7 @@ fn test_convert_with_history_promotes_learned() {
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let result = convert_with_history(&dict, None, &h, "きょう");
+    let result = convert_with_history(&dict, None, &h, "きょう", crate::user_history::now_epoch());
     assert_eq!(result[0].surface, "京");
 }
 
@@ -24,7 +24,13 @@ fn test_convert_with_history_empty_history_matches_baseline() {
     let h = UserHistory::new();
 
     let baseline = convert(&dict, None, "きょうはいいてんき");
-    let with_history = convert_with_history(&dict, None, &h, "きょうはいいてんき");
+    let with_history = convert_with_history(
+        &dict,
+        None,
+        &h,
+        "きょうはいいてんき",
+        crate::user_history::now_epoch(),
+    );
 
     let baseline_surfaces: Vec<&str> = baseline.iter().map(|s| s.surface.as_str()).collect();
     let history_surfaces: Vec<&str> = with_history.iter().map(|s| s.surface.as_str()).collect();
@@ -35,7 +41,7 @@ fn test_convert_with_history_empty_history_matches_baseline() {
 fn test_convert_with_history_empty_input() {
     let dict = test_dict();
     let h = UserHistory::new();
-    let result = convert_with_history(&dict, None, &h, "");
+    let result = convert_with_history(&dict, None, &h, "", crate::user_history::now_epoch());
     assert!(result.is_empty());
 }
 
@@ -46,7 +52,14 @@ fn test_convert_nbest_with_history_promotes_learned() {
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let results = convert_nbest_with_history(&dict, None, &h, "きょう", 5);
+    let results = convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "きょう",
+        5,
+        crate::user_history::now_epoch(),
+    );
     assert!(!results.is_empty());
     assert_eq!(results[0][0].surface, "京");
 }
@@ -55,8 +68,19 @@ fn test_convert_nbest_with_history_promotes_learned() {
 fn test_convert_nbest_with_history_empty_input() {
     let dict = test_dict();
     let h = UserHistory::new();
-    assert!(convert_nbest_with_history(&dict, None, &h, "", 5).is_empty());
-    assert!(convert_nbest_with_history(&dict, None, &h, "きょう", 0).is_empty());
+    assert!(
+        convert_nbest_with_history(&dict, None, &h, "", 5, crate::user_history::now_epoch())
+            .is_empty()
+    );
+    assert!(convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "きょう",
+        0,
+        crate::user_history::now_epoch()
+    )
+    .is_empty());
 }
 
 /// When history heavily boosts single-char alternatives, the Viterbi #1
@@ -162,7 +186,14 @@ fn test_viterbi_best_preserved_despite_history_boost() {
         h.record(&[("き".into(), "記".into())]);
     }
 
-    let with_history = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
+    let with_history = convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "きがします",
+        5,
+        crate::user_history::now_epoch(),
+    );
     let history_surfaces: Vec<String> = with_history
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -183,7 +214,14 @@ fn test_viterbi_best_preserved_despite_history_boost() {
     // After a single explicit selection the compound is a learned whole
     // path, so it takes #1 (PR-G) whatever the size of its boost. The boost's
     // magnitude is tested in `test_history_rerank_unigram_boost_reorders`.
-    let after_learn = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
+    let after_learn = convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "きがします",
+        5,
+        crate::user_history::now_epoch(),
+    );
     let learned_surfaces: Vec<String> = after_learn
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -208,8 +246,21 @@ fn one_best_equals_nbest_head_with_learned_whole_pair() {
     let mut h = UserHistory::new();
     h.record(&[("かな".into(), "可奈".into())]);
     let joined = |p: &[ConvertedSegment]| p.iter().map(|s| s.surface.as_str()).collect::<String>();
-    let one_best = joined(&convert_with_history(&dict, None, &h, "かな"));
-    let nbest = convert_nbest_with_history(&dict, None, &h, "かな", 20);
+    let one_best = joined(&convert_with_history(
+        &dict,
+        None,
+        &h,
+        "かな",
+        crate::user_history::now_epoch(),
+    ));
+    let nbest = convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "かな",
+        20,
+        crate::user_history::now_epoch(),
+    );
     assert_eq!(one_best, "可奈");
     assert_eq!(joined(&nbest[0]), "可奈");
     // Without the learning 仮名 is #1: the boost alone does not flip it.
@@ -245,17 +296,44 @@ fn learned_number_compound_outprices_stale_learned_surface() {
     }
     let joined = |p: &[ConvertedSegment]| p.iter().map(|s| s.surface.as_str()).collect::<String>();
 
-    let nbest = convert_nbest_with_history(&dict, None, &h, "にじゅう", 5);
+    let nbest = convert_nbest_with_history(
+        &dict,
+        None,
+        &h,
+        "にじゅう",
+        5,
+        crate::user_history::now_epoch(),
+    );
     assert_eq!(joined(&nbest[0]), "二十", "N-best #1");
     assert_eq!(
-        joined(&convert_with_history(&dict, None, &h, "にじゅう")),
+        joined(&convert_with_history(
+            &dict,
+            None,
+            &h,
+            "にじゅう",
+            crate::user_history::now_epoch()
+        )),
         "二十",
         "1-best"
     );
-    let list = crate::candidates::generate_candidates(&dict, None, Some(&h), "にじゅう", 20);
+    let list = crate::candidates::generate_candidates(
+        &dict,
+        None,
+        Some(&h),
+        "にじゅう",
+        20,
+        crate::user_history::now_epoch(),
+    );
     assert_eq!(list.surfaces[0], "二十", "candidate list #1");
 
-    let ex = explain(&dict, None, Some(&h), "にじゅう", 5);
+    let ex = explain(
+        &dict,
+        None,
+        Some(&h),
+        "にじゅう",
+        5,
+        crate::user_history::now_epoch(),
+    );
     let top = &ex.paths[0];
     let surface: String = top.segments.iter().map(|s| s.surface.as_str()).collect();
     assert_eq!(surface, "二十");

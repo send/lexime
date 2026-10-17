@@ -276,7 +276,14 @@ fn execute_action(
             // reports `is_composing()` but has none.
             let reading = composing_reading(session)?.to_string();
             let mode = session.config.conversion_mode;
-            let cand = mode.generate_candidates(dict, None, None, &reading, 20);
+            let cand = mode.generate_candidates(
+                dict,
+                None,
+                None,
+                &reading,
+                20,
+                lex_core::user_history::now_epoch(),
+            );
             // Simulate a fresh (non-stale) response: snapshot the current epoch.
             let epoch = session.epoch;
             session.receive_candidates(epoch, &reading, cand.surfaces, cand.paths)

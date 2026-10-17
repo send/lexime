@@ -2,9 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::Lattice;
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::Dictionary;
+use crate::converter::{ConversionContext, Lattice};
 use crate::user_history::UserHistory;
 
 use super::{generate_punctuation_candidates, punctuation_alternatives, CandidateResponse};
@@ -16,6 +14,7 @@ fn chain_bigram_phrase(
     history: &UserHistory,
     start_surface: &str,
     max_chain: usize,
+    now: u64,
 ) -> Option<String> {
     let mut result = start_surface.to_string();
     let mut current_surface = start_surface.to_string();
@@ -24,7 +23,7 @@ fn chain_bigram_phrase(
     let mut extended = false;
 
     for _ in 0..max_chain {
-        let successors = history.bigram_successors(&current_surface);
+        let successors = history.bigram_successors(&current_surface, now);
         if let Some((_, next_surface, _)) = successors.first() {
             if !visited.insert(next_surface.clone()) {
                 break; // cycle detected
@@ -48,9 +47,7 @@ fn chain_bigram_phrase(
 /// Uses Viterbi N-best as the base, then chains bigram successors from history
 /// to produce progressively longer multi-word phrases.
 pub fn generate(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
@@ -65,20 +62,19 @@ pub fn generate(
 
     // Punctuation falls back to standard punctuation candidates
     if punctuation_alternatives(reading).is_some() {
-        return generate_punctuation_candidates(dict, history, reading, max_results);
+        return generate_punctuation_candidates(
+            ctx.dict,
+            ctx.history,
+            reading,
+            max_results,
+            ctx.now,
+        );
     }
 
     // Get base candidates (same Viterbi N-best + predictions as Standard)
-    let base = super::standard::generate_normal_candidates(
-        dict,
-        conn,
-        history,
-        reading,
-        max_results,
-        lattice,
-    );
+    let base = super::standard::generate_normal_candidates(ctx, reading, max_results, lattice);
 
-    let Some(h) = history else {
+    let Some(h) = ctx.history else {
         // No history → can't chain, return standard candidates
         debug!(surface_count = base.surfaces.len(), "no history, fallback");
         return base;
@@ -103,7 +99,7 @@ pub fn generate(
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
 
         chained_starts.insert(joined.clone());
-        if let Some(chained) = chain_bigram_phrase(h, last_surface, max_chain) {
+        if let Some(chained) = chain_bigram_phrase(h, last_surface, max_chain, ctx.now) {
             let full = format!("{}{}", joined, &chained[last_surface.len()..]);
             let chain_len = full.chars().count();
             if full != joined {
@@ -117,7 +113,7 @@ pub fn generate(
         if chained_starts.contains(surface) {
             continue;
         }
-        if let Some(chained) = chain_bigram_phrase(h, surface, max_chain) {
+        if let Some(chained) = chain_bigram_phrase(h, surface, max_chain, ctx.now) {
             let chain_len = chained.chars().count();
             chained_phrases.push((chained, chain_len));
         }
@@ -165,14 +161,14 @@ mod tests {
             ("は".into(), "は".into()),
             ("いい".into(), "良い".into()),
         ]);
-        let result = chain_bigram_phrase(&h, "今日", 5);
+        let result = chain_bigram_phrase(&h, "今日", 5, crate::user_history::now_epoch());
         assert_eq!(result.as_deref(), Some("今日は良い"));
     }
 
     #[test]
     fn test_chain_bigram_phrase_no_successors() {
         let h = UserHistory::new();
-        assert!(chain_bigram_phrase(&h, "今日", 5).is_none());
+        assert!(chain_bigram_phrase(&h, "今日", 5, crate::user_history::now_epoch()).is_none());
     }
 
     #[test]
@@ -182,7 +178,7 @@ mod tests {
         h.record(&[("あ".into(), "A".into()), ("び".into(), "B".into())]);
         h.record(&[("び".into(), "B".into()), ("あ".into(), "A".into())]);
 
-        let result = chain_bigram_phrase(&h, "A", 10);
+        let result = chain_bigram_phrase(&h, "A", 10, crate::user_history::now_epoch());
         // Should chain A→B then stop (A already visited)
         assert_eq!(result.as_deref(), Some("AB"));
     }
@@ -193,7 +189,7 @@ mod tests {
         // Self-loop: は→は
         h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
 
-        let result = chain_bigram_phrase(&h, "は", 10);
+        let result = chain_bigram_phrase(&h, "は", 10, crate::user_history::now_epoch());
         // Should not chain at all (first successor is "は" which is already visited)
         assert!(result.is_none());
     }

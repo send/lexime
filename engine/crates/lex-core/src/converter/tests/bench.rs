@@ -317,11 +317,23 @@ fn bench_convert_latency() {
 
         // Measure 1-best with a non-empty history (the IME's shape: offers run)
         for _ in 0..warmup {
-            let _ = convert_with_history(&dict, None, &history, kana);
+            let _ = convert_with_history(
+                &dict,
+                None,
+                &history,
+                kana,
+                crate::user_history::now_epoch(),
+            );
         }
         let start = std::time::Instant::now();
         for _ in 0..iterations {
-            let _ = convert_with_history(&dict, None, &history, kana);
+            let _ = convert_with_history(
+                &dict,
+                None,
+                &history,
+                kana,
+                crate::user_history::now_epoch(),
+            );
         }
         let avg_1best_hist_us = start.elapsed().as_micros() as f64 / iterations as f64;
 

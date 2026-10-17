@@ -29,6 +29,7 @@ fn ctx<'a>(dict: &'a TrieDictionary, history: Option<&'a UserHistory>) -> Conver
         dict,
         conn: None,
         history,
+        now: crate::user_history::now_epoch(),
     }
 }
 

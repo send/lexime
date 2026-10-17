@@ -23,6 +23,12 @@ struct Cli {
     /// fails, where the app would fall back. Not with replay --app-dir
     #[arg(long, global = true)]
     settings: Option<String>,
+    /// The Unix time (seconds) that history decay is measured against, for
+    /// every subcommand that reads a history. Without it lextool reads the
+    /// wall clock once at startup. Pass it to make two runs comparable
+    /// byte for byte, or to measure at a chosen moment
+    #[arg(long, global = true, value_name = "EPOCH")]
+    now: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -498,20 +504,21 @@ fn run_snapshot(
     reading: &str,
     n: usize,
     kind: SnapshotKind,
+    now: u64,
 ) -> SnapshotEntry {
     let surfaces: Vec<String> = match kind {
         SnapshotKind::Nbest => {
             let paths = match hist {
-                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
+                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n, now),
                 None => convert_nbest(dict, Some(conn), reading, n),
             };
             paths.iter().map(|segs| joined_surface(segs)).collect()
         }
         SnapshotKind::Candidates | SnapshotKind::Predictive => {
             let list = if kind == SnapshotKind::Candidates {
-                rank_ops::production_candidates(dict, conn, hist, reading)
+                rank_ops::production_candidates(dict, conn, hist, reading, now)
             } else {
-                rank_ops::production_prediction_candidates(dict, conn, hist, reading)
+                rank_ops::production_prediction_candidates(dict, conn, hist, reading, now)
             };
             list.surfaces.into_iter().take(n).collect()
         }
@@ -581,6 +588,10 @@ mod app_config {
 
 fn main() {
     let cli = Cli::parse();
+    // The one clock read of this process: every history decay below is
+    // measured against it (and the accuracy corpus's `[[history]]` is seeded
+    // at it), so a run is reproducible given `--now`.
+    let now = cli.now.unwrap_or_else(lex_core::user_history::now_epoch);
     // Before any subcommand runs: settings() fixes on its first read, and a
     // custom TOML set after that would be ignored without an error.
     let app_dir = match &cli.command {
@@ -632,7 +643,7 @@ fn main() {
             // Over-fetch when filtering by surface
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
             let mut result =
-                explain::explain(&dict, conn.as_ref(), hist.as_ref(), &reading, fetch_n);
+                explain::explain(&dict, conn.as_ref(), hist.as_ref(), &reading, fetch_n, now);
 
             if let Some(ref filter) = surface {
                 result.paths.retain(|p| p.surface().contains(filter));
@@ -685,7 +696,6 @@ fn main() {
                     process::exit(1);
                 }
                 let mut h = UserHistory::new();
-                let now = lex_core::user_history::now_epoch();
                 for rec in &corpus.history {
                     for _ in 0..rec.repeat {
                         h.record_at(&rec.segments, now);
@@ -762,7 +772,7 @@ fn main() {
 
             let results: Vec<AccuracyResult> = cases
                 .iter()
-                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case))
+                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case, now))
                 .collect();
 
             // Compute summary
@@ -908,7 +918,7 @@ fn main() {
 
             let entries: Vec<SnapshotEntry> = readings
                 .iter()
-                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind))
+                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind, now))
                 .collect();
             write_jsonl(&output_file, &entries).unwrap_or_else(|e| {
                 eprintln!("Failed to write snapshot: {}", e);
@@ -1062,7 +1072,7 @@ fn main() {
                     .position(|s| s == dominant)
                     .map(|i| i + 1);
                 let hist_top1: String =
-                    convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
+                    convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1, now)
                         .first()
                         .map(|segs| joined_surface(segs))
                         .unwrap_or_default();
@@ -1150,7 +1160,7 @@ fn main() {
             let total = readings.len();
 
             for reading in &readings {
-                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
+                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind, now);
 
                 match baseline.get(reading) {
                     Some(base) => {
@@ -1254,6 +1264,7 @@ fn main() {
                 Path::new(&log_file),
                 from_line,
                 verbose,
+                now,
             )
             .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
@@ -1393,6 +1404,7 @@ fn eval_case(
     conn: &ConnectionMatrix,
     hist: Option<&UserHistory>,
     case: &AccuracyCase,
+    now: u64,
 ) -> AccuracyResult {
     let base = AccuracyResult {
         reading: case.reading.clone(),
@@ -1424,7 +1436,7 @@ fn eval_case(
     let plain = case
         .baseline
         .as_ref()
-        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading));
+        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading, now));
     let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
     if let (Some(want), Some(w)) = (&case.baseline, &plain) {
         if w.nbest_head != *want {
@@ -1437,7 +1449,7 @@ fn eval_case(
         }
     }
 
-    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading);
+    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading, now);
     let actual = widths.nbest_head.clone();
     if actual != case.expected {
         return fail(Failure::Top1, actual, baseline_actual, Vec::new());
@@ -1468,7 +1480,7 @@ fn eval_case(
                 Some(p) => b.violations(w.n, &p.list),
                 None => b.violations(
                     w.n,
-                    &rank_ops::production_candidates(dict, conn, None, &case.reading),
+                    &rank_ops::production_candidates(dict, conn, None, &case.reading, now),
                 ),
             };
             window.extend(list.into_iter().map(|v| format!("baseline: {v}")));

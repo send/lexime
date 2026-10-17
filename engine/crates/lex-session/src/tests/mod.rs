@@ -48,7 +48,14 @@ pub(super) fn complete_candidate_cycle(
             .history
             .as_ref()
             .map(|h| h.read().unwrap_or_else(|e| e.into_inner()));
-        lex_core::candidates::generate_candidates(dict, None, history.as_deref(), &reading, 20)
+        lex_core::candidates::generate_candidates(
+            dict,
+            None,
+            history.as_deref(),
+            &reading,
+            20,
+            lex_core::user_history::now_epoch(),
+        )
     };
     // Simulate a fresh (non-stale) response: snapshot the current epoch.
     let epoch = session.epoch;

@@ -51,6 +51,7 @@ pub fn production_candidates(
     conn: &ConnectionMatrix,
     history: Option<&UserHistory>,
     reading: &str,
+    now: u64,
 ) -> CandidateResponse {
     generate_candidates(
         dict,
@@ -58,6 +59,7 @@ pub fn production_candidates(
         history,
         reading,
         settings().candidates.max_results,
+        now,
     )
 }
 
@@ -68,6 +70,7 @@ pub fn production_prediction_candidates(
     conn: &ConnectionMatrix,
     history: Option<&UserHistory>,
     reading: &str,
+    now: u64,
 ) -> CandidateResponse {
     generate_prediction_candidates(
         dict,
@@ -75,6 +78,7 @@ pub fn production_prediction_candidates(
         history,
         reading,
         settings().candidates.max_results,
+        now,
     )
 }
 
@@ -85,6 +89,7 @@ pub fn production_candidates_priced(
     conn: &ConnectionMatrix,
     history: Option<&UserHistory>,
     reading: &str,
+    now: u64,
 ) -> PricedCandidates {
     generate_candidates_priced(
         dict,
@@ -92,6 +97,7 @@ pub fn production_candidates_priced(
         history,
         reading,
         settings().candidates.max_results,
+        now,
     )
 }
 
@@ -119,20 +125,22 @@ pub fn top1_widths(
     conn: &ConnectionMatrix,
     history: Option<&UserHistory>,
     reading: &str,
+    now: u64,
 ) -> Top1Widths {
     let head = match history {
-        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, 1),
+        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, 1, now),
         None => convert_nbest(dict, Some(conn), reading, 1),
     };
     let ctx = ConversionContext {
         dict,
         conn: Some(conn),
         history,
+        now,
     };
     Top1Widths {
         nbest_head: head.first().map(|p| joined_surface(p)).unwrap_or_default(),
         one_best: joined_surface(&ctx.convert_from_lattice(&ctx.build_lattice(reading))),
-        list: production_candidates(dict, conn, history, reading),
+        list: production_candidates(dict, conn, history, reading, now),
     }
 }
 
@@ -730,7 +738,8 @@ impl Tally {
 /// Returns the counts and one baseline line per selection (for
 /// `--emit-baseline` / `--baseline`). A log with no rank>0 selection is a
 /// valid, all-zero measurement. `verbose` prints per-selection content to
-/// stderr (local inspection only).
+/// stderr (local inspection only). Every line replays at the one `now`
+/// (not the line's `t`).
 pub fn replay(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
@@ -738,6 +747,7 @@ pub fn replay(
     log: &Path,
     from_line: usize,
     verbose: bool,
+    now: u64,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let Selections {
         lines: selections,
@@ -753,7 +763,7 @@ pub fn replay(
         let view = cache.entry(reading).or_insert_with(|| {
             ReadingView::new(
                 reading,
-                production_candidates_priced(dict, conn, history, reading),
+                production_candidates_priced(dict, conn, history, reading, now),
             )
         });
         let Landing { rank, gap } = tally.add(view, &sel.surface);
