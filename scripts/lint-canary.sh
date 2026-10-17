@@ -20,7 +20,8 @@
 # change.
 #
 # After the lint log, prints state / stable / pin / lints as key=value lines
-# (appended to $GITHUB_OUTPUT when set) and a table to $GITHUB_STEP_SUMMARY.
+# (serialized by shoutx to $GITHUB_OUTPUT when set) and a table to
+# $GITHUB_STEP_SUMMARY. Local runs without GITHUB_OUTPUT need no shoutx.
 # Exits 1 only for `error`. `behind` exits 0 so the workflow's canary job
 # succeeds and hands its outputs on; the report job turns the run red instead.
 set -euo pipefail
@@ -61,8 +62,15 @@ case $status:$([ "$newest" != "$pin" ] && echo newer) in
   *) state=error ;;
 esac
 
-printf 'state=%s\nstable=%s\npin=%s\nlints=%s\n' "$state" "$stable" "$pin" "$lints" |
-  tee -a "${GITHUB_OUTPUT:-/dev/null}"
+printf 'state=%s\nstable=%s\npin=%s\nlints=%s\n' "$state" "$stable" "$pin" "$lints"
+if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+  {
+    shoutx github-actions:output state "$state"
+    shoutx github-actions:output stable "$stable"
+    shoutx github-actions:output pin "$pin"
+    shoutx github-actions:output lints "$lints"
+  } >> "$GITHUB_OUTPUT"
+fi
 
 {
   echo "## Lint canary: $state"

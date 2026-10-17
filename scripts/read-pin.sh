@@ -27,9 +27,14 @@ if [[ -n $key ]]; then
 fi
 
 # With pipefail a missing match fails the assignment, so an empty value never
-# reaches the consumers. In CI the refusal is also a file annotation.
+# reaches the consumers. When CI has installed shoutx, the refusal is also a
+# file annotation. Before setup (or locally), keep a plain stderr diagnostic.
 value=$(grep -oE -m1 "^[[:space:]]*(${pat})[[:space:]]*\$" "$file" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]') || {
-  echo "${GITHUB_ACTIONS:+::error file=$file::}read-pin: no $what line in $file" >&2
+  if [[ -n ${GITHUB_ACTIONS:-} ]] && command -v shoutx >/dev/null 2>&1; then
+    shoutx github-actions:error --file "$file" "read-pin: no $what line in $file" >&2
+  else
+    printf 'read-pin: no %s line in %s\n' "$what" "$file" >&2
+  fi
   exit 1
 }
 
