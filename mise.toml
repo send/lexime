@@ -633,6 +633,27 @@ cd engine
 # own line so a failure stops the task (`echo "…$(cmd)"` would not).
 clippy=$(cargo +"$tc" clippy --version)
 echo "lint: $clippy"
+# deny.toml ignores zip's extraction advisories while clippy.toml's
+# disallowed-methods catches every call in workspace code. Two things would
+# hide a call from the clippy run below: a nested clippy config (clippy reads
+# only the nearest one, dropping the ban), and a target-specific cfg in a crate
+# that depends on zip (this runs on Linux; the IME ships for macOS).
+nested=$(find . -path ./target -prune -o \\( -name clippy.toml -o -name .clippy.toml \\) -print | grep -vx './clippy.toml' || true)
+if [ -n "$nested" ]; then
+  echo "lint: a nested clippy config drops engine/clippy.toml's zip ban — merge it into engine/clippy.toml:" >&2
+  echo "$nested" >&2
+  exit 1
+fi
+for manifest in Cargo.toml crates/*/Cargo.toml; do
+  grep -qE '^zip[[:space:]]*=' "$manifest" || continue
+  dir=$(dirname "$manifest")
+  hits=$(grep -rnE 'cfg(_attr)?!?\\(.*\\b(target_[a-z_]+|unix|windows)\\b' --include='*.rs' "$dir/src" || true)
+  if [ -n "$hits" ]; then
+    echo "lint: $dir depends on zip, and a target-specific cfg would hide a zip extraction call from this Linux clippy run:" >&2
+    echo "$hits" >&2
+    exit 1
+  fi
+done
 cargo +"$tc" fmt --all --check
 cargo +"$tc" clippy --workspace --all-targets --all-features --locked -- -D warnings
 """
