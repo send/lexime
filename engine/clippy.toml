@@ -1,6 +1,8 @@
 # zip 7.2.0's extraction API applies archive symlinks and permission bits
 # (RUSTSEC-2026-0367/0368/0369). engine/deny.toml ignores those advisories on
 # the condition that lexime never calls it — this keeps that condition true.
+# clippy reads only the nearest clippy.toml: a per-crate one (e.g. under
+# crates/lex-cli, the zip user) would drop this list for that crate.
 disallowed-methods = [
     { path = "zip::read::ZipArchive::extract", reason = "RUSTSEC-2026-0367/0368/0369 are ignored in deny.toml only while lexime never extracts; read entries with by_index / by_name" },
     { path = "zip::read::ZipArchive::extract_unwrapped_root_dir", reason = "RUSTSEC-2026-0367/0368/0369 are ignored in deny.toml only while lexime never extracts; read entries with by_index / by_name" },
