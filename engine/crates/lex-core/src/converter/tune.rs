@@ -302,8 +302,9 @@ mod tests {
     }
 
     /// Production's admission drops 可なや, but tune keeps every path: its
-    /// top-1 is rerank's index 0 either way (tune and production price the
-    /// same population).
+    /// top-1 is rerank's index 0 either way. Tune's population is its own
+    /// (`viterbi_nbest(.., 30)`), not production's oversample, so the two
+    /// agree here because the fixture has only these two paths.
     #[test]
     fn tune_keeps_every_path_and_agrees_with_rerank_top1() {
         let (dict, conn) = crate::converter::testutil::far_multi_segment_kanaya();

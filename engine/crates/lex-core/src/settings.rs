@@ -988,7 +988,7 @@ unknown_word_cost = 5000
 segment_penalti = 7
 
 [reranker]
-length_variance_weight = 1000
+length_variance_weight = 1500
 retired_weight = "abc"
 
 [history]
@@ -1024,6 +1024,9 @@ anything = 1
         assert_eq!(s.cost.segment_penalty, 1000);
         assert_eq!(s.cost.unknown_word_cost, 5000);
         assert!((s.history.half_life_hours - 72.0).abs() < f64::EPSILON);
+        // Beside an unread key, the section's real fields keep their values
+        // (1500 is neither the shipped 1000 nor the quoted decoy 500).
+        assert_eq!(s.reranker.length_variance_weight, 1500);
         assert_eq!(s.history.max_unigrams, 5000);
         assert_eq!(s.candidates.max_cost_gap, 6000);
         assert_eq!(s.snippets.trigger, "ctrl+;");

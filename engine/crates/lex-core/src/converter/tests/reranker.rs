@@ -63,8 +63,8 @@ fn test_rerank_single_path_noop() {
     rerank(&mut paths, None, None);
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "亜");
-    // A lone path is not priced. Kept to preserve behaviour (#366 §25-3):
-    // pricing it would move admission's anchor and the Numeric base.
+    // A lone path is not priced (kept as before #366): pricing it would move
+    // the clamp the variant offers built from it are priced against.
     assert_eq!(paths[0].viterbi_cost, 1000);
 }
 

@@ -10,7 +10,8 @@ use super::viterbi::ScoredPath;
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
 /// cost. Depends on the path alone, not on the population rerank saw — so a
 /// path synthesised later (a variant offer) is priced exactly as rerank would
-/// price the same segments.
+/// price the same segments. One exception sits in [`rerank`]: a lone path is
+/// not priced.
 pub(crate) struct FeaturePricer<'a> {
     fcfg: FeatureConfig<'a>,
     weights: FeatureWeights,
@@ -49,6 +50,10 @@ impl<'a> FeaturePricer<'a> {
 ///
 /// Rerank never drops a path (it takes a slice): the stages that select
 /// candidates are cost-gap admission and the cut to n.
+///
+/// A lone path is returned unpriced. This keeps the behaviour from before
+/// #366: pricing it would change what the variant offers built from it are
+/// clamped against, and so their order.
 pub(crate) fn rerank(
     paths: &mut [ScoredPath],
     conn: Option<&ConnectionMatrix>,

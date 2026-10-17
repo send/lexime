@@ -368,7 +368,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
-- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。rerank は経路を落とさない（価格を付けて並べるだけ）。本番パイプラインで候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ。かな読みそのままの経路（identity）も rerank では落ちない（neural 経路は admission を通らず、rerank → n 本の切りだけ。出荷ビルドには無い）
+- **Reranker**: Viterbi で over-generate（1-best: 10 候補・履歴ありは 30、N-best: 3x・履歴ありは最低 50。N-best の規則は `nbest_oversample` 1 箇所で、explain も同じ母集団を使う）し、特徴量を足して再ランキング。rerank は経路を落とさない（価格を付けて並べるだけ）。postprocess で候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ（Predictive モードは、その後に句チェーンを足した列を `max_results` で切る）。かな読みそのままの経路（identity）も rerank では落ちない（neural 経路は admission を通らず、rerank → n 本の切りだけ。出荷ビルドには無い）
 - **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 3 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）
 - **表記ゆれ・かな救済**（`RewriteStage::Model`、履歴前に走る。index 0 は動かさない。n = 1 で学習が空のときは index 0 に届かないので省く — 出力は同じ）。段の全 rewriter が段に入ってきたリストから生成し、挿入はその後にまとめて行う（rewriter は互いの出力を見ない）
   - `HiraganaVariantRewriter` — best の漢字分節をすべてかなにした候補（かな救済 #263、best + 4000）
@@ -459,7 +459,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 - 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
 - **学習済みの #1**: 学習済み = この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0。候補選択・そのまま確定・自動確定のどれで記録されたかは区別しない）。学習ブースト段の経路（N-best の母集団に在るもの）と Rewriters の生成物（数字・カタカナ、同じブーストを受ける）に学習済みがあれば、その中で最安（価格 = model または policy 価格 − ブースト）を #1 に置き、残りは価格順のまま。ブーストが価格差に届かなくても学習済みが #1 になる。この段より後の Rewriters は、未学習の候補で学習済みの #1 を動かさない
-  - 母集団の外（oversample の外）の学習済みは、注入（候補列の 2.）で列には入るが #1 にはならない。母集団に在る学習済みは #1 になる。1-best（打鍵ごとの同期表示）は母集団が候補列より小さいので、候補列だけが学習済みを #1 にする読みがある（候補到着時に表示が変わる、#361。差の源は 1-best（10 / 30）と候補列（60）の母集団の大きさ）。数字（非複合語）・カタカナの方針価格は n 本に絞った後の最悪値が基準なので、それらが学習済み同士で #1 を争う読みでは 1-best と候補列で勝者が割れることもある
+  - 母集団の外（oversample の外）の学習済みは、注入（候補列の 2.）で列には入るが #1 にはならない。母集団に在る学習済みは #1 の候補になる（#1 になるのは学習済みのうち価格 − ブーストが最安の 1 本）。1-best（打鍵ごとの同期表示）は母集団が候補列より小さいので、候補列だけが学習済みを #1 にする読みがある（候補到着時に表示が変わる、#361。差の源は 1-best（10 / 30）と候補列（`nbest` の 3 倍、履歴ありは最低 50）の母集団の大きさ）。数字（非複合語）・カタカナの方針価格は n 本に絞った後の最悪値が基準なので、それらが学習済み同士で #1 を争う読みでは 1-best と候補列で勝者が割れることもある
   - ユーザ辞書の登録語は学習済み扱いではない（学習済みがあればその下に並ぶ。登録語を 1 回確定すれば学習済み同士として価格で争う）
   - かなは救済価格（best + 4000）− ブーストで学習済みの漢字と争う（同じくらい古い 1 回ずつの学習なら漢字が #1）。候補列では、学習済みのかなは #1 が学習済みならその直下（2 番目）に移る（価格によらない、候補列の 3.）
   - 自動確定は候補列 #1 の先頭フレーズを確定し、それも学習として記録する: 学習済みの #1 を自動確定すると、その学習は新しくなる
@@ -545,7 +545,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 | セクション | パラメータ |
 |---|---|
 | `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty, pure_kanji_bonus, latin_penalty, unknown_word_cost |
-| `[reranker]` | length_variance_weight |
+| `[reranker]` | length_variance_weight, te_form_kanji_penalty, single_char_kanji_penalty |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results, max_cost_gap（履歴前 #1 からのコスト差の上限。4000 未満は 4000 として働く。`i64::MAX` で無効化。省略時は既定値） |
 | `[snippets]` | trigger（スニペットモードのトリガーキー）, variables（`$name` 展開用のユーザー定義変数） |
