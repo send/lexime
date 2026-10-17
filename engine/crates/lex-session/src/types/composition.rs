@@ -3,11 +3,8 @@ use std::sync::Arc;
 use lex_core::candidates::{
     generate_candidates, generate_prediction_candidates, CandidateResponse,
 };
-use lex_core::converter::ConvertedSegment;
-use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::Dictionary;
+use lex_core::converter::{ConversionContext, ConvertedSegment};
 use lex_core::snippets::SnippetStore;
-use lex_core::user_history::UserHistory;
 
 /// Pluggable conversion mode: determines how candidates are generated
 /// and whether auto-commit fires.
@@ -22,18 +19,13 @@ pub enum ConversionMode {
 impl ConversionMode {
     pub(crate) fn generate_candidates(
         &self,
-        dict: &dyn Dictionary,
-        conn: Option<&ConnectionMatrix>,
-        history: Option<&UserHistory>,
+        ctx: &ConversionContext<'_>,
         reading: &str,
         max_results: usize,
-        now: u64,
     ) -> CandidateResponse {
         match self {
-            Self::Standard => generate_candidates(dict, conn, history, reading, max_results, now),
-            Self::Predictive => {
-                generate_prediction_candidates(dict, conn, history, reading, max_results, now)
-            }
+            Self::Standard => generate_candidates(ctx, reading, max_results),
+            Self::Predictive => generate_prediction_candidates(ctx, reading, max_results),
         }
     }
 

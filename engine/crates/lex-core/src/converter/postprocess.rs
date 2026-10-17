@@ -1,8 +1,6 @@
 use tracing::debug_span;
 
 use crate::dict::connection::ConnectionMatrix;
-use crate::dict::Dictionary;
-use crate::user_history::UserHistory;
 
 use super::lattice::Lattice;
 use super::reranker;
@@ -41,21 +39,16 @@ impl PostprocessObserver for NoopObserver {}
 // Pipeline context — groups the shared parameters
 // ---------------------------------------------------------------------------
 
-/// Shared context for the postprocess pipeline.
+/// Shared context for the postprocess pipeline. The reading is the
+/// lattice's input; `conv` carries dictionary, connection matrix and history
+/// (with the `now` the pipeline and its diagnostic observers both use).
 pub(crate) struct PostprocessContext<'a> {
     pub lattice: &'a Lattice,
-    pub conn: Option<&'a ConnectionMatrix>,
-    pub dict: Option<&'a dyn Dictionary>,
-    pub history: Option<&'a UserHistory>,
-    pub kana: &'a str,
+    pub conv: &'a ConversionContext<'a>,
     pub n: usize,
     /// `[candidates] max_cost_gap`: how far above the pre-history #1 a path
     /// may be priced and stay a candidate (see [`admit_by_cost_gap`]).
     pub max_cost_gap: i64,
-    /// Timestamp passed to `history_rerank_at`. Pinning it here lets diagnostic
-    /// observers compute breakdowns against the exact value the pipeline will
-    /// use, avoiding sub-second drift across the second boundary.
-    pub now: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,13 +66,9 @@ pub(super) fn postprocess(
 ) -> Vec<ScoredPath> {
     let ctx = PostprocessContext {
         lattice,
-        conn: conv.conn,
-        dict: Some(conv.dict),
-        history: conv.history,
-        kana: &lattice.input,
+        conv,
         n,
         max_cost_gap: crate::settings::settings().candidates.max_cost_gap,
-        now: conv.now,
     };
     postprocess_observed(paths, &ctx, &mut NoopObserver)
 }
@@ -94,15 +83,21 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     observer: &mut O,
 ) -> Vec<ScoredPath> {
     let _span = debug_span!("postprocess", n = ctx.n, paths_in = paths.len()).entered();
+    let (conn, dict, history, kana) = (
+        ctx.conv.conn,
+        Some(ctx.conv.dict),
+        ctx.conv.history,
+        ctx.lattice.input.as_str(),
+    );
 
     observer.after_viterbi(paths);
 
     // Generate alternative segmentations from the lattice before reranking,
     // so the reranker can compare them on equal footing with Viterbi paths.
-    let reseg_paths = resegment::resegment(paths, ctx.lattice, ctx.conn);
+    let reseg_paths = resegment::resegment(paths, ctx.lattice, conn);
     paths.extend(reseg_paths);
 
-    let pricer = reranker::FeaturePricer::new(ctx.conn, ctx.dict);
+    let pricer = reranker::FeaturePricer::new(conn, dict);
     reranker::rerank(paths, &pricer);
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
@@ -114,27 +109,21 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     let hiragana_rw = rewriter::HiraganaVariantRewriter;
     let partial_rw = rewriter::PartialHiraganaRewriter {
         lattice: ctx.lattice,
-        conn: ctx.conn,
+        conn,
         pricer: &pricer,
     };
     let kanji_rw = rewriter::KanjiVariantRewriter {
         lattice: ctx.lattice,
-        conn: ctx.conn,
+        conn,
         pricer: &pricer,
     };
-    let offers_can_surface = ctx.n > 1 || ctx.history.is_some_and(|h| !h.is_empty());
+    let offers_can_surface = ctx.n > 1 || history.is_some_and(|h| !h.history.is_empty());
     let variants: &[&dyn rewriter::Rewriter] = if offers_can_surface {
         &[&hiragana_rw, &partial_rw, &kanji_rw]
     } else {
         &[]
     };
-    rewriter::run_rewriters(
-        variants,
-        paths,
-        ctx.kana,
-        rewriter::RewriteStage::Model,
-        None,
-    );
+    rewriter::run_rewriters(variants, paths, kana, rewriter::RewriteStage::Model, None);
 
     observer.after_rerank(paths);
 
@@ -146,12 +135,10 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     // (e.g. きがし→気がし).
     let best = paths.first();
     let anchor = best.map_or(0, |p| p.viterbi_cost);
-    let viterbi_best_key = best
-        .filter(|_| ctx.history.is_some())
-        .map(|p| p.surface_key());
+    let viterbi_best_key = best.filter(|_| history.is_some()).map(|p| p.surface_key());
 
-    if let Some(h) = ctx.history {
-        reranker::history_rerank_at(paths, h, ctx.conn, ctx.now);
+    if let Some(h) = history {
+        reranker::history_rerank_at(paths, h.history, conn, h.now);
     }
 
     admit_by_cost_gap(paths, anchor, ctx.max_cost_gap, |p| {
@@ -179,24 +166,24 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     }
     let numeric_rw = rewriter::NumericRewriter {
         lattice: Some(ctx.lattice),
-        connection: ctx.conn,
+        connection: conn,
         anchor,
     };
     let katakana_rw = rewriter::KatakanaRewriter;
     // The paths this stage creates are learned on the same terms as the
     // history-reranked ones (G7).
-    let boost = ctx
-        .history
-        .map(|h| move |p: &mut ScoredPath| reranker::apply_history_boost(p, h, ctx.conn, ctx.now));
+    let boost = history.map(|h| {
+        move |p: &mut ScoredPath| reranker::apply_history_boost(p, h.history, conn, h.now)
+    });
     rewriter::run_rewriters(
         &[&numeric_rw, &katakana_rw],
         &mut top,
-        ctx.kana,
+        kana,
         rewriter::RewriteStage::Override,
         boost.as_ref().map(|b| b as &dyn Fn(&mut ScoredPath)),
     );
     observer.before_group(&top);
-    if let Some(c) = ctx.conn {
+    if let Some(c) = conn {
         for path in &mut top {
             group_segments(&mut path.segments, c);
         }

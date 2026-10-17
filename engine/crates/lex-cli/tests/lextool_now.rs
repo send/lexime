@@ -172,9 +172,8 @@ impl Fixture {
             ],
             &[],
         );
-        run(
-            "explain",
-            &[
+        for (name, json) in [("explain", None), ("explain --json", Some("--json"))] {
+            let mut args = vec![
                 "explain",
                 &dict,
                 "きょう",
@@ -182,23 +181,10 @@ impl Fixture {
                 &conn,
                 "--history",
                 &hist,
-            ],
-            &[],
-        );
-        run(
-            "explain --json",
-            &[
-                "explain",
-                &dict,
-                "きょう",
-                "--conn",
-                &conn,
-                "--history",
-                &hist,
-                "--json",
-            ],
-            &[],
-        );
+            ];
+            args.extend(json);
+            run(name, &args, &[]);
+        }
         run(
             "accuracy --history",
             &[

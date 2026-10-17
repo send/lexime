@@ -1,28 +1,24 @@
 //! T-N1: the read path decays history against the `now` it is handed, never
 //! against the wall clock.
 //!
-//! Every history here was last used at `T0`, a moment in the future of any
-//! wall clock a test runs under (`decay` saturates a negative age to 0, so
-//! the wall clock would see every boost undecayed). Two injected moments pull
-//! apart from it:
-//! - `STALE`: ~1100 years on, every boost is decayed to 0. Any read that fell
-//!   back to the wall clock would still see the full boost and lift the
-//!   learned surface.
-//! - `HALF`: one half-life (168 h) on. A boost is exactly half its undecayed
-//!   value (`frequency * 3000`, capped at 15000); the wall clock would see it
-//!   whole.
+//! Every history here was last used at `T0`, a moment ahead of any wall clock
+//! a test runs under (see `testutil`), so a read that fell back to the clock
+//! would see every boost whole. Two injected moments pull apart from it:
+//! - `STALE`: every boost is decayed to 0, so nothing learned may lead, be
+//!   injected or chain. The wall clock would still see the full boost.
+//! - `half()`: one half-life on. A boost is exactly half its undecayed value
+//!   (`frequency * 3000`, capped at 15000); the wall clock would see it whole.
 
 use crate::converter::explain::explain;
-use crate::converter::testutil::test_dict;
-use crate::converter::{convert_nbest_with_history, convert_with_history, ConvertedSegment};
-use crate::dict::{DictEntry, TrieDictionary};
-use crate::user_history::UserHistory;
+use crate::converter::testutil::{entry, half, joined, test_dict, STALE, T0};
+use crate::converter::{
+    convert_nbest_with_history, convert_with_history, ConversionContext, ConvertedSegment,
+    HistoryAt,
+};
+use crate::dict::TrieDictionary;
+use crate::user_history::{now_epoch, UserHistory};
 
 use super::{generate_candidates, generate_prediction_candidates};
-
-const T0: u64 = 4_000_000_000;
-const HALF: u64 = T0 + 168 * 3600;
-const STALE: u64 = T0 + 10_000_000 * 3600;
 
 fn learned(sentences: &[&[(&str, &str)]]) -> UserHistory {
     let mut h = UserHistory::new();
@@ -36,20 +32,24 @@ fn learned(sentences: &[&[(&str, &str)]]) -> UserHistory {
     h
 }
 
-fn joined(paths: &[Vec<ConvertedSegment>]) -> Vec<String> {
-    paths
+fn nbest_surfaces(paths: &[Vec<ConvertedSegment>]) -> Vec<String> {
+    paths.iter().map(|p| joined(p)).collect()
+}
+
+fn position(surfaces: &[String], s: &str) -> usize {
+    surfaces
         .iter()
-        .map(|p| p.iter().map(|s| s.surface.as_str()).collect())
-        .collect()
+        .position(|x| x == s)
+        .unwrap_or_else(|| panic!("{s} missing from {surfaces:?}"))
 }
 
 #[test]
 fn the_fixture_separates_the_injected_now_from_the_wall_clock() {
     let h = learned(&[&[("きょう", "京")]]);
-    assert_eq!(h.unigram_boost("きょう", "京", HALF), 1500);
+    assert_eq!(h.unigram_boost("きょう", "京", half()), 1500);
     assert_eq!(h.unigram_boost("きょう", "京", STALE), 0);
     // What a read gone back to the wall clock would see.
-    let wall = crate::user_history::now_epoch();
+    let wall = now_epoch();
     assert!(wall < T0, "fixture: T0 must lie ahead of the wall clock");
     assert_eq!(h.unigram_boost("きょう", "京", wall), 3000);
 }
@@ -59,21 +59,15 @@ fn one_best_and_nbest_decay_against_the_injected_now() {
     let dict = test_dict();
     let h = learned(&[&[("きょう", "京")]]);
     // 今日 (3000) is the unlearned #1; a boost lifts 京 (5000) past it.
-    for (now, top) in [(STALE, "今日"), (HALF, "京")] {
+    for (now, top) in [(STALE, "今日"), (half(), "京")] {
+        let at = HistoryAt::new(&h, now);
         assert_eq!(
-            convert_with_history(&dict, None, &h, "きょう", now)[0].surface,
+            convert_with_history(&dict, None, at, "きょう")[0].surface,
             top,
             "1-best at {now}"
         );
         assert_eq!(
-            joined(&convert_nbest_with_history(
-                &dict,
-                None,
-                &h,
-                "きょう",
-                5,
-                now
-            ))[0],
+            nbest_surfaces(&convert_nbest_with_history(&dict, None, at, "きょう", 5))[0],
             top,
             "n-best at {now}"
         );
@@ -84,16 +78,17 @@ fn one_best_and_nbest_decay_against_the_injected_now() {
 fn explain_prices_history_at_the_injected_now() {
     let dict = test_dict();
     let h = learned(&[&[("きょう", "京")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
     // Half-life: boost = 3000 * 1/2 = 1500; a whole-path boost is 5x.
-    let half = explain(&dict, None, Some(&h), "きょう", 5, HALF);
+    let half = explain(&at(half()), "きょう", 5);
     let kyo = &half.paths[0];
     assert_eq!(kyo.surface(), "京");
     assert_eq!(kyo.history_breakdown.unigram_sum, 1500);
     assert_eq!(kyo.history_breakdown.whole_path_boost, 5 * 1500);
 
     // Decayed away: nothing is priced, and 京 does not lead.
-    let stale = explain(&dict, None, Some(&h), "きょう", 5, STALE);
+    let stale = explain(&at(STALE), "きょう", 5);
     assert_eq!(stale.paths[0].surface(), "今日");
     for p in &stale.paths {
         assert_eq!(p.history_breakdown.unigram_sum, 0, "{}", p.surface());
@@ -107,8 +102,9 @@ fn candidate_list_promotes_and_injects_by_the_injected_now() {
     // A learned kana (promotion) and a learned surface the dictionary lacks
     // (injection after the N-best).
     let h = learned(&[&[("きょう", "きょう")], &[("きょう", "強")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
-    let stale = generate_candidates(&dict, None, Some(&h), "きょう", 20, STALE);
+    let stale = generate_candidates(&at(STALE), "きょう", 20);
     assert_eq!(stale.surfaces[0], "今日", "{:?}", stale.surfaces);
     assert!(
         !stale.surfaces.contains(&"強".to_string()),
@@ -116,10 +112,9 @@ fn candidate_list_promotes_and_injects_by_the_injected_now() {
         stale.surfaces
     );
 
-    let half = generate_candidates(&dict, None, Some(&h), "きょう", 20, HALF);
-    // Both are learned at 1500, so the tie falls to the surface order
-    // (`by_boost_then_recency`): the kana is promoted to index 0, the other
+    // Both are learned at 1500: the kana is promoted to index 0, the other
     // learned surface is injected where the N-best ends.
+    let half = generate_candidates(&at(half()), "きょう", 20);
     assert_eq!(half.surfaces[0], "きょう", "{:?}", half.surfaces);
     assert!(
         half.surfaces.contains(&"強".to_string()),
@@ -132,75 +127,64 @@ fn candidate_list_promotes_and_injects_by_the_injected_now() {
 fn predictive_chains_bigrams_by_the_injected_now() {
     let dict = test_dict();
     let h = learned(&[&[("きょう", "今日"), ("は", "は")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
-    let stale = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20, STALE);
+    let stale = generate_prediction_candidates(&at(STALE), "きょう", 20);
     assert!(
         !stale.surfaces.contains(&"今日は".to_string()),
         "a decayed bigram does not chain: {:?}",
         stale.surfaces
     );
 
-    let half = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20, HALF);
+    let half = generate_prediction_candidates(&at(half()), "きょう", 20);
     assert!(
         half.surfaces.contains(&"今日は".to_string()),
         "{:?}",
         half.surfaces
     );
-    assert_eq!(h.bigram_successors("今日", HALF)[0].2, 1500);
+    assert_eq!(h.bigram_successors("今日", self::half())[0].2, 1500);
 }
 
 #[test]
 fn punctuation_ranking_reads_the_injected_now() {
-    let e = |surface: &str, cost: i16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    };
-    let dict =
-        TrieDictionary::from_entries(vec![("、".into(), vec![e("、", 1000), e("，", 2000)])]);
+    let dict = TrieDictionary::from_entries(vec![(
+        "、".into(),
+        vec![entry("、", 1000), entry("，", 2000)],
+    )]);
     let h = learned(&[&[("、", "，")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
     // Learned predictions come first; decayed away, the dictionary's cost
     // order stands.
-    let half = generate_candidates(&dict, None, Some(&h), "、", 9, HALF);
+    let half = generate_candidates(&at(half()), "、", 9);
     assert_eq!(half.surfaces[..2], ["，", "、"], "{:?}", half.surfaces);
-    let stale = generate_candidates(&dict, None, Some(&h), "、", 9, STALE);
+    let stale = generate_candidates(&at(STALE), "、", 9);
     assert_eq!(stale.surfaces[..2], ["、", "，"], "{:?}", stale.surfaces);
 }
 
 /// Longer readings only the prediction step lists: 京都 is cheaper than 教室,
 /// so only a learned 教室 can lead.
 fn predicting_dict() -> TrieDictionary {
-    let e = |surface: &str, cost: i16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    };
     TrieDictionary::from_entries(vec![
-        ("きょう".into(), vec![e("今日", 3000), e("京", 5000)]),
-        ("きょうと".into(), vec![e("京都", 4000)]),
-        ("きょうしつ".into(), vec![e("教室", 5000)]),
-        ("は".into(), vec![e("は", 2000)]),
+        (
+            "きょう".into(),
+            vec![entry("今日", 3000), entry("京", 5000)],
+        ),
+        ("きょうと".into(), vec![entry("京都", 4000)]),
+        ("きょうしつ".into(), vec![entry("教室", 5000)]),
+        ("は".into(), vec![entry("は", 2000)]),
     ])
-}
-
-fn position(surfaces: &[String], s: &str) -> usize {
-    surfaces
-        .iter()
-        .position(|x| x == s)
-        .unwrap_or_else(|| panic!("{s} missing from {surfaces:?}"))
 }
 
 #[test]
 fn predictions_are_ranked_by_the_injected_now() {
     let dict = predicting_dict();
     let h = learned(&[&[("きょうしつ", "教室")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
-    let stale = generate_candidates(&dict, None, Some(&h), "きょう", 20, STALE);
+    let stale = generate_candidates(&at(STALE), "きょう", 20);
     assert!(position(&stale.surfaces, "京都") < position(&stale.surfaces, "教室"));
-    let half = generate_candidates(&dict, None, Some(&h), "きょう", 20, HALF);
+    let half = generate_candidates(&at(half()), "きょう", 20);
     assert!(position(&half.surfaces, "教室") < position(&half.surfaces, "京都"));
 }
 
@@ -209,14 +193,15 @@ fn predictive_chains_from_listed_predictions_by_the_injected_now() {
     let dict = predicting_dict();
     // 教室 is listed by the prediction step, not by an N-best path.
     let h = learned(&[&[("きょうしつ", "教室"), ("は", "は")]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
 
-    let stale = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20, STALE);
+    let stale = generate_prediction_candidates(&at(STALE), "きょう", 20);
     assert!(
         !stale.surfaces.contains(&"教室は".to_string()),
         "{:?}",
         stale.surfaces
     );
-    let half = generate_prediction_candidates(&dict, None, Some(&h), "きょう", 20, HALF);
+    let half = generate_prediction_candidates(&at(half()), "きょう", 20);
     assert!(
         half.surfaces.contains(&"教室は".to_string()),
         "{:?}",
@@ -229,15 +214,44 @@ fn kana_goes_above_a_top_1_whose_learning_has_decayed() {
     let dict = test_dict();
     // 今日 (the #1) was learned at T0, the kana half a life before `now`.
     let mut h = learned(&[&[("きょう", "今日")]]);
-    h.record_at(&[("きょう".into(), "きょう".into())], STALE - 168 * 3600);
+    h.record_at(&[("きょう".into(), "きょう".into())], STALE - (half() - T0));
+    let ctx = ConversionContext::new(&dict, None).with_history(Some(&h), STALE);
 
     // The #1's learning is gone, so the learned kana takes index 0. Had the
     // #1 still counted as learned, the kana would sit at index 1 below it.
-    let list = generate_candidates(&dict, None, Some(&h), "きょう", 20, STALE);
+    let list = generate_candidates(&ctx, "きょう", 20);
     assert_eq!(
         list.surfaces[..2],
         ["きょう", "今日"],
         "{:?}",
         list.surfaces
     );
+}
+
+/// A number compound (二十) is created after history reranking and learned on
+/// the same terms: its boost, too, decays against the injected `now`.
+#[test]
+fn number_compound_is_boosted_at_the_injected_now() {
+    let dict = TrieDictionary::from_entries(vec![(
+        "にじゅう".into(),
+        vec![entry("二重", 3000), entry("荷重", 9000)],
+    )]);
+    // 荷重 was learned at T0; 二十 ten times, a day before STALE.
+    let mut h = learned(&[&[("にじゅう", "荷重")]]);
+    for _ in 0..10 {
+        h.record_at(&[("にじゅう".into(), "二十".into())], STALE - 24 * 3600);
+    }
+
+    // At STALE the 荷重 learning is gone and 二十's is 15000 * 1/(1+24/168).
+    let ctx = ConversionContext::new(&dict, None).with_history(Some(&h), STALE);
+    assert_eq!(h.unigram_boost("にじゅう", "荷重", STALE), 0);
+    assert_eq!(h.unigram_boost("にじゅう", "二十", STALE), 13125);
+    let nbest = ctx.convert_nbest_from_lattice(&ctx.build_lattice("にじゅう"), 5);
+    assert_eq!(joined(&nbest[0]), "二十");
+    let ex = explain(&ctx, "にじゅう", 5);
+    assert_eq!(ex.paths[0].surface(), "二十");
+    assert_eq!(ex.paths[0].history_breakdown.whole_path_boost, 5 * 13125);
+    // The price the pipeline set (not the observer's own breakdown) took the
+    // same boost off: the whole-path 5x plus the one segment's unigram.
+    assert_eq!(ex.paths[0].history_boost, 6 * 13125);
 }

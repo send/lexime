@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
+use crate::converter::testutil::joined;
 use crate::converter::PathOrigin;
 use crate::dict::{DictEntry, TrieDictionary};
-use crate::user_history::UserHistory;
+use crate::user_history::{now_epoch, UserHistory};
 
 use super::{
     generate_candidates, generate_candidates_priced, generate_prediction_candidates,
@@ -53,7 +54,11 @@ fn make_dict() -> TrieDictionary {
 #[test]
 fn test_punctuation_candidates() {
     let dict = make_dict();
-    let resp = generate_candidates(&dict, None, None, "。", 9, crate::user_history::now_epoch());
+    let resp = generate_candidates(
+        &crate::converter::ConversionContext::new(&dict, None),
+        "。",
+        9,
+    );
     assert!(resp.surfaces.contains(&"。".to_string()));
     assert!(resp.surfaces.contains(&"．".to_string()));
     assert!(resp.surfaces.contains(&".".to_string()));
@@ -64,12 +69,9 @@ fn test_punctuation_candidates() {
 fn test_normal_candidates() {
     let dict = make_dict();
     let resp = generate_candidates(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "きょう",
         9,
-        crate::user_history::now_epoch(),
     );
     // Viterbi #1 should be first (conversion result, not kana)
     // Kana should still be present
@@ -83,7 +85,11 @@ fn test_normal_candidates() {
 #[test]
 fn test_empty_reading() {
     let dict = make_dict();
-    let resp = generate_candidates(&dict, None, None, "", 9, crate::user_history::now_epoch());
+    let resp = generate_candidates(
+        &crate::converter::ConversionContext::new(&dict, None),
+        "",
+        9,
+    );
     assert!(resp.surfaces.is_empty());
     assert!(resp.paths.is_empty());
 }
@@ -92,12 +98,9 @@ fn test_empty_reading() {
 fn test_no_duplicates() {
     let dict = make_dict();
     let resp = generate_candidates(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     let unique: HashSet<&String> = resp.surfaces.iter().collect();
     assert_eq!(
@@ -117,18 +120,16 @@ fn test_punctuation_mode_detected() {
 
 #[test]
 fn test_kana_promoted_by_history() {
+    let now = now_epoch();
     let dict = make_dict();
     let mut h = UserHistory::new();
     // Record hiragana selection: user chose "きょう" (kana) for reading "きょう"
     h.record(&[("きょう".into(), "きょう".into())]);
 
     let resp = generate_candidates(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "きょう",
         9,
-        crate::user_history::now_epoch(),
     );
     // Kana "きょう" should appear at position 1 (after Viterbi #1, before other N-best)
     assert_eq!(
@@ -139,18 +140,16 @@ fn test_kana_promoted_by_history() {
 
 #[test]
 fn test_prediction_bigram_chaining() {
+    let now = now_epoch();
     let dict = make_dict();
     let mut h = UserHistory::new();
     // Record a sentence: 今日は → bigrams: 今日→は
     h.record(&[("きょう".into(), "今日".into()), ("は".into(), "は".into())]);
 
     let resp = generate_prediction_candidates(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     // Should contain chained phrase "今日は"
     assert!(
@@ -173,12 +172,9 @@ fn test_prediction_bigram_chaining() {
 fn test_prediction_no_chaining_without_history() {
     let dict = make_dict();
     let resp = generate_prediction_candidates(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     // Without history, should behave like standard candidates
     assert!(resp.surfaces.contains(&"今日".to_string()));
@@ -187,6 +183,7 @@ fn test_prediction_no_chaining_without_history() {
 
 #[test]
 fn test_prediction_multi_word_chain() {
+    let now = now_epoch();
     let entries = vec![
         (
             "きょう".to_string(),
@@ -236,12 +233,9 @@ fn test_prediction_multi_word_chain() {
     ]);
 
     let resp = generate_prediction_candidates(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     // Should contain the full chained phrase
     assert!(
@@ -253,18 +247,16 @@ fn test_prediction_multi_word_chain() {
 
 #[test]
 fn test_prediction_cycle_produces_no_garbage() {
+    let now = now_epoch();
     let dict = make_dict();
     let mut h = UserHistory::new();
     // Create a cycle: は→は (self-loop)
     h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
 
     let resp = generate_prediction_candidates(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "は",
         20,
-        crate::user_history::now_epoch(),
     );
     // No candidate should contain repeated "ははは..." garbage
     for surface in &resp.surfaces {
@@ -280,12 +272,9 @@ fn test_prediction_cycle_produces_no_garbage() {
 fn test_kana_not_promoted_without_history() {
     let dict = make_dict();
     let resp = generate_candidates(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "きょう",
         9,
-        crate::user_history::now_epoch(),
     );
     // Without history, kana should NOT be at position 1
     // (it should be after all N-best paths)
@@ -303,26 +292,21 @@ fn test_kana_not_promoted_without_history() {
 /// the same index (one run, so no second population to drift from).
 #[test]
 fn test_priced_candidates_are_the_production_list() {
+    let now = now_epoch();
     let dict = make_dict();
     let mut h = UserHistory::new();
     h.record(&[("きょう".into(), "京".into())]);
     for history in [None, Some(&h)] {
         for reading in ["きょう", "きょうは", "。", ""] {
             let plain = generate_candidates(
-                &dict,
-                None,
-                history,
+                &crate::converter::ConversionContext::new(&dict, None).with_history(history, now),
                 reading,
                 20,
-                crate::user_history::now_epoch(),
             );
             let priced = generate_candidates_priced(
-                &dict,
-                None,
-                history,
+                &crate::converter::ConversionContext::new(&dict, None).with_history(history, now),
                 reading,
                 20,
-                crate::user_history::now_epoch(),
             );
             assert_eq!(priced.response.surfaces, plain.surfaces, "{reading}");
             let keys =
@@ -352,10 +336,6 @@ fn test_priced_candidates_are_the_production_list() {
     }
 }
 
-fn joined(path: &[crate::converter::ConvertedSegment]) -> String {
-    path.iter().map(|s| s.surface.as_str()).collect()
-}
-
 /// Each price names the stage that set it: an offer that undercuts the
 /// real path's price owns its slot, the model owns the rest.
 #[test]
@@ -374,12 +354,9 @@ fn test_diagnostics_record_who_priced_each_path() {
         ("が".into(), vec![e("が", 0), e("蛾", 100)]),
     ]);
     let priced = generate_candidates_priced(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "あったほうが",
         20,
-        crate::user_history::now_epoch(),
     );
     let priced_by = |surface: &str| {
         let i = priced
@@ -399,6 +376,7 @@ fn test_diagnostics_record_who_priced_each_path() {
 /// stage moves it.
 #[test]
 fn test_diagnostics_record_injected_surfaces() {
+    let now = now_epoch();
     let dict = make_dict();
     let learned = |surfaces: &[&str]| {
         let mut h = UserHistory::new();
@@ -412,12 +390,9 @@ fn test_diagnostics_record_injected_surfaces() {
     // the N-best block. 京 is an N-best path, so injection adds nothing.
     let h = learned(&["卿", "京"]);
     let priced = generate_candidates_priced(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     assert_eq!(priced.diagnostics.injected, vec!["卿".to_string()]);
     let n = priced.response.paths.len();
@@ -427,24 +402,18 @@ fn test_diagnostics_record_injected_surfaces() {
     // the kana stage moves it to the front (a move, not an insertion).
     let h = learned(&["きょう"]);
     let priced = generate_candidates_priced(
-        &dict,
-        None,
-        Some(&h),
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     assert!(priced.response.paths.iter().any(|p| joined(p) == "きょう"));
     assert!(priced.diagnostics.injected.is_empty());
     assert_eq!(priced.response.surfaces[0], "きょう");
 
     let priced = generate_candidates_priced(
-        &dict,
-        None,
-        None,
+        &crate::converter::ConversionContext::new(&dict, None),
         "きょう",
         20,
-        crate::user_history::now_epoch(),
     );
     assert!(priced.diagnostics.injected.is_empty());
 }

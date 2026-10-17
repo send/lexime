@@ -217,12 +217,9 @@ fn test_stale_epoch_response_does_not_rewind_selection() {
 
     // The response arrives while the epoch is unchanged: accepted.
     let cand = generate_candidates(
-        &*dict,
-        None,
-        None,
+        &lex_core::converter::ConversionContext::new(&*dict, None),
         "きょう",
         20,
-        lex_core::user_history::now_epoch(),
     );
     let r = session.receive_candidates(
         stale_epoch,
@@ -274,12 +271,9 @@ fn test_stale_epoch_response_does_not_reshow_hidden_panel() {
 
     // The in-flight response now arrives: epoch mismatch → discarded.
     let cand = generate_candidates(
-        &*dict,
-        None,
-        None,
+        &lex_core::converter::ConversionContext::new(&*dict, None),
         "きょう",
         20,
-        lex_core::user_history::now_epoch(),
     );
     let r = session.receive_candidates(stale_epoch, "きょう", cand.surfaces, cand.paths);
     assert!(
@@ -360,12 +354,9 @@ fn test_provisional_cleared_by_async_response() {
     assert!(session.comp().candidates.provisional);
 
     let cand = generate_candidates(
-        &*dict,
-        None,
-        None,
+        &lex_core::converter::ConversionContext::new(&*dict, None),
         "きょう",
         20,
-        lex_core::user_history::now_epoch(),
     );
     let epoch = session.epoch;
     let r = session.receive_candidates(epoch, "きょう", cand.surfaces, cand.paths);
@@ -478,12 +469,9 @@ fn auto_commit_and_stability_follow_learned_top() {
     session.set_defer_candidates(true);
     // The fixture: the model #1 is segmented from きょう.
     let plain = generate_candidates(
-        &*dict,
-        None,
-        None,
+        &lex_core::converter::ConversionContext::new(&*dict, None),
         "きょうはいいい",
         20,
-        lex_core::user_history::now_epoch(),
     );
     assert_eq!(plain.paths[0][0].reading, "きょう");
 

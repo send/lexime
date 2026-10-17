@@ -1,9 +1,7 @@
 use std::path::Path;
 use std::process;
 
-use lex_core::converter::{
-    convert, convert_nbest, convert_nbest_with_history, convert_with_history,
-};
+use lex_core::converter::ConversionContext;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::TrieDictionary;
 
@@ -16,7 +14,14 @@ macro_rules! die {
     };
 }
 
-pub fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, history: Option<&str>) {
+pub fn convert_cmd(
+    dict_file: &str,
+    conn_file: &str,
+    kana: &str,
+    n: usize,
+    history: Option<&str>,
+    now: u64,
+) {
     let dict = die!(
         TrieDictionary::open(Path::new(dict_file)),
         "Error opening dictionary: {}"
@@ -36,25 +41,17 @@ pub fn convert_cmd(dict_file: &str, conn_file: &str, kana: &str, n: usize, histo
         h
     });
 
-    // This command is its own entry point: its one clock read.
-    let now = lex_core::user_history::now_epoch();
+    let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(user_history.as_ref(), now);
+    let lattice = ctx.build_lattice(kana);
     if n <= 1 {
-        let result = if let Some(ref h) = user_history {
-            convert_with_history(&dict, Some(&conn), h, kana, now)
-        } else {
-            convert(&dict, Some(&conn), kana)
-        };
+        let result = ctx.convert_from_lattice(&lattice);
         let segs: Vec<String> = result
             .iter()
             .map(|s| format!("{}({})", s.surface, s.reading))
             .collect();
         println!("{}", segs.join(" | "));
     } else {
-        let nbest = if let Some(ref h) = user_history {
-            convert_nbest_with_history(&dict, Some(&conn), h, kana, n, now)
-        } else {
-            convert_nbest(&dict, Some(&conn), kana, n)
-        };
+        let nbest = ctx.convert_nbest_from_lattice(&lattice, n);
         for (i, path) in nbest.iter().enumerate() {
             let segs: Vec<String> = path
                 .iter()

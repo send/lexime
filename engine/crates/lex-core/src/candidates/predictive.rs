@@ -62,13 +62,7 @@ pub fn generate(
 
     // Punctuation falls back to standard punctuation candidates
     if punctuation_alternatives(reading).is_some() {
-        return generate_punctuation_candidates(
-            ctx.dict,
-            ctx.history,
-            reading,
-            max_results,
-            ctx.now,
-        );
+        return generate_punctuation_candidates(ctx, reading, max_results);
     }
 
     // Get base candidates (same Viterbi N-best + predictions as Standard)
@@ -99,7 +93,7 @@ pub fn generate(
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
 
         chained_starts.insert(joined.clone());
-        if let Some(chained) = chain_bigram_phrase(h, last_surface, max_chain, ctx.now) {
+        if let Some(chained) = chain_bigram_phrase(h.history, last_surface, max_chain, h.now) {
             let full = format!("{}{}", joined, &chained[last_surface.len()..]);
             let chain_len = full.chars().count();
             if full != joined {
@@ -113,7 +107,7 @@ pub fn generate(
         if chained_starts.contains(surface) {
             continue;
         }
-        if let Some(chained) = chain_bigram_phrase(h, surface, max_chain, ctx.now) {
+        if let Some(chained) = chain_bigram_phrase(h.history, surface, max_chain, h.now) {
             let chain_len = chained.chars().count();
             chained_phrases.push((chained, chain_len));
         }
@@ -151,7 +145,7 @@ pub fn generate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user_history::UserHistory;
+    use crate::user_history::{now_epoch, UserHistory};
 
     #[test]
     fn test_chain_bigram_phrase_basic() {
@@ -161,14 +155,14 @@ mod tests {
             ("は".into(), "は".into()),
             ("いい".into(), "良い".into()),
         ]);
-        let result = chain_bigram_phrase(&h, "今日", 5, crate::user_history::now_epoch());
+        let result = chain_bigram_phrase(&h, "今日", 5, now_epoch());
         assert_eq!(result.as_deref(), Some("今日は良い"));
     }
 
     #[test]
     fn test_chain_bigram_phrase_no_successors() {
         let h = UserHistory::new();
-        assert!(chain_bigram_phrase(&h, "今日", 5, crate::user_history::now_epoch()).is_none());
+        assert!(chain_bigram_phrase(&h, "今日", 5, now_epoch()).is_none());
     }
 
     #[test]
@@ -178,7 +172,7 @@ mod tests {
         h.record(&[("あ".into(), "A".into()), ("び".into(), "B".into())]);
         h.record(&[("び".into(), "B".into()), ("あ".into(), "A".into())]);
 
-        let result = chain_bigram_phrase(&h, "A", 10, crate::user_history::now_epoch());
+        let result = chain_bigram_phrase(&h, "A", 10, now_epoch());
         // Should chain A→B then stop (A already visited)
         assert_eq!(result.as_deref(), Some("AB"));
     }
@@ -189,7 +183,7 @@ mod tests {
         // Self-loop: は→は
         h.record(&[("は".into(), "は".into()), ("は".into(), "は".into())]);
 
-        let result = chain_bigram_phrase(&h, "は", 10, crate::user_history::now_epoch());
+        let result = chain_bigram_phrase(&h, "は", 10, now_epoch());
         // Should not chain at all (first successor is "は" which is already visited)
         assert!(result.is_none());
     }

@@ -280,12 +280,9 @@ fn bench_standard(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
             b.iter(|| {
                 generate_candidates(
-                    &dict,
-                    None,
-                    None,
+                    &lex_core::converter::ConversionContext::new(&dict, None),
                     kana,
                     20,
-                    lex_core::user_history::now_epoch(),
                 )
             });
         });
@@ -300,12 +297,9 @@ fn bench_predictive(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
             b.iter(|| {
                 generate_prediction_candidates(
-                    &dict,
-                    None,
-                    None,
+                    &lex_core::converter::ConversionContext::new(&dict, None),
                     kana,
                     20,
-                    lex_core::user_history::now_epoch(),
                 )
             });
         });

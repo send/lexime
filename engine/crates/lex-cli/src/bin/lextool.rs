@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use lex_cli::commands::rank_ops::{self, joined_surface, width_disagreements, WindowCheck};
 use lex_core::converter::tune;
-use lex_core::converter::{convert_nbest, convert_nbest_with_history};
+use lex_core::converter::{
+    convert_nbest, convert_nbest_with_history, ConversionContext, HistoryAt,
+};
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use lex_core::user_history::UserHistory;
@@ -498,27 +500,21 @@ fn read_readings(input_file: &str) -> Vec<String> {
 }
 
 fn run_snapshot(
-    dict: &TrieDictionary,
-    conn: &ConnectionMatrix,
-    hist: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     n: usize,
     kind: SnapshotKind,
-    now: u64,
 ) -> SnapshotEntry {
     let surfaces: Vec<String> = match kind {
         SnapshotKind::Nbest => {
-            let paths = match hist {
-                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n, now),
-                None => convert_nbest(dict, Some(conn), reading, n),
-            };
+            let paths = ctx.convert_nbest_from_lattice(&ctx.build_lattice(reading), n);
             paths.iter().map(|segs| joined_surface(segs)).collect()
         }
         SnapshotKind::Candidates | SnapshotKind::Predictive => {
             let list = if kind == SnapshotKind::Candidates {
-                rank_ops::production_candidates(dict, conn, hist, reading, now)
+                rank_ops::production_candidates(ctx, reading)
             } else {
-                rank_ops::production_prediction_candidates(dict, conn, hist, reading, now)
+                rank_ops::production_prediction_candidates(ctx, reading)
             };
             list.surfaces.into_iter().take(n).collect()
         }
@@ -642,8 +638,11 @@ fn main() {
             let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history);
             // Over-fetch when filtering by surface
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
-            let mut result =
-                explain::explain(&dict, conn.as_ref(), hist.as_ref(), &reading, fetch_n, now);
+            let mut result = explain::explain(
+                &ConversionContext::new(&dict, conn.as_ref()).with_history(hist.as_ref(), now),
+                &reading,
+                fetch_n,
+            );
 
             if let Some(ref filter) = surface {
                 result.paths.retain(|p| p.surface().contains(filter));
@@ -770,10 +769,9 @@ fn main() {
                 }
             }
 
-            let results: Vec<AccuracyResult> = cases
-                .iter()
-                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case, now))
-                .collect();
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
+            let results: Vec<AccuracyResult> =
+                cases.iter().map(|case| eval_case(&ctx, case)).collect();
 
             // Compute summary
             let total = results.len();
@@ -916,9 +914,10 @@ fn main() {
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
             let entries: Vec<SnapshotEntry> = readings
                 .iter()
-                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind, now))
+                .map(|reading| run_snapshot(&ctx, reading, n, kind))
                 .collect();
             write_jsonl(&output_file, &entries).unwrap_or_else(|e| {
                 eprintln!("Failed to write snapshot: {}", e);
@@ -1071,11 +1070,16 @@ fn main() {
                     .take(n)
                     .position(|s| s == dominant)
                     .map(|i| i + 1);
-                let hist_top1: String =
-                    convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1, now)
-                        .first()
-                        .map(|segs| joined_surface(segs))
-                        .unwrap_or_default();
+                let hist_top1: String = convert_nbest_with_history(
+                    &dict,
+                    Some(&conn),
+                    HistoryAt::new(&hist, now),
+                    reading,
+                    1,
+                )
+                .first()
+                .map(|segs| joined_surface(segs))
+                .unwrap_or_default();
 
                 misses.push(AuditMiss {
                     reading: reading.to_string(),
@@ -1154,13 +1158,14 @@ fn main() {
                 baseline.insert(entry.reading.clone(), entry);
             }
 
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
             let mut changed = 0usize;
             let mut same = 0usize;
             let mut new_count = 0usize;
             let total = readings.len();
 
             for reading in &readings {
-                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind, now);
+                let current = run_snapshot(&ctx, reading, n, kind);
 
                 match baseline.get(reading) {
                     Some(base) => {
@@ -1257,16 +1262,9 @@ fn main() {
                 Some(ud) => Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)])),
                 None => Box::new(trie),
             };
-            let (report, lines) = rank_ops::replay(
-                &*dict,
-                &conn,
-                hist.as_ref(),
-                Path::new(&log_file),
-                from_line,
-                verbose,
-                now,
-            )
-            .unwrap_or_else(|e| die(e));
+            let ctx = ConversionContext::new(&*dict, Some(&conn)).with_history(hist.as_ref(), now);
+            let (report, lines) = rank_ops::replay(&ctx, Path::new(&log_file), from_line, verbose)
+                .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
@@ -1399,13 +1397,12 @@ fn write_jsonl<T: Serialize>(path: &str, items: &[T]) -> Result<(), String> {
 /// Evaluate one accuracy case. Gates run in order and the first to fail
 /// decides the result: no-history `baseline`, top-1 at n=1, then the other
 /// display widths and the `[cases.window]` expectations.
-fn eval_case(
-    dict: &TrieDictionary,
-    conn: &ConnectionMatrix,
-    hist: Option<&UserHistory>,
-    case: &AccuracyCase,
-    now: u64,
-) -> AccuracyResult {
+fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult {
+    // The no-history arms of a case run on the same context less its history.
+    let plain_ctx = ConversionContext {
+        history: None,
+        ..*ctx
+    };
     let base = AccuracyResult {
         reading: case.reading.clone(),
         expected: case.expected.clone(),
@@ -1436,7 +1433,7 @@ fn eval_case(
     let plain = case
         .baseline
         .as_ref()
-        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading, now));
+        .map(|_| rank_ops::top1_widths(&plain_ctx, &case.reading));
     let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
     if let (Some(want), Some(w)) = (&case.baseline, &plain) {
         if w.nbest_head != *want {
@@ -1449,7 +1446,7 @@ fn eval_case(
         }
     }
 
-    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading, now);
+    let widths = rank_ops::top1_widths(ctx, &case.reading);
     let actual = widths.nbest_head.clone();
     if actual != case.expected {
         return fail(Failure::Top1, actual, baseline_actual, Vec::new());
@@ -1480,7 +1477,7 @@ fn eval_case(
                 Some(p) => b.violations(w.n, &p.list),
                 None => b.violations(
                     w.n,
-                    &rank_ops::production_candidates(dict, conn, None, &case.reading, now),
+                    &rank_ops::production_candidates(&plain_ctx, &case.reading),
                 ),
             };
             window.extend(list.into_iter().map(|v| format!("baseline: {v}")));

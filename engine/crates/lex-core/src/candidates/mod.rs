@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
-use crate::converter::{build_lattice, ConversionContext, ConvertedSegment, Lattice, PathOrigin};
-use crate::dict::Dictionary;
-use crate::user_history::UserHistory;
+use crate::converter::{
+    build_lattice, ConversionContext, ConvertedSegment, HistoryAt, Lattice, PathOrigin,
+};
 
 pub mod predictive;
 pub mod standard;
@@ -77,19 +77,17 @@ fn punctuation_alternatives(reading: &str) -> Option<&'static [&'static str]> {
 
 /// Generate punctuation candidates: learned predictions first, then default + alternatives.
 fn generate_punctuation_candidates(
-    dict: &dyn Dictionary,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
-    now: u64,
 ) -> CandidateResponse {
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
     // Learned predictions first
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = ctx.history {
         let fetch_limit = max_results.max(200);
-        let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
+        let mut ranked = ctx.dict.predict_ranked(reading, fetch_limit, 1000);
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
             let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
             let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
@@ -130,51 +128,33 @@ fn generate_punctuation_candidates(
 /// Builds a lattice internally. Use `generate_candidates_from_lattice` when
 /// a pre-built lattice is available (e.g. deferred candidate mode).
 pub fn generate_candidates(
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
-    now: u64,
 ) -> CandidateResponse {
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history,
-        now,
-    };
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
-        return standard::generate(&ctx, reading, max_results, &Lattice::empty());
+        return standard::generate(ctx, reading, max_results, &Lattice::empty());
     }
-    let lattice = build_lattice(dict, reading);
-    standard::generate(&ctx, reading, max_results, &lattice)
+    let lattice = build_lattice(ctx.dict, reading);
+    standard::generate(ctx, reading, max_results, &lattice)
 }
 
 /// [`generate_candidates`] with the [`CandidateDiagnostics`] of the same run
 /// (each N-best path's price and the stage that set it, the injected learned
 /// surfaces). Diagnostic entry point; the IME uses [`generate_candidates`].
 pub fn generate_candidates_priced(
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
-    now: u64,
 ) -> PricedCandidates {
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
         return PricedCandidates {
-            response: generate_candidates(dict, conn, history, reading, max_results, now),
+            response: generate_candidates(ctx, reading, max_results),
             diagnostics: CandidateDiagnostics::default(),
         };
     }
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history,
-        now,
-    };
-    let lattice = build_lattice(dict, reading);
-    standard::generate_normal_priced(&ctx, reading, max_results, &lattice)
+    let lattice = build_lattice(ctx.dict, reading);
+    standard::generate_normal_priced(ctx, reading, max_results, &lattice)
 }
 
 /// Unified candidate generation from a pre-built lattice.
@@ -182,41 +162,23 @@ pub fn generate_candidates_priced(
 /// Uses `lattice.input` as the reading to prevent mismatch.
 pub fn generate_candidates_from_lattice(
     lattice: &Lattice,
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     max_results: usize,
-    now: u64,
 ) -> CandidateResponse {
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history,
-        now,
-    };
-    standard::generate(&ctx, &lattice.input, max_results, lattice)
+    standard::generate(ctx, &lattice.input, max_results, lattice)
 }
 
 /// Generate prediction candidates with bigram chaining.
 pub fn generate_prediction_candidates(
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
-    now: u64,
 ) -> CandidateResponse {
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
-        return generate_candidates(dict, conn, history, reading, max_results, now);
+        return generate_candidates(ctx, reading, max_results);
     }
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history,
-        now,
-    };
-    let lattice = build_lattice(dict, reading);
-    predictive::generate(&ctx, reading, max_results, &lattice)
+    let lattice = build_lattice(ctx.dict, reading);
+    predictive::generate(ctx, reading, max_results, &lattice)
 }
 
 /// Generate prediction candidates from a pre-built lattice.
@@ -224,17 +186,8 @@ pub fn generate_prediction_candidates(
 /// Uses `lattice.input` as the reading to prevent mismatch.
 pub fn generate_prediction_candidates_from_lattice(
     lattice: &Lattice,
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     max_results: usize,
-    now: u64,
 ) -> CandidateResponse {
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history,
-        now,
-    };
-    predictive::generate(&ctx, &lattice.input, max_results, lattice)
+    predictive::generate(ctx, &lattice.input, max_results, lattice)
 }

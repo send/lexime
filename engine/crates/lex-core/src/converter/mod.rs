@@ -37,21 +37,54 @@ pub use lattice::{build_lattice, Lattice};
 use viterbi::{viterbi_nbest, ScoredPath};
 pub use viterbi::{ConvertedSegment, PathOrigin};
 
-/// Shared conversion resources: dictionary, connection matrix, and user history.
+/// A user history together with the moment its decay is measured at.
 ///
-/// Groups the `(dict, conn, history)` triple that appears across conversion
-/// and candidate generation APIs, plus the `now` every history read decays
-/// against. The read path never reads the wall clock: the entry point
-/// (IME session, worker, `lextool`) reads it once and hands it down here.
-/// `now` is unused when `history` is `None`.
-pub struct ConversionContext<'a> {
-    pub dict: &'a dyn Dictionary,
-    pub conn: Option<&'a ConnectionMatrix>,
-    pub history: Option<&'a UserHistory>,
+/// The read path never reads the wall clock: the entry point (IME session,
+/// candidate worker, `lextool`, `dictool`) reads it once and pairs it with the
+/// history here. A `now` exists only beside a history, so a conversion without
+/// one has no timestamp to pass or to get wrong.
+#[derive(Clone, Copy)]
+pub struct HistoryAt<'a> {
+    pub history: &'a UserHistory,
     pub now: u64,
 }
 
-impl ConversionContext<'_> {
+impl<'a> HistoryAt<'a> {
+    pub fn new(history: &'a UserHistory, now: u64) -> Self {
+        Self { history, now }
+    }
+}
+
+/// Shared conversion resources: dictionary, connection matrix, and user
+/// history (with the `now` it decays against).
+///
+/// Groups what appears across conversion and candidate generation APIs; every
+/// read-path entry point takes one.
+#[derive(Clone, Copy)]
+pub struct ConversionContext<'a> {
+    pub dict: &'a dyn Dictionary,
+    pub conn: Option<&'a ConnectionMatrix>,
+    pub history: Option<HistoryAt<'a>>,
+}
+
+impl<'a> ConversionContext<'a> {
+    /// A context without history.
+    pub fn new(dict: &'a dyn Dictionary, conn: Option<&'a ConnectionMatrix>) -> Self {
+        Self {
+            dict,
+            conn,
+            history: None,
+        }
+    }
+
+    /// The same context with `history` (decayed at `now`) when there is one.
+    pub fn with_history(self, history: Option<&'a UserHistory>, now: u64) -> Self {
+        Self {
+            history: history.map(|h| HistoryAt::new(h, now)),
+            ..self
+        }
+    }
+
     /// Build a lattice from a kana string.
     pub fn build_lattice(&self, kana: &str) -> Lattice {
         build_lattice(self.dict, kana)
@@ -136,12 +169,7 @@ pub fn convert(
     if kana.is_empty() {
         return Vec::new();
     }
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history: None,
-        now: 0,
-    };
+    let ctx = ConversionContext::new(dict, conn);
     let lattice = ctx.build_lattice(kana);
     ctx.convert_from_lattice(&lattice)
 }
@@ -150,18 +178,15 @@ pub fn convert(
 pub fn convert_with_history(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
-    history: &UserHistory,
+    history: HistoryAt<'_>,
     kana: &str,
-    now: u64,
 ) -> Vec<ConvertedSegment> {
     if kana.is_empty() {
         return Vec::new();
     }
     let ctx = ConversionContext {
-        dict,
-        conn,
         history: Some(history),
-        now,
+        ..ConversionContext::new(dict, conn)
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_from_lattice(&lattice)
@@ -177,12 +202,7 @@ pub fn convert_nbest(
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
-    let ctx = ConversionContext {
-        dict,
-        conn,
-        history: None,
-        now: 0,
-    };
+    let ctx = ConversionContext::new(dict, conn);
     let lattice = ctx.build_lattice(kana);
     ctx.convert_nbest_from_lattice(&lattice, n)
 }
@@ -191,19 +211,16 @@ pub fn convert_nbest(
 pub fn convert_nbest_with_history(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
-    history: &UserHistory,
+    history: HistoryAt<'_>,
     kana: &str,
     n: usize,
-    now: u64,
 ) -> Vec<Vec<ConvertedSegment>> {
     if kana.is_empty() || n == 0 {
         return Vec::new();
     }
     let ctx = ConversionContext {
-        dict,
-        conn,
         history: Some(history),
-        now,
+        ..ConversionContext::new(dict, conn)
     };
     let lattice = ctx.build_lattice(kana);
     ctx.convert_nbest_from_lattice(&lattice, n)

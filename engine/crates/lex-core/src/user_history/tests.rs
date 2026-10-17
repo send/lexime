@@ -114,7 +114,7 @@ fn test_reorder_candidates() {
             right_id: 0,
         },
     ];
-    let reordered = h.reorder_candidates("きょう", &entries, crate::user_history::now_epoch());
+    let reordered = h.reorder_candidates("きょう", &entries, now_epoch());
     assert_eq!(reordered[0].surface, "京");
 }
 
@@ -235,7 +235,7 @@ fn test_reorder_candidates_no_boost_preserves_order() {
             right_id: 0,
         },
     ];
-    let reordered = h.reorder_candidates("きょう", &entries, crate::user_history::now_epoch());
+    let reordered = h.reorder_candidates("きょう", &entries, now_epoch());
     // All boosts are 0 → original order preserved
     assert_eq!(reordered[0].surface, "今日");
     assert_eq!(reordered[1].surface, "京");
@@ -272,19 +272,20 @@ fn test_bigram_successors() {
         ("は".into(), "は".into()),
         ("いい".into(), "良い".into()),
     ]);
-    let succs = h.bigram_successors("今日", crate::user_history::now_epoch());
+    let now = now_epoch();
+    let succs = h.bigram_successors("今日", now);
     assert_eq!(succs.len(), 1);
     assert_eq!(succs[0].0, "は"); // reading
     assert_eq!(succs[0].1, "は"); // surface
     assert!(succs[0].2 > 0); // boost
 
-    let succs2 = h.bigram_successors("は", crate::user_history::now_epoch());
+    let succs2 = h.bigram_successors("は", now);
     assert_eq!(succs2.len(), 1);
     assert_eq!(succs2[0].0, "いい");
     assert_eq!(succs2[0].1, "良い");
 
     // No successors for "良い" (end of chain)
-    let succs3 = h.bigram_successors("良い", crate::user_history::now_epoch());
+    let succs3 = h.bigram_successors("良い", now);
     assert!(succs3.is_empty());
 }
 
@@ -304,7 +305,7 @@ fn equal_boosts_are_ordered_by_key_not_by_map_order() {
         h.record_at(&[("よみ".into(), s.into())], now);
     }
 
-    let succs = h.bigram_successors("前", crate::user_history::now_epoch());
+    let succs = h.bigram_successors("前", now);
     assert_eq!(succs.len(), surfaces.len());
     assert!(
         succs.windows(2).all(|w| w[0].2 == w[1].2),
@@ -348,9 +349,7 @@ fn equal_boosts_prefer_the_more_recent_entry() {
 #[test]
 fn test_bigram_successors_empty_history() {
     let h = UserHistory::new();
-    assert!(h
-        .bigram_successors("今日", crate::user_history::now_epoch())
-        .is_empty());
+    assert!(h.bigram_successors("今日", now_epoch()).is_empty());
 }
 
 #[test]
@@ -973,16 +972,9 @@ fn test_residue_is_not_part_of_the_checkpoint_body() {
 /// the clock would see the boost whole.
 #[test]
 fn reads_decay_against_the_now_they_are_handed() {
-    const T0: u64 = 4_000_000_000;
-    let half = T0 + 168 * 3600; // one half-life: 3000 -> 1500
-    let stale = T0 + 10_000_000 * 3600; // decayed to 0
-    let e = |surface: &str, cost: i16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    };
-    let entries = vec![e("今日", 3000), e("京", 5000)];
+    use crate::converter::testutil::{entry, half, STALE, T0};
+
+    let entries = vec![entry("今日", 3000), entry("京", 5000)];
 
     let mut h = UserHistory::new();
     h.record_at(
@@ -1000,12 +992,12 @@ fn reads_decay_against_the_now_they_are_handed() {
             .map(|e| e.surface)
             .collect()
     };
-    assert_eq!(surfaces(half), ["京", "今日"]);
-    assert_eq!(surfaces(stale), ["今日", "京"]);
+    assert_eq!(surfaces(half()), ["京", "今日"]);
+    assert_eq!(surfaces(STALE), ["今日", "京"]);
 
     assert_eq!(
-        h.bigram_successors("京", half),
+        h.bigram_successors("京", half()),
         [("は".to_string(), "は".to_string(), 1500)]
     );
-    assert!(h.bigram_successors("京", stale).is_empty());
+    assert!(h.bigram_successors("京", STALE).is_empty());
 }

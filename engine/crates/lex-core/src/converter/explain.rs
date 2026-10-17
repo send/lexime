@@ -4,7 +4,6 @@ use serde::Serialize;
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
-use crate::user_history::UserHistory;
 
 use crate::settings::settings;
 
@@ -17,6 +16,7 @@ use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessOb
 use super::reranker::{compute_history_boost, FeaturePricer};
 use super::rewriter::RESCUE_OFFSET;
 use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
+use super::{ConversionContext, HistoryAt};
 
 // Re-export so downstream crates (e.g. lex-cli) can name the type behind
 // `ExplainPath::history_breakdown` — the definition lives in the crate-private
@@ -194,11 +194,10 @@ struct PreHistorySnapshot {
 /// (numeric, katakana) take their breakdown from `override_boosts` instead:
 /// that stage boosts them itself, after history_rerank.
 struct ExplainObserver<'a> {
-    history: Option<&'a UserHistory>,
+    history: Option<HistoryAt<'a>>,
     /// Needed so the displayed breakdown matches `history_rerank`'s
     /// function-word exclusion for per-segment unigram boosts.
     conn: Option<&'a ConnectionMatrix>,
-    now: u64,
     /// viterbi_cost before resegment/rerank — the raw Viterbi output.
     original_costs: HashMap<String, i64>,
     /// State at the post-rerank / pre-history-rerank boundary.
@@ -220,16 +219,15 @@ struct ExplainObserver<'a> {
 }
 
 impl<'a> ExplainObserver<'a> {
-    fn new(
-        history: Option<&'a UserHistory>,
-        conn: Option<&'a ConnectionMatrix>,
-        dict: &'a dyn Dictionary,
-        now: u64,
-    ) -> Self {
+    fn new(conv: &ConversionContext<'a>) -> Self {
+        let ConversionContext {
+            dict,
+            conn,
+            history,
+        } = *conv;
         Self {
             history,
             conn,
-            now,
             original_costs: HashMap::new(),
             pre_history: HashMap::new(),
             override_boosts: HashMap::new(),
@@ -256,7 +254,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
         self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
         for p in paths {
             let breakdown = match self.history {
-                Some(h) => compute_history_boost(p, h, self.conn, self.now),
+                Some(h) => compute_history_boost(p, h.history, self.conn, h.now),
                 None => HistoryBoostBreakdown::default(),
             };
             self.pre_history.insert(
@@ -288,7 +286,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 .iter()
                 .filter(|p| is_override_priced(p))
                 .map(|p| {
-                    let b = compute_history_boost(p, h, self.conn, self.now);
+                    let b = compute_history_boost(p, h.history, self.conn, h.now);
                     (p.surface_key(), (b, p.segments.len()))
                 })
                 .collect();
@@ -400,14 +398,12 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 /// (`nbest_oversample`) to follow the exact same pipeline as production
 /// conversion, with an observer that records cost snapshots at each stage
 /// for diagnostic output. History decays against the caller's `now`.
-pub fn explain(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
-    kana: &str,
-    n: usize,
-    now: u64,
-) -> ExplainResult {
+pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainResult {
+    let ConversionContext {
+        dict,
+        conn,
+        history,
+    } = *conv;
     let max_cost_gap = settings().candidates.max_cost_gap;
     if kana.is_empty() || n == 0 {
         return ExplainResult {
@@ -431,16 +427,12 @@ pub fn explain(
     let oversample = super::nbest_oversample(n, history.is_some());
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
-    let mut observer = ExplainObserver::new(history, conn, dict, now);
+    let mut observer = ExplainObserver::new(conv);
     let ctx = PostprocessContext {
         lattice: &lattice,
-        conn,
-        dict: Some(dict),
-        history,
-        kana,
+        conv,
         n,
         max_cost_gap,
-        now,
     };
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
     let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
@@ -681,10 +673,10 @@ fn format_dropped(result: &ExplainResult, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::testutil::test_dict;
+    use crate::converter::testutil::{joined, test_dict};
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, TrieDictionary};
-    use crate::user_history::UserHistory;
+    use crate::user_history::{now_epoch, UserHistory};
 
     /// 確認 (content word), 史 (名詞,接尾: role 2, grouped into the word
     /// before it) and 値 (content word), the shapes of かくにんしますね.
@@ -720,12 +712,9 @@ mod tests {
     fn single_kanji_segments_are_listed_before_grouping() {
         let (dict, conn) = single_kanji_fixture();
         let result = explain(
-            &dict,
-            Some(&conn),
-            None,
+            &crate::converter::ConversionContext::new(&dict, Some(&conn)),
             "かくにんし",
             5,
-            crate::user_history::now_epoch(),
         );
         let p = path_by_surface(&result, "確認史");
         assert_eq!(p.segments.len(), 1, "the suffix is grouped into 確認");
@@ -743,12 +732,9 @@ mod tests {
         ]);
         let conn = crate::converter::testutil::zero_conn_with_roles(2, vec![0, 0]);
         let result = explain(
-            &dict,
-            Some(&conn),
-            None,
+            &crate::converter::ConversionContext::new(&dict, Some(&conn)),
             "きょうと",
             5,
-            crate::user_history::now_epoch(),
         );
         let p = result
             .paths
@@ -763,12 +749,9 @@ mod tests {
         // The shipped weight is not what decides `penalised`.
         let (dict, conn) = single_kanji_fixture();
         let result = explain(
-            &dict,
-            Some(&conn),
-            None,
+            &crate::converter::ConversionContext::new(&dict, Some(&conn)),
             "かくにんね",
             5,
-            crate::user_history::now_epoch(),
         );
         assert_eq!(
             listed(path_by_surface(&result, "確認値")),
@@ -780,12 +763,9 @@ mod tests {
     fn test_explain_basic() {
         let dict = test_dict();
         let result = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
 
         assert_eq!(result.reading, "きょう");
@@ -847,6 +827,7 @@ mod tests {
     /// on the multi-segment fixture, whose 仮名屋 / カナや are not the #1.
     #[test]
     fn test_explain_paths_match_production_nbest() {
+        let now = now_epoch();
         let sensitive = oversample_sensitive();
         let multi_segment = multi_segment_kanaya();
         // Admission drops 可|な|や here: explain must observe the same drops
@@ -862,7 +843,7 @@ mod tests {
         let mut stale = UserHistory::new();
         stale.record_at(
             &[("かなや".into(), "カナや".into())],
-            crate::user_history::now_epoch() - 3600 * 24 * 365,
+            now_epoch() - 3600 * 24 * 365,
         );
         let mut rotated_at = 0;
         for ((dict, conn), history, is_stale) in [
@@ -877,12 +858,10 @@ mod tests {
         ] {
             for n in 1..=6 {
                 let explanation = explain(
-                    dict,
-                    Some(conn),
-                    history,
+                    &crate::converter::ConversionContext::new(dict, Some(conn))
+                        .with_history(history, now),
                     "かなや",
                     n,
-                    crate::user_history::now_epoch(),
                 );
                 let explained: Vec<String> =
                     explanation.paths.iter().map(|p| p.surface()).collect();
@@ -900,10 +879,9 @@ mod tests {
                     Some(h) => crate::converter::convert_nbest_with_history(
                         dict,
                         Some(conn),
-                        h,
+                        crate::converter::HistoryAt::new(h, now),
                         "かなや",
                         n,
-                        crate::user_history::now_epoch(),
                     ),
                     None => crate::converter::convert_nbest(dict, Some(conn), "かなや", n),
                 }
@@ -916,12 +894,9 @@ mod tests {
         assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
         let (dict, conn) = &far;
         let result = explain(
-            dict,
-            Some(conn),
-            None,
+            &crate::converter::ConversionContext::new(dict, Some(conn)),
             "かなや",
             6,
-            crate::user_history::now_epoch(),
         );
         assert!(
             result
@@ -947,9 +922,6 @@ mod tests {
     #[test]
     fn widths_agree_on_the_multi_segment_fixture() {
         let (dict, conn) = multi_segment_kanaya();
-        let joined = |p: &[crate::converter::ConvertedSegment]| {
-            p.iter().map(|s| s.surface.as_str()).collect::<String>()
-        };
         let head = |n| joined(&crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]);
         let one_best = joined(&crate::converter::convert(&dict, Some(&conn), "かなや"));
         assert_eq!(head(1), head(20));
@@ -959,7 +931,11 @@ mod tests {
     #[test]
     fn test_explain_empty_reading() {
         let dict = test_dict();
-        let result = explain(&dict, None, None, "", 5, crate::user_history::now_epoch());
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, None),
+            "",
+            5,
+        );
 
         assert!(result.lattice_nodes.is_empty());
         assert!(result.paths.is_empty());
@@ -967,25 +943,20 @@ mod tests {
 
     #[test]
     fn test_explain_with_history() {
+        let now = now_epoch();
         let dict = test_dict();
         let mut h = UserHistory::new();
         h.record(&[("きょう".into(), "京".into())]);
 
         let without = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
         let with = explain(
-            &dict,
-            None,
-            Some(&h),
+            &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
 
         let without_kyou = without.paths.iter().find(|p| p.surface() == "京");
@@ -1018,12 +989,9 @@ mod tests {
     fn test_explain_history_breakdown_empty_without_history() {
         let dict = test_dict();
         let result = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
         for path in &result.paths {
             assert_eq!(path.history_boost, 0);
@@ -1035,6 +1003,7 @@ mod tests {
 
     #[test]
     fn test_explain_history_segment_count_consistent_with_boost() {
+        let now = now_epoch();
         // The reported `history_segment_count` is the denominator that
         // `history_rerank` used at normalization time. Without `group_segments`
         // (no conn passed here) the pre-history and final segmentation match,
@@ -1046,12 +1015,9 @@ mod tests {
         h.record(&[("きょう".into(), "京".into())]);
 
         let result = explain(
-            &dict,
-            None,
-            Some(&h),
+            &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
         for path in &result.paths {
             assert_eq!(
@@ -1069,6 +1035,7 @@ mod tests {
 
     #[test]
     fn test_explain_unrelated_paths_have_zero_history_boost() {
+        let now = now_epoch();
         // Paths whose surface does NOT match the recorded history must show a
         // zero breakdown regardless of how they entered the final candidate set:
         //   - Real Viterbi paths that simply don't match (lookup hit, zero score).
@@ -1084,12 +1051,9 @@ mod tests {
         h.record(&[("きょう".into(), "京".into())]);
 
         let result = explain(
-            &dict,
-            None,
-            Some(&h),
+            &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
             "きょう",
             10,
-            crate::user_history::now_epoch(),
         );
         for path in result.paths.iter().filter(|p| p.surface() != "京") {
             assert_eq!(
@@ -1108,12 +1072,9 @@ mod tests {
     fn test_explain_paths_sorted_by_final_cost() {
         let dict = test_dict();
         let result = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "きょう",
             10,
-            crate::user_history::now_epoch(),
         );
 
         for window in result.paths.windows(2) {
@@ -1128,12 +1089,9 @@ mod tests {
     fn test_explain_segment_costs_are_populated() {
         let dict = test_dict();
         let result = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "きょう",
             5,
-            crate::user_history::now_epoch(),
         );
 
         for path in &result.paths {
@@ -1145,6 +1103,7 @@ mod tests {
 
     #[test]
     fn breakdown_adds_up_for_every_price_owner() {
+        let now = now_epoch();
         // viterbi + rerank (+ clamp) − history = final, for model paths,
         // offers, repriced paths and the kana rescue alike — with and
         // without history.
@@ -1169,12 +1128,9 @@ mod tests {
         let mut owners = std::collections::HashSet::new();
         for history in [None, Some(&h)] {
             let result = explain(
-                &dict,
-                None,
-                history,
+                &crate::converter::ConversionContext::new(&dict, None).with_history(history, now),
                 "あったほうが",
                 20,
-                crate::user_history::now_epoch(),
             );
             for p in &result.paths {
                 owners.insert(format!("{:?}", p.priced_by));
@@ -1202,12 +1158,9 @@ mod tests {
     fn dropped_by_cost_gap_lists_what_admission_cut() {
         let dict = crate::converter::testutil::taberu_dict();
         let result = explain(
-            &dict,
-            None,
-            None,
+            &crate::converter::ConversionContext::new(&dict, None),
             "たべる",
             20,
-            crate::user_history::now_epoch(),
         );
         assert_eq!(
             result.max_cost_gap,
@@ -1240,12 +1193,9 @@ mod tests {
     fn multi_segment_path_is_dropped_by_admission_not_rerank() {
         let (dict, conn) = crate::converter::testutil::far_multi_segment_kanaya();
         let result = explain(
-            &dict,
-            Some(&conn),
-            None,
+            &crate::converter::ConversionContext::new(&dict, Some(&conn)),
             "かなや",
             20,
-            crate::user_history::now_epoch(),
         );
         let dropped = result
             .dropped_by_cost_gap

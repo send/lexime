@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::{ConversionContext, Lattice};
+use crate::converter::{ConversionContext, HistoryAt, Lattice};
 use crate::settings::settings;
 
 use super::{
@@ -50,9 +50,7 @@ fn generate_normal(
     lattice: &Lattice,
     mut diag: Option<&mut CandidateDiagnostics>,
 ) -> CandidateResponse {
-    let ConversionContext {
-        dict, history, now, ..
-    } = *ctx;
+    let ConversionContext { dict, history, .. } = *ctx;
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
@@ -81,7 +79,7 @@ fn generate_normal(
     }
 
     // 1.5. Inject history-learned surfaces not in N-best.
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = history {
         for (surface, _boost) in h.learned_surfaces(reading, now) {
             if seen.insert(surface.clone()) {
                 if let Some(d) = diag.as_deref_mut() {
@@ -100,9 +98,9 @@ fn generate_normal(
     //    This moves a learned kana wherever history reranking priced it (a
     //    kana in the N-best competes there at its rescue price): to index 1
     //    below a learned #1, else to index 0.
-    let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
+    let kana_boost = history.map_or(0, |h| h.history.unigram_boost(reading, reading, h.now));
     let top_has_boost = if !surfaces.is_empty() && surfaces[0] != reading {
-        history.is_some_and(|h| h.unigram_boost(reading, &surfaces[0], now) > 0)
+        history.is_some_and(|h| h.history.unigram_boost(reading, &surfaces[0], h.now) > 0)
     } else {
         false
     };
@@ -138,7 +136,7 @@ fn generate_normal(
         max_results
     };
     let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = history {
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
             let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
             let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
@@ -154,7 +152,7 @@ fn generate_normal(
 
     // 4. Dictionary lookup
     let lookup_entries = dict.lookup(reading);
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = history {
         if !lookup_entries.is_empty() {
             let reordered = h.reorder_candidates(reading, &lookup_entries, now);
             for entry in &reordered {
@@ -193,7 +191,7 @@ pub fn generate(
     }
 
     let resp = if punctuation_alternatives(reading).is_some() {
-        generate_punctuation_candidates(ctx.dict, ctx.history, reading, max_results, ctx.now)
+        generate_punctuation_candidates(ctx, reading, max_results)
     } else {
         generate_normal_candidates(ctx, reading, max_results, lattice)
     };

@@ -1,5 +1,6 @@
 use super::*;
 use crate::dict::{DictEntry, TrieDictionary};
+use crate::user_history::now_epoch;
 
 /// Build a richer dictionary for benchmarking that covers all words in the
 /// benchmark inputs so we exercise real dictionary lookup paths, not just
@@ -272,6 +273,7 @@ fn bench_dict() -> TrieDictionary {
 #[test]
 #[ignore]
 fn bench_convert_latency() {
+    let now = now_epoch();
     let dict = bench_dict();
 
     let inputs: Vec<(&str, &str)> = vec![
@@ -320,9 +322,8 @@ fn bench_convert_latency() {
             let _ = convert_with_history(
                 &dict,
                 None,
-                &history,
+                crate::converter::HistoryAt::new(&history, now),
                 kana,
-                crate::user_history::now_epoch(),
             );
         }
         let start = std::time::Instant::now();
@@ -330,9 +331,8 @@ fn bench_convert_latency() {
             let _ = convert_with_history(
                 &dict,
                 None,
-                &history,
+                crate::converter::HistoryAt::new(&history, now),
                 kana,
-                crate::user_history::now_epoch(),
             );
         }
         let avg_1best_hist_us = start.elapsed().as_micros() as f64 / iterations as f64;

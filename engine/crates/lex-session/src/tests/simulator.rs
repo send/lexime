@@ -84,12 +84,9 @@ impl HeadlessIME {
 
         let mode = self.session.config.conversion_mode;
         let cand: CandidateResponse = mode.generate_candidates(
-            &*self.dict,
-            self.conn.as_deref(),
-            None,
+            &lex_core::converter::ConversionContext::new(&*self.dict, self.conn.as_deref()),
             &reading,
             MAX_CANDIDATES,
-            lex_core::user_history::now_epoch(),
         );
         // Simulate a fresh (non-stale) response: snapshot the current epoch.
         let epoch = self.session.epoch;

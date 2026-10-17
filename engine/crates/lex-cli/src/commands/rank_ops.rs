@@ -19,13 +19,8 @@ use lex_core::candidates::{
     generate_candidates, generate_candidates_priced, generate_prediction_candidates,
     CandidateResponse, PathPrice, PricedCandidates,
 };
-use lex_core::converter::{
-    convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment, PathOrigin,
-};
-use lex_core::dict::connection::ConnectionMatrix;
-use lex_core::dict::Dictionary;
+use lex_core::converter::{ConversionContext, ConvertedSegment, PathOrigin};
 use lex_core::settings::settings;
-use lex_core::user_history::UserHistory;
 
 /// Candidates shown on the first page of the candidate window. Mirrors
 /// `CandidateManager.maxDisplay` in Sources/CandidateManager.swift, which
@@ -46,59 +41,26 @@ pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
 /// change which predictions are fetched for short readings. This is the
 /// Standard conversion mode's list; Predictive mode's is
 /// [`production_prediction_candidates`].
-pub fn production_candidates(
-    dict: &dyn Dictionary,
-    conn: &ConnectionMatrix,
-    history: Option<&UserHistory>,
-    reading: &str,
-    now: u64,
-) -> CandidateResponse {
-    generate_candidates(
-        dict,
-        Some(conn),
-        history,
-        reading,
-        settings().candidates.max_results,
-        now,
-    )
+pub fn production_candidates(ctx: &ConversionContext<'_>, reading: &str) -> CandidateResponse {
+    generate_candidates(ctx, reading, settings().candidates.max_results)
 }
 
 /// The candidate list of the Predictive conversion mode (bigram chaining),
 /// at the same `candidates.max_results` the async worker passes for it.
 pub fn production_prediction_candidates(
-    dict: &dyn Dictionary,
-    conn: &ConnectionMatrix,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
-    now: u64,
 ) -> CandidateResponse {
-    generate_prediction_candidates(
-        dict,
-        Some(conn),
-        history,
-        reading,
-        settings().candidates.max_results,
-        now,
-    )
+    generate_prediction_candidates(ctx, reading, settings().candidates.max_results)
 }
 
 /// [`production_candidates`] with its [`lex_core::candidates::CandidateDiagnostics`] from the same
 /// run — so a price is always the price of the path the list shows.
 pub fn production_candidates_priced(
-    dict: &dyn Dictionary,
-    conn: &ConnectionMatrix,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
-    now: u64,
 ) -> PricedCandidates {
-    generate_candidates_priced(
-        dict,
-        Some(conn),
-        history,
-        reading,
-        settings().candidates.max_results,
-        now,
-    )
+    generate_candidates_priced(ctx, reading, settings().candidates.max_results)
 }
 
 /// Top-1 at each width the user can see. They oversample differently, so
@@ -120,27 +82,13 @@ impl Top1Widths {
     }
 }
 
-pub fn top1_widths(
-    dict: &dyn Dictionary,
-    conn: &ConnectionMatrix,
-    history: Option<&UserHistory>,
-    reading: &str,
-    now: u64,
-) -> Top1Widths {
-    let head = match history {
-        Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, 1, now),
-        None => convert_nbest(dict, Some(conn), reading, 1),
-    };
-    let ctx = ConversionContext {
-        dict,
-        conn: Some(conn),
-        history,
-        now,
-    };
+pub fn top1_widths(ctx: &ConversionContext<'_>, reading: &str) -> Top1Widths {
+    let lattice = ctx.build_lattice(reading);
+    let head = ctx.convert_nbest_from_lattice(&lattice, 1);
     Top1Widths {
         nbest_head: head.first().map(|p| joined_surface(p)).unwrap_or_default(),
-        one_best: joined_surface(&ctx.convert_from_lattice(&ctx.build_lattice(reading))),
-        list: production_candidates(dict, conn, history, reading, now),
+        one_best: joined_surface(&ctx.convert_from_lattice(&lattice)),
+        list: production_candidates(ctx, reading),
     }
 }
 
@@ -741,13 +689,10 @@ impl Tally {
 /// stderr (local inspection only). Every line replays at the one `now`
 /// (not the line's `t`).
 pub fn replay(
-    dict: &dyn Dictionary,
-    conn: &ConnectionMatrix,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     log: &Path,
     from_line: usize,
     verbose: bool,
-    now: u64,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let Selections {
         lines: selections,
@@ -761,10 +706,7 @@ pub fn replay(
     for (i, sel) in &selections {
         let reading = sel.reading.as_str();
         let view = cache.entry(reading).or_insert_with(|| {
-            ReadingView::new(
-                reading,
-                production_candidates_priced(dict, conn, history, reading, now),
-            )
+            ReadingView::new(reading, production_candidates_priced(ctx, reading))
         });
         let Landing { rank, gap } = tally.add(view, &sel.surface);
         if verbose {

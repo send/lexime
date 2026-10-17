@@ -317,6 +317,8 @@ fn bench_history() -> UserHistory {
 fn bench_convert_1best_history(c: &mut Criterion) {
     let dict = bench_dict();
     let history = bench_history();
+    // Read once, outside the timed loop: the read path takes it as an argument.
+    let now = lex_core::user_history::now_epoch();
     let mut group = c.benchmark_group("converter/convert_1best_history");
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
@@ -324,9 +326,8 @@ fn bench_convert_1best_history(c: &mut Criterion) {
                 convert_with_history(
                     &dict,
                     None,
-                    &history,
+                    lex_core::converter::HistoryAt::new(&history, now),
                     kana,
-                    lex_core::user_history::now_epoch(),
                 )
             });
         });

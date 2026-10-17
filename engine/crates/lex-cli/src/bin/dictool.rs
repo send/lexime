@@ -19,6 +19,11 @@ fn parse_extra_source(raw: &str) -> Result<(String, String), String> {
 #[derive(Parser)]
 #[command(name = "dictool", about = "Lexime dictionary build tool")]
 struct Cli {
+    /// The Unix time (seconds) that history decay is measured against
+    /// (`convert --history`). Without it dictool reads the wall clock once at
+    /// startup. Same flag as `lextool --now`
+    #[arg(long, global = true, value_name = "EPOCH")]
+    now: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -225,6 +230,8 @@ enum CandidatesAction {
 
 fn main() {
     let cli = Cli::parse();
+    // The one clock read of this process.
+    let now = cli.now.unwrap_or_else(lex_core::user_history::now_epoch);
 
     match cli.command {
         Command::Fetch {
@@ -273,7 +280,7 @@ fn main() {
             kana,
             n,
             history,
-        } => convert_ops::convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref()),
+        } => convert_ops::convert_cmd(&dict_file, &conn_file, &kana, n, history.as_deref(), now),
         Command::ConnCost {
             conn_file,
             left,

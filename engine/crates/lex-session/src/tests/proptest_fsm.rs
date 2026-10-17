@@ -277,12 +277,9 @@ fn execute_action(
             let reading = composing_reading(session)?.to_string();
             let mode = session.config.conversion_mode;
             let cand = mode.generate_candidates(
-                dict,
-                None,
-                None,
+                &lex_core::converter::ConversionContext::new(dict, None),
                 &reading,
                 20,
-                lex_core::user_history::now_epoch(),
             );
             // Simulate a fresh (non-stale) response: snapshot the current epoch.
             let epoch = session.epoch;
