@@ -298,15 +298,20 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
 
 /// Write each entry of `archive` whose name ends with `suffix` to
 /// `dest/<its basename>`, returning how many were written.
+///
+/// Every name is checked before anything is written, so a rejected archive
+/// leaves `dest` as it was: `fetch` trusts a CSV that exists under a current
+/// `.stamp`, and a half-written set would pass for a complete one.
 fn extract_entries<R: io::Read + io::Seek>(
     archive: R,
     suffix: &str,
     dest: &Path,
 ) -> Result<usize, CandidateError> {
     let mut archive = zip::ZipArchive::new(archive).map_err(zip_err)?;
-    let mut written = HashSet::new();
+    let mut wanted = Vec::new();
+    let mut seen = HashSet::new();
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(zip_err)?;
+        let file = archive.by_index(i).map_err(zip_err)?;
         // Filter on the raw bytes first: decoding a name can fail, and an
         // entry we do not want (a README, a directory) must not abort the run.
         if !file.name_raw().ends_with(suffix.as_bytes()) {
@@ -322,12 +327,16 @@ fn extract_entries<R: io::Read + io::Seek>(
             .into_owned();
         // Flattening to the basename would let a second entry of the same
         // name overwrite the first.
-        if !written.insert(basename.clone()) {
+        if !seen.insert(basename.clone()) {
             return Err(CandidateError::Parse(format!(
                 "two ZIP entries share the basename {basename}"
             )));
         }
-        let out_path = dest.join(&basename);
+        wanted.push((i, basename));
+    }
+    for (i, basename) in &wanted {
+        let mut file = archive.by_index(*i).map_err(zip_err)?;
+        let out_path = dest.join(basename);
         // Stage the extraction to a per-process unique temp file then
         // atomically rename so two parallel `mine` runs against the same
         // cache dir don't interleave half-written CSVs (the prior
@@ -344,7 +353,7 @@ fn extract_entries<R: io::Read + io::Seek>(
         fs::rename(&extract_tmp, &out_path)?;
         eprintln!("    → {basename}");
     }
-    Ok(written.len())
+    Ok(wanted.len())
 }
 
 /// Removes the staged ZIP on drop so a panic / error on extraction doesn't
@@ -427,11 +436,18 @@ mod tests {
     #[test]
     fn extract_entries_rejects_two_entries_with_one_basename() {
         let dir = fresh_dir("lexime_test_sudachi_extract_dup");
-        let archive = zip_of(&[("a/core_lex.csv", b"1"), ("b/core_lex.csv", b"2")]);
+        let archive = zip_of(&[
+            ("a/core_lex.csv", b"1"),
+            ("small_lex.csv", b"3"),
+            ("b/core_lex.csv", b"2"),
+        ]);
         assert!(matches!(
             extract_entries(archive, ".csv", &dir),
             Err(CandidateError::Parse(_))
         ));
+        // Nothing is written before the names are checked: a partial set
+        // would pass for a complete cache under the current .stamp.
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
