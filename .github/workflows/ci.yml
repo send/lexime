@@ -40,6 +40,9 @@ jobs:
               - 'engine/Cargo.toml'
               - 'engine/Cargo.lock'
               - 'engine/deny.toml'
+              # clippy.toml forbids the zip extraction API that deny.toml's
+              # ignores depend on never being called — an edit to it must run lint.
+              - 'engine/clippy.toml'
               - 'engine/quarantine-allowlist.toml'
               - 'engine/build-script-baseline.txt'
               - 'scripts/screen.sh'
