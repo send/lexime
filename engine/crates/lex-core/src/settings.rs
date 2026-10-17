@@ -513,6 +513,20 @@ mod tests {
         assert_eq!(s.reranker.length_variance_weight, 1000);
         assert_eq!(s.reranker.te_form_kanji_penalty, 2000);
         assert_eq!(s.reranker.single_char_kanji_penalty, 0);
+        // The shipped file and the consts (the serde defaults and
+        // FeatureWeights::default) must not drift apart.
+        assert_eq!(
+            s.reranker.length_variance_weight,
+            DEFAULT_LENGTH_VARIANCE_WEIGHT
+        );
+        assert_eq!(
+            s.reranker.te_form_kanji_penalty,
+            DEFAULT_TE_FORM_KANJI_PENALTY
+        );
+        assert_eq!(
+            s.reranker.single_char_kanji_penalty,
+            DEFAULT_SINGLE_CHAR_KANJI_PENALTY
+        );
         assert_eq!(s.history.boost_per_use, 3000);
         assert_eq!(s.history.max_boost, 15000);
         assert!((s.history.half_life_hours - 168.0).abs() < f64::EPSILON);
@@ -690,6 +704,33 @@ max_results = 20
         assert_eq!(s.candidates.max_cost_gap, 12000);
         let err = parse_settings_toml(&with("-1")).unwrap_err();
         assert!(err.to_string().contains("candidates.max_cost_gap"));
+    }
+
+    #[test]
+    fn reranker_penalties_default_when_omitted() {
+        // A settings.toml exported before these keys existed.
+        let keys = ["te_form_kanji_penalty", "single_char_kanji_penalty"];
+        let base: String = DEFAULT_SETTINGS_TOML
+            .lines()
+            .filter(|l| !keys.iter().any(|k| l.starts_with(k)))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        for k in keys {
+            assert!(DEFAULT_SETTINGS_TOML.contains(&format!("\n{k} = ")));
+            assert!(
+                !base.contains(&format!("\n{k} = ")),
+                "fixture: {k} was removed"
+            );
+        }
+        let s = parse_settings_toml(&base).unwrap();
+        assert_eq!(
+            s.reranker.te_form_kanji_penalty,
+            DEFAULT_TE_FORM_KANJI_PENALTY
+        );
+        assert_eq!(
+            s.reranker.single_char_kanji_penalty,
+            DEFAULT_SINGLE_CHAR_KANJI_PENALTY
+        );
     }
 
     #[test]

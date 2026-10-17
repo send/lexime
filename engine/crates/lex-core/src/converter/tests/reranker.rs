@@ -1,4 +1,4 @@
-use crate::converter::reranker::{history_rerank_at, rerank};
+use crate::converter::reranker::{history_rerank_at, rerank, FeaturePricer};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 use crate::user_history::{now_epoch, UserHistory};
@@ -41,7 +41,7 @@ fn test_rerank_script_cost_without_conn() {
 
     // Without conn there are no transition features; "木の" (reading "きの" = 2 chars)
     // gets script_cost -3000 * 2/3 = -2000 (mixed kanji+kana bonus scaled).
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, &FeaturePricer::new(None, None));
     assert_eq!(paths[0].segments[0].surface, "木の");
     assert_eq!(paths[0].viterbi_cost, 2000 - 2000);
 }
@@ -60,7 +60,7 @@ fn test_rerank_single_path_noop() {
         PathOrigin::Viterbi,
     )];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, &FeaturePricer::new(None, None));
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "亜");
     // A lone path is not priced (kept as before #366): pricing it would move
@@ -71,7 +71,7 @@ fn test_rerank_single_path_noop() {
 #[test]
 fn test_rerank_empty_noop() {
     let mut paths: Vec<ScoredPath> = Vec::new();
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, &FeaturePricer::new(None, None));
     assert!(paths.is_empty());
 }
 
@@ -124,7 +124,7 @@ fn test_rerank_penalizes_uneven_segments() {
         ),
     ];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, &FeaturePricer::new(None, None));
 
     // script_cost (scaled by reading length, capped at 2):
     //   "来たり" (reading "きたり" = 3 chars, cap 2) → mixed bonus -3000 * 2/3 = -2000
@@ -170,7 +170,7 @@ fn test_rerank_applies_script_cost() {
         ),
     ];
 
-    rerank(&mut paths, None, None);
+    rerank(&mut paths, &FeaturePricer::new(None, None));
 
     // Katakana: 3000 + 150 = 3150
     // Hiragana: 3100 + 0   = 3100
