@@ -229,8 +229,7 @@ jobs:
       # Enforce the declared MSRV. Keep this version in sync with
       # `rust-version` in engine/Cargo.toml ([workspace.package]): a dependency
       # bump or code change that needs a newer Rust fails here even though every
-      # other job builds on stable. Default features only — the optional
-      # `neural` feature pulls candle, whose MSRV is tracked separately, and
+      # other job builds on stable. Default features only, and
       # default targets only — do NOT propagate the `lint` job's --all-targets
       # (mise.toml [tasks.lint]) here, or criterion / proptest and bench source come under the MSRV
       # constraint and a dev-dep bump turns CI red over code that never ships.
@@ -257,7 +256,7 @@ jobs:
           workspaces: engine -> target
           shared-key: engine
 
-      - run: cd engine && cargo test -p lex-core --features trace,neural
+      - run: cd engine && cargo test -p lex-core --features trace
 
   test-session:
     needs: [changes, lint]

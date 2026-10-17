@@ -162,66 +162,6 @@ enum Command {
         #[command(subcommand)]
         action: CandidatesAction,
     },
-    /// Score N-best candidates with neural model (requires --features neural)
-    #[cfg(feature = "neural")]
-    NeuralScore {
-        /// Dictionary file
-        dict_file: String,
-        /// Connection matrix file
-        conn_file: String,
-        /// GGUF model file path
-        #[arg(long)]
-        model: String,
-        /// Kana input
-        kana: String,
-        /// Number of N-best candidates
-        #[arg(short, long, default_value = "10")]
-        n: usize,
-        /// User history file (optional)
-        #[arg(long)]
-        history: Option<String>,
-        /// Left context for scoring
-        #[arg(long, default_value = "")]
-        context: String,
-    },
-    /// Generate text continuation with neural model (requires --features neural)
-    #[cfg(feature = "neural")]
-    Generate {
-        /// GGUF model file path
-        #[arg(long)]
-        model: String,
-        /// Left context for generation
-        #[arg(long, default_value = "")]
-        context: String,
-        /// Maximum tokens to generate
-        #[arg(long, default_value = "30")]
-        max_tokens: usize,
-    },
-    /// Speculative decoding: Viterbi draft + GPT-2 verify (requires --features neural)
-    #[cfg(feature = "neural")]
-    SpeculativeDecode {
-        /// Dictionary file
-        dict_file: String,
-        /// Connection matrix file
-        conn_file: String,
-        /// GGUF model file path
-        #[arg(long)]
-        model: String,
-        /// Kana input
-        kana: String,
-        /// Left context for scoring
-        #[arg(long, default_value = "")]
-        context: String,
-        /// Per-char log-prob confidence threshold
-        #[arg(long, default_value = "-2.0")]
-        threshold: f64,
-        /// Maximum verify-refine iterations
-        #[arg(long, default_value = "3")]
-        max_iter: usize,
-        /// Compare Viterbi / N-best reranking / speculative results
-        #[arg(long)]
-        compare: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -401,52 +341,6 @@ fn main() {
                 }
                 UserDictAction::List => user_dict_ops::user_dict_list(path),
             }
-        }
-        #[cfg(feature = "neural")]
-        Command::NeuralScore {
-            dict_file,
-            conn_file,
-            model,
-            kana,
-            n,
-            history,
-            context,
-        } => {
-            use lex_cli::commands::neural_ops;
-            neural_ops::neural_score_cmd(
-                &dict_file,
-                &conn_file,
-                &model,
-                &kana,
-                n,
-                history.as_deref(),
-                &context,
-            )
-        }
-        #[cfg(feature = "neural")]
-        Command::Generate {
-            model,
-            context,
-            max_tokens,
-        } => {
-            use lex_cli::commands::neural_ops;
-            neural_ops::generate_cmd(&model, &context, max_tokens)
-        }
-        #[cfg(feature = "neural")]
-        Command::SpeculativeDecode {
-            dict_file,
-            conn_file,
-            model,
-            kana,
-            context,
-            threshold,
-            max_iter,
-            compare,
-        } => {
-            use lex_cli::commands::neural_ops;
-            neural_ops::speculative_decode_cmd(
-                &dict_file, &conn_file, &model, &kana, &context, threshold, max_iter, compare,
-            )
         }
     }
 }
