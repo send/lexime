@@ -13,18 +13,24 @@ unused-ignored-advisory = "deny"
 ignore = [
     # bincode 1.3.3 is unmaintained but stable; migrate to postcard later
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is stable, migration planned" },
-    # zip 7.2.0: all three advisories are in ZipArchive / ZipStreamReader
-    # extract() (symlinks and permission bits applied on extraction). lexime
-    # never calls extract(): candle-core 0.10.2 uses zip under the `neural`
-    # feature only (not shipped), and lex-cli's dev-only Sudachi miner
-    # (candidates/sudachi.rs) reads entries by index and writes each to a
-    # basename it chooses. The fix needs zip >= 9; candle (0.11 too) still
-    # requires zip < 9, so bumping lex-cli alone would leave 7.2.0 in the tree.
-    # Remove these lines when candle allows zip >= 9 (then bump lex-cli too),
-    # or when the neural feature is removed and lex-cli has moved.
-    { id = "RUSTSEC-2026-0367", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
-    { id = "RUSTSEC-2026-0368", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
-    { id = "RUSTSEC-2026-0369", reason = "zip extract() only; lexime never calls extract(); fix needs zip >= 9, blocked by candle" },
+    # zip 7.2.0: all three advisories are in its extraction API —
+    # ZipArchive::extract, ZipArchive::extract_unwrapped_root_dir and
+    # ZipStreamReader::extract (archive symlinks and permission bits applied on
+    # extraction). lexime never calls it, and engine/clippy.toml's
+    # disallowed-methods makes a call fail the lint. zip reaches the tree two
+    # ways: candle-core depends on it unconditionally, but candle itself comes
+    # only from lexime's non-shipped `neural` feature (it reads .npy archives,
+    # no extraction); lex-cli's dev-only Sudachi miner (candidates/sudachi.rs)
+    # reads entries with by_index + io::copy and writes each to
+    # dest/<the entry's basename>. The fix needs zip >= 9; candle (0.10.2: ^7.2,
+    # 0.11: ^8.6) does not allow it yet, so bumping lex-cli alone would leave
+    # 7.2.0 in the tree. Remove these lines once no 7.x zip is left in the
+    # lock: candle allows zip >= 9 (or the neural feature is removed) AND
+    # lex-cli's zip requirement is >= 9. unused-ignored-advisory = "deny" then
+    # fails the audit until they go.
+    { id = "RUSTSEC-2026-0367", reason = "zip 7.2.0 extraction API, never called (clippy disallowed-methods); see the note above" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 7.2.0 extraction API, never called (clippy disallowed-methods); see the note above" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 7.2.0 extraction API, never called (clippy disallowed-methods); see the note above" },
 ]
 
 [licenses]
