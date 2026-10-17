@@ -70,7 +70,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | モジュール | 内容 |
 |---|---|
 | `romaji/` | ローマ字→かな変換。Trie + TOML 設定対応（`default_romaji.toml`, 306 エントリ） |
-| `candidates/` | 統一候補生成（Standard / Predictive）。Neural は feature-gated で research 用 |
+| `candidates/` | 統一候補生成（Standard / Predictive） |
 | `converter/` | Lattice 構築、Viterbi N-best、Reranker、Rewriter、CostFunction trait |
 | `dict/` | `Dictionary` trait、`TrieDictionary`、`CompositeDictionary`、`ConnectionMatrix` |
 | `user_history/` | ユニグラム・バイグラム学習、WAL、LXUD 形式 |

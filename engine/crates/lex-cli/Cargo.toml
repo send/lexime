@@ -16,9 +16,6 @@ path = "src/bin/dictool.rs"
 name = "lextool"
 path = "src/bin/lextool.rs"
 
-[features]
-default = []
-
 [dependencies]
 lex-core = { path = "../lex-core" }
 clap = { workspace = true }

@@ -1,8 +1,7 @@
 //! Candidate generation for IME input.
 //!
 //! Provides standard and predictive strategies for generating conversion
-//! candidates from a kana reading. Neural scoring is feature-gated for
-//! research use only.
+//! candidates from a kana reading.
 
 use std::collections::HashSet;
 
