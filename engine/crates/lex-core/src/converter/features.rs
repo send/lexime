@@ -7,16 +7,13 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::unicode::is_kanji;
 
-use super::cost::{conn_cost, script_cost};
+use super::cost::script_cost;
 use super::viterbi::{RichSegment, ScoredPath};
 
 /// Raw features extracted from a single conversion path.
 /// All values are in "raw" units — weights convert them to cost adjustments.
 #[derive(Debug, Clone, Default)]
 pub struct PathFeatures {
-    /// Sum of capped transition costs along the path.
-    /// Higher = more fragmented / unnatural transitions.
-    pub structure_cost: i64,
     /// Length variance of content-word segments (integer-scaled).
     /// Computed as N × Σlen² - (Σlen)², where N and len exclude FW and
     /// single-char segments. 0 means uniform. Divide by N² for true variance.
@@ -35,7 +32,6 @@ pub struct PathFeatures {
 impl PathFeatures {
     /// Apply weights to produce a single cost adjustment.
     pub fn weighted_cost(&self, w: &FeatureWeights) -> i64 {
-        let structure = self.structure_cost * w.structure / 100;
         let variance = if self.length_variance_n >= 2 {
             self.length_variance_raw * w.length_variance
                 / (self.length_variance_n * self.length_variance_n)
@@ -46,7 +42,7 @@ impl PathFeatures {
         let te_kanji = self.te_kanji_count * w.te_kanji;
         let single_kanji = self.single_kanji_count * w.single_kanji;
 
-        structure + variance + script + te_kanji + single_kanji
+        variance + script + te_kanji + single_kanji
     }
 }
 
@@ -54,8 +50,6 @@ impl PathFeatures {
 /// Each weight scales its corresponding feature.
 #[derive(Debug, Clone)]
 pub struct FeatureWeights {
-    /// Structure cost weight (applied as structure_cost * weight / 100).
-    pub structure: i64,
     /// Length variance weight (applied as variance_raw * weight / N²).
     pub length_variance: i64,
     /// Script cost weight (applied as script_cost * weight / 100).
@@ -67,9 +61,6 @@ pub struct FeatureWeights {
     pub single_kanji: i64,
 }
 
-/// Structure weight is fixed at 0 (grid search found structure_cost
-/// adds noise rather than signal at the reranker stage).
-const STRUCTURE_WEIGHT: i64 = 0;
 /// Script weight is fixed at 100 (= 100% of raw script cost, no scaling).
 const SCRIPT_WEIGHT: i64 = 100;
 
@@ -80,7 +71,6 @@ impl Default for FeatureWeights {
             DEFAULT_TE_FORM_KANJI_PENALTY,
         };
         Self {
-            structure: STRUCTURE_WEIGHT,
             length_variance: DEFAULT_LENGTH_VARIANCE_WEIGHT,
             script: SCRIPT_WEIGHT,
             te_kanji: DEFAULT_TE_FORM_KANJI_PENALTY,
@@ -92,12 +82,11 @@ impl Default for FeatureWeights {
 impl FeatureWeights {
     /// Build weights from settings + fixed constants.
     ///
-    /// `structure` and `script` are compile-time constants (not in settings)
-    /// because grid search showed no benefit from varying them.
+    /// `script` is a compile-time constant (not in settings) because grid
+    /// search showed no benefit from varying it.
     pub fn from_settings() -> Self {
         let s = crate::settings::settings();
         Self {
-            structure: STRUCTURE_WEIGHT,
             length_variance: s.reranker.length_variance_weight,
             script: SCRIPT_WEIGHT,
             te_kanji: s.reranker.te_form_kanji_penalty,
@@ -153,120 +142,66 @@ pub fn is_single_char_kanji_penalised(
     !exempt
 }
 
-/// Compute capped structure cost for a path (sum of capped transition costs).
-///
-/// This is used by the reranker hard filter and can be passed into
-/// `extract_features` via `precomputed_structure_cost` to avoid recomputation.
-pub fn compute_structure_cost(
-    path: &ScoredPath,
-    conn: Option<&ConnectionMatrix>,
-    cap: i64,
-    prefix_floor: i64,
-) -> i64 {
-    let mut sc: i64 = 0;
-    for i in 1..path.segments.len() {
-        let mut tc = conn_cost(
-            conn,
-            path.segments[i - 1].right_id,
-            path.segments[i].left_id,
-        );
-        if let Some(c) = conn {
-            if c.is_prefix(path.segments[i - 1].right_id) {
-                tc = tc.max(prefix_floor);
-            }
-        }
-        sc += tc.min(cap);
-    }
-    sc
-}
-
 /// Configuration for feature extraction shared across paths.
 pub struct FeatureConfig<'a> {
     pub conn: Option<&'a ConnectionMatrix>,
     pub dict: Option<&'a dyn Dictionary>,
-    pub structure_cap: i64,
-    pub prefix_floor: i64,
 }
 
 impl FeatureConfig<'_> {
     /// Extract features from a path.
-    ///
-    /// If `precomputed_structure_cost` is `Some`, reuses the value instead of
-    /// recomputing the transition-cost sum.
-    pub fn extract(
-        &self,
-        path: &ScoredPath,
-        precomputed_structure_cost: Option<i64>,
-    ) -> PathFeatures {
-        extract_features(path, self, precomputed_structure_cost)
-    }
-}
+    pub fn extract(&self, path: &ScoredPath) -> PathFeatures {
+        let mut f = PathFeatures::default();
 
-/// Extract features from a path.
-///
-/// If `precomputed_structure_cost` is `Some`, reuses the value instead of
-/// recomputing the transition-cost sum (an optimisation for the reranker
-/// which already computes it for the hard filter).
-pub fn extract_features(
-    path: &ScoredPath,
-    cfg: &FeatureConfig<'_>,
-    precomputed_structure_cost: Option<i64>,
-) -> PathFeatures {
-    let mut f = PathFeatures {
-        structure_cost: precomputed_structure_cost.unwrap_or_else(|| {
-            compute_structure_cost(path, cfg.conn, cfg.structure_cap, cfg.prefix_floor)
-        }),
-        ..Default::default()
-    };
+        // Length variance (excluding FW and single-char segments)
+        if path.segments.len() >= 3 {
+            let lengths: Vec<i64> = path
+                .segments
+                .iter()
+                .filter_map(|s| {
+                    let len = s.reading.chars().count() as i64;
+                    if len > 1 && !self.conn.is_some_and(|c| c.is_function_word(s.left_id)) {
+                        Some(len)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let n = lengths.len() as i64;
+            if n >= 2 {
+                let sum: i64 = lengths.iter().sum();
+                let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
+                f.length_variance_raw = n * sum_sq - sum * sum;
+                f.length_variance_n = n;
+            }
+        }
 
-    // Length variance (excluding FW and single-char segments)
-    if path.segments.len() >= 3 {
-        let lengths: Vec<i64> = path
+        // Script cost
+        f.script_cost = path
             .segments
             .iter()
-            .filter_map(|s| {
-                let len = s.reading.chars().count() as i64;
-                if len > 1 && !cfg.conn.is_some_and(|c| c.is_function_word(s.left_id)) {
-                    Some(len)
+            .map(|s| script_cost(&s.surface, s.reading.chars().count()))
+            .sum();
+
+        // Per-segment features
+        if let Some(c) = self.conn {
+            for (i, seg) in path.segments.iter().enumerate() {
+                // Te-form kanji
+                let prev = if i > 0 {
+                    Some(&path.segments[i - 1])
                 } else {
                     None
+                };
+                if is_te_form_kanji_penalised(seg, prev, c) {
+                    f.te_kanji_count += 1;
                 }
-            })
-            .collect();
-        let n = lengths.len() as i64;
-        if n >= 2 {
-            let sum: i64 = lengths.iter().sum();
-            let sum_sq: i64 = lengths.iter().map(|l| l * l).sum();
-            f.length_variance_raw = n * sum_sq - sum * sum;
-            f.length_variance_n = n;
-        }
-    }
-
-    // Script cost
-    f.script_cost = path
-        .segments
-        .iter()
-        .map(|s| script_cost(&s.surface, s.reading.chars().count()))
-        .sum();
-
-    // Per-segment features
-    if let Some(c) = cfg.conn {
-        for (i, seg) in path.segments.iter().enumerate() {
-            // Te-form kanji
-            let prev = if i > 0 {
-                Some(&path.segments[i - 1])
-            } else {
-                None
-            };
-            if is_te_form_kanji_penalised(seg, prev, c) {
-                f.te_kanji_count += 1;
-            }
-            // Single-char kanji content word
-            if is_single_char_kanji_penalised(seg, i, &path.segments, c, cfg.dict) {
-                f.single_kanji_count += 1;
+                // Single-char kanji content word
+                if is_single_char_kanji_penalised(seg, i, &path.segments, c, self.dict) {
+                    f.single_kanji_count += 1;
+                }
             }
         }
-    }
 
-    f
+        f
+    }
 }

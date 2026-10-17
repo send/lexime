@@ -6,13 +6,11 @@
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
-use crate::settings::settings;
 
 use super::cost::DefaultCostFunction;
 use super::features::FeatureConfig;
 pub use super::features::{FeatureWeights, PathFeatures};
 use super::lattice::build_lattice;
-use super::reranker;
 use super::resegment;
 use super::viterbi::viterbi_nbest;
 
@@ -38,7 +36,7 @@ pub struct TuneCase {
 
 /// Ranges for grid search.  Each `Vec<i64>` is the list of values to try.
 ///
-/// `structure` and `script` are fixed in `FeatureWeights::from_settings()`
+/// `script` is fixed in `FeatureWeights::from_settings()`
 /// (compile-time constants), so the default grid only varies the three
 /// settings-backed weights.
 #[derive(Debug, Clone)]
@@ -107,8 +105,8 @@ pub struct TuneResult {
 // ---------------------------------------------------------------------------
 
 /// Run Viterbi + resegment + feature extraction for each case. Every path
-/// is a candidate: the structure filter never drops the best-priced path,
-/// the only one tune scores.
+/// is a candidate: tune scores top-1 only, so which paths a later stage
+/// would drop does not matter.
 ///
 /// `cases` is a slice of `(reading, expected)` pairs.
 pub fn precompute_cases(
@@ -116,15 +114,11 @@ pub fn precompute_cases(
     conn: &ConnectionMatrix,
     cases: &[(String, String)],
 ) -> Vec<TuneCase> {
-    let cap = settings().reranker.structure_cost_transition_cap;
-    let prefix_floor = reranker::structure_prefix_floor();
     let cost_fn = DefaultCostFunction::new(Some(conn));
 
     let fcfg = FeatureConfig {
         conn: Some(conn),
         dict: Some(dict),
-        structure_cap: cap,
-        prefix_floor,
     };
 
     cases
@@ -137,14 +131,12 @@ pub fn precompute_cases(
             let reseg = resegment::resegment(&paths, &lattice, Some(conn));
             paths.extend(reseg);
 
-            // No structure filter: it never drops the best-priced path, and
-            // tune scores top-1 only, so every path is a candidate.
             let candidates = paths
                 .iter()
                 .map(|p| TuneCandidate {
                     surface: p.surface_key(),
                     base_cost: p.viterbi_cost,
-                    features: fcfg.extract(p, None),
+                    features: fcfg.extract(p),
                 })
                 .collect();
 
@@ -173,14 +165,13 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
     };
 
     // Grid search — only track pass counts (cheap).
-    // structure and script are fixed (compile-time constants in from_settings).
+    // script is fixed (compile-time constants in from_settings).
     let mut evals: Vec<TuneEval> = Vec::with_capacity(grid.total_combinations());
 
     for &lv in &grid.length_variance {
         for &te in &grid.te_kanji {
             for &sk in &grid.single_kanji {
                 let w = FeatureWeights {
-                    structure: default_weights.structure,
                     length_variance: lv,
                     script: default_weights.script,
                     te_kanji: te,
@@ -259,7 +250,7 @@ fn top1_surface<'a>(candidates: &'a [TuneCandidate], weights: &FeatureWeights) -
         .unwrap_or("")
 }
 
-/// L1 distance over the tunable weight dimensions (excludes fixed structure/script).
+/// L1 distance over the tunable weight dimensions (excludes fixed script).
 fn weight_distance(a: &FeatureWeights, b: &FeatureWeights) -> i64 {
     (a.length_variance - b.length_variance).abs()
         + (a.te_kanji - b.te_kanji).abs()
@@ -310,11 +301,13 @@ mod tests {
         );
     }
 
-    /// The structure filter drops 可なや in production, but tune keeps every
-    /// path: its top-1 is rerank's index 0 either way.
+    /// Production's admission drops 可なや, but tune keeps every path: its
+    /// top-1 is rerank's index 0 either way. Tune's population is its own
+    /// (`viterbi_nbest(.., 30)`), not production's oversample, so the two
+    /// agree here because the fixture has only these two paths.
     #[test]
     fn tune_keeps_every_path_and_agrees_with_rerank_top1() {
-        let (dict, conn) = crate::converter::testutil::filtered_kanaya();
+        let (dict, conn) = crate::converter::testutil::far_multi_segment_kanaya();
         let cases = vec![("かなや".to_string(), "仮名屋".to_string())];
         let tune = precompute_cases(&dict, &conn, &cases);
         let surfaces: Vec<&str> = tune[0]

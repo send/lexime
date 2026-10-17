@@ -257,10 +257,10 @@ pub(crate) const OFFER_CAP: i64 = 2000;
 pub(crate) const RESCUE_OFFSET: i64 = 4000;
 
 /// The largest Viterbi-price increase a kanji spelling may add over its
-/// source and still be offered (したほうがいい's 方: 2357). Measured against the source,
-/// not the rest of the list: an offer is a spelling next to its source,
-/// judged by that source rather than by the #1 the structure filter
-/// measures from.
+/// source and still be offered (したほうがいい's 方: 2357). Measured against the
+/// source, not the rest of the list: an offer is a spelling next to its
+/// source. Whether an offer stays is decided later, by cost-gap admission
+/// against the #1, like every other path.
 const OFFER_MAX_MODEL_GAP: i64 = 6000;
 
 /// The first 5 multi-segment model-priced paths: the sources both variant

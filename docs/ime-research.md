@@ -54,7 +54,7 @@
 - **辞書データ**: Mozc の TSV を直接使用 (BSD-3 ライセンスで再利用許可)
 - **接続行列**: connection_single_column.txt を使用
 - **POS ID 体系**: Mozc の id.def に依存
-- **structure_cost**: reranker で Mozc に着想を得た遷移コスト集約 (ただし適用方法は異なる)
+- **structure_cost**: reranker で Mozc に着想を得た遷移コスト集約 (ただし適用方法は異なる)。structure filter として使っていたが #366 で削除
 
 ### Lexime の独自設計
 | 項目 | Mozc | Lexime |
