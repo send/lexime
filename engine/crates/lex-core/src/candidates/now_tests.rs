@@ -248,3 +248,40 @@ fn number_compound_is_boosted_at_the_injected_now() {
     // same boost off: the whole-path 5x plus the one segment's unigram.
     assert_eq!(ex.paths[0].history_boost, 6 * 13125);
 }
+
+/// More same-reading entries than the N-best holds, so the dearest few are
+/// listed only by the lookup step (the predictions are cut at `max_results`).
+fn crowded_dict(entries: usize) -> TrieDictionary {
+    let crowd: Vec<_> = (0..entries)
+        .map(|i| entry(&format!("語{i:02}"), 3000 + 100 * i as i16))
+        .collect();
+    TrieDictionary::from_entries(vec![("ごご".into(), crowd)])
+}
+
+#[test]
+fn lookup_remainder_is_reordered_by_the_injected_now() {
+    let nbest = crate::settings::settings().candidates.nbest;
+    let entries = nbest + 4;
+    let dict = crowded_dict(entries);
+    // Only the dearest entry is learned: too dear to be lifted into the
+    // N-best, and (at STALE) not injected either.
+    let last = format!("語{:02}", entries - 1);
+    let h = learned(&[&[("ごご", &last)]]);
+    let at = |now| ConversionContext::new(&dict, None).with_history(Some(&h), now);
+
+    // The lookup step appends what the N-best and the predictions did not
+    // list. Decayed away, it keeps the dictionary's cost order, so the
+    // learned entry stays last; had the reorder read the wall clock it would
+    // see the entry whole and move it first.
+    let stale = generate_candidates(&at(STALE), "ごご", 2);
+    let tail: Vec<&String> = stale.surfaces.iter().rev().take(4).rev().collect();
+    let want: Vec<String> = (entries - 4..entries)
+        .map(|i| format!("語{i:02}"))
+        .collect();
+    assert_eq!(
+        tail,
+        want.iter().collect::<Vec<_>>(),
+        "{:?}",
+        stale.surfaces
+    );
+}
