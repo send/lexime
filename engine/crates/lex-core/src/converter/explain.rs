@@ -9,7 +9,9 @@ use crate::user_history::UserHistory;
 use crate::settings::settings;
 
 use super::cost::{conn_cost, score_path, script_cost, DefaultCostFunction};
-use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
+use super::features::{
+    is_single_char_kanji, is_single_char_kanji_penalised, is_te_form_kanji_penalised,
+};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
 use super::reranker::{compute_history_boost, FeaturePricer};
@@ -112,6 +114,29 @@ pub struct ExplainPath {
     /// The price was set by another stage than the one that made the
     /// segments (an offer, the kana rescue or Numeric adopted over them).
     pub repriced: bool,
+    /// The path's one-character-reading segments with kanji in the surface,
+    /// taken before `group_segments` merges them into a neighbour (the
+    /// `segments` above are grouped, which is why the single-kanji penalty
+    /// is shown here and not per segment). Empty without a connection
+    /// matrix.
+    pub single_kanji_segments: Vec<SingleKanjiSegment>,
+}
+
+/// A one-character-reading segment with kanji in its surface, whatever its
+/// role.
+#[derive(Debug, Clone, Serialize)]
+pub struct SingleKanjiSegment {
+    pub reading: String,
+    pub surface: String,
+    pub left_id: u16,
+    /// Connection-matrix role of `left_id` (0 = content word).
+    pub role: u8,
+    /// The single-char kanji penalty's predicate holds for it (rerank's
+    /// predicate, with the dictionary for the compound exemption), whatever
+    /// the weight. Whether this path's price includes it is another matter:
+    /// a lone path, an Override price and the kana rescue are not priced by
+    /// the features.
+    pub penalised: bool,
 }
 
 impl ExplainPath {
@@ -132,8 +157,6 @@ pub struct ExplainSegment {
     pub connection_cost: i64,
     /// Te-form kanji penalty applied.
     pub te_form_kanji_penalty: i64,
-    /// Single-char kanji content-word penalty applied.
-    pub single_char_kanji_penalty: i64,
     pub left_id: u16,
     pub right_id: u16,
 }
@@ -187,6 +210,9 @@ struct ExplainObserver<'a> {
     /// are lattice nodes, taken before `group_segments` merges morphemes (a
     /// grouped segment keeps only the first node's cost).
     model_costs: HashMap<String, (i64, i64)>,
+    /// Single-kanji segments of each final path, before `group_segments`.
+    single_kanji: HashMap<String, Vec<SingleKanjiSegment>>,
+    dict: &'a dyn Dictionary,
     pricer: FeaturePricer<'a>,
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
@@ -208,6 +234,8 @@ impl<'a> ExplainObserver<'a> {
             pre_history: HashMap::new(),
             override_boosts: HashMap::new(),
             model_costs: HashMap::new(),
+            single_kanji: HashMap::new(),
+            dict,
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
             anchor: 0,
@@ -279,7 +307,35 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 (p.surface_key(), costs)
             })
             .collect();
+        if let Some(conn) = self.conn {
+            self.single_kanji = paths
+                .iter()
+                .filter_map(|p| {
+                    let listed = single_kanji_segments(p, conn, self.dict);
+                    (!listed.is_empty()).then(|| (p.surface_key(), listed))
+                })
+                .collect();
+        }
     }
+}
+
+fn single_kanji_segments(
+    p: &ScoredPath,
+    conn: &ConnectionMatrix,
+    dict: &dyn Dictionary,
+) -> Vec<SingleKanjiSegment> {
+    p.segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_single_char_kanji(s))
+        .map(|(i, s)| SingleKanjiSegment {
+            reading: s.reading.clone(),
+            surface: s.surface.clone(),
+            left_id: s.left_id,
+            role: conn.role(s.left_id),
+            penalised: is_single_char_kanji_penalised(s, i, &p.segments, conn, Some(dict)),
+        })
+        .collect()
 }
 
 /// Priced by the Override stage (Numeric / Katakana), which applies the
@@ -293,11 +349,7 @@ fn is_override_priced(p: &ScoredPath) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Build per-segment cost breakdown from a ScoredPath.
-fn explain_segments(
-    scored: &ScoredPath,
-    conn: Option<&ConnectionMatrix>,
-    dict: &dyn Dictionary,
-) -> Vec<ExplainSegment> {
+fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec<ExplainSegment> {
     scored
         .segments
         .iter()
@@ -323,15 +375,6 @@ fn explain_segments(
             } else {
                 0
             };
-            let sc_penalty = if let Some(c) = conn {
-                if is_single_char_kanji_penalised(seg, i, &scored.segments, c, Some(dict)) {
-                    settings().reranker.single_char_kanji_penalty
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
             ExplainSegment {
                 reading: seg.reading.clone(),
                 surface: seg.surface.clone(),
@@ -340,7 +383,6 @@ fn explain_segments(
                 script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
                 connection_cost: connection,
                 te_form_kanji_penalty: te_penalty,
-                single_char_kanji_penalty: sc_penalty,
                 left_id: seg.left_id,
                 right_id: seg.right_id,
             }
@@ -455,7 +497,7 @@ pub fn explain(
                 _ => snapshot.cost - original,
             };
             ExplainPath {
-                segments: explain_segments(scored, conn, dict),
+                segments: explain_segments(scored, conn),
                 viterbi_cost: original,
                 rerank_delta,
                 history_breakdown,
@@ -467,6 +509,7 @@ pub fn explain(
                 model_cost,
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
+                single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
         .collect();
@@ -567,13 +610,8 @@ pub fn format_text(result: &ExplainResult) -> String {
             } else {
                 String::new()
             };
-            let single_char_str = if seg.single_char_kanji_penalty > 0 {
-                format!(" 1charK={:<+6}", seg.single_char_kanji_penalty)
-            } else {
-                String::new()
-            };
             out.push_str(&format!(
-                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}{}\n",
+                "    seg[{}]: {} word={:<6} penalty={:<5} script={:<6} {}{}{}\n",
                 j,
                 padded,
                 seg.word_cost,
@@ -582,7 +620,6 @@ pub fn format_text(result: &ExplainResult) -> String {
                 conn_label,
                 seg.connection_cost,
                 te_str,
-                single_char_str,
             ));
         }
 
@@ -598,6 +635,20 @@ pub fn format_text(result: &ExplainResult) -> String {
             out.push_str(&format!(
                 "      history: uni_sum={:<+7} bi_sum={:<+7} whole×5={:<+7} (/{} segs)\n",
                 -hb.unigram_sum, -hb.bigram_sum, -hb.whole_path_boost, path.history_segment_count,
+            ));
+        }
+        if !path.single_kanji_segments.is_empty() {
+            let listed: Vec<String> = path
+                .single_kanji_segments
+                .iter()
+                .map(|s| {
+                    let mark = if s.penalised { " penalised" } else { "" };
+                    format!("{}({}) role={}{mark}", s.surface, s.reading, s.role)
+                })
+                .collect();
+            out.push_str(&format!(
+                "      1-char kanji (ungrouped): {}\n",
+                listed.join(", ")
             ));
         }
     }
@@ -634,6 +685,75 @@ mod tests {
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, TrieDictionary};
     use crate::user_history::UserHistory;
+
+    /// 確認 (content word), 史 (名詞,接尾: role 2, grouped into the word
+    /// before it) and 値 (content word), the shapes of かくにんしますね.
+    fn single_kanji_fixture() -> (TrieDictionary, ConnectionMatrix) {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![
+            ("かくにん".into(), vec![e("確認", 0, 1)]),
+            ("し".into(), vec![e("史", 0, 2)]),
+            ("ね".into(), vec![e("値", 0, 1)]),
+        ]);
+        (
+            dict,
+            crate::converter::testutil::zero_conn_with_roles(3, vec![0, 0, 2]),
+        )
+    }
+
+    fn path_by_surface<'r>(result: &'r ExplainResult, surface: &str) -> &'r ExplainPath {
+        result
+            .paths
+            .iter()
+            .find(|p| p.surface() == surface)
+            .unwrap_or_else(|| panic!("no path {surface}"))
+    }
+
+    fn listed(p: &ExplainPath) -> Vec<(&str, u8, bool)> {
+        p.single_kanji_segments
+            .iter()
+            .map(|s| (s.surface.as_str(), s.role, s.penalised))
+            .collect()
+    }
+
+    #[test]
+    fn single_kanji_segments_are_listed_before_grouping() {
+        let (dict, conn) = single_kanji_fixture();
+        let result = explain(&dict, Some(&conn), None, "かくにんし", 5);
+        let p = path_by_surface(&result, "確認史");
+        assert_eq!(p.segments.len(), 1, "the suffix is grouped into 確認");
+        assert_eq!(listed(p), [("史", 2, false)]);
+    }
+
+    #[test]
+    fn single_kanji_segments_apply_the_compound_exemption() {
+        // 京|都 with 京都 in the dictionary: 都 is a content word, exempt.
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![
+            ("きょう".into(), vec![e("京", 0, 1)]),
+            ("と".into(), vec![e("都", 0, 1)]),
+            ("きょうと".into(), vec![e("京都", 20000, 1)]),
+        ]);
+        let conn = crate::converter::testutil::zero_conn_with_roles(2, vec![0, 0]);
+        let result = explain(&dict, Some(&conn), None, "きょうと", 5);
+        let p = result
+            .paths
+            .iter()
+            .find(|p| p.segments.len() == 2)
+            .expect("京|都 is a path");
+        assert_eq!(listed(p), [("都", 0, false)]);
+    }
+
+    #[test]
+    fn single_kanji_segments_mark_the_penalised_content_word_at_any_weight() {
+        // The shipped weight is not what decides `penalised`.
+        let (dict, conn) = single_kanji_fixture();
+        let result = explain(&dict, Some(&conn), None, "かくにんね", 5);
+        assert_eq!(
+            listed(path_by_surface(&result, "確認値")),
+            [("値", 0, true)]
+        );
+    }
 
     #[test]
     fn test_explain_basic() {

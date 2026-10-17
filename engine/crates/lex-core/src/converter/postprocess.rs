@@ -104,7 +104,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     let reseg_paths = resegment::resegment(paths, ctx.lattice, ctx.conn);
     paths.extend(reseg_paths);
 
-    reranker::rerank(paths, ctx.conn, ctx.dict);
+    let pricer = reranker::FeaturePricer::new(ctx.conn, ctx.dict);
+    reranker::rerank(paths, &pricer);
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
     // user picked like any other path (whole-path boosts ×5 can promote a
@@ -113,7 +114,6 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     // index 0 by construction (the Model stage never touches it and nothing
     // re-sorts), so the offers could only be dropped at the cut.
     let hiragana_rw = rewriter::HiraganaVariantRewriter;
-    let pricer = reranker::FeaturePricer::new(ctx.conn, ctx.dict);
     let partial_rw = rewriter::PartialHiraganaRewriter {
         lattice: ctx.lattice,
         conn: ctx.conn,

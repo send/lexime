@@ -19,7 +19,14 @@ pub(crate) struct FeaturePricer<'a> {
 
 impl<'a> FeaturePricer<'a> {
     pub fn new(conn: Option<&'a ConnectionMatrix>, dict: Option<&'a dyn Dictionary>) -> Self {
-        let weights = FeatureWeights::from_settings();
+        Self::with_weights(FeatureWeights::from_settings(), conn, dict)
+    }
+
+    fn with_weights(
+        weights: FeatureWeights,
+        conn: Option<&'a ConnectionMatrix>,
+        dict: Option<&'a dyn Dictionary>,
+    ) -> Self {
         // Only the single-kanji compound exemption requires dictionary lookups.
         let need_dict = weights.single_kanji != 0;
         Self {
@@ -47,6 +54,9 @@ impl<'a> FeaturePricer<'a> {
 ///   segmentations are preferred when Viterbi costs are close
 /// - **Script cost**: penalises katakana / Latin surfaces and rewards mixed-script
 ///   (kanji+kana) surfaces — a ranking preference that doesn't affect search quality
+/// - **Te-form kanji**: penalises a kanji segment right after a て/で function word
+/// - **Single-char kanji**: penalises a one-character-reading kanji content word
+///   that is not part of a dictionary compound with a neighbour
 ///
 /// Rerank never drops a path (it takes a slice): the stages that select
 /// candidates are cost-gap admission and the cut to n.
@@ -54,18 +64,16 @@ impl<'a> FeaturePricer<'a> {
 /// A lone path is returned unpriced. This keeps the behaviour from before
 /// #366: pricing it would change what the variant offers built from it are
 /// clamped against, and so their order.
-pub(crate) fn rerank(
-    paths: &mut [ScoredPath],
-    conn: Option<&ConnectionMatrix>,
-    dict: Option<&dyn Dictionary>,
-) {
+///
+/// The caller passes the pricer the variant offers use, so a path and an
+/// offer with the same segments get the same features.
+pub(crate) fn rerank(paths: &mut [ScoredPath], pricer: &FeaturePricer<'_>) {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
         return;
     }
-    let features = FeaturePricer::new(conn, dict);
     for p in paths.iter_mut() {
-        p.viterbi_cost += features.adjustment(p);
+        p.viterbi_cost += pricer.adjustment(p);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
 }
@@ -278,8 +286,8 @@ mod tests {
             path(vec![seg("で", "で", 2), seg("みる", "見る", 1)], 99999), // dummy
         ];
 
-        rerank(&mut with_kanji, Some(&conn), None);
-        rerank(&mut without_kanji, Some(&conn), None);
+        rerank(&mut with_kanji, &FeaturePricer::new(Some(&conn), None));
+        rerank(&mut without_kanji, &FeaturePricer::new(Some(&conn), None));
 
         let kanji_cost = with_kanji
             .iter()
@@ -293,7 +301,7 @@ mod tests {
             path(vec![seg("は", "は", 2), seg("みる", "見る", 1)], 100),
             path(vec![seg("は", "は", 2), seg("みる", "みる", 1)], 99999),
         ];
-        rerank(&mut baseline_kanji, Some(&conn), None);
+        rerank(&mut baseline_kanji, &FeaturePricer::new(Some(&conn), None));
         let baseline_kanji_cost = baseline_kanji
             .iter()
             .find(|p| p.segments[1].surface == "見る")
@@ -340,7 +348,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, &FeaturePricer::new(Some(&conn), None));
 
         // The FW path should rank first (lower cost) because its 2-char
         // particle is excluded from the variance calculation.
@@ -383,7 +391,7 @@ mod tests {
             ),
         ];
 
-        rerank(&mut paths, Some(&conn), None);
+        rerank(&mut paths, &FeaturePricer::new(Some(&conn), None));
 
         // Path A should rank better: its 1-char segments are all excluded,
         // leaving no variance. Path B has [4, 2] with nonzero variance.
@@ -436,122 +444,108 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_char_kanji_penalty_applied() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
+    /// Weight of the single-kanji penalty in these tests, the other weights
+    /// 0: the shipped weight has been 0, and at 0 every assertion on the
+    /// penalty passes whatever the predicate does.
+    const SK: i64 = 1000;
 
-        // Path A: single-char kanji content word "ね" → "根" — penalty applied
-        // Path B: multi-char content word "ねこ" → "猫" — no penalty
-        let mut paths = vec![
-            path(vec![seg("かくにん", "確認", 1), seg("ね", "根", 1)], 100),
-            path(vec![seg("かくにんね", "確認ね", 1)], 100),
-        ];
+    fn sk_pricer<'a>(
+        conn: &'a ConnectionMatrix,
+        dict: Option<&'a dyn Dictionary>,
+    ) -> FeaturePricer<'a> {
+        let weights = FeatureWeights {
+            length_variance: 0,
+            script: 0,
+            te_kanji: 0,
+            single_kanji: SK,
+        };
+        FeaturePricer::with_weights(weights, Some(conn), dict)
+    }
 
-        rerank(&mut paths, Some(&conn), None);
-
-        // The path with 根 should have penalty applied
-        let root_path = paths
-            .iter()
-            .find(|p| p.segments.len() == 2 && p.segments[1].surface == "根")
-            .unwrap();
-        let other_path = paths.iter().find(|p| p.segments.len() == 1).unwrap();
-        assert!(
-            root_path.viterbi_cost > other_path.viterbi_cost,
-            "single-char kanji content-word should be penalized: root={}, other={}",
-            root_path.viterbi_cost,
-            other_path.viterbi_cost
-        );
+    fn sk_adjustment(
+        path: &ScoredPath,
+        conn: &ConnectionMatrix,
+        dict: Option<&dyn Dictionary>,
+    ) -> i64 {
+        sk_pricer(conn, dict).adjustment(path)
     }
 
     #[test]
-    fn single_char_kanji_penalty_exempt_with_dict_compound() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
-
-        // Dictionary has "きょうと" → "京都" compound
-        let dict = MockDict::new(&[("きょうと", "京都")]);
-
-        // "と" → "都" is single-char kanji CW, but "きょう" + "と" = "きょうと"
-        // exists in dictionary, so it should be exempt.
-        // Need 2+ paths so rerank doesn't short-circuit.
-        let dummy = path(vec![seg("きょうと", "京都", 1)], 99999);
-
-        let cost_with_dict = {
-            let mut p = vec![
-                path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
-                dummy.clone(),
-            ];
-            rerank(&mut p, Some(&conn), Some(&dict));
-            p.iter()
-                .find(|pp| pp.segments.len() == 2)
-                .unwrap()
-                .viterbi_cost
-        };
-
-        // Without dict: penalty applied
-        let cost_without_dict = {
-            let mut p = vec![
-                path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100),
-                dummy.clone(),
-            ];
-            rerank(&mut p, Some(&conn), None);
-            p.iter()
-                .find(|pp| pp.segments.len() == 2)
-                .unwrap()
-                .viterbi_cost
-        };
-
-        let penalty = settings().reranker.single_char_kanji_penalty;
-        assert_eq!(
-            cost_without_dict - cost_with_dict,
-            penalty,
-            "compound exemption should save exactly the penalty amount"
+    fn single_char_kanji_penalty_applied_to_content_word() {
+        // 確認します|値 (かくにんしますね): 値 is a content word (role 0).
+        let conn = conn_with_roles(vec![0u8, 0]);
+        let p = path(
+            vec![seg("かくにんします", "確認します", 1), seg("ね", "値", 1)],
+            100,
         );
+        assert_eq!(sk_adjustment(&p, &conn, None), SK);
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_not_applied_to_suffix() {
+        // 確認|史|ます|ね: 史 is 名詞,接尾 (role 2), not a content word.
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 1, 2], 2, 2);
+        let p = path(
+            vec![
+                seg("かくにん", "確認", 1),
+                seg("し", "史", 3),
+                seg("ます", "ます", 2),
+                seg("ね", "ね", 2),
+            ],
+            100,
+        );
+        assert_eq!(sk_adjustment(&p, &conn, None), 0);
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_exempt_with_previous_segment_compound() {
+        // 京|都 with 京都 (きょうと) in the dictionary.
+        let conn = conn_with_roles(vec![0u8, 0]);
+        let dict = MockDict::new(&[("きょうと", "京都")]);
+        let p = path(vec![seg("きょう", "京", 1), seg("と", "都", 1)], 100);
+        assert_eq!(sk_adjustment(&p, &conn, Some(&dict)), 0);
+        assert_eq!(sk_adjustment(&p, &conn, None), SK);
+    }
+
+    #[test]
+    fn single_char_kanji_penalty_exempt_with_next_segment_compound() {
+        // 都|会 with 都会 (とかい) in the dictionary.
+        let conn = conn_with_roles(vec![0u8, 0]);
+        let dict = MockDict::new(&[("とかい", "都会")]);
+        let p = path(vec![seg("と", "都", 1), seg("かい", "会", 1)], 100);
+        assert_eq!(sk_adjustment(&p, &conn, Some(&dict)), 0);
+        assert_eq!(sk_adjustment(&p, &conn, None), SK);
     }
 
     #[test]
     fn single_char_kanji_penalty_not_exempt_when_surface_mismatches() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
-
-        // Dictionary has "ますね" → "増根" but segments are ます + 根,
-        // so combined_surface = "ます根" ≠ "増根" — should NOT be exempt.
+        // ますね is in the dictionary as 増根, not as ます根.
+        let conn = conn_with_roles(vec![0u8, 0]);
         let dict = MockDict::new(&[("ますね", "増根")]);
+        let p = path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100);
+        assert_eq!(sk_adjustment(&p, &conn, Some(&dict)), SK);
+    }
 
-        let dummy = path(vec![seg("ますね", "ますね", 1)], 99999);
+    #[test]
+    fn single_char_kanji_penalty_not_applied_to_multi_char_reading() {
+        let conn = conn_with_roles(vec![0u8, 0]);
+        let multi = path(vec![seg("ねこ", "猫", 1)], 100);
+        let single = path(vec![seg("ね", "根", 1)], 100);
+        assert_eq!(sk_adjustment(&multi, &conn, None), 0);
+        assert_eq!(sk_adjustment(&single, &conn, None), SK);
+    }
 
-        let cost_with_dict = {
-            let mut p = vec![
-                path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
-                dummy.clone(),
-            ];
-            rerank(&mut p, Some(&conn), Some(&dict));
-            p.iter()
-                .find(|pp| pp.segments.len() == 2)
-                .unwrap()
-                .viterbi_cost
-        };
-
-        let cost_without_dict = {
-            let mut p = vec![
-                path(vec![seg("ます", "ます", 1), seg("ね", "根", 1)], 100),
-                dummy.clone(),
-            ];
-            rerank(&mut p, Some(&conn), None);
-            p.iter()
-                .find(|pp| pp.segments.len() == 2)
-                .unwrap()
-                .viterbi_cost
-        };
-
-        assert_eq!(
-            cost_with_dict, cost_without_dict,
-            "surface mismatch should not grant exemption"
-        );
+    #[test]
+    fn rerank_adds_the_pricers_adjustment() {
+        let conn = conn_with_roles(vec![0u8, 0]);
+        let pricer = sk_pricer(&conn, None);
+        let mut paths = vec![
+            path(vec![seg("ね", "根", 1)], 100),
+            path(vec![seg("ね", "ね", 1)], 100),
+        ];
+        rerank(&mut paths, &pricer);
+        assert_eq!(paths[0].segments[0].surface, "ね");
+        assert_eq!(paths[1].viterbi_cost, 100 + SK);
     }
 
     #[test]
@@ -579,37 +573,6 @@ mod tests {
         assert_eq!(
             fw_features.single_kanji_count, 0,
             "FW should not trigger single-char kanji feature"
-        );
-    }
-
-    #[test]
-    fn single_char_kanji_penalty_not_applied_to_multi_char_reading() {
-        // ID 1 = content word (role 0)
-        let roles = vec![0u8, 0];
-        let conn = conn_with_roles(roles);
-
-        // Compare multi-char reading (no penalty) vs single-char reading (penalty)
-        let mut paths = vec![
-            path(vec![seg("ねこ", "猫", 1)], 100), // 2-char reading
-            path(vec![seg("ね", "根", 1)], 100),   // 1-char reading
-        ];
-
-        rerank(&mut paths, Some(&conn), None);
-
-        let multi = paths
-            .iter()
-            .find(|p| p.segments[0].reading == "ねこ")
-            .unwrap();
-        let single = paths
-            .iter()
-            .find(|p| p.segments[0].reading == "ね")
-            .unwrap();
-        let penalty = settings().reranker.single_char_kanji_penalty;
-        assert!(
-            single.viterbi_cost - multi.viterbi_cost >= penalty,
-            "only single-char reading should get penalty: multi={}, single={}",
-            multi.viterbi_cost,
-            single.viterbi_cost,
         );
     }
 
