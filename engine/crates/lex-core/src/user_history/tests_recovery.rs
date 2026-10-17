@@ -137,7 +137,7 @@ fn quarantine_count(f: &Fx) -> usize {
 fn t1_cp_normal_wal_normal() {
     let f = fx();
     build_v2_state(&f, false);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B, C, D, E], &[]);
     assert_eq!(report.checkpoint_state, CheckpointState::Loaded);
     assert_eq!(report.wal_state, WalState::Clean);
@@ -146,7 +146,7 @@ fn t1_cp_normal_wal_normal() {
     assert!(report.is_clean());
     assert!(!report.data_loss_suspected());
     // Idempotent: a second open sees identical state
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h2, &[A, B, C, D, E], &[]);
     assert!(r2.is_clean());
 }
@@ -156,7 +156,7 @@ fn t1_cp_normal_wal_missing() {
     let f = fx();
     build_v2_state(&f, false);
     fs::remove_file(&f.wal).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Same shape as a clean shutdown; external deletion is undetectable
     assert_contents(&h, &[A, B], &[C, D, E]);
     assert_eq!(report.wal_state, WalState::Missing);
@@ -169,7 +169,7 @@ fn t1_cp_normal_wal_tail_corrupt() {
     build_v2_state(&f, false);
     let full_len = fs::read(&f.wal).unwrap().len();
     cut_tail(&f.wal, 5);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Good prefix replayed; only the torn last frame (E) is lost
     assert_contents(&h, &[A, B, C, D], &[E]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -180,7 +180,7 @@ fn t1_cp_normal_wal_tail_corrupt() {
     // Not user-visible data loss (§8 ※1: expected power-loss residue)
     assert!(!report.data_loss_suspected());
     // Next open is clean and content is preserved
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h2, &[A, B, C, D], &[E]);
     assert_eq!(r2.wal_state, WalState::Clean);
 }
@@ -190,7 +190,7 @@ fn t1_cp_normal_wal_mid_corrupt() {
     let f = fx();
     build_v2_state(&f, false);
     corrupt_first_frame(&f.wal);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Framing cannot re-synchronize past the corrupt frame: C, D, E all lost
     assert_contents(&h, &[A, B], &[C, D, E]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -206,7 +206,7 @@ fn t1_cp_missing_wal_normal() {
     let f = fx();
     build_v2_state(&f, false);
     fs::remove_file(&f.cp).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // applied_seq = 0 → full WAL replay recovers the un-checkpointed tail
     assert_contents(&h, &[C, D, E], &[A, B]);
     assert_eq!(report.checkpoint_state, CheckpointState::Missing);
@@ -218,7 +218,7 @@ fn t1_cp_missing_wal_normal() {
 #[test]
 fn t1_cp_missing_wal_missing() {
     let f = fx();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Fresh-install shape
     assert_contents(&h, &[], &[A, B, C, D, E]);
     assert_eq!(report.checkpoint_state, CheckpointState::Missing);
@@ -233,7 +233,7 @@ fn t1_cp_missing_wal_tail_corrupt() {
     build_v2_state(&f, false);
     fs::remove_file(&f.cp).unwrap();
     cut_tail(&f.wal, 5);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[C, D], &[A, B, E]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
 }
@@ -244,7 +244,7 @@ fn t1_cp_missing_wal_mid_corrupt() {
     build_v2_state(&f, false);
     fs::remove_file(&f.cp).unwrap();
     corrupt_first_frame(&f.wal);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[], &[A, B, C, D, E]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
 }
@@ -254,7 +254,7 @@ fn t1_cp_corrupt_wal_normal() {
     let f = fx();
     build_v2_state(&f, false);
     corrupt_cp(&f.cp);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Checkpoint-only learning is lost; WAL replay recovers the recent tail
     assert_contents(&h, &[C, D, E], &[A, B]);
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
@@ -269,7 +269,7 @@ fn t1_cp_corrupt_wal_normal() {
     assert!(report.compaction_recommended);
     // The quarantine unblocks the next startup: reopen is a normal
     // missing-checkpoint open, not a repeated failure
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h2, &[C, D, E], &[A, B]);
     assert_eq!(r2.checkpoint_state, CheckpointState::Missing);
 }
@@ -280,7 +280,7 @@ fn t1_cp_corrupt_wal_missing() {
     build_v2_state(&f, false);
     corrupt_cp(&f.cp);
     fs::remove_file(&f.wal).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[], &[A, B, C, D, E]);
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert!(report.data_loss_suspected());
@@ -292,7 +292,7 @@ fn t1_cp_corrupt_wal_tail_corrupt() {
     build_v2_state(&f, false);
     corrupt_cp(&f.cp);
     cut_tail(&f.wal, 5);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[C, D], &[A, B, E]);
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -304,7 +304,7 @@ fn t1_cp_corrupt_wal_mid_corrupt() {
     build_v2_state(&f, false);
     corrupt_cp(&f.cp);
     corrupt_first_frame(&f.wal);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[], &[A, B, C, D, E]);
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -317,7 +317,7 @@ fn t1_cp_stale_wal_normal() {
     // seq 1..=2 but the WAL still holds frames 1..=5.
     let f = fx();
     build_v2_state(&f, true);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B, C, D, E], &[]);
     // The two covered frames are skipped, not re-applied (T2 asserts freq)
     assert_eq!(report.frames_skipped, 2);
@@ -330,7 +330,7 @@ fn t1_cp_stale_wal_missing() {
     let f = fx();
     build_v2_state(&f, true);
     fs::remove_file(&f.wal).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // Indistinguishable from normal × missing — by design
     assert_contents(&h, &[A, B], &[C, D, E]);
     assert_eq!(report.wal_state, WalState::Missing);
@@ -341,7 +341,7 @@ fn t1_cp_stale_wal_tail_corrupt() {
     let f = fx();
     build_v2_state(&f, true);
     cut_tail(&f.wal, 5);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B, C, D], &[E]);
     assert_eq!(report.frames_skipped, 2);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -354,7 +354,7 @@ fn t1_cp_stale_wal_mid_corrupt() {
     // Frame 1 (a *skipped* frame) is corrupted: CRC is still verified on
     // skip, so scanning stops immediately — checkpoint content only.
     corrupt_first_frame(&f.wal);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B], &[C, D, E]);
     assert_eq!(report.frames_skipped, 0);
     assert_eq!(report.wal_state, WalState::TailRepaired);
@@ -370,7 +370,7 @@ fn t2_no_double_apply_after_compaction_crash() {
     // Exact item-4 state: checkpoint durable, truncation never happened.
     let f = fx();
     build_v2_state(&f, true);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(frequency(&h, A), 1, "v1 replay would double this to 2");
     assert_eq!(frequency(&h, B), 1);
     assert_eq!(report.frames_skipped, 2);
@@ -380,7 +380,7 @@ fn t2_no_double_apply_after_compaction_crash() {
     let mut h2 = h.clone();
     h2.advance_applied_seq(5);
     h2.save(&f.cp).unwrap();
-    let (h3, _, r3) = open_recovering(&f.cp).unwrap();
+    let (h3, _, r3) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(frequency(&h3, A), 1);
     assert_eq!(frequency(&h3, C), 1);
     assert_eq!(r3.frames_skipped, 5);
@@ -393,7 +393,7 @@ fn t2_strict_replay_also_skips_covered_frames() {
     // double-count during the item-4 window.
     let f = fx();
     build_v2_state(&f, true);
-    let (h, _) = super::wal::open_with_wal(&f.cp).unwrap();
+    let (h, _) = super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).unwrap();
     assert_eq!(frequency(&h, A), 1);
     assert_eq!(frequency(&h, C), 1);
 }
@@ -419,7 +419,7 @@ fn t3_truncation_sweep() {
     for cut in 0..=master.len() {
         let f = fx();
         fs::write(&f.wal, &master[..cut]).unwrap();
-        let (_h, mut wal, report) = open_recovering(&f.cp).unwrap();
+        let (_h, mut wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
         assert!(
             report.frames_replayed >= prev_replayed,
             "recovered frame count must be monotone in prefix length \
@@ -433,7 +433,7 @@ fn t3_truncation_sweep() {
         // every later frame permanently invisible (problem A).
         assert!(!wal.is_frozen(), "cut={cut}");
         wal.append(&seg(A), T0 + 100).unwrap();
-        let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+        let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
         assert!(
             present(&h2, A),
             "appended frame lost after repair (cut={cut})"
@@ -464,7 +464,7 @@ fn t4_bitflip_fuzz_wal() {
         let mut data = wal_master.clone();
         data[i] ^= 0xFF;
         fs::write(&f.wal, &data).unwrap();
-        let (h, _, report) = open_recovering(&f.cp)
+        let (h, _, report) = open_recovering(&f.cp, super::now_epoch())
             .unwrap_or_else(|e| panic!("open must not fail on bit flip at {i}: {e}"));
         // Checkpoint content survives any WAL damage
         assert!(present(&h, A), "flip at byte {i}");
@@ -487,7 +487,7 @@ fn t4_bitflip_fuzz_checkpoint() {
         data[i] ^= 0xFF;
         fs::write(&f.cp, &data).unwrap();
         fs::write(&f.wal, &wal_master).unwrap();
-        let (h, _, report) = open_recovering(&f.cp)
+        let (h, _, report) = open_recovering(&f.cp, super::now_epoch())
             .unwrap_or_else(|e| panic!("open must not fail on bit flip at {i}: {e}"));
         // The CRC covers the header prefix (magic/version flips fail their
         // own checks) and the body: every single-byte flip must quarantine,
@@ -511,7 +511,7 @@ fn t4_applied_seq_bitflip_is_detected() {
     data[14] ^= 0xFF; // high-ish byte of applied_seq → huge value
     fs::write(&f.cp, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert!(report.data_loss_suspected());
     // WAL frames are replayed, not silently skipped by the corrupt seq
@@ -558,7 +558,7 @@ fn t5_full_migration() {
     let f = fx();
     let v1_bytes = write_v1_state(&f);
 
-    let (h, mut wal, report) = open_recovering(&f.cp).unwrap();
+    let (h, mut wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B, C], &[D, E]);
     assert_eq!(
         frequency(&h, A),
@@ -583,7 +583,7 @@ fn t5_full_migration() {
     );
 
     // Migration is one-shot: the next open is clean with identical content
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h2, &[A, B, C], &[]);
     assert!(r2.is_clean());
 
@@ -599,12 +599,12 @@ fn t5_residue_v2_checkpoint_with_v1_wal() {
     let f = fx();
     write_v1_state(&f);
     let v1_wal = fs::read(&f.wal).unwrap();
-    let (_, _, first) = open_recovering(&f.cp).unwrap();
+    let (_, _, first) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(first.migrated_from_v1);
     // Reconstruct the residue: put the v1 WAL back next to the v2 checkpoint
     fs::write(&f.wal, &v1_wal).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.wal_state, WalState::LegacyDiscarded);
     assert!(!report.migrated_from_v1);
     assert_contents(&h, &[A, B, C], &[]);
@@ -618,8 +618,8 @@ fn t5_migration_idempotent_from_pristine_v1() {
     // copy only) — rerunning from the exact same input must converge.
     let f = fx();
     write_v1_state(&f);
-    let (h1, _, _) = open_recovering(&f.cp).unwrap();
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h1, _, _) = open_recovering(&f.cp, super::now_epoch()).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(r2.is_clean());
     assert_eq!(frequency(&h1, A), frequency(&h2, A));
     assert_eq!(frequency(&h1, C), frequency(&h2, C));
@@ -631,7 +631,7 @@ fn t5_missing_checkpoint_with_v1_wal() {
     // but no checkpoint. Its learnings must survive migration.
     let f = fx();
     fs::write(&f.wal, v1_wal_bytes(&[(seg(B), T0), (seg(C), T0 + 1)])).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[B, C], &[A]);
     assert!(report.migrated_from_v1);
     assert_eq!(report.checkpoint_state, CheckpointState::Missing);
@@ -640,7 +640,7 @@ fn t5_missing_checkpoint_with_v1_wal() {
         !v1_backup_path(&f.cp).exists(),
         "no v1 checkpoint to back up"
     );
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(r2.is_clean());
     assert_contents(&h2, &[B, C], &[]);
 }
@@ -656,7 +656,7 @@ fn t5_corrupt_v1_checkpoint_with_v1_wal() {
     cp[idx] ^= 0xFF;
     fs::write(&f.cp, &cp).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[B, C], &[A]);
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert!(report.migrated_from_v1);
@@ -677,7 +677,7 @@ fn t5_v1_checkpoint_with_v2_wal_mixed_state() {
     wal.append(&seg(B), T0 + 1).unwrap();
     wal.append(&seg(C), T0 + 2).unwrap();
 
-    let (h2, _, report) = open_recovering(&f.cp).unwrap();
+    let (h2, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h2, &[A, B, C], &[]);
     assert!(report.migrated_from_v1);
     assert_eq!(report.frames_replayed, 2);
@@ -685,7 +685,7 @@ fn t5_v1_checkpoint_with_v2_wal_mixed_state() {
 
     // The migrated checkpoint covers the replayed v2 frames: the retained
     // WAL skips them on the next open (no double apply)
-    let (h3, _, r3) = open_recovering(&f.cp).unwrap();
+    let (h3, _, r3) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(frequency(&h3, B), 1);
     assert_eq!(r3.frames_skipped, 2);
     assert_eq!(r3.frames_replayed, 0);
@@ -702,7 +702,7 @@ fn wal_corrupted_magic_quarantined_not_discarded() {
     data[0] ^= 0xFF;
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.wal_state, WalState::Quarantined);
     assert!(report.data_loss_suspected());
     assert_contents(&h, &[A, B], &[C, D, E]);
@@ -729,7 +729,7 @@ fn t5_migration_commit_failure_leaves_v1_intact_and_freezes_appends() {
         eprintln!("skipping: directory permissions are not enforced here");
         return;
     }
-    let result = open_recovering(&f.cp);
+    let result = open_recovering(&f.cp, super::now_epoch());
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
     let (h, mut wal, report) = result.unwrap();
@@ -753,7 +753,7 @@ fn t5_migration_commit_failure_leaves_v1_intact_and_freezes_appends() {
     assert!(!report.data_loss_suspected());
     assert!(report.compaction_recommended);
     // And the retry succeeds once the environment recovers
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(r2.migrated_from_v1);
     assert!(!r2.migration_failed);
     assert_contents(&h2, &[A, B, C], &[]);
@@ -786,7 +786,7 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
         eprintln!("skipping: directory permissions are not enforced here");
         return;
     }
-    let result = open_recovering(&f.cp);
+    let result = open_recovering(&f.cp, super::now_epoch());
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
     let (h, wal, report) = result.unwrap();
@@ -811,7 +811,7 @@ fn t5_migration_commit_failure_without_legacy_wal_is_still_reported() {
         "a failed migration must not schedule a generic compaction"
     );
 
-    let (h2, _, r2) = open_recovering(&f.cp).unwrap();
+    let (h2, _, r2) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(r2.migrated_from_v1);
     assert!(!r2.migration_failed);
     assert_contents(&h2, &[A], &[]);
@@ -840,7 +840,7 @@ fn t5_migration_commit_failure_schedules_nothing_even_with_a_backup() {
         eprintln!("skipping: directory permissions are not enforced here");
         return;
     }
-    let result = open_recovering(&f.cp);
+    let result = open_recovering(&f.cp, super::now_epoch());
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
     let (_, _, report) = result.unwrap();
@@ -885,7 +885,7 @@ fn t9_non_monotonic_seq_stops_and_repairs() {
     data.extend(raw_v2_frame(2, &committed(C, T0 + 2)));
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B], &[C]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
     assert_eq!(fs::read(&f.wal).unwrap().len(), good_len);
@@ -899,7 +899,7 @@ fn t9_decreasing_seq_stops_and_repairs() {
     data.extend(raw_v2_frame(3, &committed(B, T0 + 1)));
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A], &[B]);
     assert_eq!(report.wal_state, WalState::TailRepaired);
 }
@@ -915,7 +915,7 @@ fn t9_seq_gap_is_tolerated() {
     data.extend(raw_v2_frame(9, &committed(C, T0 + 2)));
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, mut wal, report) = open_recovering(&f.cp).unwrap();
+    let (h, mut wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[A, B, C], &[]);
     assert_eq!(report.wal_state, WalState::Clean);
     assert_eq!(report.frames_replayed, 3);
@@ -941,7 +941,7 @@ fn tombstone_replay_removes_entries() {
     })
     .unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[B], &[A]);
     assert_eq!(report.frames_replayed, 3);
 }
@@ -968,7 +968,7 @@ fn replayed_tombstone_recommends_startup_scrub() {
     .unwrap();
     drop(wal);
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[], &[A]); // deletion applied
     assert_eq!(report.checkpoint_state, CheckpointState::Loaded);
     assert_eq!(report.frames_replayed, 1);
@@ -1009,7 +1009,7 @@ fn wal_stub_reinitialized() {
     for stub in [&b""[..], &b"LXW"[..], &b"LXWL\x02\x00\x00"[..]] {
         let f = fx();
         fs::write(&f.wal, stub).unwrap();
-        let (_, mut wal, report) = open_recovering(&f.cp).unwrap();
+        let (_, mut wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
         assert_eq!(report.wal_state, WalState::Reinitialized);
         assert!(!report.data_loss_suspected());
         assert_eq!(fs::read(&f.wal).unwrap(), WAL_HEADER.to_vec());
@@ -1028,7 +1028,7 @@ fn append_onto_stub_recreates_header() {
 
     let data = fs::read(&f.wal).unwrap();
     assert_eq!(&data[..WAL_HEADER_LEN], &WAL_HEADER);
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(present(&h, A), "appended frame must be replayable");
     assert_eq!(report.frames_replayed, 1);
     assert_eq!(report.wal_state, WalState::Clean);
@@ -1047,7 +1047,7 @@ fn append_refused_on_corrupt_header() {
     wal.truncate_wal().unwrap();
     assert!(!wal.is_frozen());
     wal.append(&seg(A), T0).unwrap();
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(present(&h, A));
     assert_eq!(report.frames_replayed, 1);
 }
@@ -1060,7 +1060,7 @@ fn wal_unknown_version_quarantined() {
     data[4] = 9; // future version
     fs::write(&f.wal, &data).unwrap();
 
-    let (h, wal, report) = open_recovering(&f.cp).unwrap();
+    let (h, wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.wal_state, WalState::Quarantined);
     assert!(report.data_loss_suspected());
     assert_contents(&h, &[A, B], &[C, D, E]);
@@ -1084,7 +1084,7 @@ fn checkpoint_unknown_version_quarantined_not_hard_error() {
     data[4] = 9;
     fs::write(&f.cp, &data).unwrap();
 
-    let (h, _, report) = open_recovering(&f.cp).unwrap();
+    let (h, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.checkpoint_state, CheckpointState::Quarantined);
     assert_contents(&h, &[C, D, E], &[A, B]);
 }
@@ -1100,7 +1100,7 @@ fn strict_open_errors_on_corruption_and_never_mutates() {
     let wal_bytes = fs::read(&f.wal).unwrap();
 
     assert!(UserHistory::open(&f.cp).is_err());
-    assert!(super::wal::open_with_wal(&f.cp).is_err());
+    assert!(super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).is_err());
     assert_eq!(fs::read(&f.cp).unwrap(), cp_bytes);
     assert_eq!(fs::read(&f.wal).unwrap(), wal_bytes);
     assert_eq!(quarantine_count(&f), 0);
@@ -1118,7 +1118,7 @@ fn strict_replay_errors_on_unreadable_wal_formats() {
     let mut data = fs::read(&f.wal).unwrap();
     data[4] = 9;
     fs::write(&f.wal, &data).unwrap();
-    assert!(super::wal::open_with_wal(&f.cp).is_err());
+    assert!(super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).is_err());
 
     // Corrupted magic (classifies Legacy but parses as zero v1 frames)
     let f = fx();
@@ -1126,14 +1126,14 @@ fn strict_replay_errors_on_unreadable_wal_formats() {
     let mut data = fs::read(&f.wal).unwrap();
     data[0] ^= 0xFF;
     fs::write(&f.wal, &data).unwrap();
-    assert!(super::wal::open_with_wal(&f.cp).is_err());
+    assert!(super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).is_err());
 
     // Genuine migration residue (readable v1 WAL beside a v2 checkpoint)
     // stays a silent skip: the checkpoint already contains its content.
     let f = fx();
     build_v2_state(&f, false);
     fs::write(&f.wal, v1_wal_bytes(&[(seg(B), T0)])).unwrap();
-    let (h, _) = super::wal::open_with_wal(&f.cp).unwrap();
+    let (h, _) = super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).unwrap();
     assert_eq!(frequency(&h, B), 1, "from checkpoint only, not re-applied");
 
     // Corrupted magic with a *missing* checkpoint must also fail loudly:
@@ -1144,7 +1144,7 @@ fn strict_replay_errors_on_unreadable_wal_formats() {
     let mut data = fs::read(&f.wal).unwrap();
     data[0] ^= 0xFF;
     fs::write(&f.wal, &data).unwrap();
-    assert!(super::wal::open_with_wal(&f.cp).is_err());
+    assert!(super::wal::open_with_wal(&f.cp, crate::user_history::now_epoch()).is_err());
 }
 
 #[test]
@@ -1160,7 +1160,7 @@ fn quarantine_rotation_keeps_newest_three() {
         .unwrap();
     }
     corrupt_cp(&f.cp);
-    let (_, _, report) = open_recovering(&f.cp).unwrap();
+    let (_, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(report.quarantined_paths.len(), 1);
     assert!(
         report.quarantined_paths[0].exists(),
@@ -1241,8 +1241,12 @@ fn barrier_reissued_on_first_append_after_replay() {
     };
     let mut h = UserHistory::new();
     let mut wal = HistoryWal::with_io(&f.cp, Box::new(io));
-    wal.replay(&mut h, super::wal::CheckpointOrigin::Missing)
-        .unwrap();
+    wal.replay(
+        &mut h,
+        super::wal::CheckpointOrigin::Missing,
+        super::now_epoch(),
+    )
+    .unwrap();
     wal.append(&seg(B), T0 + 1).unwrap();
     assert_eq!(
         barriers.load(std::sync::atomic::Ordering::SeqCst),
@@ -1471,7 +1475,7 @@ fn t7_clear_residue_empty_checkpoint_covers_leftover_wal() {
     empty.save(&f.cp).unwrap();
     drop(wal);
 
-    let (h, mut wal, report) = open_recovering(&f.cp).unwrap();
+    let (h, mut wal, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&h, &[], &[A, B, C]);
     assert_eq!(report.frames_replayed, 0);
     assert_eq!(
@@ -1498,7 +1502,7 @@ fn v1_backup_expires_after_ttl() {
 
     // Fresh backup survives startup.
     fs::write(&bak, b"v1 bytes").unwrap();
-    open_recovering(&f.cp).unwrap();
+    open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(bak.exists(), "fresh backup must survive");
 
     // Backdate past the 90-day TTL: the next startup removes it.
@@ -1507,7 +1511,7 @@ fn v1_backup_expires_after_ttl() {
     file.set_times(fs::FileTimes::new().set_modified(old))
         .unwrap();
     drop(file);
-    open_recovering(&f.cp).unwrap();
+    open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert!(!bak.exists(), "expired backup must be GCed");
 }
 
@@ -1577,12 +1581,12 @@ fn marker_bytes(f: &Fx, bytes: &[u8]) {
 }
 
 fn open_report_of(f: &Fx) -> super::recovery::OpenReport {
-    let (_, _, report) = open_recovering(&f.cp).unwrap();
+    let (_, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     report
 }
 
 fn applied_seq_of(f: &Fx) -> u64 {
-    let (h, _, _) = open_recovering(&f.cp).unwrap();
+    let (h, _, _) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     h.applied_seq()
 }
 
@@ -1678,7 +1682,7 @@ fn t10_a_witness_the_checkpoint_covers_is_retracted_outright() {
     let f = fx();
     build_v2_state(&f, false);
     let covered = {
-        let (h, _, _) = open_recovering(&f.cp).unwrap();
+        let (h, _, _) = open_recovering(&f.cp, super::now_epoch()).unwrap();
         let settled = h.clone();
         settled.save(&f.cp).unwrap();
         settled.applied_seq()
@@ -1783,7 +1787,7 @@ fn t10_a_replayed_tombstone_does_not_settle_a_claim_the_checkpoint_outlives() {
 
     fs::write(deletion_marker::marker_path(&f.cp), b"not a marker").unwrap();
 
-    let (loaded, _, report) = open_recovering(&f.cp).unwrap();
+    let (loaded, _, report) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     // The premise: memory is empty, and the checkpoint on disk is not.
     assert_contents(&loaded, &[], &[A, B]);
     assert!(
@@ -2233,7 +2237,7 @@ fn t10_a_ceiling_witness_refuses_rather_than_wrapping() {
     h.advance_applied_seq(u64::MAX);
     h.save(&f.cp).unwrap();
 
-    let (_, mut wal, _) = open_recovering(&f.cp).unwrap();
+    let (_, mut wal, _) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_eq!(
         wal.next_seq_for_tests(),
         u64::MAX,
@@ -2340,7 +2344,7 @@ fn t10_a_failed_migration_suppresses_the_marker_compaction() {
         eprintln!("skipping: directory permissions are not enforced here");
         return;
     }
-    let result = open_recovering(&f.cp);
+    let result = open_recovering(&f.cp, super::now_epoch());
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let report = result.unwrap().2;
     assert!(report.migration_failed, "fixture must block the commit");
@@ -2400,7 +2404,7 @@ fn t10_a_migration_that_persists_the_deletion_settles_the_marker() {
     );
 
     // The deletion really is gone from the checkpoint that was just written.
-    let (reloaded, _, _) = open_recovering(&f.cp).unwrap();
+    let (reloaded, _, _) = open_recovering(&f.cp, super::now_epoch()).unwrap();
     assert_contents(&reloaded, &[], &[A]);
 }
 

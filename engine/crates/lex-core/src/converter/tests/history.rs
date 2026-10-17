@@ -15,12 +15,9 @@ fn test_convert_with_history_promotes_learned() {
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let result = convert_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きょう",
-    );
+    let result = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("きょう");
     assert_eq!(result[0].surface, "京");
 }
 
@@ -31,12 +28,9 @@ fn test_convert_with_history_empty_history_matches_baseline() {
     let h = UserHistory::new();
 
     let baseline = convert(&dict, None, "きょうはいいてんき");
-    let with_history = convert_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きょうはいいてんき",
-    );
+    let with_history = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("きょうはいいてんき");
 
     let baseline_surfaces: Vec<&str> = baseline.iter().map(|s| s.surface.as_str()).collect();
     let history_surfaces: Vec<&str> = with_history.iter().map(|s| s.surface.as_str()).collect();
@@ -48,7 +42,9 @@ fn test_convert_with_history_empty_input() {
     let now = now_epoch();
     let dict = test_dict();
     let h = UserHistory::new();
-    let result = convert_with_history(&dict, None, crate::converter::HistoryAt::new(&h, now), "");
+    let result = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("");
     assert!(result.is_empty());
 }
 
@@ -60,13 +56,9 @@ fn test_convert_nbest_with_history_promotes_learned() {
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let results = convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きょう",
-        5,
-    );
+    let results = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きょう", 5);
     assert!(!results.is_empty());
     assert_eq!(results[0][0].surface, "京");
 }
@@ -76,22 +68,14 @@ fn test_convert_nbest_with_history_empty_input() {
     let now = now_epoch();
     let dict = test_dict();
     let h = UserHistory::new();
-    assert!(convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "",
-        5
-    )
-    .is_empty());
-    assert!(convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きょう",
-        0
-    )
-    .is_empty());
+    assert!(crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("", 5)
+        .is_empty());
+    assert!(crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きょう", 0)
+        .is_empty());
 }
 
 /// When history heavily boosts single-char alternatives, the Viterbi #1
@@ -198,13 +182,9 @@ fn test_viterbi_best_preserved_despite_history_boost() {
         h.record(&[("き".into(), "記".into())]);
     }
 
-    let with_history = convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きがします",
-        5,
-    );
+    let with_history = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きがします", 5);
     let history_surfaces: Vec<String> = with_history
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -225,13 +205,9 @@ fn test_viterbi_best_preserved_despite_history_boost() {
     // After a single explicit selection the compound is a learned whole
     // path, so it takes #1 (PR-G) whatever the size of its boost. The boost's
     // magnitude is tested in `test_history_rerank_unigram_boost_reorders`.
-    let after_learn = convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "きがします",
-        5,
-    );
+    let after_learn = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きがします", 5);
     let learned_surfaces: Vec<String> = after_learn
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -256,19 +232,14 @@ fn one_best_equals_nbest_head_with_learned_whole_pair() {
     )]);
     let mut h = UserHistory::new();
     h.record(&[("かな".into(), "可奈".into())]);
-    let one_best = joined(&convert_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "かな",
-    ));
-    let nbest = convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "かな",
-        20,
+    let one_best = joined(
+        &crate::converter::ConversionContext::new(&dict, None)
+            .with_history(Some(&h), now)
+            .convert("かな"),
     );
+    let nbest = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("かな", 20);
     assert_eq!(one_best, "可奈");
     assert_eq!(joined(&nbest[0]), "可奈");
     // Without the learning 仮名 is #1: the boost alone does not flip it.
@@ -303,21 +274,16 @@ fn learned_number_compound_outprices_stale_learned_surface() {
         h.record_at(&[("にじゅう".into(), "二十".into())], now - 24 * 3600);
     }
 
-    let nbest = convert_nbest_with_history(
-        &dict,
-        None,
-        crate::converter::HistoryAt::new(&h, now),
-        "にじゅう",
-        5,
-    );
+    let nbest = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("にじゅう", 5);
     assert_eq!(joined(&nbest[0]), "二十", "N-best #1");
     assert_eq!(
-        joined(&convert_with_history(
-            &dict,
-            None,
-            crate::converter::HistoryAt::new(&h, now),
-            "にじゅう"
-        )),
+        joined(
+            &crate::converter::ConversionContext::new(&dict, None)
+                .with_history(Some(&h), now)
+                .convert("にじゅう")
+        ),
         "二十",
         "1-best"
     );

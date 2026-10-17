@@ -455,7 +455,8 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 ```
 
 - 半減期: 1 週間（168 時間）
-- `now`（`hours_elapsed` の基準）は読み経路が呼び手から受け取る。壁時計を読むのは入口だけ（1-best と候補列で別々に 1 回ずつ、lextool は起動時に 1 回）。書き込み経路（`record_at`・evict・隔離名）は壁時計のまま
+- `now`（`hours_elapsed` の基準）は読み経路が呼び手から受け取る。壁時計を読むのは入口だけ（1-best と候補列で別々に 1 回ずつ、lextool / dictool は起動時に 1 回）
+- 書き込み経路も呼び手の `now` を使う: `record` は壁時計を 1 回読んで `record_at` に渡し、`record_at` はその `now` で容量 evict する。WAL replay・`apply_batch`・open（`open_recovering` / `open_with_wal`）の evict も呼び手の `now` で採点する（engine の open は起動時に 1 回、ライブの確定は確定時に 1 回読む）。壁時計のままなのは隔離ファイル名とチェックポイントのヘッダ時刻だけ
 - 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
 - **学習済みの #1**: 学習済み = この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0。候補選択・そのまま確定・自動確定のどれで記録されたかは区別しない）。学習ブースト段の経路（N-best の母集団に在るもの）と Rewriters の生成物（数字・カタカナ、同じブーストを受ける）に学習済みがあれば、その中で最安（価格 = model または policy 価格 − ブースト）を #1 に置き、残りは価格順のまま。ブーストが価格差に届かなくても学習済みが #1 になる。この段より後の Rewriters は、未学習の候補で学習済みの #1 を動かさない
@@ -706,7 +707,7 @@ macOS で動作する最小限の IME を構築。
 | `romaji-export` | デフォルトローマ字テーブルを `~/Library/Application Support/Lexime/romaji.toml` にエクスポート |
 | `settings-export` | デフォルト設定を `~/Library/Application Support/Lexime/settings.toml` にエクスポート |
 
-`lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻を指定できる。省略時は起動時に壁時計を 1 回読む。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。
+`lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻（履歴を開くときの容量 evict の採点を含む）を指定できる。省略時は起動時に壁時計を 1 回読む。`dictool` にも同じグローバル `--now` があり、`convert --history` が使う。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。
 
 ### CI
 

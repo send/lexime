@@ -466,7 +466,8 @@ impl LexUserHistory {
         // startup, so learning never silently stops. Err = environmental
         // read failure only (EACCES etc.). Swift consumes the report via
         // `open_report()`; the logs here cover headless/CLI contexts.
-        let (history, wal, report) = crate::user_history::recovery::open_recovering(cp)?;
+        let (history, wal, report) =
+            crate::user_history::recovery::open_recovering(cp, crate::user_history::now_epoch())?;
         if report.data_loss_suspected() {
             warn!("user history recovered with suspected data loss: {report:?}");
         } else if !report.is_clean() {
@@ -1204,7 +1205,9 @@ impl LexUserHistory {
                 // apply_batch records the residue for any tombstone whose
                 // frame never landed: the entry leaves memory but stays in
                 // the checkpoint with nothing to neutralise it.
-                write_recover(&self.inner).apply_batch(&sequenced);
+                // A write path: capacity eviction dates itself at the wall clock.
+                write_recover(&self.inner)
+                    .apply_batch(&sequenced, crate::user_history::now_epoch());
             }
             // Still holding the wal mutex, and after the apply above — see
             // `raise_unpersisted` for why both matter. A `None` seq means the
@@ -1977,13 +1980,16 @@ mod tests {
             matches!(hist.run_compact(), CompactOutcome::Done),
             "the entry must reach a durable checkpoint"
         );
-        write_recover(&hist.inner).apply_batch(&[(
-            WalRecord::Tombstone {
-                segments: vec![("きょう".to_string(), "今日".to_string())],
-                timestamp: 0,
-            },
-            None,
-        )]);
+        write_recover(&hist.inner).apply_batch(
+            &[(
+                WalRecord::Tombstone {
+                    segments: vec![("きょう".to_string(), "今日".to_string())],
+                    timestamp: 0,
+                },
+                None,
+            )],
+            crate::user_history::now_epoch(),
+        );
         assert!(
             learned(&hist, "きょう").is_empty(),
             "evicted: absent from memory"
@@ -2232,7 +2238,8 @@ mod tests {
                 let gate = hist.lock_gate();
                 drop(gate);
                 let (h, _wal) =
-                    crate::user_history::wal::open_with_wal(&cp).expect("reopen after clear");
+                    crate::user_history::wal::open_with_wal(&cp, crate::user_history::now_epoch())
+                        .expect("reopen after clear");
                 h.learned_surfaces("よみ0", u64::MAX).is_empty() && h.unigrams().next().is_none()
             },
             "post-clear disk state to settle empty",
@@ -4232,7 +4239,8 @@ mod tests {
                 // Holding the gate: no compaction can start; writers are
                 // done, so the disk state is stable. Reconstruct and diff.
                 let (disk, _wal) =
-                    crate::user_history::wal::open_with_wal(&cp).expect("strict reopen");
+                    crate::user_history::wal::open_with_wal(&cp, crate::user_history::now_epoch())
+                        .expect("strict reopen");
                 let mem = read_recover(&hist.inner);
                 let collect = |h: &UserHistory| {
                     let mut v: Vec<(String, String, u32)> = h

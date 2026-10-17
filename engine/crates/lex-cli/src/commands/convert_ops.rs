@@ -35,7 +35,7 @@ pub fn convert_cmd(
         // open_with_wal: uncheckpointed commits live only in the WAL; a
         // checkpoint-only read would ignore the most recent learning.
         let (h, _wal) = die!(
-            lex_core::user_history::wal::open_with_wal(Path::new(path)),
+            lex_core::user_history::wal::open_with_wal(Path::new(path), now),
             "Error opening history: {}"
         );
         h

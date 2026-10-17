@@ -388,7 +388,9 @@ fn test_wal_append_and_replay() {
     // Replay into fresh history
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    let summary = wal2
+        .replay(&mut h, CheckpointOrigin::Missing, now_epoch())
+        .unwrap();
     assert_eq!(summary.frames_replayed, 2);
     assert_eq!(summary.frames_skipped, 0);
     assert_eq!(wal2.entry_count(), 2);
@@ -425,7 +427,9 @@ fn test_wal_compaction() {
     // Reopen: checkpoint has the data, WAL is empty
     let mut h2 = UserHistory::open(&cp).unwrap();
     let mut wal2 = HistoryWal::new(&cp);
-    let replayed = wal2.replay(&mut h2, CheckpointOrigin::V2).unwrap();
+    let replayed = wal2
+        .replay(&mut h2, CheckpointOrigin::V2, now_epoch())
+        .unwrap();
     assert_eq!(replayed.frames_replayed, 0);
     assert!(h2.unigram_boost("きょう", "今日", now + 1) > 0);
 }
@@ -449,7 +453,9 @@ fn test_wal_truncated_frame() {
     // Replay should recover the first entry only
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    let summary = wal2
+        .replay(&mut h, CheckpointOrigin::Missing, now_epoch())
+        .unwrap();
     assert_eq!(summary.frames_replayed, 1);
     assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
     assert_eq!(h.unigram_boost("あした", "明日", now + 1), 0);
@@ -482,12 +488,14 @@ fn test_wal_corrupt_crc() {
     // Strict replay should stop at the corrupt frame without repairing
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    let summary = wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    let summary = wal2
+        .replay(&mut h, CheckpointOrigin::Missing, now_epoch())
+        .unwrap();
     assert_eq!(summary.frames_replayed, 0);
 
     // Recovery-mode open repairs: truncate back to the last good frame
     // (here: the file header) so later appends stay visible to replay
-    let (h2, wal3, report) = super::recovery::open_recovering(&cp).unwrap();
+    let (h2, wal3, report) = super::recovery::open_recovering(&cp, now_epoch()).unwrap();
     assert_eq!(h2.unigram_boost("きょう", "今日", now + 1), 0);
     assert_eq!(report.wal_state, super::recovery::WalState::TailRepaired);
     assert_eq!(
@@ -507,7 +515,9 @@ fn test_wal_empty_file() {
 
     let mut h = UserHistory::new();
     let mut wal = HistoryWal::new(&cp);
-    let summary = wal.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    let summary = wal
+        .replay(&mut h, CheckpointOrigin::Missing, now_epoch())
+        .unwrap();
     assert_eq!(summary.frames_replayed, 0);
 }
 
@@ -523,7 +533,7 @@ fn test_open_with_wal_checkpoint_only() {
     assert!(!cp.with_extension("lxud.wal").exists());
 
     // open_with_wal should load checkpoint and create WAL handle with 0 entries
-    let (h2, wal) = super::wal::open_with_wal(&cp).unwrap();
+    let (h2, wal) = super::wal::open_with_wal(&cp, now_epoch()).unwrap();
     assert!(h2.unigram_boost("きょう", "今日", now_epoch()) > 0);
     assert_eq!(wal.entry_count(), 0);
 }
@@ -572,7 +582,8 @@ fn test_wal_roundtrip_with_bigrams() {
 
     let mut h = UserHistory::new();
     let mut wal2 = HistoryWal::new(&cp);
-    wal2.replay(&mut h, CheckpointOrigin::Missing).unwrap();
+    wal2.replay(&mut h, CheckpointOrigin::Missing, now_epoch())
+        .unwrap();
 
     assert!(h.unigram_boost("きょう", "今日", now + 1) > 0);
     assert!(h.bigram_boost("今日", "は", "は", now + 1) > 0);
@@ -686,13 +697,16 @@ fn pair(reading: &str, surface: &str) -> Vec<(String, String)> {
 /// reached the WAL (`seq: None`) removes the entry from memory while the
 /// durable set keeps it.
 fn raise_residue(h: &mut UserHistory, segments: &[(String, String)]) {
-    h.apply_batch(&[(
-        wal::WalRecord::Tombstone {
-            segments: segments.to_vec(),
-            timestamp: 0,
-        },
-        None,
-    )]);
+    h.apply_batch(
+        &[(
+            wal::WalRecord::Tombstone {
+                segments: segments.to_vec(),
+                timestamp: 0,
+            },
+            None,
+        )],
+        now_epoch(),
+    );
 }
 
 /// Fill both maps past capacity without paying an `evict()` per insert
@@ -732,7 +746,7 @@ fn test_evict_enforces_both_caps_and_reports_bigram_residue() {
         (s.history.max_unigrams, s.history.max_bigrams)
     };
     let mut h = over_capacity(max_unigrams + 1, max_bigrams + 3);
-    h.evict();
+    h.evict(now_epoch());
 
     let unigrams: usize = h.unigrams.values().map(|inner| inner.len()).sum();
     let bigrams: usize = h.bigrams.values().map(|inner| inner.len()).sum();
@@ -790,7 +804,7 @@ fn evict_breaks_score_ties_by_key() {
             },
         );
     }
-    h.evict();
+    h.evict(now_epoch());
     // The three lowest keys in string order: r0 < r1 < r10.
     for r in ["r0", "r1", "r10"] {
         let s = r.replacen('r', "s", 1);
@@ -810,7 +824,7 @@ fn test_evict_selection_is_unchanged_and_reports_residue() {
     let mut h = over_capacity(max_unigrams + 3, 0);
     // r0..r2 are the oldest (lowest last_used ⇒ lowest score at equal
     // frequency), so they are exactly the three that must go.
-    h.evict();
+    h.evict(now_epoch());
     for i in 0..3 {
         let p = pair(&format!("r{i}"), &format!("s{i}"));
         assert!(!h.contains_entries(&p), "oldest entries evicted first");
@@ -1000,4 +1014,106 @@ fn reads_decay_against_the_now_they_are_handed() {
         [("は".to_string(), "は".to_string(), 1500)]
     );
     assert!(h.bigram_successors("京", STALE).is_empty());
+}
+
+/// Capacity eviction scores `frequency * decay` at the `now` it is handed
+/// (`record_at`, `apply_batch` and WAL replay all pass theirs down), so the
+/// survivor is a function of that `now` and not of the wall clock.
+///
+/// A: used 10 times, 20 half-lives before B. B: used once, at `T0` (ahead of
+/// any wall clock, which would see both undecayed and keep A). Fillers
+/// outscore both. At `T0` A has decayed to 10/21 < 1: A is evicted. Long
+/// after, both are decayed alike and A's frequency wins: B is evicted.
+fn eviction_fixture(entries: usize) -> UserHistory {
+    use crate::converter::testutil::T0;
+
+    let mut h = over_capacity(entries, 0);
+    for inner in h.unigrams.values_mut() {
+        for e in inner.values_mut() {
+            *e = HistoryEntry {
+                frequency: 1000,
+                last_used: T0,
+            };
+        }
+    }
+    let entry = |frequency, last_used| HistoryEntry {
+        frequency,
+        last_used,
+    };
+    h.unigrams
+        .get_mut("r0")
+        .unwrap()
+        .insert("s0".into(), entry(10, T0 - 20 * 168 * 3600));
+    h.unigrams
+        .get_mut("r1")
+        .unwrap()
+        .insert("s1".into(), entry(1, T0));
+    h
+}
+
+fn survivors(h: &UserHistory) -> (bool, bool) {
+    (h.unigrams.contains_key("r0"), h.unigrams.contains_key("r1"))
+}
+
+#[test]
+fn eviction_order_follows_the_now_it_is_handed() {
+    use crate::converter::testutil::{STALE, T0};
+
+    let evicted_at = |now| {
+        let mut h = eviction_fixture(settings().history.max_unigrams + 1);
+        h.evict(now);
+        survivors(&h)
+    };
+    assert_eq!(evicted_at(T0), (false, true), "A decayed below B");
+    assert_eq!(
+        evicted_at(STALE),
+        (true, false),
+        "A's frequency wins long after"
+    );
+    assert_eq!(evicted_at(T0), evicted_at(T0), "same now, same survivors");
+}
+
+/// The same at every site that settles capacity: `record_at`, `apply_batch`,
+/// and opening (strict `open_with_wal`, and the engine's `open_recovering`):
+/// a history at capacity plus one new entry overflows by one, and the
+/// eviction scores at the `now` that site was handed.
+#[test]
+fn every_eviction_site_scores_at_its_now() {
+    use super::recovery::open_recovering;
+    use super::wal::{open_with_wal, WalRecord};
+    use crate::converter::testutil::{STALE, T0};
+
+    let max = settings().history.max_unigrams;
+    let new_segments = || vec![("zz".to_string(), "zz".to_string())];
+    let committed = || WalRecord::Committed {
+        segments: new_segments(),
+        timestamp: T0,
+    };
+    // A checkpoint at capacity with one more frame in its WAL.
+    let with_wal = || {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = dir.path().join("history.lxud");
+        eviction_fixture(max).save(&cp).unwrap();
+        HistoryWal::new(&cp).append_record(&committed()).unwrap();
+        (dir, cp)
+    };
+
+    // (A decayed below B at T0; A's frequency wins long after STALE.)
+    for (now, want) in [(T0, (false, true)), (STALE, (true, false))] {
+        let mut h = eviction_fixture(max);
+        h.record_at(&new_segments(), now);
+        assert_eq!(survivors(&h), want, "record_at at {now}");
+
+        let mut h = eviction_fixture(max);
+        h.apply_batch(&[(committed(), Some(1))], now);
+        assert_eq!(survivors(&h), want, "apply_batch at {now}");
+
+        let (_dir, cp) = with_wal();
+        let opened = open_with_wal(&cp, now).unwrap().0;
+        assert_eq!(survivors(&opened), want, "open_with_wal at {now}");
+
+        let (_dir, cp) = with_wal();
+        let opened = open_recovering(&cp, now).unwrap().0;
+        assert_eq!(survivors(&opened), want, "open_recovering at {now}");
+    }
 }

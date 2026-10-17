@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use lex_cli::commands::rank_ops::{self, joined_surface, width_disagreements, WindowCheck};
 use lex_core::converter::tune;
-use lex_core::converter::{
-    convert_nbest, convert_nbest_with_history, ConversionContext, HistoryAt,
-};
+use lex_core::converter::ConversionContext;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use lex_core::user_history::UserHistory;
@@ -437,6 +435,7 @@ fn open_resources(
     dict_file: &str,
     conn_file: Option<&str>,
     history: &Option<String>,
+    now: u64,
 ) -> (
     TrieDictionary,
     Option<ConnectionMatrix>,
@@ -454,7 +453,7 @@ fn open_resources(
         })
     });
 
-    let hist = history.as_deref().map(open_history);
+    let hist = history.as_deref().map(|h| open_history(h, now));
 
     (dict, conn, hist)
 }
@@ -463,7 +462,7 @@ fn open_resources(
 /// history for a missing checkpoint and WAL, so a mistyped path must fail
 /// here instead of measuring an unlearned engine as if it were the learned
 /// one. The WAL is replayed: uncheckpointed commits live only there.
-fn open_history(path: &str) -> UserHistory {
+fn open_history(path: &str, now: u64) -> UserHistory {
     let checkpoint = Path::new(path);
     let wal = checkpoint.with_extension("lxud.wal");
     if !checkpoint.exists() && !wal.exists() {
@@ -474,10 +473,11 @@ fn open_history(path: &str) -> UserHistory {
         );
         process::exit(1);
     }
-    let (h, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint).unwrap_or_else(|e| {
-        eprintln!("Failed to open user history at {}: {}", path, e);
-        process::exit(1);
-    });
+    let (h, _wal) =
+        lex_core::user_history::wal::open_with_wal(checkpoint, now).unwrap_or_else(|e| {
+            eprintln!("Failed to open user history at {}: {}", path, e);
+            process::exit(1);
+        });
     h
 }
 
@@ -635,7 +635,7 @@ fn main() {
         } => {
             use lex_core::converter::explain;
 
-            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history, now);
             // Over-fetch when filtering by surface
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
             let mut result = explain::explain(
@@ -673,7 +673,8 @@ fn main() {
             json,
             history,
         } => {
-            let (dict, conn, file_hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, file_hist) =
+                open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for accuracy");
 
             // Load and parse corpus
@@ -910,7 +911,7 @@ fn main() {
         } => {
             let kind = SnapshotKind::from_flags(candidates, predictive);
             warn_predictive_without_history(kind, &history);
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
@@ -940,7 +941,7 @@ fn main() {
             json,
             top_n,
         } => {
-            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None, now);
             let conn = conn.expect("connection matrix is required for tune");
 
             // Load and parse corpus (same as Accuracy)
@@ -1011,10 +1012,12 @@ fn main() {
             n,
             json,
         } => {
-            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None, now);
             let conn = conn.expect("connection matrix is required for history-audit");
 
-            let hist = open_history(&history_file);
+            let hist = open_history(&history_file, now);
+            let plain_ctx = ConversionContext::new(&dict, Some(&conn));
+            let ctx = plain_ctx.with_history(Some(&hist), now);
 
             // Group unigrams by reading
             let mut by_reading: HashMap<&str, Vec<(&str, u32, u64)>> = HashMap::new();
@@ -1054,7 +1057,8 @@ fn main() {
                     });
                 }
 
-                let paths = convert_nbest(&dict, Some(&conn), reading, n);
+                let lattice = plain_ctx.build_lattice(reading);
+                let paths = plain_ctx.convert_nbest_from_lattice(&lattice, n);
                 let joined: Vec<String> = paths.iter().map(|segs| joined_surface(segs)).collect();
                 let raw_top1 = joined.first().cloned().unwrap_or_default();
                 if raw_top1 == dominant {
@@ -1070,16 +1074,11 @@ fn main() {
                     .take(n)
                     .position(|s| s == dominant)
                     .map(|i| i + 1);
-                let hist_top1: String = convert_nbest_with_history(
-                    &dict,
-                    Some(&conn),
-                    HistoryAt::new(&hist, now),
-                    reading,
-                    1,
-                )
-                .first()
-                .map(|segs| joined_surface(segs))
-                .unwrap_or_default();
+                let hist_top1: String = ctx
+                    .convert_nbest_from_lattice(&lattice, 1)
+                    .first()
+                    .map(|segs| joined_surface(segs))
+                    .unwrap_or_default();
 
                 misses.push(AuditMiss {
                     reading: reading.to_string(),
@@ -1137,7 +1136,7 @@ fn main() {
         } => {
             let kind = SnapshotKind::from_flags(candidates, predictive);
             warn_predictive_without_history(kind, &history);
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
 
@@ -1252,7 +1251,7 @@ fn main() {
                 // "every earlier selection is new" in a later full comparison.
                 die("--emit-baseline records the whole log; drop --from-line".into());
             }
-            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
             // Same layering as LexDictionary::open_with_user_dict.
             let dict: Box<dyn Dictionary> = match app_dir

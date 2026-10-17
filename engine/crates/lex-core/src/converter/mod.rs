@@ -49,12 +49,6 @@ pub struct HistoryAt<'a> {
     pub now: u64,
 }
 
-impl<'a> HistoryAt<'a> {
-    pub fn new(history: &'a UserHistory, now: u64) -> Self {
-        Self { history, now }
-    }
-}
-
 /// Shared conversion resources: dictionary, connection matrix, and user
 /// history (with the `now` it decays against).
 ///
@@ -80,7 +74,7 @@ impl<'a> ConversionContext<'a> {
     /// The same context with `history` (decayed at `now`) when there is one.
     pub fn with_history(self, history: Option<&'a UserHistory>, now: u64) -> Self {
         Self {
-            history: history.map(|h| HistoryAt::new(h, now)),
+            history: history.map(|history| HistoryAt { history, now }),
             ..self
         }
     }
@@ -88,6 +82,22 @@ impl<'a> ConversionContext<'a> {
     /// Build a lattice from a kana string.
     pub fn build_lattice(&self, kana: &str) -> Lattice {
         build_lattice(self.dict, kana)
+    }
+
+    /// 1-best conversion of a kana string (builds its lattice).
+    pub fn convert(&self, kana: &str) -> Vec<ConvertedSegment> {
+        if kana.is_empty() {
+            return Vec::new();
+        }
+        self.convert_from_lattice(&self.build_lattice(kana))
+    }
+
+    /// N-best conversion of a kana string (builds its lattice).
+    pub fn convert_nbest(&self, kana: &str, n: usize) -> Vec<Vec<ConvertedSegment>> {
+        if kana.is_empty() || n == 0 {
+            return Vec::new();
+        }
+        self.convert_nbest_from_lattice(&self.build_lattice(kana), n)
     }
 
     /// 1-best conversion from a pre-built lattice.
@@ -157,7 +167,7 @@ pub(crate) fn nbest_oversample(n: usize, has_history: bool) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience wrappers — build lattice internally
+// Convenience wrappers without history
 // ---------------------------------------------------------------------------
 
 /// Convert a kana string to the best segmentation using Viterbi algorithm.
@@ -166,30 +176,7 @@ pub fn convert(
     conn: Option<&ConnectionMatrix>,
     kana: &str,
 ) -> Vec<ConvertedSegment> {
-    if kana.is_empty() {
-        return Vec::new();
-    }
-    let ctx = ConversionContext::new(dict, conn);
-    let lattice = ctx.build_lattice(kana);
-    ctx.convert_from_lattice(&lattice)
-}
-
-/// 1-best conversion with history-aware reranking.
-pub fn convert_with_history(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: HistoryAt<'_>,
-    kana: &str,
-) -> Vec<ConvertedSegment> {
-    if kana.is_empty() {
-        return Vec::new();
-    }
-    let ctx = ConversionContext {
-        history: Some(history),
-        ..ConversionContext::new(dict, conn)
-    };
-    let lattice = ctx.build_lattice(kana);
-    ctx.convert_from_lattice(&lattice)
+    ConversionContext::new(dict, conn).convert(kana)
 }
 
 /// Convert a kana string to the N-best segmentations.
@@ -199,29 +186,5 @@ pub fn convert_nbest(
     kana: &str,
     n: usize,
 ) -> Vec<Vec<ConvertedSegment>> {
-    if kana.is_empty() || n == 0 {
-        return Vec::new();
-    }
-    let ctx = ConversionContext::new(dict, conn);
-    let lattice = ctx.build_lattice(kana);
-    ctx.convert_nbest_from_lattice(&lattice, n)
-}
-
-/// N-best conversion with history-aware reranking.
-pub fn convert_nbest_with_history(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: HistoryAt<'_>,
-    kana: &str,
-    n: usize,
-) -> Vec<Vec<ConvertedSegment>> {
-    if kana.is_empty() || n == 0 {
-        return Vec::new();
-    }
-    let ctx = ConversionContext {
-        history: Some(history),
-        ..ConversionContext::new(dict, conn)
-    };
-    let lattice = ctx.build_lattice(kana);
-    ctx.convert_nbest_from_lattice(&lattice, n)
+    ConversionContext::new(dict, conn).convert_nbest(kana, n)
 }

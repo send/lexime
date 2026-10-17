@@ -876,13 +876,9 @@ mod tests {
                     }
                 }
                 let production: Vec<String> = match history {
-                    Some(h) => crate::converter::convert_nbest_with_history(
-                        dict,
-                        Some(conn),
-                        crate::converter::HistoryAt::new(h, now),
-                        "かなや",
-                        n,
-                    ),
+                    Some(h) => crate::converter::ConversionContext::new(dict, Some(conn))
+                        .with_history(Some(h), now)
+                        .convert_nbest("かなや", n),
                     None => crate::converter::convert_nbest(dict, Some(conn), "かなや", n),
                 }
                 .iter()

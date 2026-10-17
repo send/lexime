@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use lex_core::converter::{build_lattice, convert, convert_nbest, convert_with_history};
+use lex_core::converter::{build_lattice, convert, convert_nbest};
 use lex_core::dict::{DictEntry, TrieDictionary};
 use lex_core::user_history::UserHistory;
 
@@ -323,12 +323,9 @@ fn bench_convert_1best_history(c: &mut Criterion) {
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
             b.iter(|| {
-                convert_with_history(
-                    &dict,
-                    None,
-                    lex_core::converter::HistoryAt::new(&history, now),
-                    kana,
-                )
+                lex_core::converter::ConversionContext::new(&dict, None)
+                    .with_history(Some(&history), now)
+                    .convert(kana)
             });
         });
     }

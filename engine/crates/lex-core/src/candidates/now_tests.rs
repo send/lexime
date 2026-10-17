@@ -11,10 +11,7 @@
 
 use crate::converter::explain::explain;
 use crate::converter::testutil::{entry, half, joined, test_dict, STALE, T0};
-use crate::converter::{
-    convert_nbest_with_history, convert_with_history, ConversionContext, ConvertedSegment,
-    HistoryAt,
-};
+use crate::converter::{ConversionContext, ConvertedSegment};
 use crate::dict::TrieDictionary;
 use crate::user_history::{now_epoch, UserHistory};
 
@@ -60,14 +57,10 @@ fn one_best_and_nbest_decay_against_the_injected_now() {
     let h = learned(&[&[("きょう", "京")]]);
     // 今日 (3000) is the unlearned #1; a boost lifts 京 (5000) past it.
     for (now, top) in [(STALE, "今日"), (half(), "京")] {
-        let at = HistoryAt::new(&h, now);
+        let ctx = ConversionContext::new(&dict, None).with_history(Some(&h), now);
+        assert_eq!(ctx.convert("きょう")[0].surface, top, "1-best at {now}");
         assert_eq!(
-            convert_with_history(&dict, None, at, "きょう")[0].surface,
-            top,
-            "1-best at {now}"
-        );
-        assert_eq!(
-            nbest_surfaces(&convert_nbest_with_history(&dict, None, at, "きょう", 5))[0],
+            nbest_surfaces(&ctx.convert_nbest("きょう", 5))[0],
             top,
             "n-best at {now}"
         );

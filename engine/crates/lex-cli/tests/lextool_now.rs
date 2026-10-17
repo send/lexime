@@ -7,7 +7,7 @@
 //! subcommand and the run was measuring the wall clock all along.
 //!
 //! The history was last used at `T0`, ahead of any wall clock this runs
-//! under (a negative age counts as 0). `HALF` is one half-life after it:
+//! under (a negative age counts as 0). `half()` is one half-life after it:
 //! the learned 京 holds half its boost. `STALE` is ~1100 years on: it holds
 //! none. A subcommand reading the wall clock would see the boost whole, and
 //! match neither.
@@ -23,8 +23,12 @@ use lex_core::dict::{DictEntry, TrieDictionary};
 use lex_core::user_history::UserHistory;
 
 const T0: u64 = 4_000_000_000;
-const HALF: u64 = T0 + 168 * 3600;
 const STALE: u64 = T0 + 10_000_000 * 3600;
+
+/// One half-life after `T0`, from the engine's own setting.
+fn half() -> u64 {
+    T0 + (lex_core::settings::settings().history.half_life_hours * 3600.0) as u64
+}
 
 struct Fixture {
     dir: PathBuf,
@@ -86,7 +90,7 @@ impl Fixture {
              {\"t\":2,\"reading\":\"きょう\",\"surface\":\"今日\",\"rank\":0}\n",
         )
         .unwrap();
-        // The baseline diff-snapshot compares against, written at HALF
+        // The baseline diff-snapshot compares against, written at half()
         // whatever `now` that subcommand later runs at.
         f.lextool(
             &[
@@ -99,7 +103,7 @@ impl Fixture {
                 &f.arg("history.lxud"),
             ],
             &[],
-            HALF,
+            half(),
         );
         f
     }
@@ -114,7 +118,12 @@ impl Fixture {
 
     /// One `lextool` process; its observable output as bytes.
     fn lextool(&self, args: &[&str], outputs: &[&str], now: u64) -> Vec<u8> {
-        let out = Command::new(env!("CARGO_BIN_EXE_lextool"))
+        self.run(env!("CARGO_BIN_EXE_lextool"), args, outputs, now)
+    }
+
+    /// One process of `bin` at `--now`; its observable output as bytes.
+    fn run(&self, bin: &str, args: &[&str], outputs: &[&str], now: u64) -> Vec<u8> {
+        let out = Command::new(bin)
             .args(args)
             .args(["--now", &now.to_string()])
             .output()
@@ -227,6 +236,16 @@ impl Fixture {
             &["history-audit", &dict, &conn, &hist, "--json"],
             &[],
         );
+        // dictool reads the clock for `convert --history`: same flag.
+        runs.push((
+            "dictool convert --history",
+            self.run(
+                env!("CARGO_BIN_EXE_dictool"),
+                &["convert", &dict, &conn, "きょう", "--history", &hist],
+                &[],
+                now,
+            ),
+        ));
         runs
     }
 }
@@ -240,19 +259,31 @@ impl Drop for Fixture {
 #[test]
 fn now_pins_every_history_reading_subcommand() {
     let fx = Fixture::new();
-    let first = fx.run_all(HALF);
+    let first = fx.run_all(half());
     // Each run did its job: no usage error or unreadable input stands in for
     // an output that merely repeats.
-    for (name, out) in &first {
-        let text = String::from_utf8_lossy(out);
-        assert!(
-            text.starts_with("status=Some(0)") && !text.contains("error"),
-            "{name}: {text}"
-        );
-    }
+    let ran_ok = |runs: &[(&str, Vec<u8>)], failing: &[&str]| {
+        for (name, out) in runs {
+            let text = String::from_utf8_lossy(out);
+            let want = if failing.contains(name) {
+                "status=Some(1)"
+            } else {
+                "status=Some(0)"
+            };
+            assert!(
+                text.starts_with(want) && !text.contains("error"),
+                "{name}: want {want}\n{text}"
+            );
+        }
+    };
+    ran_ok(&first, &[]);
     sleep(Duration::from_millis(1100));
-    let second = fx.run_all(HALF);
+    let second = fx.run_all(half());
     let stale = fx.run_all(STALE);
+    // Once the learning has decayed away, the accuracy case that expects the
+    // learned 京 fails and diff-snapshot reports the change (both exit 1, which
+    // is the difference); everything else still runs.
+    ran_ok(&stale, &["accuracy --history", "diff-snapshot"]);
 
     for (((name, a), (_, b)), (_, c)) in first.iter().zip(&second).zip(&stale) {
         let text = |v: &Vec<u8>| String::from_utf8_lossy(v).into_owned();
