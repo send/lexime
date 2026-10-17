@@ -13,9 +13,6 @@ use crate::user_history::UserHistory;
 pub mod predictive;
 pub mod standard;
 
-#[cfg(feature = "neural")]
-pub mod neural;
-
 #[cfg(test)]
 mod tests;
 
@@ -204,18 +201,4 @@ pub fn generate_prediction_candidates_from_lattice(
     max_results: usize,
 ) -> CandidateResponse {
     predictive::generate(dict, conn, history, &lattice.input, max_results, lattice)
-}
-
-/// Generate candidates using neural speculative decoding.
-#[cfg(feature = "neural")]
-pub fn generate_neural_candidates(
-    scorer: &mut crate::neural::NeuralScorer,
-    dict: &dyn Dictionary,
-    conn: Option<&crate::dict::connection::ConnectionMatrix>,
-    history: Option<&UserHistory>,
-    context: &str,
-    reading: &str,
-    max_results: usize,
-) -> CandidateResponse {
-    neural::generate(scorer, dict, conn, history, context, reading, max_results)
 }

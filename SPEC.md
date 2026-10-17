@@ -29,7 +29,7 @@ Lexime は macOS 向けの軽量・高速な日本語予測入力システム。
 │  │  │  lex-core (計算エンジン)              │  │  │
 │  │  │  romaji / candidates / converter /   │  │  │
 │  │  │  dict / user_history / user_dict /   │  │  │
-│  │  │  neural (feature-gated) / settings    │  │  │
+│  │  │  settings                             │  │  │
 │  │  └──────────────────────────────────────┘  │  │
 │  └────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
@@ -75,7 +75,6 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 | `dict/` | `Dictionary` trait、`TrieDictionary`、`CompositeDictionary`、`ConnectionMatrix` |
 | `user_history/` | ユニグラム・バイグラム学習、WAL、LXUD 形式 |
 | `user_dict/` | ユーザー辞書、LXUW 形式 |
-| `neural/` | GPT-2 (Zenzai) ニューラルスコアリング（feature gate: `--features neural`） |
 | `settings.rs` | 設定管理（`default_settings.toml`, OnceLock パターン） |
 | `unicode.rs` | Unicode ユーティリティ（ひらがな・カタカナ判定、変換） |
 | `numeric.rs` | 日本語数詞→数字変換（にじゅうさん → 23） |
@@ -96,7 +95,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 
 | バイナリ | 内容 |
 |---|---|
-| `dictool` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info / user-dict / romaji-export / romaji-validate / settings-export / settings-validate / neural-score (`--features neural`)） |
+| `dictool` | 辞書操作 CLI（fetch / compile / compile-conn / merge / diff / info / user-dict / romaji-export / romaji-validate / settings-export / settings-validate） |
 | `lextool` | 変換テスト CLI |
 
 ### 辞書データ
@@ -661,7 +660,7 @@ macOS で動作する最小限の IME を構築。
 
 ### Phase 6+ (今後)
 
-- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし変換精度を向上（lex-core に実験モジュールあり、IME 統合は速度課題のため未定）
+- ニューラルリスコアリング: GGUF ニューラルモデル（azooKey/Zenzai 方式）で Viterbi N-best をリスコアし変換精度を向上（IME 統合は速度課題のため未定。lex-core の実験モジュール（candle ベース、`--features neural`）は削除済み — candle が展開 API に脆弱性のある zip 7.x を必須で引き込み、zip ≥ 9 を許さなかったため。再開するなら zip ≥ 9 で組める推論ライブラリで作り直す）
 
 ## ビルド・CI
 
@@ -703,8 +702,6 @@ macOS で動作する最小限の IME を構築。
 | `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
 | `replay-commit-log` | コミットログの手動選択（rank>0）を現在のエンジンで再生し、選択された候補の頁 1 在否・順位・1 位とのコスト差を件数だけで集計。1 位より安い選択（`< 0`）は別に数える — 学習済みの #1 を避けてそれより安い表記を選んだ行（再訂正）。学習済みかどうかは `--history` の履歴で決まるので、再訂正を数えるときは窓（`--from-line`）の開始時点の履歴を凍結したコピーを渡す（現在の履歴では選び直した表記も学習済みになり、0 件になる）。候補列の各表記を「列に入れた段」(所有者: N-best 経路はその価格を決めた段 `priced_by` = model / 表記ゆれの提示 (KanjiVariant・PartialHiragana) / かな救済 / 数字 / カタカナ、それ以外は学習済み注入 / かな / 予測・lookup) に分け、選択と頁 1 枠 (選択ごとの窓で数える) を所有者別にも集計する。`--from-line N` は 0 始まりの行番号 N 以降だけを再生する（行番号は絶対のままなので、baseline の同じ窓の行と突き合わせる。ログ末尾を超える N は打ち間違いとしてエラー。窓つきの `--emit-baseline` は後の全体比較を誤らせるので拒否する）。`--emit-baseline` / `--baseline` で変更前後の消失・降格を比較（baseline は行番号・時刻・順位のみ。読み・表記は含まないが、時刻は訂正のタイムラインなのでローカルに留め PR / issue に添付しない）。行番号と時刻 (秒) で突き合わせるので、clear して書き直したログも区別するが、同じ行番号の行が旧ログと同じ 1 秒内に書かれた場合だけは区別できない（内容由来のキーは baseline に個人入力を持ち込むので使わない）。再生は標準モードの候補列に対して行う（予測モードでの選択も標準モードの列で数える）。`--app-dir` でアプリのデータディレクトリの user_dict を重ね settings.toml を読み、アプリと同じ構成で再生する。ディレクトリは存在しなければならない（打ち間違いで未学習・既定の構成を測らないため）。ファイルが無ければアプリ同様に使わない（新規インストールと同じ）。読めない・不正ならアプリと同じく使わずに続行し、警告を出す（破損 user_dict はアプリなら隔離するが、ここではユーザデータに触れない）。mise タスクは既定で `--app-dir` を渡す。学習履歴はこれらの選択そのものから学んだものなので既定では渡さず、学習済みエンジンを測るときに `--history` を足す。システム辞書だけで測るときは lextool を直接呼ぶ。`--settings`（全サブコマンド共通、`--app-dir` とは排他）は明示指定なので、読めない・不正なら失敗する。どちらもどのコマンドの処理よりも先に読む。読めない行（追記途中の末尾など）は件数だけ数えて飛ばす。個人の入力内容は `--verbose` の stderr にしか出さない |
 | `bench` | criterion ベンチマーク |
-| `fetch-model` | Zenzai GGUF モデルダウンロード |
-| `neural-score` | ニューラルスコアリングベンチマーク |
 | `romaji-export` | デフォルトローマ字テーブルを `~/Library/Application Support/Lexime/romaji.toml` にエクスポート |
 | `settings-export` | デフォルト設定を `~/Library/Application Support/Lexime/settings.toml` にエクスポート |
 
@@ -723,7 +720,7 @@ macOS で動作する最小限の IME を構築。
 | `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うこと、claude.yml の sha256 が pin の linux-x64 バイナリのものであることも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（上表の `lint` task） |
 | `msrv` | ubuntu-latest | Rust 変更時 | `cargo check --workspace --locked`（宣言 MSRV。デフォルト features / targets） |
-| `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace,neural` |
+| `test-core` | ubuntu-latest | core 変更時 | `cargo test -p lex-core --features trace` |
 | `test-session` | ubuntu-latest | session/core 変更時 | `cargo test -p lex-session --features trace` |
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |

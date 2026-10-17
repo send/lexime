@@ -11,7 +11,6 @@ name = "lex_core"
 [features]
 default = []
 trace = ["tracing/max_level_debug"]
-neural = ["candle-core", "candle-nn", "dep:anyhow"]
 
 [dependencies]
 tracing = { workspace = true }
@@ -25,9 +24,6 @@ toml = { workspace = true }
 serde_ignored = { workspace = true }
 time = { version = "0.3", features = ["local-offset"] }
 unicode-width = "0.2"
-anyhow = { version = "1", optional = true }
-candle-core = { version = "0.10", optional = true }
-candle-nn = { version = "0.10", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Two uses, one Apple-only and one every-unix, which is why this is `cfg(unix)`

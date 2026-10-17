@@ -297,7 +297,7 @@ fn download_and_extract(url: &str, suffix: &str, dest: &Path) -> Result<usize, C
     let mut count = 0;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(zip_err)?;
-        let raw_name = file.name().to_string();
+        let raw_name = file.name().map_err(zip_err)?.into_owned();
         if !raw_name.ends_with(suffix) {
             continue;
         }
