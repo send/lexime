@@ -288,6 +288,63 @@ fn test_bigram_successors() {
     assert!(succs3.is_empty());
 }
 
+// Equal boosts must come out in one fixed order: the maps are HashMaps, whose
+// iteration order differs between processes, so a boost-only sort let the
+// Predictive chain and the learned-surface injection change across launches.
+#[test]
+fn equal_boosts_are_ordered_by_key_not_by_map_order() {
+    let mut h = UserHistory::new();
+    let now = now_epoch();
+    let surfaces = ["ア", "イ", "ウ", "エ", "オ", "カ", "キ", "ク", "ケ", "コ"];
+    for s in surfaces {
+        h.record_at(
+            &[("まえ".into(), "前".into()), ("あと".into(), s.into())],
+            now,
+        );
+        h.record_at(&[("よみ".into(), s.into())], now);
+    }
+
+    let succs = h.bigram_successors("前");
+    assert_eq!(succs.len(), surfaces.len());
+    assert!(
+        succs.windows(2).all(|w| w[0].2 == w[1].2),
+        "boosts should tie"
+    );
+    let got: Vec<&str> = succs.iter().map(|s| s.1.as_str()).collect();
+    assert_eq!(got, surfaces);
+
+    let learned = h.learned_surfaces("よみ", now);
+    assert!(
+        learned.windows(2).all(|w| w[0].1 == w[1].1),
+        "boosts should tie"
+    );
+    let got: Vec<&str> = learned.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(got, surfaces);
+}
+
+// A tie in the integer boost between entries used at different times goes
+// to the more recent one, ahead of the key order.
+#[test]
+fn equal_boosts_prefer_the_more_recent_entry() {
+    let mut h = UserHistory::new();
+    let week = 7 * 24 * 3600;
+    // Capped at max_boost and one half-life old, both truncate to the same
+    // boost although "イ" was used one second later.
+    for (surface, last_used) in [("ア", 1000), ("イ", 1001)] {
+        h.unigrams.entry("よみ".into()).or_default().insert(
+            surface.into(),
+            HistoryEntry {
+                frequency: 1000,
+                last_used,
+            },
+        );
+    }
+    let learned = h.learned_surfaces("よみ", 1000 + week);
+    assert_eq!(learned.len(), 2);
+    assert_eq!(learned[0].1, learned[1].1, "boosts should tie");
+    assert_eq!(learned[0].0, "イ");
+}
+
 #[test]
 fn test_bigram_successors_empty_history() {
     let h = UserHistory::new();
@@ -714,6 +771,31 @@ fn test_evict_enforces_both_caps_and_reports_bigram_residue() {
         !h.durable_residue.contains_entries(&wrong_surface),
         "the residue is keyed by the whole triple, not by prev+reading"
     );
+}
+
+// Equal scores are evicted by key, not by HashMap order: entries recorded in
+// one commit share frequency and last_used, and which of them survived used to
+// depend on the per-process iteration order.
+#[test]
+fn evict_breaks_score_ties_by_key() {
+    let max_unigrams = settings().history.max_unigrams;
+    let mut h = UserHistory::new();
+    for i in 0..max_unigrams + 3 {
+        h.unigrams.entry(format!("r{i}")).or_default().insert(
+            format!("s{i}"),
+            HistoryEntry {
+                frequency: 1,
+                last_used: 1000,
+            },
+        );
+    }
+    h.evict();
+    // The three lowest keys in string order: r0 < r1 < r10.
+    for r in ["r0", "r1", "r10"] {
+        let s = r.replacen('r', "s", 1);
+        assert!(!h.contains_entries(&pair(r, &s)), "{r} evicted");
+    }
+    assert!(h.contains_entries(&pair("r2", "s2")));
 }
 
 #[test]

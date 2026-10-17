@@ -16,7 +16,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use lex_core::candidates::{
-    generate_candidates, generate_candidates_priced, CandidateResponse, PathPrice, PricedCandidates,
+    generate_candidates, generate_candidates_priced, generate_prediction_candidates,
+    CandidateResponse, PathPrice, PricedCandidates,
 };
 use lex_core::converter::{
     convert_nbest, convert_nbest_with_history, ConversionContext, ConvertedSegment, PathOrigin,
@@ -43,7 +44,8 @@ pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
 ///
 /// Callers slice the result with `take(n)`; passing a smaller limit would
 /// change which predictions are fetched for short readings. This is the
-/// Standard conversion mode's list; Predictive mode builds a different one.
+/// Standard conversion mode's list; Predictive mode's is
+/// [`production_prediction_candidates`].
 pub fn production_candidates(
     dict: &dyn Dictionary,
     conn: &ConnectionMatrix,
@@ -51,6 +53,23 @@ pub fn production_candidates(
     reading: &str,
 ) -> CandidateResponse {
     generate_candidates(
+        dict,
+        Some(conn),
+        history,
+        reading,
+        settings().candidates.max_results,
+    )
+}
+
+/// The candidate list of the Predictive conversion mode (bigram chaining),
+/// at the same `candidates.max_results` the async worker passes for it.
+pub fn production_prediction_candidates(
+    dict: &dyn Dictionary,
+    conn: &ConnectionMatrix,
+    history: Option<&UserHistory>,
+    reading: &str,
+) -> CandidateResponse {
+    generate_prediction_candidates(
         dict,
         Some(conn),
         history,

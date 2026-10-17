@@ -463,11 +463,11 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
   - かなは救済価格（best + 4000）− ブーストで学習済みの漢字と争う（同じくらい古い 1 回ずつの学習なら漢字が #1）。候補列では、学習済みのかなは #1 が学習済みならその直下（2 番目）に移る（価格によらない、候補列の 3.）
   - 自動確定は候補列 #1 の先頭フレーズを確定し、それも学習として記録する: 学習済みの #1 を自動確定すると、その学習は新しくなる
 - #1 の選定では、decay は学習済み同士の比較にだけ効き、学習済みと未学習の比較には効かない（#2 以降は decay 込みの価格順）。既定値（半減期 168h / 最大 15,000）では 1 回の確定のブーストが 0 になるまで数十年かかるので、学習済みは容量 evict か削除まで #1 の資格を持ち続ける。別の表記に変えるには、候補列にあるその表記を確定して学習済み同士の価格で上回らせる（何度も使った表記は 1 回では抜けないことがある）か、Fn+Delete で学習を削除する（次に安い学習済み、無ければ model の順に戻る）
-- 学習済みサーフェスを候補上位に注入（N-best 直後、boost 降順）
+- 学習済みサーフェスを候補上位に注入（N-best 直後、boost 降順。同点は最終利用の新しい順、次に表記順）
 
 ### バイグラム後続探索
 
-`bigram_successors(prev_surface)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順で返す。Predictive モードの bigram chaining で使用される。
+`bigram_successors(prev_surface)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順（同点は最終利用の新しい順、次に `(reading, surface)` 順）で返す。Predictive モードの bigram chaining で使用される。
 
 ### LearningRecord
 
@@ -695,8 +695,8 @@ macOS で動作する最小限の IME を構築。
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
 | `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。 |
-| `snapshot` | 変換スナップショット生成（N-best。本番の候補列は `lextool snapshot --candidates` を直接呼ぶ — task は引数を渡さず出力先も N-best 用に固定） |
-| `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` を直接呼ぶ。種別の違うファイルはエラー） |
+| `snapshot` | 変換スナップショット生成（N-best。Standard モードの本番候補列は `lextool snapshot --candidates`、Predictive モードは `--predictive` を直接呼ぶ（Predictive は履歴の bigram でしか差が出ないので `--history` と併用） — task は引数を渡さず出力先も N-best 用に固定） |
+| `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` / `--predictive` を直接呼ぶ。種別の違うファイルはエラー） |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は 3 つの幅（N-best 先頭 n=1 / 候補待ちの同期 1-best / 本番候補列の #1）すべてで一致を要求し、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
 | `accuracy-history` | 履歴込み変換精度テスト（accuracy-corpus-history.toml） |
 | `history-audit` | 学習履歴を素のエンジン top-1 と突き合わせて監査 |
