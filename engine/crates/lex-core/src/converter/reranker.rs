@@ -446,18 +446,25 @@ mod tests {
     /// penalty passes whatever the predicate does.
     const SK: i64 = 1000;
 
-    fn sk_adjustment(
-        path: &ScoredPath,
-        conn: &ConnectionMatrix,
-        dict: Option<&dyn Dictionary>,
-    ) -> i64 {
+    fn sk_pricer<'a>(
+        conn: &'a ConnectionMatrix,
+        dict: Option<&'a dyn Dictionary>,
+    ) -> FeaturePricer<'a> {
         let weights = FeatureWeights {
             length_variance: 0,
             script: 0,
             te_kanji: 0,
             single_kanji: SK,
         };
-        FeaturePricer::with_weights(weights, Some(conn), dict).adjustment(path)
+        FeaturePricer::with_weights(weights, Some(conn), dict)
+    }
+
+    fn sk_adjustment(
+        path: &ScoredPath,
+        conn: &ConnectionMatrix,
+        dict: Option<&dyn Dictionary>,
+    ) -> i64 {
+        sk_pricer(conn, dict).adjustment(path)
     }
 
     #[test]
@@ -528,13 +535,7 @@ mod tests {
     #[test]
     fn rerank_adds_the_pricers_adjustment() {
         let conn = conn_with_roles(vec![0u8, 0]);
-        let weights = FeatureWeights {
-            length_variance: 0,
-            script: 0,
-            te_kanji: 0,
-            single_kanji: SK,
-        };
-        let pricer = FeaturePricer::with_weights(weights, Some(&conn), None);
+        let pricer = sk_pricer(&conn, None);
         let mut paths = vec![
             path(vec![seg("ね", "根", 1)], 100),
             path(vec![seg("ね", "ね", 1)], 100),

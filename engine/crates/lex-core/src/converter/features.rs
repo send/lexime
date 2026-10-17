@@ -113,6 +113,12 @@ pub fn is_te_form_kanji_penalised(
     }
 }
 
+/// A one-character reading with kanji in the surface: the segments the
+/// single-char kanji penalty looks at, whatever their role.
+pub fn is_single_char_kanji(seg: &RichSegment) -> bool {
+    seg.reading.chars().count() == 1 && seg.surface.chars().any(is_kanji)
+}
+
 /// Check whether a segment triggers the single-char kanji content-word penalty.
 ///
 /// Returns `true` when the segment is a single-character kanji content word
@@ -124,10 +130,7 @@ pub fn is_single_char_kanji_penalised(
     conn: &ConnectionMatrix,
     dict: Option<&dyn Dictionary>,
 ) -> bool {
-    if seg.reading.chars().count() != 1
-        || !seg.surface.chars().any(is_kanji)
-        || conn.role(seg.left_id) != 0
-    {
+    if !is_single_char_kanji(seg) || conn.role(seg.left_id) != 0 {
         return false;
     }
     let exempt = dict.is_some_and(|d| {

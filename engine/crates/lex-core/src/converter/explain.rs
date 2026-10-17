@@ -4,13 +4,14 @@ use serde::Serialize;
 
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
-use crate::unicode::is_kanji;
 use crate::user_history::UserHistory;
 
 use crate::settings::settings;
 
 use super::cost::{conn_cost, score_path, script_cost, DefaultCostFunction};
-use super::features::{is_single_char_kanji_penalised, is_te_form_kanji_penalised};
+use super::features::{
+    is_single_char_kanji, is_single_char_kanji_penalised, is_te_form_kanji_penalised,
+};
 use super::lattice::{build_lattice, Lattice};
 use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
 use super::reranker::{compute_history_boost, FeaturePricer};
@@ -306,7 +307,10 @@ impl PostprocessObserver for ExplainObserver<'_> {
         if let Some(conn) = self.conn {
             self.single_kanji = paths
                 .iter()
-                .map(|p| (p.surface_key(), single_kanji_segments(p, conn, self.dict)))
+                .filter_map(|p| {
+                    let listed = single_kanji_segments(p, conn, self.dict);
+                    (!listed.is_empty()).then(|| (p.surface_key(), listed))
+                })
                 .collect();
         }
     }
@@ -320,7 +324,7 @@ fn single_kanji_segments(
     p.segments
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.reading.chars().count() == 1 && s.surface.chars().any(is_kanji))
+        .filter(|(_, s)| is_single_char_kanji(s))
         .map(|(i, s)| SingleKanjiSegment {
             reading: s.reading.clone(),
             surface: s.surface.clone(),
@@ -516,7 +520,7 @@ pub fn explain(
                 model_cost,
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
-                single_kanji_segments: observer.single_kanji.get(&key).cloned().unwrap_or_default(),
+                single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
         .collect();
@@ -696,7 +700,7 @@ mod tests {
         ]);
         (
             dict,
-            ConnectionMatrix::new_owned(3, 0, 0, vec![0, 0, 2], vec![0i16; 9]),
+            crate::converter::testutil::zero_conn_with_roles(3, vec![0, 0, 2]),
         )
     }
 
@@ -708,18 +712,20 @@ mod tests {
             .unwrap_or_else(|| panic!("no path {surface}"))
     }
 
+    fn listed(p: &ExplainPath) -> Vec<(&str, u8, bool)> {
+        p.single_kanji_segments
+            .iter()
+            .map(|s| (s.surface.as_str(), s.role, s.penalised))
+            .collect()
+    }
+
     #[test]
     fn single_kanji_segments_are_listed_before_grouping() {
         let (dict, conn) = single_kanji_fixture();
         let result = explain(&dict, Some(&conn), None, "かくにんし", 5);
         let p = path_by_surface(&result, "確認史");
         assert_eq!(p.segments.len(), 1, "the suffix is grouped into 確認");
-        let listed: Vec<_> = p
-            .single_kanji_segments
-            .iter()
-            .map(|s| (s.surface.as_str(), s.role, s.penalised))
-            .collect();
-        assert_eq!(listed, [("史", 2, false)]);
+        assert_eq!(listed(p), [("史", 2, false)]);
     }
 
     #[test]
@@ -727,13 +733,10 @@ mod tests {
         // The shipped weight is not what decides `penalised`.
         let (dict, conn) = single_kanji_fixture();
         let result = explain(&dict, Some(&conn), None, "かくにんね", 5);
-        let p = path_by_surface(&result, "確認値");
-        let listed: Vec<_> = p
-            .single_kanji_segments
-            .iter()
-            .map(|s| (s.surface.as_str(), s.role, s.penalised))
-            .collect();
-        assert_eq!(listed, [("値", 0, true)]);
+        assert_eq!(
+            listed(path_by_surface(&result, "確認値")),
+            [("値", 0, true)]
+        );
     }
 
     #[test]
