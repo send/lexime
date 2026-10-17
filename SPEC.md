@@ -456,7 +456,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 - 半減期: 1 週間（168 時間）
 - `now`（`hours_elapsed` の基準）は読み経路が呼び手から受け取る。壁時計を読むのは入口だけ（1-best と候補列で別々に 1 回ずつ、lextool / dictool は起動時に 1 回）
-- 書き込み経路も呼び手の `now` を使う: `record` は壁時計を 1 回読んで `record_at` に渡し、`record_at` はその `now` で容量 evict する。WAL replay・`apply_batch`・open（`open_recovering` / `open_with_wal`）の evict も呼び手の `now` で採点する（engine の open は起動時に 1 回、ライブの確定は確定時に 1 回読む）。壁時計のままなのは隔離ファイル名とチェックポイントのヘッダ時刻だけ
+- 書き込み経路も呼び手の `now` を使う: `record` は壁時計を 1 回読んで `record_at` に渡し、`record_at` はその `now` で容量 evict する。WAL replay・`apply_batch`・open（`open_recovering` / `open_with_wal`）の evict も呼び手の `now` で採点する（engine の open は起動時に 1 回、ライブの確定は確定時に 1 回読み、frame の日付と evict で共有する）。壁時計のままなのは隔離ファイル名、チェックポイントのヘッダ時刻、v1 backup の期限判定
 - 最大ブースト: 15,000（frequency ≥ 5 で到達）
 - Reranker が Viterbi 後のパスに対してブーストを適用し、学習した変換を優先する
 - **学習済みの #1**: 学習済み = この読みで（全体として、またはフレーズの分節として）確定したことのある表記（whole-path boost > 0。候補選択・そのまま確定・自動確定のどれで記録されたかは区別しない）。学習ブースト段の経路（N-best の母集団に在るもの）と Rewriters の生成物（数字・カタカナ、同じブーストを受ける）に学習済みがあれば、その中で最安（価格 = model または policy 価格 − ブースト）を #1 に置き、残りは価格順のまま。ブーストが価格差に届かなくても学習済みが #1 になる。この段より後の Rewriters は、未学習の候補で学習済みの #1 を動かさない
@@ -469,7 +469,7 @@ decay = 1.0 / (1.0 + hours_elapsed / 168.0)
 
 ### バイグラム後続探索
 
-`bigram_successors(prev_surface)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順（同点は最終利用の新しい順、次に `(reading, surface)` 順）で返す。Predictive モードの bigram chaining で使用される。
+`bigram_successors(prev_surface, now)` は、指定サーフェスに続くバイグラムエントリを検索し、`(reading, surface, boost)` のリストをブースト降順（同点は最終利用の新しい順、次に `(reading, surface)` 順）で返す。Predictive モードの bigram chaining で使用される。
 
 ### LearningRecord
 
