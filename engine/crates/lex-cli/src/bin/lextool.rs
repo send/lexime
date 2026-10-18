@@ -705,16 +705,7 @@ fn main() {
         } => {
             let readings: Vec<String> = match (reading, input) {
                 (Some(r), None) => vec![r],
-                (None, Some(path)) => fs::read_to_string(&path)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Failed to read {path}: {e}");
-                        process::exit(1);
-                    })
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(String::from)
-                    .collect(),
+                (None, Some(path)) => read_readings(&path),
                 _ => {
                     eprintln!("widths: pass a reading or --input <file>");
                     process::exit(2);
@@ -730,7 +721,11 @@ fn main() {
                     r,
                     now,
                     now_list,
-                );
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
                 if json {
                     println!(
                         "{}",
@@ -1534,7 +1529,12 @@ fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult
         stale,
     } = rank_ops::judge_widths(case.width_issue.as_ref(), &observed);
     // Neither width shows what the case expects: the user sees no right answer.
-    let no_width_right = observed.len() == 2;
+    let no_width_right = observed
+        .iter()
+        .any(|m| matches!(m, rank_ops::WidthMismatch::OneBest(_)))
+        && observed
+            .iter()
+            .any(|m| matches!(m, rank_ops::WidthMismatch::ListTop { .. }));
 
     let mut window = Vec::new();
     if let Some(ref w) = case.window {

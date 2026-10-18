@@ -15,6 +15,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use lex_core::candidates::widths::production_tops;
 use lex_core::candidates::{
     generate_candidates, generate_candidates_priced, generate_prediction_candidates,
     CandidateResponse, PathPrice, PricedCandidates,
@@ -63,9 +64,10 @@ pub fn production_candidates_priced(
     generate_candidates_priced(ctx, reading, settings().candidates.max_results)
 }
 
-/// Top-1 at each of the two widths the user can see — the production ones,
-/// nothing else. They draw different populations (the 1-best's budget is
-/// per keystroke, the list's is larger), so rerank's argmin can differ between
+/// Top-1 at each of the two widths the user sees — the production ones,
+/// nothing else, from [`production_tops`] (the generator `lextool widths`
+/// reads too). They draw different populations (the 1-best's budget is per
+/// keystroke, the list's is larger), so rerank's argmin can differ between
 /// them and so can the top-1 (#361).
 pub struct Top1Widths {
     /// Synchronous 1-best shown while candidates are pending (the session's
@@ -82,10 +84,10 @@ impl Top1Widths {
 }
 
 pub fn top1_widths(ctx: &ConversionContext<'_>, reading: &str) -> Top1Widths {
-    let lattice = ctx.build_lattice(reading);
+    let tops = production_tops(ctx, ctx, reading);
     Top1Widths {
-        one_best: joined_surface(&ctx.convert_from_lattice(&lattice)),
-        list: production_candidates(ctx, reading),
+        one_best: tops.one_best,
+        list: tops.list.response,
     }
 }
 

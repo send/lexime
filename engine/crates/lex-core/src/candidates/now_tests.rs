@@ -10,24 +10,12 @@
 //!   (`frequency * 3000`, capped at 15000); the wall clock would see it whole.
 
 use crate::converter::explain::explain;
-use crate::converter::testutil::{entry, half, joined, test_dict, STALE, T0};
+use crate::converter::testutil::{entry, half, joined, learned, test_dict, STALE, T0};
 use crate::converter::{ConversionContext, ConvertedSegment};
 use crate::dict::TrieDictionary;
-use crate::user_history::{now_epoch, UserHistory};
+use crate::user_history::now_epoch;
 
 use super::{generate_candidates, generate_prediction_candidates};
-
-fn learned(sentences: &[&[(&str, &str)]]) -> UserHistory {
-    let mut h = UserHistory::new();
-    for pairs in sentences {
-        let segs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|&(r, s)| (r.to_string(), s.to_string()))
-            .collect();
-        h.record_at(&segs, T0);
-    }
-    h
-}
 
 fn nbest_surfaces(paths: &[Vec<ConvertedSegment>]) -> Vec<String> {
     paths.iter().map(|p| joined(p)).collect()

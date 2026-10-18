@@ -75,7 +75,6 @@ pub enum TopSource {
         /// Its position in the list before the promotion, if it was there.
         from: Option<usize>,
         kana_boost: i64,
-        top_has_boost: bool,
     },
     /// A learned surface the injection stage added (N-best empty).
     Injected,

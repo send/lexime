@@ -206,6 +206,11 @@ struct PreHistorySnapshot {
     segment_count: usize,
 }
 
+/// Each surface of the Viterbi output with its `viterbi_cost` and position
+/// (`viterbi_nbest` has already deduped by surface, so positions are
+/// consecutive).
+type ViterbiOutput = HashMap<String, (i64, usize)>;
+
 /// Diagnostic observer.
 ///
 /// Keys are `ScoredPath::surface_key()` — i.e. the concatenated surface — so
@@ -218,11 +223,8 @@ struct ExplainObserver<'a> {
     /// Needed so the displayed breakdown matches `history_rerank`'s
     /// function-word exclusion for per-segment unigram boosts.
     conn: Option<&'a ConnectionMatrix>,
-    /// viterbi_cost before resegment/rerank — the raw Viterbi output.
-    original_costs: HashMap<String, i64>,
-    /// Position of each surface in the Viterbi output (`viterbi_nbest` has
-    /// already deduped by surface, so the positions are consecutive).
-    viterbi_ranks: HashMap<String, usize>,
+    /// The raw Viterbi output, before resegment / rerank.
+    viterbi: ViterbiOutput,
     /// State at the post-rerank / pre-history-rerank boundary.
     pre_history: HashMap<String, PreHistorySnapshot>,
     /// Breakdown and segment count of each final Override-priced path, as
@@ -252,8 +254,7 @@ impl<'a> ExplainObserver<'a> {
         Self {
             history,
             conn,
-            original_costs: HashMap::new(),
-            viterbi_ranks: HashMap::new(),
+            viterbi: HashMap::new(),
             pre_history: HashMap::new(),
             override_boosts: HashMap::new(),
             model_costs: HashMap::new(),
@@ -269,14 +270,10 @@ impl<'a> ExplainObserver<'a> {
 
 impl PostprocessObserver for ExplainObserver<'_> {
     fn after_viterbi(&mut self, paths: &[ScoredPath]) {
-        self.original_costs = paths
-            .iter()
-            .map(|p| (p.surface_key(), p.viterbi_cost))
-            .collect();
-        self.viterbi_ranks = paths
+        self.viterbi = paths
             .iter()
             .enumerate()
-            .map(|(rank, p)| (p.surface_key(), rank))
+            .map(|(rank, p)| (p.surface_key(), (p.viterbi_cost, rank)))
             .collect();
     }
 
@@ -436,9 +433,9 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 /// Viterbi path another stage repriced (`resolve_duplicate` keeps the
 /// existing path and writes the cheaper candidate's `priced_by` onto it) has
 /// no rank: its price is not the Viterbi one the rank describes.
-fn viterbi_rank_of(scored: &ScoredPath, ranks: &HashMap<String, usize>) -> Option<usize> {
+fn viterbi_rank_of(scored: &ScoredPath, viterbi: &ViterbiOutput) -> Option<usize> {
     if scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model() {
-        ranks.get(&scored.surface_key()).copied()
+        viterbi.get(&scored.surface_key()).map(|&(_, rank)| rank)
     } else {
         None
     }
@@ -506,9 +503,9 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             let pre = scored.pre_history_cost();
             let original = if scored.priced_by.is_model() {
                 observer
-                    .original_costs
+                    .viterbi
                     .get(&key)
-                    .copied()
+                    .map(|&(cost, _)| cost)
                     .or(model_cost)
                     .unwrap_or(pre)
             } else {
@@ -554,7 +551,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 model_cost,
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
-                viterbi_rank: viterbi_rank_of(scored, &observer.viterbi_ranks),
+                viterbi_rank: viterbi_rank_of(scored, &observer.viterbi),
                 single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
@@ -1015,7 +1012,7 @@ mod tests {
     /// `resolve_duplicate`) keeps `origin == Viterbi` but has no rank.
     #[test]
     fn viterbi_rank_is_none_for_a_repriced_viterbi_path() {
-        let ranks = HashMap::from([(String::new(), 3usize)]);
+        let ranks = ViterbiOutput::from([(String::new(), (0, 3usize))]);
         let mut p = ScoredPath::new(Vec::new(), 0, PathOrigin::Viterbi);
         assert_eq!(viterbi_rank_of(&p, &ranks), Some(3));
         for other in [

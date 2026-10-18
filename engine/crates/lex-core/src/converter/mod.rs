@@ -134,7 +134,9 @@ impl<'a> ConversionContext<'a> {
         self.convert_lattice_impl(lattice, n, population(n, self.history.is_some()))
     }
 
-    /// Shared Viterbi + postprocess pipeline used by the 1-best and N-best wrappers.
+    /// Viterbi at `oversample` paths + postprocess for `n`. The N-best
+    /// wrappers call it with `population(n, h)` (the 1-best is `n = 1`);
+    /// tests call it with a chosen population.
     fn convert_lattice_impl(
         &self,
         lattice: &Lattice,

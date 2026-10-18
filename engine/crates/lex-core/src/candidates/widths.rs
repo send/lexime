@@ -19,7 +19,7 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::{generate_candidates_priced, TopSource};
+use super::{generate_candidates_priced, PricedCandidates, TopSource};
 
 /// The top path of one width's postprocess output.
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +96,76 @@ pub struct StandardTop {
     pub promoted_from: Option<TopPath>,
 }
 
+/// The two top-1s the user sees, as production computes them — the one
+/// generator both the accuracy gate (`lextool accuracy`) and the census
+/// (`widths`) read, so neither can describe a different pipeline.
+pub struct ProductionTops {
+    /// The synchronous 1-best's surface (`convert_from_lattice`).
+    pub one_best: String,
+    /// The candidate list (`generate_candidates`) with how it was built.
+    pub list: PricedCandidates,
+}
+
+impl ProductionTops {
+    /// The list's #1 (`surfaces[0]`), empty for an empty list.
+    pub fn list_top(&self) -> &str {
+        self.list
+            .response
+            .surfaces
+            .first()
+            .map_or("", String::as_str)
+    }
+}
+
+/// The 1-best (decayed at `ctx_1best`'s `now`) and the Standard candidate
+/// list (at `ctx_list`'s), at the production budgets.
+pub fn production_tops(
+    ctx_1best: &ConversionContext<'_>,
+    ctx_list: &ConversionContext<'_>,
+    reading: &str,
+) -> ProductionTops {
+    ProductionTops {
+        one_best: joined_surface(&ctx_1best.convert(reading)),
+        list: generate_candidates_priced(ctx_list, reading, settings().candidates.max_results),
+    }
+}
+
+fn joined_surface(segments: &[crate::converter::ConvertedSegment]) -> String {
+    segments.iter().map(|s| s.surface.as_str()).collect()
+}
+
+/// `explain` and the production pipeline disagree: the report would describe
+/// a different path than the one the user sees. Never silent: it means the
+/// attribution run is not the production run (a bug in this tool, or a
+/// nondeterminism in the engine).
+#[derive(Debug, PartialEq, Eq)]
+pub struct WidthsMismatch(pub String);
+
+impl std::fmt::Display for WidthsMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "widths: {}", self.0)
+    }
+}
+
+impl std::error::Error for WidthsMismatch {}
+
+/// The surface production shows must be the one `explain`'s path carries
+/// (`None` = explain has no such path; production's empty surface agrees).
+fn agree(
+    reading: &str,
+    what: &str,
+    production: &str,
+    explained: Option<String>,
+) -> Result<(), WidthsMismatch> {
+    if explained.as_deref().unwrap_or("") == production {
+        Ok(())
+    } else {
+        Err(WidthsMismatch(format!(
+            "{reading}: {what} is {production:?} but explain's path is {explained:?}"
+        )))
+    }
+}
+
 /// Both widths for one reading.
 #[derive(Debug, Serialize)]
 pub struct Widths {
@@ -118,6 +188,10 @@ pub struct Widths {
 
 /// Compute both widths. The 1-best decays history at `now_1best`, the list at
 /// `now_list`; a caller wanting the production pairing passes one value.
+///
+/// The surfaces come from [`production_tops`]; `explain` only attributes
+/// them. Where its path does not carry the production surface, that is an
+/// error, not a report about another path.
 pub fn widths(
     dict: &dyn Dictionary,
     conn: Option<&ConnectionMatrix>,
@@ -125,27 +199,38 @@ pub fn widths(
     reading: &str,
     now_1best: u64,
     now_list: u64,
-) -> Widths {
+) -> Result<Widths, WidthsMismatch> {
     let has_history = history.is_some();
     let ctx_1best = ConversionContext::new(dict, conn).with_history(history, now_1best);
     let ctx_list = ConversionContext::new(dict, conn).with_history(history, now_list);
 
     let nbest = settings().candidates.nbest;
+    let tops = production_tops(&ctx_1best, &ctx_list, reading);
     let one_best = explain(&ctx_1best, reading, 1);
     let list = explain(&ctx_list, reading, nbest);
-    let priced = generate_candidates_priced(&ctx_list, reading, settings().candidates.max_results);
 
-    let surface = priced
-        .response
-        .surfaces
-        .first()
-        .cloned()
-        .unwrap_or_default();
-    let source = priced.diagnostics.top_source;
-    let path_of = |i: usize| list.paths.get(i).map(TopPath::of);
+    agree(
+        reading,
+        "the 1-best",
+        &tops.one_best,
+        one_best.paths.first().map(ExplainPath::surface),
+    )?;
+
+    let surface = tops.list_top().to_string();
+    let source = tops.list.diagnostics.top_source;
+    let path_of = |i: usize| -> Result<TopPath, WidthsMismatch> {
+        let explained = list.paths.get(i);
+        agree(
+            reading,
+            &format!("the list's #1 (N-best path {i})"),
+            &surface,
+            explained.map(ExplainPath::surface),
+        )?;
+        Ok(TopPath::of(explained.expect("agreed with a surface")))
+    };
     let standard_top = StandardTop {
         path: match source {
-            Some(TopSource::Path(i)) => path_of(i),
+            Some(TopSource::Path(i)) => Some(path_of(i)?),
             _ => None,
         },
         promoted_from: match source {
@@ -162,21 +247,21 @@ pub fn widths(
 
     let one_best = Width::of(&one_best, population(1, has_history));
     let list = Width::of(&list, population(nbest, has_history));
-    Widths {
+    Ok(Widths {
         reading: reading.to_string(),
         now_1best,
         now_list,
         has_history,
-        split: one_best.top_surface() != standard_top.surface,
+        split: tops.one_best != standard_top.surface,
         list_top_in_one_best_set: !list.top_surface().is_empty()
             && one_best.has_model_path(list.top_surface()),
         one_best,
         list,
         standard_top,
-    }
+    })
 }
 
-fn top_line(t: &Option<TopPath>) -> String {
+fn top_line(t: Option<&TopPath>) -> String {
     match t {
         None => "(none)".into(),
         Some(t) => format!(
@@ -212,26 +297,23 @@ pub fn format_text(w: &Widths) -> String {
         "  1-best  (population {}, anchor {}): {}\n",
         w.one_best.population,
         w.one_best.anchor,
-        top_line(&w.one_best.top),
+        top_line(w.one_best.top.as_ref()),
     ));
     out.push_str(&format!(
         "  list P  (population {}, anchor {}): {}\n",
         w.list.population,
         w.list.anchor,
-        top_line(&w.list.top),
+        top_line(w.list.top.as_ref()),
     ));
     out.push_str(&format!(
         "  list #1 {} from {:?}\n",
         w.standard_top.surface, w.standard_top.source
     ));
     if let Some(p) = &w.standard_top.path {
-        out.push_str(&format!("    path: {}\n", top_line(&Some(p.clone()))));
+        out.push_str(&format!("    path: {}\n", top_line(Some(p))));
     }
     if let Some(p) = &w.standard_top.promoted_from {
-        out.push_str(&format!(
-            "    promoted_from: {}\n",
-            top_line(&Some(p.clone()))
-        ));
+        out.push_str(&format!("    promoted_from: {}\n", top_line(Some(p))));
     }
     out.push_str(&format!(
         "  list top in 1-best set: {}\n  1-best set: {}\n  list set:   {}\n",
@@ -246,19 +328,32 @@ pub fn format_text(w: &Widths) -> String {
 mod tests {
     use super::*;
     use crate::converter::testutil::{
-        deep_argmin_kanaya, entry_with_id, half, test_dict, STALE, T0,
+        deep_argmin_kanaya, entry_with_id, half, joined, learned, test_dict, STALE, T0,
     };
     use crate::dict::TrieDictionary;
-    use crate::user_history::{now_epoch, UserHistory};
+    use crate::user_history::now_epoch;
 
-    fn learned(pairs: &[(&str, &str)]) -> UserHistory {
-        let mut h = UserHistory::new();
-        let segs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|&(r, s)| (r.to_string(), s.to_string()))
-            .collect();
-        h.record_at(&segs, T0);
-        h
+    fn widths(
+        dict: &dyn Dictionary,
+        conn: Option<&ConnectionMatrix>,
+        history: Option<&UserHistory>,
+        reading: &str,
+        now_1best: u64,
+        now_list: u64,
+    ) -> Widths {
+        super::widths(dict, conn, history, reading, now_1best, now_list).expect("agrees")
+    }
+
+    /// The attribution run must be the production run: a disagreement is an
+    /// error naming both, never a report about another path.
+    #[test]
+    fn explain_disagreeing_with_production_is_an_error() {
+        assert_eq!(agree("よみ", "the 1-best", "京", Some("京".into())), Ok(()));
+        assert_eq!(agree("よみ", "the 1-best", "", None), Ok(()));
+        for explained in [Some("今日".to_string()), None] {
+            let err = agree("よみ", "the 1-best", "京", explained).unwrap_err();
+            assert!(err.0.contains("よみ") && err.0.contains("京"), "{err}");
+        }
     }
 
     /// T-A5 (1)(2): each width decays at the `now` it is handed, and the
@@ -268,7 +363,7 @@ mod tests {
     #[test]
     fn each_width_decays_at_its_own_injected_now() {
         let dict = test_dict();
-        let h = learned(&[("きょう", "京")]);
+        let h = learned(&[&[("きょう", "京")]]);
         let w = widths(&dict, None, Some(&h), "きょう", half(), STALE);
         assert_eq!((w.now_1best, w.now_list), (half(), STALE));
         let wall = now_epoch();
@@ -304,7 +399,7 @@ mod tests {
     #[test]
     fn a_decay_rounding_boundary_splits_only_at_now_plus_one() {
         let dict = test_dict();
-        let h = learned(&[("きょう", "京")]);
+        let h = learned(&[&[("きょう", "京")]]);
         let boost = |t| h.unigram_boost("きょう", "京", t);
         let (mut lo, mut hi) = (T0, STALE);
         assert!(boost(lo) > 0 && boost(hi) == 0);
@@ -384,20 +479,17 @@ mod tests {
     #[test]
     fn a_promoted_kana_carries_no_path_fields() {
         let dict = test_dict();
-        let h = learned(&[("きょう", "きょう")]);
+        let h = learned(&[&[("きょう", "きょう")]]);
         let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
         assert_eq!(w.standard_top.surface, "きょう");
         assert!(matches!(
             w.standard_top.source,
-            Some(TopSource::KanaPromoted {
-                top_has_boost: false,
-                ..
-            })
+            Some(TopSource::KanaPromoted { .. })
         ));
         assert!(w.standard_top.path.is_none());
 
         // A #1 with a history of its own keeps index 0: no promotion.
-        let h = learned(&[("きょう", "京")]);
+        let h = learned(&[&[("きょう", "京")]]);
         let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
         assert_eq!(w.standard_top.source, Some(TopSource::Path(0)));
         assert_eq!(w.standard_top.path.as_ref().unwrap().surface, "京");
@@ -408,16 +500,13 @@ mod tests {
     #[test]
     fn the_widths_are_the_production_outputs() {
         let dict = test_dict();
-        let h = learned(&[("きょう", "京")]);
+        let h = learned(&[&[("きょう", "京")]]);
         for history in [None, Some(&h)] {
             let ctx = ConversionContext::new(&dict, None).with_history(history, half());
             let w = widths(&dict, None, history, "きょう", half(), half());
             assert_eq!(
                 w.one_best.top.as_ref().unwrap().surface,
-                ctx.convert("きょう")
-                    .iter()
-                    .map(|s| s.surface.as_str())
-                    .collect::<String>()
+                joined(&ctx.convert("きょう"))
             );
             assert_eq!(
                 w.standard_top.surface,

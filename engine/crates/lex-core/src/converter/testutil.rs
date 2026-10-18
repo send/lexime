@@ -238,3 +238,17 @@ pub fn deep_learned_kanaya(rank: usize) -> (TrieDictionary, ConnectionMatrix) {
 
 /// The surface [`deep_learned_kanaya`] puts at the learned position.
 pub const DEEP_LEARNED: &str = "学習";
+
+/// A history that learned each sentence (reading, surface pairs) once, at
+/// [`T0`].
+pub fn learned(sentences: &[&[(&str, &str)]]) -> crate::user_history::UserHistory {
+    let mut h = crate::user_history::UserHistory::new();
+    for pairs in sentences {
+        let segs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|&(r, s)| (r.to_string(), s.to_string()))
+            .collect();
+        h.record_at(&segs, T0);
+    }
+    h
+}

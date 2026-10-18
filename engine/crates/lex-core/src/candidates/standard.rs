@@ -118,7 +118,6 @@ fn generate_normal(
     let promoted = (kana_boost > 0 && kana_target == 0).then_some(TopSource::KanaPromoted {
         from: kana_existing_pos,
         kana_boost,
-        top_has_boost,
     });
     if kana_boost > 0 {
         match kana_existing_pos {
