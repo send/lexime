@@ -7,7 +7,7 @@ use crate::converter::rewriter::{
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
 #[test]
-fn test_run_rewriters_applies_all() {
+fn test_run_policy_rewriters_applies_all() {
     let rw = KatakanaRewriter { anchor: 1000 };
     let mut paths = vec![ScoredPath::new(
         vec![RichSegment {
@@ -96,8 +96,8 @@ fn test_run_rewriters_dedup_across_rewriters() {
 }
 
 #[test]
-fn test_run_rewriters_cost_ordered_insertion() {
-    // Compound kanji (best_cost) should be inserted at position 0
+fn test_run_policy_rewriters_cost_ordered_insertion() {
+    // Compound kanji (at the anchor) should be inserted at position 0
     let rw = NumericRewriter {
         lattice: None,
         connection: None,
@@ -118,7 +118,7 @@ fn test_run_rewriters_cost_ordered_insertion() {
     run_policy_rewriters(&[&rw], &mut paths, "にじゅうさん", None, &mut NoopObserver);
 
     assert_eq!(paths[0].surface_key(), "二十三");
-    assert_eq!(paths[0].viterbi_cost, 3000); // best_cost = 3000
+    assert_eq!(paths[0].viterbi_cost, 3000); // the anchor
     assert_eq!(paths[1].surface_key(), "に十三");
 }
 

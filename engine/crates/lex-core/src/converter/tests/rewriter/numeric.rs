@@ -42,7 +42,7 @@ fn test_numeric_rewriter_generates_candidates() {
 
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].surface_key(), "二十三");
-    assert_eq!(result[0].viterbi_cost, 3000); // compound → best_cost
+    assert_eq!(result[0].viterbi_cost, 3000); // compound → the anchor
     assert_eq!(result[1].surface_key(), "23");
     assert_eq!(result[1].viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
     assert_eq!(result[2].surface_key(), "２３");
@@ -98,7 +98,7 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
 
     run_policy_rewriters(&[&rw], &mut paths, "じゅう", None, &mut NoopObserver);
 
-    // 十 is single-char → base_cost (not best_cost), all after 中
+    // 十 is single-char → a fallback (anchor + NUMERIC_POLICY_OFFSET), all after 中
     assert_eq!(paths[0].surface_key(), "中");
     let kanji = paths.iter().find(|p| p.surface_key() == "十").unwrap();
     assert_eq!(kanji.viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
@@ -179,7 +179,7 @@ fn test_numeric_counter_generates_kanji_compound() {
         .iter()
         .find(|p| p.surface_key() == "三千円")
         .expect("should generate 三千円");
-    // Cheapest counter at the position is anchored at best_cost - 500
+    // Cheapest counter at the position is anchored at anchor - COUNTER_COMPOUND_DISCOUNT
     // (lifts the kanji compound above the existing top-1).
     assert_eq!(kanji.viterbi_cost, 4500);
     assert!(result.iter().any(|p| p.surface_key() == "3000円"));

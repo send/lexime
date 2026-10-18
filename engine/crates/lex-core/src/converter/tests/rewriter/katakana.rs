@@ -24,7 +24,7 @@ fn test_katakana_rewriter_generates_candidate() {
 }
 
 #[test]
-fn test_katakana_dedup_via_run_rewriters() {
+fn test_katakana_fallback_skips_a_listed_surface() {
     let rw = KatakanaRewriter { anchor: 5000 };
     let mut paths = vec![ScoredPath::new(
         vec![RichSegment {
