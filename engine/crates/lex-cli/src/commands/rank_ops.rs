@@ -20,7 +20,7 @@ use lex_core::candidates::{
     generate_candidates, generate_candidates_priced, generate_prediction_candidates,
     CandidateResponse, PathPrice, PricedCandidates,
 };
-use lex_core::converter::{ConversionContext, ConvertedSegment, PathOrigin};
+use lex_core::converter::{ConversionContext, PathOrigin};
 use lex_core::settings::settings;
 
 /// Candidates shown on the first page of the candidate window. Mirrors
@@ -28,10 +28,7 @@ use lex_core::settings::settings;
 /// owns the value; change both together.
 pub const PAGE_SIZE: usize = 9;
 
-/// Concatenated surface of a conversion path.
-pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
-    segments.iter().map(|s| s.surface.as_str()).collect()
-}
+pub use lex_core::converter::joined_surface;
 
 /// The candidate list as the IME builds it: N-best + learned injection +
 /// kana + predictions + lookup, at `candidates.max_results` — the limit the
@@ -791,6 +788,7 @@ pub fn diff_baseline(
 mod tests {
     use super::*;
     use lex_core::candidates::CandidateDiagnostics;
+    use lex_core::converter::ConvertedSegment;
 
     fn resp(surfaces: &[&str], nbest: &[&str]) -> CandidateResponse {
         CandidateResponse {

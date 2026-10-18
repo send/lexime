@@ -178,6 +178,11 @@ pub(crate) fn population(n: usize, has_history: bool) -> usize {
     (n * 3).max(floor)
 }
 
+/// The surface a conversion path spells.
+pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
+    segments.iter().map(|s| s.surface.as_str()).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Convenience wrappers without history
 // ---------------------------------------------------------------------------

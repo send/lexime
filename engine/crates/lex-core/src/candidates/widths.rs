@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 use crate::converter::explain::{explain, ExplainPath, ExplainResult, ModelPath};
-use crate::converter::{population, ConversionContext, PathOrigin};
+use crate::converter::{joined_surface, population, ConversionContext, PathOrigin};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::settings::settings;
@@ -128,10 +128,6 @@ pub fn production_tops(
         one_best: joined_surface(&ctx_1best.convert(reading)),
         list: generate_candidates_priced(ctx_list, reading, settings().candidates.max_results),
     }
-}
-
-fn joined_surface(segments: &[crate::converter::ConvertedSegment]) -> String {
-    segments.iter().map(|s| s.surface.as_str()).collect()
 }
 
 /// `explain` and the production pipeline disagree: the report would describe

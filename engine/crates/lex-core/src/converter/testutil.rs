@@ -134,10 +134,7 @@ pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
     ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
 }
 
-/// The surface a conversion path spells.
-pub fn joined(path: &[super::ConvertedSegment]) -> String {
-    path.iter().map(|s| s.surface.as_str()).collect()
-}
+pub use super::joined_surface as joined;
 
 /// A moment ahead of any wall clock a test runs under: a history last used
 /// here ages as 0 against the clock (a negative age saturates), so a read that
