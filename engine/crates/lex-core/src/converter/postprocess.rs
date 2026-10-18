@@ -29,6 +29,9 @@ pub(crate) trait PostprocessObserver {
     /// Called when the Override stage writes a policy price onto the path
     /// with surface `key` (a new path, or a duplicate it repriced).
     fn policy_priced(&mut self, _key: &str, _price: rewriter::PolicyPrice) {}
+    /// Called when a policy fallback finds its surface `key` already listed
+    /// and leaves the list as it is.
+    fn policy_skipped(&mut self, _key: &str, _price: rewriter::PolicyPrice) {}
     /// Called on the final paths before `group_segments` merges morphemes
     /// into phrases, while segments are still the priced lattice nodes.
     fn before_group(&mut self, _paths: &[ScoredPath]) {}

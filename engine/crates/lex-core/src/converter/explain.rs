@@ -46,6 +46,9 @@ pub struct ExplainResult {
     /// or recorded while something else priced the path. A pipeline bug;
     /// empty when consistent.
     pub policy_price_inconsistent: Vec<String>,
+    /// Surfaces a policy fallback found already listed and left alone (the
+    /// listed path keeps its price, plan §27-8 B6).
+    pub policy_skipped: Vec<String>,
     /// The paths of the cost model's population (origin Viterbi or
     /// Resegment) after rerank, before admission and the other stages: the
     /// set a surface must be in for this run to have been able to choose it.
@@ -151,6 +154,10 @@ pub struct ExplainPath {
     /// stage wrote it: `final_cost + history_boost == policy_price.cost()`.
     /// `None` for any other path.
     pub policy_price: Option<PolicyPrice>,
+    /// Cost-gap admission's verdict on the path: its pre-history gap to the
+    /// anchor when admission kept it by that price; `None` for the head, an
+    /// exempt path (learned, the typed kana) or a policy price.
+    pub admission_gap: Option<i64>,
 }
 
 /// A one-character-reading segment with kanji in its surface, whatever its
@@ -255,6 +262,7 @@ struct ExplainObserver<'a> {
     model_paths: Vec<ModelPath>,
     /// The last policy price the Override stage wrote onto each surface.
     policy: HashMap<String, PolicyPrice>,
+    policy_skipped: Vec<String>,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -278,6 +286,7 @@ impl<'a> ExplainObserver<'a> {
             anchor: 0,
             model_paths: Vec::new(),
             policy: HashMap::new(),
+            policy_skipped: Vec::new(),
         }
     }
 }
@@ -332,6 +341,10 @@ impl PostprocessObserver for ExplainObserver<'_> {
 
     fn policy_priced(&mut self, key: &str, price: PolicyPrice) {
         self.policy.insert(key.to_string(), price);
+    }
+
+    fn policy_skipped(&mut self, key: &str, _price: PolicyPrice) {
+        self.policy_skipped.push(key.to_string());
     }
 
     fn before_group(&mut self, paths: &[ScoredPath]) {
@@ -483,6 +496,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
             policy_price_inconsistent: Vec::new(),
+            policy_skipped: Vec::new(),
             model_paths: Vec::new(),
         };
     }
@@ -582,6 +596,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 repriced: scored.priced_by != scored.origin,
                 viterbi_rank: viterbi_rank_of(scored, &observer.viterbi),
                 policy_price,
+                admission_gap: scored.admission_gap,
                 single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
@@ -597,6 +612,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
         policy_price_inconsistent,
+        policy_skipped: std::mem::take(&mut observer.policy_skipped),
         model_paths: std::mem::take(&mut observer.model_paths),
     }
 }
@@ -826,6 +842,37 @@ mod tests {
         assert_eq!(compound.origin, PathOrigin::Viterbi, "segments kept");
         assert_eq!(compound.priced_by, PathOrigin::Numeric);
         assert_eq!(path_by_surface(&result, "に十三").policy_price, None);
+    }
+
+    /// B6 in explain: the katakana fallback finds テスト listed (a
+    /// dictionary path) and is reported as skipped; the path keeps its model
+    /// price and admission's verdict (the head has none, a path kept by
+    /// price has its gap).
+    #[test]
+    fn a_skipped_fallback_and_admission_verdicts_are_reported() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "てすと".into(),
+            vec![e("手酢と", 0, 1), e("テスト", 1000, 1)],
+        )]);
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, None),
+            "てすと",
+            20,
+        );
+        assert_eq!(result.policy_skipped, ["テスト"]);
+        let listed = path_by_surface(&result, "テスト");
+        assert_eq!(listed.priced_by, PathOrigin::Viterbi);
+        assert_eq!(listed.policy_price, None);
+        let head = &result.paths[0];
+        assert_eq!(
+            head.admission_gap, None,
+            "the head is kept whatever its price"
+        );
+        assert_eq!(
+            listed.admission_gap,
+            Some(listed.final_cost - result.cost_gap_anchor)
+        );
     }
 
     fn path_by_surface<'r>(result: &'r ExplainResult, surface: &str) -> &'r ExplainPath {

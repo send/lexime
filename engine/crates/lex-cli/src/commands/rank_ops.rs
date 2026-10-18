@@ -422,7 +422,9 @@ pub struct ReplayReport {
     /// head, a learned or kana path, or a Numeric / Katakana price (#375).
     /// Only the bins above the 4000 floor move with `max_cost_gap`. With
     /// `--history` the head can be a learned path, and the rerank best then
-    /// counts here at gap 0.
+    /// counts here at gap 0. Bins above the run's own bound are empty by
+    /// construction (admission dropped those paths): bins above T come from
+    /// a replay under a larger `max_cost_gap`.
     pub admission_gap_hist: Vec<usize>,
     /// Selections priced below the #1 path. The #1 is then a learned
     /// surface the user picked around (history puts the cheapest learned

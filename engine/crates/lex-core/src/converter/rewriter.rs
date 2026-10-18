@@ -266,7 +266,9 @@ fn insert_candidates<O: PostprocessObserver>(
             // A held Override head is learned, and so is a candidate with its
             // surface: that one may reprice it in place, unless it is a
             // fallback. The Model stage leaves its head as it is.
-            if stage == RewriteStage::Override && !fallback {
+            if let (true, Some(p)) = (fallback, policy) {
+                observer.policy_skipped(&key, p);
+            } else if stage == RewriteStage::Override {
                 if let Some((resolved, by_candidate)) = resolve_duplicate(stage, candidate, h) {
                     record(by_candidate);
                     *h = boosted(resolved);
@@ -279,7 +281,11 @@ fn insert_candidates<O: PostprocessObserver>(
                 record(true);
                 insert_by_cost(paths, boosted(candidate), stage);
             }
-            Some(_) if fallback => {}
+            Some(_) if fallback => {
+                if let Some(p) = policy {
+                    observer.policy_skipped(&key, p);
+                }
+            }
             Some(i) => {
                 if let Some((resolved, by_candidate)) =
                     resolve_duplicate(stage, candidate, &paths[i])
