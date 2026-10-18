@@ -100,16 +100,11 @@ impl<'a> ConversionContext<'a> {
         self.convert_nbest_from_lattice(&self.build_lattice(kana), n)
     }
 
-    /// 1-best conversion from a pre-built lattice.
+    /// 1-best conversion from a pre-built lattice: the N-best path with
+    /// `n = 1`, so the 1-best and `convert_nbest(.., 1)[0]` are one code path
+    /// and one population (`population(1, h)`).
     pub fn convert_from_lattice(&self, lattice: &Lattice) -> Vec<ConvertedSegment> {
-        // A floor above n = 1's own share gives the reranker and history boost
-        // candidates to work with, kept below the N-best formula's (50 with
-        // history) because the 1-best runs on every keystroke. A learned path
-        // past 30 reaches the candidate list's #1 but not this one (#361):
-        // drawing the list's population (60) here, even only for readings
-        // with a history record, made this 1-best about 2.2× slower.
-        let oversample = if self.history.is_some() { 30 } else { 10 };
-        self.convert_lattice_impl(lattice, 1, oversample)
+        self.convert_nbest_scored_from_lattice(lattice, 1)
             .into_iter()
             .next()
             .map(ScoredPath::into_segments)
@@ -136,7 +131,7 @@ impl<'a> ConversionContext<'a> {
         lattice: &Lattice,
         n: usize,
     ) -> Vec<ScoredPath> {
-        self.convert_lattice_impl(lattice, n, nbest_oversample(n, self.history.is_some()))
+        self.convert_lattice_impl(lattice, n, population(n, self.history.is_some()))
     }
 
     /// Shared Viterbi + postprocess pipeline used by the 1-best and N-best wrappers.
@@ -155,15 +150,30 @@ impl<'a> ConversionContext<'a> {
     }
 }
 
+/// Per-keystroke budget: the Viterbi paths the 1-best (`n = 1`) works on
+/// without a history record to learn from. The 1-best runs synchronously on
+/// every keystroke, so its population is kept small (drawing the candidate
+/// list's 60 here made it about 2.2x slower, #361).
+pub(crate) const KEYSTROKE_POPULATION: usize = 10;
+/// Per-keystroke budget with a history: gives the reranker and the history
+/// boost paths to work on. A learned path past 30 reaches the candidate list's
+/// #1 but not the 1-best's (#361).
+pub(crate) const KEYSTROKE_POPULATION_WITH_HISTORY: usize = 30;
+/// Candidate-list budget with a history, for `n >= 2` (it may also run
+/// synchronously on a key thread, so it is a budget too).
+pub(crate) const LIST_POPULATION_WITH_HISTORY: usize = 50;
+
 /// Viterbi paths collected for an N-best of `n`: the population rerank,
-/// history and the rewriters work on. Diagnostics that must describe the
-/// production list (explain) use this same rule.
-pub(crate) fn nbest_oversample(n: usize, has_history: bool) -> usize {
-    if has_history {
-        (n * 3).max(50)
-    } else {
-        n * 3
-    }
+/// history and the rewriters work on, `max(3n, floor(n, h))`. `n = 1` is the
+/// 1-best and takes the per-keystroke floor. Every reader (the 1-best, the
+/// candidate list, explain) uses this one rule.
+pub(crate) fn population(n: usize, has_history: bool) -> usize {
+    let floor = match (has_history, n) {
+        (false, _) => KEYSTROKE_POPULATION,
+        (true, 1) => KEYSTROKE_POPULATION_WITH_HISTORY,
+        (true, _) => LIST_POPULATION_WITH_HISTORY,
+    };
+    (n * 3).max(floor)
 }
 
 // ---------------------------------------------------------------------------

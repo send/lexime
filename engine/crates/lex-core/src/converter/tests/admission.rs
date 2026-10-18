@@ -237,7 +237,7 @@ fn the_one_best_is_the_same_at_every_bound() {
     let mut learned = UserHistory::new();
     learned.record(&[("たべる".into(), "田辺留".into())]);
     for history in [None, Some(&empty), Some(&learned)] {
-        let oversample = if history.is_some() { 30 } else { 10 };
+        let oversample = population(1, history.is_some());
         let one_best = |t| {
             let p = run(&dict, history, "たべる", 1, oversample, t);
             (p[0].surface_key(), p[0].viterbi_cost)
@@ -250,7 +250,7 @@ fn the_one_best_is_the_same_at_every_bound() {
             history,
             "たべる",
             20,
-            nbest_oversample(20, history.is_some()),
+            population(20, history.is_some()),
             0,
         );
         assert_eq!(nbest[0].surface_key(), reference.0, "1-best == N-best[0]");

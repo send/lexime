@@ -307,3 +307,59 @@ fn learned_number_compound_outprices_stale_learned_surface() {
         "explain reports the compound's own boost"
     );
 }
+
+/// A1/T-A1: the 1-best is the N-best of `n = 1`, one path and one population.
+/// Before #361's follow-up the n = 1 head ran at 3 (no history) / 50 (history)
+/// against the 1-best's 10 / 30, so a path inside only one of them split the
+/// two. 金谷 is Viterbi's 6th and rerank's argmin without a history; 学習 is
+/// Viterbi's 41st, learned once (inside 50, outside 30).
+#[test]
+fn one_best_is_the_nbest_of_one() {
+    use crate::converter::testutil::{deep_argmin_kanaya, deep_learned_kanaya, DEEP_LEARNED};
+    let now = now_epoch();
+    let (shallow, conn_s) = deep_argmin_kanaya(5);
+    let (deep, conn_d) = deep_learned_kanaya(40);
+    let mut learned = UserHistory::new();
+    learned.record(&[("かなや".into(), DEEP_LEARNED.into())]);
+    for (dict, conn, history) in [
+        (&shallow, &conn_s, None),
+        (&deep, &conn_d, None),
+        (&deep, &conn_d, Some(&learned)),
+    ] {
+        let ctx =
+            crate::converter::ConversionContext::new(dict, Some(conn)).with_history(history, now);
+        let lattice = ctx.build_lattice("かなや");
+        let one_best = joined(&ctx.convert_from_lattice(&lattice));
+        let head = joined(&ctx.convert_nbest_from_lattice(&lattice, 1)[0]);
+        assert_eq!(one_best, head, "history={}", history.is_some());
+    }
+    // The fixtures reach what they claim: a population of 10 sees 金谷
+    // (6th), the learned 学習 is the list's #1 and outside the 1-best's 30.
+    let ctx = crate::converter::ConversionContext::new(&shallow, Some(&conn_s));
+    assert_eq!(joined(&ctx.convert("かなや")), "金谷");
+    let ctx = crate::converter::ConversionContext::new(&deep, Some(&conn_d))
+        .with_history(Some(&learned), now);
+    assert_eq!(joined(&ctx.convert_nbest("かなや", 20)[0]), DEEP_LEARNED);
+    assert_ne!(joined(&ctx.convert("かなや")), DEEP_LEARNED);
+}
+
+/// A1/T-A2: the population rule's values. T-A1 compares the 1-best with the
+/// n = 1 head, so it cannot see both moving together (both 50); the 1-best's
+/// own budget (it runs on every keystroke) and the default list's 60 are
+/// pinned here by value.
+#[test]
+fn population_values() {
+    for ((n, history), want) in [
+        ((1, false), 10),
+        ((1, true), 30),
+        ((2, false), 10),
+        ((3, false), 10),
+        ((4, false), 12),
+        ((2, true), 50),
+        ((5, true), 50),
+        ((20, false), 60),
+        ((20, true), 60),
+    ] {
+        assert_eq!(population(n, history), want, "n={n} history={history}");
+    }
+}
