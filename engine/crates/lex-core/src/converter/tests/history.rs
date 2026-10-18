@@ -1,9 +1,10 @@
 use super::*;
-use crate::converter::testutil::test_dict;
-use crate::user_history::UserHistory;
+use crate::converter::testutil::{joined, test_dict};
+use crate::user_history::{now_epoch, UserHistory};
 
 #[test]
 fn test_convert_with_history_promotes_learned() {
+    let now = now_epoch();
     let dict = test_dict();
     // "きょう" has 今日(3000) and 京(5000). Without history, 今日 wins.
     let baseline = convert(&dict, None, "きょう");
@@ -14,17 +15,22 @@ fn test_convert_with_history_promotes_learned() {
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let result = convert_with_history(&dict, None, &h, "きょう");
+    let result = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("きょう");
     assert_eq!(result[0].surface, "京");
 }
 
 #[test]
 fn test_convert_with_history_empty_history_matches_baseline() {
+    let now = now_epoch();
     let dict = test_dict();
     let h = UserHistory::new();
 
     let baseline = convert(&dict, None, "きょうはいいてんき");
-    let with_history = convert_with_history(&dict, None, &h, "きょうはいいてんき");
+    let with_history = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("きょうはいいてんき");
 
     let baseline_surfaces: Vec<&str> = baseline.iter().map(|s| s.surface.as_str()).collect();
     let history_surfaces: Vec<&str> = with_history.iter().map(|s| s.surface.as_str()).collect();
@@ -33,36 +39,50 @@ fn test_convert_with_history_empty_history_matches_baseline() {
 
 #[test]
 fn test_convert_with_history_empty_input() {
+    let now = now_epoch();
     let dict = test_dict();
     let h = UserHistory::new();
-    let result = convert_with_history(&dict, None, &h, "");
+    let result = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert("");
     assert!(result.is_empty());
 }
 
 #[test]
 fn test_convert_nbest_with_history_promotes_learned() {
+    let now = now_epoch();
     let dict = test_dict();
     let mut h = UserHistory::new();
     h.record(&[("きょう".into(), "京".into())]);
     h.record(&[("きょう".into(), "京".into())]);
 
-    let results = convert_nbest_with_history(&dict, None, &h, "きょう", 5);
+    let results = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きょう", 5);
     assert!(!results.is_empty());
     assert_eq!(results[0][0].surface, "京");
 }
 
 #[test]
 fn test_convert_nbest_with_history_empty_input() {
+    let now = now_epoch();
     let dict = test_dict();
     let h = UserHistory::new();
-    assert!(convert_nbest_with_history(&dict, None, &h, "", 5).is_empty());
-    assert!(convert_nbest_with_history(&dict, None, &h, "きょう", 0).is_empty());
+    assert!(crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("", 5)
+        .is_empty());
+    assert!(crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きょう", 0)
+        .is_empty());
 }
 
 /// When history heavily boosts single-char alternatives, the Viterbi #1
 /// (compound entry) must still appear in the n-best results.
 #[test]
 fn test_viterbi_best_preserved_despite_history_boost() {
+    let now = now_epoch();
     use crate::dict::DictEntry;
 
     // Dict with a compound entry and multiple single-char alternatives.
@@ -162,7 +182,9 @@ fn test_viterbi_best_preserved_despite_history_boost() {
         h.record(&[("き".into(), "記".into())]);
     }
 
-    let with_history = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
+    let with_history = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きがします", 5);
     let history_surfaces: Vec<String> = with_history
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -183,7 +205,9 @@ fn test_viterbi_best_preserved_despite_history_boost() {
     // After a single explicit selection the compound is a learned whole
     // path, so it takes #1 (PR-G) whatever the size of its boost. The boost's
     // magnitude is tested in `test_history_rerank_unigram_boost_reorders`.
-    let after_learn = convert_nbest_with_history(&dict, None, &h, "きがします", 5);
+    let after_learn = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("きがします", 5);
     let learned_surfaces: Vec<String> = after_learn
         .iter()
         .map(|path| path.iter().map(|s| s.surface.as_str()).collect())
@@ -199,6 +223,7 @@ fn test_viterbi_best_preserved_despite_history_boost() {
 /// #1 of the 1-best and of the N-best alike.
 #[test]
 fn one_best_equals_nbest_head_with_learned_whole_pair() {
+    let now = now_epoch();
     use crate::converter::testutil::entry;
     use crate::dict::TrieDictionary;
     let dict = TrieDictionary::from_entries(vec![(
@@ -207,9 +232,14 @@ fn one_best_equals_nbest_head_with_learned_whole_pair() {
     )]);
     let mut h = UserHistory::new();
     h.record(&[("かな".into(), "可奈".into())]);
-    let joined = |p: &[ConvertedSegment]| p.iter().map(|s| s.surface.as_str()).collect::<String>();
-    let one_best = joined(&convert_with_history(&dict, None, &h, "かな"));
-    let nbest = convert_nbest_with_history(&dict, None, &h, "かな", 20);
+    let one_best = joined(
+        &crate::converter::ConversionContext::new(&dict, None)
+            .with_history(Some(&h), now)
+            .convert("かな"),
+    );
+    let nbest = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("かな", 20);
     assert_eq!(one_best, "可奈");
     assert_eq!(joined(&nbest[0]), "可奈");
     // Without the learning 仮名 is #1: the boost alone does not flip it.
@@ -243,19 +273,32 @@ fn learned_number_compound_outprices_stale_learned_surface() {
     for _ in 0..10 {
         h.record_at(&[("にじゅう".into(), "二十".into())], now - 24 * 3600);
     }
-    let joined = |p: &[ConvertedSegment]| p.iter().map(|s| s.surface.as_str()).collect::<String>();
 
-    let nbest = convert_nbest_with_history(&dict, None, &h, "にじゅう", 5);
+    let nbest = crate::converter::ConversionContext::new(&dict, None)
+        .with_history(Some(&h), now)
+        .convert_nbest("にじゅう", 5);
     assert_eq!(joined(&nbest[0]), "二十", "N-best #1");
     assert_eq!(
-        joined(&convert_with_history(&dict, None, &h, "にじゅう")),
+        joined(
+            &crate::converter::ConversionContext::new(&dict, None)
+                .with_history(Some(&h), now)
+                .convert("にじゅう")
+        ),
         "二十",
         "1-best"
     );
-    let list = crate::candidates::generate_candidates(&dict, None, Some(&h), "にじゅう", 20);
+    let list = crate::candidates::generate_candidates(
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
+        "にじゅう",
+        20,
+    );
     assert_eq!(list.surfaces[0], "二十", "candidate list #1");
 
-    let ex = explain(&dict, None, Some(&h), "にじゅう", 5);
+    let ex = explain(
+        &crate::converter::ConversionContext::new(&dict, None).with_history(Some(&h), now),
+        "にじゅう",
+        5,
+    );
     let top = &ex.paths[0];
     let surface: String = top.segments.iter().map(|s| s.surface.as_str()).collect();
     assert_eq!(surface, "二十");

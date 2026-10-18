@@ -1,5 +1,6 @@
 use lex_core::candidates::CandidateResponse;
 use lex_core::converter::{ConversionContext, ConvertedSegment};
+use lex_core::user_history::now_epoch;
 
 use super::response::{build_marked_text, build_marked_text_and_candidates};
 use super::types::{AsyncCandidateRequest, KeyResponse, SessionState, MAX_CANDIDATES};
@@ -23,14 +24,10 @@ impl InputSession {
             // panicked, we degrade gracefully to history-less conversion rather
             // than cascading the panic. macOS will restart the IME if needed.
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-            let history_ref = h_guard.as_deref();
-            mode.generate_candidates(
-                &*self.dict,
-                self.conn.as_deref(),
-                history_ref,
-                &reading,
-                MAX_CANDIDATES,
-            )
+            // Entry point of this synchronous candidate list: its one clock read.
+            let ctx = ConversionContext::new(&*self.dict, self.conn.as_deref())
+                .with_history(h_guard.as_deref(), now_epoch());
+            mode.generate_candidates(&ctx, &reading, MAX_CANDIDATES)
         };
         let c = self.comp();
         c.candidates.surfaces = surfaces;
@@ -50,11 +47,9 @@ impl InputSession {
             let lattice = self.lattice_cache.get_or_build(&reading, &*self.dict);
 
             let h_guard = self.history.as_ref().and_then(|h| h.read().ok());
-            let ctx = ConversionContext {
-                dict: &*self.dict,
-                conn: self.conn.as_deref(),
-                history: h_guard.as_deref(),
-            };
+            // Entry point of the 1-best: its one clock read.
+            let ctx = ConversionContext::new(&*self.dict, self.conn.as_deref())
+                .with_history(h_guard.as_deref(), now_epoch());
             let segments = ctx.convert_from_lattice(&lattice);
             drop(h_guard);
 

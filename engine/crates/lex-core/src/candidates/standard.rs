@@ -2,11 +2,8 @@ use std::collections::HashSet;
 
 use tracing::{debug, debug_span};
 
-use crate::converter::Lattice;
-use crate::dict::connection::ConnectionMatrix;
-use crate::dict::Dictionary;
+use crate::converter::{ConversionContext, HistoryAt, Lattice};
 use crate::settings::settings;
-use crate::user_history::UserHistory;
 
 use super::{
     generate_punctuation_candidates, punctuation_alternatives, CandidateDiagnostics,
@@ -15,36 +12,24 @@ use super::{
 
 /// Generate candidates for normal (non-punctuation) input.
 pub(super) fn generate_normal_candidates(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
 ) -> CandidateResponse {
-    generate_normal(dict, conn, history, reading, max_results, lattice, None)
+    generate_normal(ctx, reading, max_results, lattice, None)
 }
 
 /// [`generate_normal_candidates`] with [`CandidateDiagnostics`] recorded by
 /// the same pipeline run that ordered the list.
 pub(super) fn generate_normal_priced(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
 ) -> PricedCandidates {
     let mut diagnostics = CandidateDiagnostics::default();
-    let response = generate_normal(
-        dict,
-        conn,
-        history,
-        reading,
-        max_results,
-        lattice,
-        Some(&mut diagnostics),
-    );
+    let response = generate_normal(ctx, reading, max_results, lattice, Some(&mut diagnostics));
     PricedCandidates {
         response,
         diagnostics,
@@ -59,14 +44,13 @@ pub(super) fn generate_normal_priced(
 /// these records and the stage order below (N-best → injection → kana →
 /// predictions / lookup). A new stage that lists surfaces records them here.
 fn generate_normal(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
     mut diag: Option<&mut CandidateDiagnostics>,
 ) -> CandidateResponse {
+    let ConversionContext { dict, history, .. } = *ctx;
     let mut surfaces = Vec::new();
     let mut seen = HashSet::new();
 
@@ -77,11 +61,6 @@ fn generate_normal(
     //    surfaces among themselves, not against unlearned ones (SPEC
     //    §ブースト計算).
     let nbest = settings().candidates.nbest;
-    let ctx = crate::converter::ConversionContext {
-        dict,
-        conn,
-        history,
-    };
     let scored = ctx.convert_nbest_scored_from_lattice(lattice, nbest);
     if let Some(d) = diag.as_deref_mut() {
         d.prices.extend(scored.iter().map(|p| PathPrice {
@@ -100,8 +79,7 @@ fn generate_normal(
     }
 
     // 1.5. Inject history-learned surfaces not in N-best.
-    if let Some(h) = history {
-        let now = crate::user_history::now_epoch();
+    if let Some(HistoryAt { history: h, now }) = history {
         for (surface, _boost) in h.learned_surfaces(reading, now) {
             if seen.insert(surface.clone()) {
                 if let Some(d) = diag.as_deref_mut() {
@@ -120,10 +98,9 @@ fn generate_normal(
     //    This moves a learned kana wherever history reranking priced it (a
     //    kana in the N-best competes there at its rescue price): to index 1
     //    below a learned #1, else to index 0.
-    let now = crate::user_history::now_epoch();
-    let kana_boost = history.map_or(0, |h| h.unigram_boost(reading, reading, now));
+    let kana_boost = history.map_or(0, |h| h.history.unigram_boost(reading, reading, h.now));
     let top_has_boost = if !surfaces.is_empty() && surfaces[0] != reading {
-        history.is_some_and(|h| h.unigram_boost(reading, &surfaces[0], now) > 0)
+        history.is_some_and(|h| h.history.unigram_boost(reading, &surfaces[0], h.now) > 0)
     } else {
         false
     };
@@ -159,7 +136,7 @@ fn generate_normal(
         max_results
     };
     let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = history {
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
             let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
             let boost_b = h.unigram_boost(r_b, &e_b.surface, now);
@@ -175,9 +152,9 @@ fn generate_normal(
 
     // 4. Dictionary lookup
     let lookup_entries = dict.lookup(reading);
-    if let Some(h) = history {
+    if let Some(HistoryAt { history: h, now }) = history {
         if !lookup_entries.is_empty() {
-            let reordered = h.reorder_candidates(reading, &lookup_entries);
+            let reordered = h.reorder_candidates(reading, &lookup_entries, now);
             for entry in &reordered {
                 if seen.insert(entry.surface.clone()) {
                     surfaces.push(entry.surface.clone());
@@ -200,9 +177,7 @@ fn generate_normal(
 
 /// Unified candidate generation: handles both punctuation and normal input.
 pub fn generate(
-    dict: &dyn Dictionary,
-    conn: Option<&ConnectionMatrix>,
-    history: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     max_results: usize,
     lattice: &Lattice,
@@ -216,9 +191,9 @@ pub fn generate(
     }
 
     let resp = if punctuation_alternatives(reading).is_some() {
-        generate_punctuation_candidates(dict, history, reading, max_results)
+        generate_punctuation_candidates(ctx, reading, max_results)
     } else {
-        generate_normal_candidates(dict, conn, history, reading, max_results, lattice)
+        generate_normal_candidates(ctx, reading, max_results, lattice)
     };
     debug!(
         surface_count = resp.surfaces.len(),

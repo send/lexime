@@ -4,7 +4,7 @@
 use super::*;
 use crate::converter::viterbi::PathOrigin;
 use crate::dict::{DictEntry, TrieDictionary};
-use crate::user_history::UserHistory;
+use crate::user_history::{now_epoch, UserHistory};
 
 /// あった|ほう|が, where the dictionary prefers kana ほう (0) to 方 (6000):
 /// あった|方|が is a real lattice path, but dearer than its kana source by
@@ -25,11 +25,7 @@ fn attahouga() -> TrieDictionary {
 }
 
 fn ctx<'a>(dict: &'a TrieDictionary, history: Option<&'a UserHistory>) -> ConversionContext<'a> {
-    ConversionContext {
-        dict,
-        conn: None,
-        history,
-    }
+    ConversionContext::new(dict, None).with_history(history, now_epoch())
 }
 
 fn price_of(paths: &[ScoredPath], s: &str) -> Option<i64> {

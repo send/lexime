@@ -240,9 +240,12 @@ impl OpenReport {
     }
 }
 
-/// Open checkpoint + WAL with full recovery semantics. See module docs.
+/// Open checkpoint + WAL with full recovery semantics. See module docs. The
+/// capacity eviction that settles the replay scores against the caller's
+/// `now` (the engine's one startup read).
 pub fn open_recovering(
     checkpoint_path: &Path,
+    now: u64,
 ) -> io::Result<(UserHistory, HistoryWal, OpenReport)> {
     let wal_path = wal_path_for(checkpoint_path);
     let mut report = OpenReport {
@@ -416,7 +419,7 @@ pub fn open_recovering(
     }
 
     // Replay applied frames without evicting; settle capacity once (§5.1-4).
-    history.evict();
+    history.evict(now);
 
     // --- 3. migration commit (§7) ---
     if migrate {

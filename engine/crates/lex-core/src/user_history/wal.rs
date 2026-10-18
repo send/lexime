@@ -345,6 +345,7 @@ impl HistoryWal {
         &mut self,
         history: &mut UserHistory,
         origin: CheckpointOrigin,
+        now: u64,
     ) -> io::Result<ReplaySummary> {
         let data = match fs::read(&self.wal_path) {
             Ok(d) => d,
@@ -392,7 +393,7 @@ impl HistoryWal {
                 }
                 let scan = scan_legacy(&data, history);
                 if scan.frames_applied > 0 {
-                    history.evict();
+                    history.evict(now);
                 }
                 self.adopt_scan(
                     scan.frames_applied as usize,
@@ -410,7 +411,7 @@ impl HistoryWal {
             WalFormat::V2 => {
                 let scan = scan_v2(&data, history);
                 if scan.frames_applied > 0 {
-                    history.evict();
+                    history.evict(now);
                 }
                 self.adopt_scan(
                     scan.valid_frames,
@@ -902,8 +903,9 @@ pub(super) fn scan_legacy(data: &[u8], history: &mut UserHistory) -> LegacyScan 
 
 /// Convenience: open checkpoint + replay WAL in one call. Strict and free of
 /// side effects — used by offline tooling (`lextool`); the engine uses
-/// [`super::recovery::open_recovering`].
-pub fn open_with_wal(checkpoint_path: &Path) -> io::Result<(UserHistory, HistoryWal)> {
+/// [`super::recovery::open_recovering`]. Capacity eviction after the replay
+/// scores against the caller's `now`.
+pub fn open_with_wal(checkpoint_path: &Path, now: u64) -> io::Result<(UserHistory, HistoryWal)> {
     use super::persistence::{load_checkpoint, CheckpointLoaded};
     let (mut history, origin) = match load_checkpoint(checkpoint_path)? {
         CheckpointLoaded::V2(h) => (h, CheckpointOrigin::V2),
@@ -912,6 +914,6 @@ pub fn open_with_wal(checkpoint_path: &Path) -> io::Result<(UserHistory, History
         CheckpointLoaded::Corrupt(e) => return Err(e),
     };
     let mut wal = HistoryWal::new(checkpoint_path);
-    wal.replay(&mut history, origin)?;
+    wal.replay(&mut history, origin, now)?;
     Ok((history, wal))
 }

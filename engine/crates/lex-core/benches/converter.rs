@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use lex_core::converter::{build_lattice, convert, convert_nbest, convert_with_history};
+use lex_core::converter::{build_lattice, convert, convert_nbest};
 use lex_core::dict::{DictEntry, TrieDictionary};
 use lex_core::user_history::UserHistory;
 
@@ -317,10 +317,16 @@ fn bench_history() -> UserHistory {
 fn bench_convert_1best_history(c: &mut Criterion) {
     let dict = bench_dict();
     let history = bench_history();
+    // Read once, outside the timed loop: the read path takes it as an argument.
+    let now = lex_core::user_history::now_epoch();
     let mut group = c.benchmark_group("converter/convert_1best_history");
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
-            b.iter(|| convert_with_history(&dict, None, &history, kana));
+            b.iter(|| {
+                lex_core::converter::ConversionContext::new(&dict, None)
+                    .with_history(Some(&history), now)
+                    .convert(kana)
+            });
         });
     }
     group.finish();

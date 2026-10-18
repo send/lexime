@@ -278,7 +278,13 @@ fn bench_standard(c: &mut Criterion) {
     let mut group = c.benchmark_group("candidates/standard");
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
-            b.iter(|| generate_candidates(&dict, None, None, kana, 20));
+            b.iter(|| {
+                generate_candidates(
+                    &lex_core::converter::ConversionContext::new(&dict, None),
+                    kana,
+                    20,
+                )
+            });
         });
     }
     group.finish();
@@ -289,7 +295,13 @@ fn bench_predictive(c: &mut Criterion) {
     let mut group = c.benchmark_group("candidates/predictive");
     for &(label, kana) in INPUTS {
         group.bench_with_input(BenchmarkId::new(label, kana.len()), &kana, |b, &kana| {
-            b.iter(|| generate_prediction_candidates(&dict, None, None, kana, 20));
+            b.iter(|| {
+                generate_prediction_candidates(
+                    &lex_core::converter::ConversionContext::new(&dict, None),
+                    kana,
+                    20,
+                )
+            });
         });
     }
     group.finish();

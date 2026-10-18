@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use lex_cli::commands::rank_ops::{self, joined_surface, width_disagreements, WindowCheck};
 use lex_core::converter::tune;
-use lex_core::converter::{convert_nbest, convert_nbest_with_history};
+use lex_core::converter::ConversionContext;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{CompositeDictionary, Dictionary, TrieDictionary};
 use lex_core::user_history::UserHistory;
@@ -23,6 +23,14 @@ struct Cli {
     /// fails, where the app would fall back. Not with replay --app-dir
     #[arg(long, global = true)]
     settings: Option<String>,
+    /// The Unix time (seconds) that history decay is measured against, for
+    /// every subcommand that reads a history. Without it lextool reads the
+    /// wall clock once at startup. Pass it to make two runs comparable
+    /// byte for byte. It does not reconstruct the history as it was at that
+    /// moment: entries used after it count as undecayed, and eviction on
+    /// open still ranks the whole file at this time
+    #[arg(long, global = true, value_name = "EPOCH")]
+    now: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -429,6 +437,7 @@ fn open_resources(
     dict_file: &str,
     conn_file: Option<&str>,
     history: &Option<String>,
+    now: u64,
 ) -> (
     TrieDictionary,
     Option<ConnectionMatrix>,
@@ -446,7 +455,7 @@ fn open_resources(
         })
     });
 
-    let hist = history.as_deref().map(open_history);
+    let hist = history.as_deref().map(|h| open_history(h, now));
 
     (dict, conn, hist)
 }
@@ -455,7 +464,7 @@ fn open_resources(
 /// history for a missing checkpoint and WAL, so a mistyped path must fail
 /// here instead of measuring an unlearned engine as if it were the learned
 /// one. The WAL is replayed: uncheckpointed commits live only there.
-fn open_history(path: &str) -> UserHistory {
+fn open_history(path: &str, now: u64) -> UserHistory {
     let checkpoint = Path::new(path);
     let wal = checkpoint.with_extension("lxud.wal");
     if !checkpoint.exists() && !wal.exists() {
@@ -466,10 +475,11 @@ fn open_history(path: &str) -> UserHistory {
         );
         process::exit(1);
     }
-    let (h, _wal) = lex_core::user_history::wal::open_with_wal(checkpoint).unwrap_or_else(|e| {
-        eprintln!("Failed to open user history at {}: {}", path, e);
-        process::exit(1);
-    });
+    let (h, _wal) =
+        lex_core::user_history::wal::open_with_wal(checkpoint, now).unwrap_or_else(|e| {
+            eprintln!("Failed to open user history at {}: {}", path, e);
+            process::exit(1);
+        });
     h
 }
 
@@ -492,26 +502,21 @@ fn read_readings(input_file: &str) -> Vec<String> {
 }
 
 fn run_snapshot(
-    dict: &TrieDictionary,
-    conn: &ConnectionMatrix,
-    hist: Option<&UserHistory>,
+    ctx: &ConversionContext<'_>,
     reading: &str,
     n: usize,
     kind: SnapshotKind,
 ) -> SnapshotEntry {
     let surfaces: Vec<String> = match kind {
         SnapshotKind::Nbest => {
-            let paths = match hist {
-                Some(h) => convert_nbest_with_history(dict, Some(conn), h, reading, n),
-                None => convert_nbest(dict, Some(conn), reading, n),
-            };
+            let paths = ctx.convert_nbest_from_lattice(&ctx.build_lattice(reading), n);
             paths.iter().map(|segs| joined_surface(segs)).collect()
         }
         SnapshotKind::Candidates | SnapshotKind::Predictive => {
             let list = if kind == SnapshotKind::Candidates {
-                rank_ops::production_candidates(dict, conn, hist, reading)
+                rank_ops::production_candidates(ctx, reading)
             } else {
-                rank_ops::production_prediction_candidates(dict, conn, hist, reading)
+                rank_ops::production_prediction_candidates(ctx, reading)
             };
             list.surfaces.into_iter().take(n).collect()
         }
@@ -581,6 +586,10 @@ mod app_config {
 
 fn main() {
     let cli = Cli::parse();
+    // The one clock read of this process: every history decay below is
+    // measured against it (and the accuracy corpus's `[[history]]` is seeded
+    // at it), so a run is reproducible given `--now`.
+    let now = cli.now.unwrap_or_else(lex_core::user_history::now_epoch);
     // Before any subcommand runs: settings() fixes on its first read, and a
     // custom TOML set after that would be ignored without an error.
     let app_dir = match &cli.command {
@@ -628,11 +637,14 @@ fn main() {
         } => {
             use lex_core::converter::explain;
 
-            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history, now);
             // Over-fetch when filtering by surface
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
-            let mut result =
-                explain::explain(&dict, conn.as_ref(), hist.as_ref(), &reading, fetch_n);
+            let mut result = explain::explain(
+                &ConversionContext::new(&dict, conn.as_ref()).with_history(hist.as_ref(), now),
+                &reading,
+                fetch_n,
+            );
 
             if let Some(ref filter) = surface {
                 result.paths.retain(|p| p.surface().contains(filter));
@@ -663,7 +675,8 @@ fn main() {
             json,
             history,
         } => {
-            let (dict, conn, file_hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, file_hist) =
+                open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for accuracy");
 
             // Load and parse corpus
@@ -685,7 +698,6 @@ fn main() {
                     process::exit(1);
                 }
                 let mut h = UserHistory::new();
-                let now = lex_core::user_history::now_epoch();
                 for rec in &corpus.history {
                     for _ in 0..rec.repeat {
                         h.record_at(&rec.segments, now);
@@ -760,10 +772,9 @@ fn main() {
                 }
             }
 
-            let results: Vec<AccuracyResult> = cases
-                .iter()
-                .map(|case| eval_case(&dict, &conn, hist.as_ref(), case))
-                .collect();
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
+            let results: Vec<AccuracyResult> =
+                cases.iter().map(|case| eval_case(&ctx, case)).collect();
 
             // Compute summary
             let total = results.len();
@@ -902,13 +913,14 @@ fn main() {
         } => {
             let kind = SnapshotKind::from_flags(candidates, predictive);
             warn_predictive_without_history(kind, &history);
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for snapshot");
             let readings = read_readings(&input_file);
 
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
             let entries: Vec<SnapshotEntry> = readings
                 .iter()
-                .map(|reading| run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind))
+                .map(|reading| run_snapshot(&ctx, reading, n, kind))
                 .collect();
             write_jsonl(&output_file, &entries).unwrap_or_else(|e| {
                 eprintln!("Failed to write snapshot: {}", e);
@@ -931,7 +943,7 @@ fn main() {
             json,
             top_n,
         } => {
-            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None, now);
             let conn = conn.expect("connection matrix is required for tune");
 
             // Load and parse corpus (same as Accuracy)
@@ -1002,10 +1014,12 @@ fn main() {
             n,
             json,
         } => {
-            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None);
+            let (dict, conn, _) = open_resources(&dict_file, Some(&conn_file), &None, now);
             let conn = conn.expect("connection matrix is required for history-audit");
 
-            let hist = open_history(&history_file);
+            let hist = open_history(&history_file, now);
+            let plain_ctx = ConversionContext::new(&dict, Some(&conn));
+            let ctx = plain_ctx.with_history(Some(&hist), now);
 
             // Group unigrams by reading
             let mut by_reading: HashMap<&str, Vec<(&str, u32, u64)>> = HashMap::new();
@@ -1045,7 +1059,8 @@ fn main() {
                     });
                 }
 
-                let paths = convert_nbest(&dict, Some(&conn), reading, n);
+                let lattice = plain_ctx.build_lattice(reading);
+                let paths = plain_ctx.convert_nbest_from_lattice(&lattice, n);
                 let joined: Vec<String> = paths.iter().map(|segs| joined_surface(segs)).collect();
                 let raw_top1 = joined.first().cloned().unwrap_or_default();
                 if raw_top1 == dominant {
@@ -1061,11 +1076,11 @@ fn main() {
                     .take(n)
                     .position(|s| s == dominant)
                     .map(|i| i + 1);
-                let hist_top1: String =
-                    convert_nbest_with_history(&dict, Some(&conn), &hist, reading, 1)
-                        .first()
-                        .map(|segs| joined_surface(segs))
-                        .unwrap_or_default();
+                let hist_top1: String = ctx
+                    .convert_nbest_from_lattice(&lattice, 1)
+                    .first()
+                    .map(|segs| joined_surface(segs))
+                    .unwrap_or_default();
 
                 misses.push(AuditMiss {
                     reading: reading.to_string(),
@@ -1123,7 +1138,7 @@ fn main() {
         } => {
             let kind = SnapshotKind::from_flags(candidates, predictive);
             warn_predictive_without_history(kind, &history);
-            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (dict, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for diff-snapshot");
             let readings = read_readings(&input_file);
 
@@ -1144,13 +1159,14 @@ fn main() {
                 baseline.insert(entry.reading.clone(), entry);
             }
 
+            let ctx = ConversionContext::new(&dict, Some(&conn)).with_history(hist.as_ref(), now);
             let mut changed = 0usize;
             let mut same = 0usize;
             let mut new_count = 0usize;
             let total = readings.len();
 
             for reading in &readings {
-                let current = run_snapshot(&dict, &conn, hist.as_ref(), reading, n, kind);
+                let current = run_snapshot(&ctx, reading, n, kind);
 
                 match baseline.get(reading) {
                     Some(base) => {
@@ -1237,7 +1253,7 @@ fn main() {
                 // "every earlier selection is new" in a later full comparison.
                 die("--emit-baseline records the whole log; drop --from-line".into());
             }
-            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history);
+            let (trie, conn, hist) = open_resources(&dict_file, Some(&conn_file), &history, now);
             let conn = conn.expect("connection matrix is required for replay-commit-log");
             // Same layering as LexDictionary::open_with_user_dict.
             let dict: Box<dyn Dictionary> = match app_dir
@@ -1247,15 +1263,9 @@ fn main() {
                 Some(ud) => Box::new(CompositeDictionary::new(vec![Arc::new(trie), Arc::new(ud)])),
                 None => Box::new(trie),
             };
-            let (report, lines) = rank_ops::replay(
-                &*dict,
-                &conn,
-                hist.as_ref(),
-                Path::new(&log_file),
-                from_line,
-                verbose,
-            )
-            .unwrap_or_else(|e| die(e));
+            let ctx = ConversionContext::new(&*dict, Some(&conn)).with_history(hist.as_ref(), now);
+            let (report, lines) = rank_ops::replay(&ctx, Path::new(&log_file), from_line, verbose)
+                .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
@@ -1388,12 +1398,12 @@ fn write_jsonl<T: Serialize>(path: &str, items: &[T]) -> Result<(), String> {
 /// Evaluate one accuracy case. Gates run in order and the first to fail
 /// decides the result: no-history `baseline`, top-1 at n=1, then the other
 /// display widths and the `[cases.window]` expectations.
-fn eval_case(
-    dict: &TrieDictionary,
-    conn: &ConnectionMatrix,
-    hist: Option<&UserHistory>,
-    case: &AccuracyCase,
-) -> AccuracyResult {
+fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult {
+    // The no-history arms of a case run on the same context less its history.
+    let plain_ctx = ConversionContext {
+        history: None,
+        ..*ctx
+    };
     let base = AccuracyResult {
         reading: case.reading.clone(),
         expected: case.expected.clone(),
@@ -1424,7 +1434,7 @@ fn eval_case(
     let plain = case
         .baseline
         .as_ref()
-        .map(|_| rank_ops::top1_widths(dict, conn, None, &case.reading));
+        .map(|_| rank_ops::top1_widths(&plain_ctx, &case.reading));
     let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
     if let (Some(want), Some(w)) = (&case.baseline, &plain) {
         if w.nbest_head != *want {
@@ -1437,7 +1447,7 @@ fn eval_case(
         }
     }
 
-    let widths = rank_ops::top1_widths(dict, conn, hist, &case.reading);
+    let widths = rank_ops::top1_widths(ctx, &case.reading);
     let actual = widths.nbest_head.clone();
     if actual != case.expected {
         return fail(Failure::Top1, actual, baseline_actual, Vec::new());
@@ -1468,7 +1478,7 @@ fn eval_case(
                 Some(p) => b.violations(w.n, &p.list),
                 None => b.violations(
                     w.n,
-                    &rank_ops::production_candidates(dict, conn, None, &case.reading),
+                    &rank_ops::production_candidates(&plain_ctx, &case.reading),
                 ),
             };
             window.extend(list.into_iter().map(|v| format!("baseline: {v}")));

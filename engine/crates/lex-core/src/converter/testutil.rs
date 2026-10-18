@@ -134,6 +134,25 @@ pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
     ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
 }
 
+/// The surface a conversion path spells.
+pub fn joined(path: &[super::ConvertedSegment]) -> String {
+    path.iter().map(|s| s.surface.as_str()).collect()
+}
+
+/// A moment ahead of any wall clock a test runs under: a history last used
+/// here ages as 0 against the clock (a negative age saturates), so a read that
+/// fell back to the wall clock sees every boost whole.
+pub const T0: u64 = 4_000_000_000;
+
+/// One half-life after [`T0`]: a boost is exactly half its undecayed value
+/// (`frequency * boost_per_use`, capped at `max_boost`).
+pub fn half() -> u64 {
+    T0 + (crate::settings::settings().history.half_life_hours * 3600.0) as u64
+}
+
+/// ~1100 years after [`T0`]: every boost decayed to 0.
+pub const STALE: u64 = T0 + 10_000_000 * 3600;
+
 /// A dictionary entry with no POS ids.
 pub fn entry(surface: &str, cost: i16) -> DictEntry {
     DictEntry {

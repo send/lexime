@@ -452,7 +452,7 @@ impl UserHistory {
     /// failure): the effect still applies, but coverage must not advance —
     /// a checkpoint claiming a frame that cannot replay would let the
     /// conditional truncation destroy learning.
-    pub fn apply_batch(&mut self, records: &[(wal::WalRecord, Option<u64>)]) {
+    pub fn apply_batch(&mut self, records: &[(wal::WalRecord, Option<u64>)], now: u64) {
         let mut any_committed = false;
         for (record, seq) in records {
             self.apply_effect(record);
@@ -474,7 +474,7 @@ impl UserHistory {
         // Deletions only shrink the maps; skip the O(entries) capacity scan
         // unless something grew.
         if any_committed {
-            self.evict();
+            self.evict(now);
         }
     }
 
@@ -495,10 +495,10 @@ impl UserHistory {
         self.record_at(segments, now_epoch());
     }
 
-    /// Record with an explicit timestamp.
+    /// Record at `now`, which also dates the capacity eviction it triggers.
     pub fn record_at(&mut self, segments: &[(String, String)], now: u64) {
         self.record_segments_at(segments, now);
-        self.evict();
+        self.evict(now);
     }
 
     /// Apply one recorded conversion without evicting (replay applies many
@@ -536,7 +536,7 @@ impl UserHistory {
     }
 
     /// Compute unigram boost for a (reading, surface) pair.
-    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    /// `now` is the value the entry point read once (`HistoryAt::now`).
     pub fn unigram_boost(&self, reading: &str, surface: &str, now: u64) -> i64 {
         self.unigrams
             .get(reading)
@@ -545,7 +545,7 @@ impl UserHistory {
     }
 
     /// Compute bigram boost for (prev_surface → next_reading, next_surface).
-    /// `now` should be obtained from [`now_epoch()`] once per batch operation.
+    /// `now` is the value the entry point read once (`HistoryAt::now`).
     pub fn bigram_boost(
         &self,
         prev_surface: &str,
@@ -563,8 +563,7 @@ impl UserHistory {
     /// Return successor words for a given previous surface, sorted by boost
     /// descending (see [`by_boost_then_recency`] for ties).
     /// Used by predictive mode to chain bigram phrases (Copilot-like completions).
-    pub fn bigram_successors(&self, prev_surface: &str) -> Vec<(String, String, i64)> {
-        let now = now_epoch();
+    pub fn bigram_successors(&self, prev_surface: &str, now: u64) -> Vec<(String, String, i64)> {
         let Some(inner) = self.bigrams.get(prev_surface) else {
             return Vec::new();
         };
@@ -620,8 +619,12 @@ impl UserHistory {
     }
 
     /// Reorder dictionary candidates so learned entries appear first.
-    pub fn reorder_candidates(&self, reading: &str, entries: &[DictEntry]) -> Vec<DictEntry> {
-        let now = now_epoch();
+    pub fn reorder_candidates(
+        &self,
+        reading: &str,
+        entries: &[DictEntry],
+        now: u64,
+    ) -> Vec<DictEntry> {
         let mut with_boost: Vec<(i64, usize, &DictEntry)> = entries
             .iter()
             .enumerate()
@@ -689,7 +692,7 @@ impl UserHistory {
 
     /// Evict lowest-score entries when exceeding capacity. Batch paths
     /// ([`Self::apply_batch`], replay) apply many records and settle
-    /// capacity once afterwards.
+    /// capacity once afterwards. Scores decay against the caller's `now`.
     ///
     /// Eviction is the one mutation that drops an entry from memory without
     /// dropping it from disk, so the evicted keys are recorded as residue
@@ -699,9 +702,8 @@ impl UserHistory {
     /// than combining them with `||`, which would short-circuit the bigram
     /// eviction whenever unigrams evicted and let `max_bigrams` go
     /// unenforced.
-    fn evict(&mut self) {
+    fn evict(&mut self, now: u64) {
         let s = settings();
-        let now = now_epoch();
         let uni = evict_map(&mut self.unigrams, s.history.max_unigrams, now);
         let bi = evict_map(&mut self.bigrams, s.history.max_bigrams, now);
         for (reading, surface) in uni {

@@ -84,9 +84,7 @@ impl HeadlessIME {
 
         let mode = self.session.config.conversion_mode;
         let cand: CandidateResponse = mode.generate_candidates(
-            &*self.dict,
-            self.conn.as_deref(),
-            None,
+            &lex_core::converter::ConversionContext::new(&*self.dict, self.conn.as_deref()),
             &reading,
             MAX_CANDIDATES,
         );

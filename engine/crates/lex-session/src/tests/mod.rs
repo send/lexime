@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 use lex_core::snippets::{SnippetStore, SnippetVariable, VariableResolver};
+use lex_core::user_history::now_epoch;
 
 use super::types::{KeyEvent, SessionState};
 use super::InputSession;
@@ -41,6 +42,7 @@ pub(super) fn complete_candidate_cycle(
     session: &mut InputSession,
     dict: &dyn Dictionary,
 ) -> Option<KeyResponse> {
+    let now = now_epoch();
     let reading = composing_reading(session)?.to_string();
     // The session's own history, as the async worker reads it.
     let cand = {
@@ -48,7 +50,12 @@ pub(super) fn complete_candidate_cycle(
             .history
             .as_ref()
             .map(|h| h.read().unwrap_or_else(|e| e.into_inner()));
-        lex_core::candidates::generate_candidates(dict, None, history.as_deref(), &reading, 20)
+        lex_core::candidates::generate_candidates(
+            &lex_core::converter::ConversionContext::new(dict, None)
+                .with_history(history.as_deref(), now),
+            &reading,
+            20,
+        )
     };
     // Simulate a fresh (non-stale) response: snapshot the current epoch.
     let epoch = session.epoch;

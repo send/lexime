@@ -9,7 +9,7 @@ use crate::converter::testutil::{entry as e, taberu_dict as taberu};
 use crate::converter::viterbi::PathOrigin;
 use crate::dict::TrieDictionary;
 use crate::settings::DEFAULT_CANDIDATE_MAX_COST_GAP;
-use crate::user_history::UserHistory;
+use crate::user_history::{now_epoch, UserHistory};
 
 fn path(reading: &str, surface: &str, cost: i64) -> ScoredPath {
     ScoredPath::single(reading.into(), surface.into(), cost, PathOrigin::Viterbi)
@@ -38,15 +38,12 @@ fn run(
 ) -> Vec<ScoredPath> {
     let lattice = build_lattice(dict, kana);
     let mut raw = viterbi_nbest(&lattice, &DefaultCostFunction::new(None), oversample);
+    let conv = ConversionContext::new(dict, None).with_history(history, now_epoch());
     let ctx = PostprocessContext {
         lattice: &lattice,
-        conn: None,
-        dict: Some(dict),
-        history,
-        kana,
+        conv: &conv,
         n,
         max_cost_gap,
-        now: crate::user_history::now_epoch(),
     };
     postprocess_observed(&mut raw, &ctx, &mut NoopObserver)
 }

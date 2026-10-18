@@ -3,6 +3,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 
 use crate::candidates::CandidateResponse;
+use crate::converter::ConversionContext;
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::session::CandidateDispatch;
@@ -178,41 +179,33 @@ fn candidate_worker(
         let conn_ref = conn.as_deref();
 
         let max_results = settings().candidates.max_results;
+        // Entry point of the candidate list: its one clock read (the 1-best
+        // reads its own, in `make_deferred_candidates_response`).
+        let ctx = ConversionContext::new(&*dict, conn_ref)
+            .with_history(hist_ref, crate::user_history::now_epoch());
         let response = if let Some(ref lattice) = latest.lattice {
             match latest.dispatch {
                 CandidateDispatch::Predictive => {
                     crate::candidates::generate_prediction_candidates_from_lattice(
                         lattice,
-                        &*dict,
-                        conn_ref,
-                        hist_ref,
+                        &ctx,
                         max_results,
                     )
                 }
-                CandidateDispatch::Standard => crate::candidates::generate_candidates_from_lattice(
-                    lattice,
-                    &*dict,
-                    conn_ref,
-                    hist_ref,
-                    max_results,
-                ),
+                CandidateDispatch::Standard => {
+                    crate::candidates::generate_candidates_from_lattice(lattice, &ctx, max_results)
+                }
             }
         } else {
             match latest.dispatch {
                 CandidateDispatch::Predictive => crate::candidates::generate_prediction_candidates(
-                    &*dict,
-                    conn_ref,
-                    hist_ref,
+                    &ctx,
                     &latest.reading,
                     max_results,
                 ),
-                CandidateDispatch::Standard => crate::candidates::generate_candidates(
-                    &*dict,
-                    conn_ref,
-                    hist_ref,
-                    &latest.reading,
-                    max_results,
-                ),
+                CandidateDispatch::Standard => {
+                    crate::candidates::generate_candidates(&ctx, &latest.reading, max_results)
+                }
             }
         };
 
