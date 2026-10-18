@@ -11,6 +11,7 @@ use crate::converter::{
 
 pub mod predictive;
 pub mod standard;
+pub mod widths;
 
 #[cfg(test)]
 mod now_tests;
@@ -55,6 +56,37 @@ pub struct CandidateDiagnostics {
     /// Learned surfaces the history-injection stage added to the list (those
     /// no N-best path had already placed), in list order.
     pub injected: Vec<String>,
+    /// Which stage put the list's #1 (`response.surfaces[0]`) there. `None`
+    /// for an empty reading.
+    pub top_source: Option<TopSource>,
+}
+
+/// Which stage of the Standard generator the list's #1 comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum TopSource {
+    /// The `i`-th N-best path (postprocess order); `i = 0` unless the
+    /// N-best's first paths were empty.
+    Path(usize),
+    /// The reading itself, placed at index 0 by the kana promotion (a learned
+    /// kana over a #1 with no history of its own, `standard.rs`). Recorded
+    /// whenever that branch decides index 0, even when the kana was already
+    /// there (then `from == Some(0)`).
+    KanaPromoted {
+        /// Its position in the list before the promotion, if it was there.
+        from: Option<usize>,
+        kana_boost: i64,
+        top_has_boost: bool,
+    },
+    /// A learned surface the injection stage added (N-best empty).
+    Injected,
+    /// The reading, appended with no learning (N-best empty).
+    Kana,
+    /// A dictionary prediction (N-best empty).
+    Prediction,
+    /// A dictionary lookup entry (N-best empty).
+    Lookup,
+    /// Punctuation input, which has no N-best.
+    Punctuation,
 }
 
 /// The final price of an N-best path and the stage that set it.
@@ -150,7 +182,10 @@ pub fn generate_candidates_priced(
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
         return PricedCandidates {
             response: generate_candidates(ctx, reading, max_results),
-            diagnostics: CandidateDiagnostics::default(),
+            diagnostics: CandidateDiagnostics {
+                top_source: (!reading.is_empty()).then_some(TopSource::Punctuation),
+                ..CandidateDiagnostics::default()
+            },
         };
     }
     let lattice = build_lattice(ctx.dict, reading);

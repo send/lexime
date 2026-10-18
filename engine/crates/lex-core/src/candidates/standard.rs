@@ -7,7 +7,7 @@ use crate::settings::settings;
 
 use super::{
     generate_punctuation_candidates, punctuation_alternatives, CandidateDiagnostics,
-    CandidateResponse, PathPrice, PricedCandidates,
+    CandidateResponse, PathPrice, PricedCandidates, TopSource,
 };
 
 /// Generate candidates for normal (non-punctuation) input.
@@ -70,9 +70,14 @@ fn generate_normal(
     }
 
     let mut nbest_paths = Vec::with_capacity(scored.len());
-    for path in scored.into_iter().map(|p| p.into_segments()) {
+    // The N-best path that put surfaces[0] there (recorded for diagnostics).
+    let mut nbest_top = None;
+    for (i, path) in scored.into_iter().map(|p| p.into_segments()).enumerate() {
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
         if !joined.is_empty() && seen.insert(joined.clone()) {
+            if surfaces.is_empty() {
+                nbest_top = Some(i);
+            }
             surfaces.push(joined);
         }
         nbest_paths.push(path);
@@ -110,6 +115,11 @@ fn generate_normal(
         1
     };
     let kana_existing_pos = surfaces.iter().position(|s| s == reading);
+    let promoted = (kana_boost > 0 && kana_target == 0).then_some(TopSource::KanaPromoted {
+        from: kana_existing_pos,
+        kana_boost,
+        top_has_boost,
+    });
     if kana_boost > 0 {
         match kana_existing_pos {
             Some(pos) if pos == kana_target => {} // already where we want it
@@ -167,6 +177,22 @@ fn generate_normal(
                 surfaces.push(entry.surface.clone());
             }
         }
+    }
+
+    if let Some(d) = diag {
+        let injected_first = d.injected.first().filter(|s| surfaces.first() == Some(s));
+        d.top_source = surfaces.first().map(|top| {
+            promoted
+                .or(nbest_top.map(TopSource::Path))
+                .or(injected_first.map(|_| TopSource::Injected))
+                .unwrap_or(if top == reading {
+                    TopSource::Kana
+                } else if ranked.iter().any(|(_, e)| e.surface == *top) {
+                    TopSource::Prediction
+                } else {
+                    TopSource::Lookup
+                })
+        });
     }
 
     CandidateResponse {
