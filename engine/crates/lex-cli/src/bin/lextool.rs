@@ -1391,18 +1391,24 @@ fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::Baselin
         r.rank_hist.iter().skip(rank_ops::PAGE_SIZE).sum(),
     );
     println!();
+    let bins = |hist: &[usize]| {
+        for (i, &n) in hist.iter().enumerate() {
+            let lower = i.checked_sub(1).map_or(0, |j| rank_ops::GAP_BIN_UPPER[j]);
+            let label = match rank_ops::GAP_BIN_UPPER.get(i) {
+                Some(upper) if i == 0 => format!("[0, {upper}]"),
+                Some(upper) => format!("({lower}, {upper}]"),
+                None => format!("> {lower}"),
+            };
+            row(&label, n);
+        }
+    };
     println!("=== Cost gap to #1 (N-best path of the selected surface) ===");
-    for (i, &n) in r.gap_hist.iter().enumerate() {
-        let lower = i.checked_sub(1).map_or(0, |j| rank_ops::GAP_BIN_UPPER[j]);
-        let label = match rank_ops::GAP_BIN_UPPER.get(i) {
-            Some(upper) if i == 0 => format!("[0, {upper}]"),
-            Some(upper) => format!("({lower}, {upper}]"),
-            None => format!("> {lower}"),
-        };
-        row(&label, n);
-    }
+    bins(&r.gap_hist);
     row("< 0 (learned #1)", r.gap_below_top);
     row("no N-best path", r.gap_no_path);
+    println!();
+    println!("=== Cost gap, selections admission judged by price ===");
+    bins(&r.admission_gap_hist);
     println!();
     println!(
         "=== By owner ({} readings, {} page-1 slots{}) ===",

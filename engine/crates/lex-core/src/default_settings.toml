@@ -31,6 +31,8 @@ max_results = 20
 # Always kept: #1, a surface the user has committed for this reading (whole
 # or as a phrase segment), the typed kana. 9223372036854775807 (i64::MAX)
 # disables the bound. How the default was chosen: DEFAULT_CANDIDATE_MAX_COST_GAP.
+# Katakana / number fallbacks are priced from the #1 by fixed offsets that do
+# not follow this value (KATAKANA_POLICY_OFFSET / NUMERIC_POLICY_OFFSET).
 max_cost_gap = 8000
 
 [snippets]

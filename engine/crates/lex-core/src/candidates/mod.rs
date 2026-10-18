@@ -96,6 +96,9 @@ pub struct PathPrice {
     /// can cost less than the first.
     pub cost: i64,
     pub priced_by: PathOrigin,
+    /// Cost-gap admission keeps the path whatever its price: a surface the
+    /// user committed for this reading, or the typed kana.
+    pub cost_gap_exempt: bool,
 }
 
 /// Look up punctuation alternatives for a reading.

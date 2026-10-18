@@ -417,6 +417,11 @@ pub struct ReplayReport {
     /// Cost gap of the selected surface's N-best path to the #1 path,
     /// binned by [`GAP_BIN_UPPER`] plus an open last bin.
     pub gap_hist: Vec<usize>,
+    /// `gap_hist` over the selections cost-gap admission judged by price: an
+    /// N-best path after the list's first, not priced by a policy (Numeric /
+    /// Katakana are added after admission) and not exempt (learned, or the
+    /// typed kana). The bins a change to `max_cost_gap` moves (#375).
+    pub admission_gap_hist: Vec<usize>,
     /// Selections priced below the #1 path. The #1 is then a learned
     /// surface the user picked around (history puts the cheapest learned
     /// path first, whatever cheaper unlearned paths follow it): a
@@ -589,13 +594,19 @@ impl ReadingView {
 
     fn land(&self, surface: &str) -> Landing {
         let rank = self.surfaces.iter().position(|s| s == surface);
-        let gap = self.paths.first().and_then(|(_, top)| {
-            self.paths
-                .iter()
-                .find(|(s, _)| s == surface)
-                .map(|(_, p)| p.cost - top.cost)
+        let path = self.paths.iter().position(|(s, _)| s == surface);
+        let gap = path.map(|i| self.paths[i].1.cost - self.paths[0].1.cost);
+        let admission_subject = path.is_some_and(|i| {
+            let p = self.paths[i].1;
+            i > 0
+                && !p.cost_gap_exempt
+                && !matches!(p.priced_by, PathOrigin::Numeric | PathOrigin::Katakana)
         });
-        Landing { rank, gap }
+        Landing {
+            rank,
+            gap,
+            admission_subject,
+        }
     }
 }
 
@@ -605,12 +616,16 @@ struct Landing {
     /// Cost gap of the selected surface's N-best path to the #1 path;
     /// negative when #1 is a learned path priced above it.
     gap: Option<i64>,
+    /// Admission judged that path by its price (see
+    /// [`ReplayReport::admission_gap_hist`]).
+    admission_subject: bool,
 }
 
 /// The report's counts, accumulated one selection at a time.
 struct Tally {
     rank_hist: Vec<usize>,
     gap_hist: Vec<usize>,
+    admission_gap_hist: Vec<usize>,
     gap_below_top: usize,
     gap_no_path: usize,
     by_owner: BTreeMap<Owner, OwnerCounts>,
@@ -621,6 +636,7 @@ impl Tally {
         Self {
             rank_hist: vec![0; PAGE_SIZE],
             gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
+            admission_gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
             gap_below_top: 0,
             gap_no_path: 0,
             // Every owner has a row, so an owner with nothing reads as 0,
@@ -645,7 +661,12 @@ impl Tally {
         }
         match landing.gap {
             Some(g) if g < 0 => self.gap_below_top += 1,
-            Some(g) => self.gap_hist[gap_bin(g)] += 1,
+            Some(g) => {
+                self.gap_hist[gap_bin(g)] += 1;
+                if landing.admission_subject {
+                    self.admission_gap_hist[gap_bin(g)] += 1;
+                }
+            }
             None => self.gap_no_path += 1,
         }
         for &o in view.owners.iter().take(PAGE_SIZE) {
@@ -669,6 +690,7 @@ impl Tally {
             absent: selections - in_list,
             rank_hist: self.rank_hist,
             gap_hist: self.gap_hist,
+            admission_gap_hist: self.admission_gap_hist,
             gap_below_top: self.gap_below_top,
             gap_no_path: self.gap_no_path,
             malformed_lines,
@@ -706,7 +728,7 @@ pub fn replay(
         let view = cache.entry(reading).or_insert_with(|| {
             ReadingView::new(reading, production_candidates_priced(ctx, reading))
         });
-        let Landing { rank, gap } = tally.add(view, &sel.surface);
+        let Landing { rank, gap, .. } = tally.add(view, &sel.surface);
         if verbose {
             eprintln!(
                 "{i}\t{}\t{}\trank={}\tgap={}\towner={}",
@@ -949,6 +971,7 @@ absent = ["x"]"#
                 .map(|(i, &(_, priced_by))| PathPrice {
                     cost: 1000 * i as i64,
                     priced_by,
+                    cost_gap_exempt: false,
                 })
                 .collect(),
             injected: injected.iter().map(|s| s.to_string()).collect(),
@@ -1064,6 +1087,7 @@ absent = ["x"]"#
                         .map(|cost| PathPrice {
                             cost,
                             priced_by: PathOrigin::Viterbi,
+                            cost_gap_exempt: false,
                         })
                         .collect(),
                     injected: Vec::new(),
@@ -1078,6 +1102,45 @@ absent = ["x"]"#
         assert_eq!(r.gap_below_top, 1);
         assert_eq!(r.gap_hist[0], 1, "the #1 itself is at gap 0");
         assert_eq!(r.gap_hist.iter().sum::<usize>(), 1);
+    }
+
+    /// Admission's bins hold only what it judged by price: not the list's
+    /// first path, a policy price, or an exempt (learned / kana) path.
+    #[test]
+    fn admission_gap_hist_counts_what_admission_judged_by_price() {
+        let surfaces = ["一", "二", "三", "四", "5"];
+        let exempt = [false, false, true, false, false];
+        let priced_by = [
+            PathOrigin::Viterbi,
+            PathOrigin::Viterbi,
+            PathOrigin::Viterbi,
+            PathOrigin::KanjiVariant,
+            PathOrigin::Numeric,
+        ];
+        let v = ReadingView::new(
+            "よみ",
+            PricedCandidates {
+                response: resp(&surfaces, &surfaces),
+                diagnostics: CandidateDiagnostics {
+                    prices: (0..5)
+                        .map(|i| PathPrice {
+                            cost: 3000 * i as i64,
+                            priced_by: priced_by[i],
+                            cost_gap_exempt: exempt[i],
+                        })
+                        .collect(),
+                    ..CandidateDiagnostics::default()
+                },
+            },
+        );
+        let mut t = Tally::new();
+        for s in surfaces {
+            t.add(&v, s);
+        }
+        let r = t.into_report(5, 0, 0, 1);
+        assert_eq!(r.gap_hist.iter().sum::<usize>(), 5);
+        // 二 at 3000 (bin 1) and the offer 四 at 9000 (bin 4).
+        assert_eq!(r.admission_gap_hist, [0, 1, 0, 0, 1, 0, 0]);
     }
 
     #[test]

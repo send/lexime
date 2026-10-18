@@ -1,5 +1,6 @@
 use super::{offer_price, pricer};
 use crate::converter::lattice::Lattice;
+use crate::converter::postprocess::NoopObserver;
 use crate::converter::rewriter::{run_rewriters, PartialHiraganaRewriter, RewriteStage, Rewriter};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
@@ -123,7 +124,14 @@ fn test_partial_hiragana_dedup_via_run_rewriters() {
         source(vec![seg("した", "した", 1), seg("ほう", "方", 20)], 9000),
     ];
 
-    run_rewriters(&[&rw], &mut paths, "したほう", RewriteStage::Model, None);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "したほう",
+        RewriteStage::Model,
+        None,
+        &mut NoopObserver,
+    );
 
     let same: Vec<_> = paths
         .iter()

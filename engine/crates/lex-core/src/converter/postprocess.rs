@@ -26,6 +26,9 @@ pub(crate) trait PostprocessObserver {
     /// Called for each path cost-gap admission drops, with the gap's base
     /// (the pre-history #1's cost).
     fn dropped_by_cost_gap(&mut self, _path: &ScoredPath, _anchor: i64) {}
+    /// Called when the Override stage writes a policy price onto the path
+    /// with surface `key` (a new path, or a duplicate it repriced).
+    fn policy_priced(&mut self, _key: &str, _price: rewriter::PolicyPrice) {}
     /// Called on the final paths before `group_segments` merges morphemes
     /// into phrases, while segments are still the priced lattice nodes.
     fn before_group(&mut self, _paths: &[ScoredPath]) {}
@@ -123,7 +126,14 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     } else {
         &[]
     };
-    rewriter::run_rewriters(variants, paths, kana, rewriter::RewriteStage::Model, None);
+    rewriter::run_rewriters(
+        variants,
+        paths,
+        kana,
+        rewriter::RewriteStage::Model,
+        None,
+        observer,
+    );
 
     observer.after_rerank(paths);
 
@@ -169,7 +179,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
         connection: conn,
         anchor,
     };
-    let katakana_rw = rewriter::KatakanaRewriter;
+    let katakana_rw = rewriter::KatakanaRewriter { anchor };
     // The paths this stage creates are learned on the same terms as the
     // history-reranked ones (G7).
     let boost = history.map(|h| {
@@ -181,6 +191,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
         kana,
         rewriter::RewriteStage::Override,
         boost.as_ref().map(|b| b as &dyn Fn(&mut ScoredPath)),
+        observer,
     );
     observer.before_group(&top);
     if let Some(c) = conn {
@@ -206,7 +217,7 @@ pub(super) fn admit_by_cost_gap(
     max_gap: i64,
     mut on_drop: impl FnMut(&ScoredPath),
 ) {
-    let limit = anchor.saturating_add(max_gap.max(rewriter::RESCUE_OFFSET));
+    let limit = anchor.saturating_add(admission_bound(max_gap));
     let mut first = true;
     paths.retain(|p| {
         let keep = std::mem::take(&mut first)
@@ -218,6 +229,12 @@ pub(super) fn admit_by_cost_gap(
         }
         keep
     });
+}
+
+/// How far above the anchor admission keeps a path by price: `max_gap`,
+/// never below the kana rescue's band.
+pub(crate) fn admission_bound(max_gap: i64) -> i64 {
+    max_gap.max(rewriter::RESCUE_OFFSET)
 }
 
 /// Length of the prefix of `paths` holding its first `n` model-priced paths

@@ -1,5 +1,8 @@
 use crate::converter::lattice::Lattice;
-use crate::converter::rewriter::{run_rewriters, NumericRewriter, RewriteStage, Rewriter};
+use crate::converter::postprocess::NoopObserver;
+use crate::converter::rewriter::{
+    run_rewriters, NumericRewriter, RewriteStage, Rewriter, NUMERIC_POLICY_OFFSET,
+};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 
@@ -44,9 +47,9 @@ fn test_numeric_rewriter_generates_candidates() {
     assert_eq!(result[0].surface_key(), "二十三");
     assert_eq!(result[0].viterbi_cost, 3000); // compound → best_cost
     assert_eq!(result[1].surface_key(), "23");
-    assert_eq!(result[1].viterbi_cost, 3000 + 5000);
+    assert_eq!(result[1].viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
     assert_eq!(result[2].surface_key(), "２３");
-    assert_eq!(result[2].viterbi_cost, 3000 + 5001);
+    assert_eq!(result[2].viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET + 1);
 }
 
 #[test]
@@ -74,6 +77,7 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         "にじゅうさん",
         RewriteStage::Override,
         None,
+        &mut NoopObserver,
     );
 
     // Kanji already exists, only halfwidth + fullwidth added
@@ -102,12 +106,19 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override, None);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "じゅう",
+        RewriteStage::Override,
+        None,
+        &mut NoopObserver,
+    );
 
     // 十 is single-char → base_cost (not best_cost), all after 中
     assert_eq!(paths[0].surface_key(), "中");
     let kanji = paths.iter().find(|p| p.surface_key() == "十").unwrap();
-    assert_eq!(kanji.viterbi_cost, 3000 + 5000);
+    assert_eq!(kanji.viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
 }
 
 #[test]
@@ -156,7 +167,14 @@ fn test_numeric_rewriter_skips_duplicate() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override, None);
+    run_rewriters(
+        &[&rw],
+        &mut paths,
+        "いち",
+        RewriteStage::Override,
+        None,
+        &mut NoopObserver,
+    );
 
     // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
     assert_eq!(paths.len(), 3);
@@ -448,6 +466,7 @@ fn learned_surface_outranks_number_compound() {
             "にじゅうさん",
             RewriteStage::Override,
             Some(&boost),
+            &mut NoopObserver,
         )
     };
 
@@ -509,6 +528,7 @@ fn learned_index0_takes_its_compound_price() {
             "にじゅう",
             RewriteStage::Override,
             Some(&boost),
+            &mut NoopObserver,
         );
         paths.iter().map(|p| p.surface_key()).collect::<Vec<_>>()
     };

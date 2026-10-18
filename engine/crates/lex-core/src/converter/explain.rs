@@ -12,9 +12,10 @@ use super::features::{
     is_single_char_kanji, is_single_char_kanji_penalised, is_te_form_kanji_penalised,
 };
 use super::lattice::{build_lattice, Lattice};
-use super::postprocess::{postprocess_observed, PostprocessContext, PostprocessObserver};
+use super::postprocess::{
+    admission_bound, postprocess_observed, PostprocessContext, PostprocessObserver,
+};
 use super::reranker::{compute_history_boost, FeaturePricer};
-use super::rewriter::RESCUE_OFFSET;
 use super::viterbi::{viterbi_nbest, PathOrigin, ScoredPath};
 use super::{ConversionContext, HistoryAt};
 
@@ -22,6 +23,7 @@ use super::{ConversionContext, HistoryAt};
 // `ExplainPath::history_breakdown` — the definition lives in the crate-private
 // `reranker` module.
 pub use super::reranker::HistoryBoostBreakdown;
+pub use super::rewriter::{PolicyPrice, PolicyRule};
 
 /// Full diagnostic result for a single reading.
 #[derive(Debug, Serialize)]
@@ -39,6 +41,11 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
+    /// Surfaces whose policy record disagrees with the final path: priced by
+    /// Numeric / Katakana with no record or with a record of another price,
+    /// or recorded while something else priced the path. A pipeline bug;
+    /// empty when consistent.
+    pub policy_price_inconsistent: Vec<String>,
     /// The paths of the cost model's population (origin Viterbi or
     /// Resegment) after rerank, before admission and the other stages: the
     /// set a surface must be in for this run to have been able to choose it.
@@ -140,6 +147,10 @@ pub struct ExplainPath {
     /// resegment, an offer, a policy path or a path another stage repriced.
     /// Tells a path the population cut from one it kept (#361).
     pub viterbi_rank: Option<usize>,
+    /// The policy that priced a Numeric / Katakana path, as the Override
+    /// stage wrote it: `final_cost + history_boost == policy_price.cost()`.
+    /// `None` for any other path.
+    pub policy_price: Option<PolicyPrice>,
 }
 
 /// A one-character-reading segment with kanji in its surface, whatever its
@@ -242,6 +253,8 @@ struct ExplainObserver<'a> {
     dropped: Vec<DroppedPath>,
     anchor: i64,
     model_paths: Vec<ModelPath>,
+    /// The last policy price the Override stage wrote onto each surface.
+    policy: HashMap<String, PolicyPrice>,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -264,6 +277,7 @@ impl<'a> ExplainObserver<'a> {
             dropped: Vec::new(),
             anchor: 0,
             model_paths: Vec::new(),
+            policy: HashMap::new(),
         }
     }
 }
@@ -314,6 +328,10 @@ impl PostprocessObserver for ExplainObserver<'_> {
             origin: path.origin,
             priced_by: path.priced_by,
         });
+    }
+
+    fn policy_priced(&mut self, key: &str, price: PolicyPrice) {
+        self.policy.insert(key.to_string(), price);
     }
 
     fn before_group(&mut self, paths: &[ScoredPath]) {
@@ -461,9 +479,10 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
             max_cost_gap,
-            cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
+            cost_gap_bound: admission_bound(max_cost_gap),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
+            policy_price_inconsistent: Vec::new(),
             model_paths: Vec::new(),
         };
     }
@@ -487,11 +506,22 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
     let final_paths = postprocess_observed(&mut raw_paths, &ctx, &mut observer);
     let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
+    let mut policy_price_inconsistent = Vec::new();
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
         .map(|scored| {
             let key = scored.surface_key();
+            let recorded = observer.policy.remove(&key);
+            let policy_price = recorded.filter(|_| is_override_priced(scored));
+            let consistent = match (is_override_priced(scored), recorded) {
+                (true, Some(p)) => p.cost() == scored.pre_history_cost(),
+                (false, None) => true,
+                _ => false,
+            };
+            if !consistent {
+                policy_price_inconsistent.push(key.clone());
+            }
             // Look up snapshots by surface_key — preserved through group_segments.
             // A model-priced path shows its raw Viterbi cost (or, missed by
             // the observer, its model cost) and the rerank delta. Any other
@@ -552,6 +582,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
                 viterbi_rank: viterbi_rank_of(scored, &observer.viterbi),
+                policy_price,
                 single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
@@ -563,9 +594,10 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         lattice_nodes,
         paths,
         max_cost_gap: ctx.max_cost_gap,
-        cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
+        cost_gap_bound: admission_bound(ctx.max_cost_gap),
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
+        policy_price_inconsistent,
         model_paths: std::mem::take(&mut observer.model_paths),
     }
 }
@@ -622,11 +654,19 @@ pub fn format_text(result: &ExplainResult) -> String {
     out.push_str(&format!("\n=== Paths ({}) ===\n", result.paths.len()));
     for (i, path) in result.paths.iter().enumerate() {
         let surface = path.surface();
-        let priced = if path.priced_by == path.origin {
+        let mut priced = if path.priced_by == path.origin {
             format!("{:?}", path.origin)
         } else {
             format!("{:?}, priced by {:?}", path.origin, path.priced_by)
         };
+        if let Some(p) = path.policy_price {
+            priced.push_str(&format!(
+                ", {:?} = anchor {:+} {:+}",
+                p.rule,
+                p.rule.offset(),
+                p.cost_offset
+            ));
+        }
         out.push_str(&format!(
             "\n  #{:<2} {}  (final_cost={}, {})\n",
             i + 1,
@@ -698,6 +738,12 @@ pub fn format_text(result: &ExplainResult) -> String {
     }
 
     format_dropped(result, &mut out);
+    if !result.policy_price_inconsistent.is_empty() {
+        out.push_str(&format!(
+            "\n=== Policy price inconsistent (pipeline bug): {} ===\n",
+            result.policy_price_inconsistent.join(", ")
+        ));
+    }
     out
 }
 
@@ -743,6 +789,44 @@ mod tests {
             dict,
             crate::converter::testutil::zero_conn_with_roles(3, vec![0, 0, 2]),
         )
+    }
+
+    /// §27-8 T-B6 / T-B7: every policy path carries the rule that priced it,
+    /// with `final_cost + history_boost == policy_price.cost()`, including
+    /// 二十三, a Viterbi path the number compound repriced (the duplicate's
+    /// segments stay, the price is the compound's, #239).
+    #[test]
+    fn policy_prices_are_recorded_where_the_override_stage_writes_them() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "にじゅうさん".into(),
+            vec![e("に十三", 0, 1), e("二十三", 2000, 1)],
+        )]);
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, None),
+            "にじゅうさん",
+            20,
+        );
+        assert!(result.policy_price_inconsistent.is_empty());
+        let anchor = result.cost_gap_anchor;
+        for (surface, rule, cost_offset) in [
+            ("二十三", PolicyRule::NumericCompound, 0),
+            ("23", PolicyRule::NumericFallback, 0),
+            ("２３", PolicyRule::NumericFallback, 1),
+            ("ニジュウサン", PolicyRule::KatakanaFallback, 0),
+        ] {
+            let p = path_by_surface(&result, surface);
+            let price = p.policy_price.expect(surface);
+            assert_eq!(
+                (price.rule, price.base, price.cost_offset),
+                (rule, anchor, cost_offset)
+            );
+            assert_eq!(p.final_cost + p.history_boost, price.cost(), "{surface}");
+        }
+        let compound = path_by_surface(&result, "二十三");
+        assert_eq!(compound.origin, PathOrigin::Viterbi, "segments kept");
+        assert_eq!(compound.priced_by, PathOrigin::Numeric);
+        assert_eq!(path_by_surface(&result, "に十三").policy_price, None);
     }
 
     fn path_by_surface<'r>(result: &'r ExplainResult, surface: &str) -> &'r ExplainPath {

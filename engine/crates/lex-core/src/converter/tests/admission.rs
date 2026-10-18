@@ -4,7 +4,7 @@ use super::*;
 use crate::converter::postprocess::{
     admit_by_cost_gap, postprocess_observed, NoopObserver, PostprocessContext,
 };
-use crate::converter::rewriter::RESCUE_OFFSET;
+use crate::converter::rewriter::{KATAKANA_POLICY_OFFSET, NUMERIC_POLICY_OFFSET, RESCUE_OFFSET};
 use crate::converter::testutil::{entry as e, taberu_dict as taberu};
 use crate::converter::viterbi::PathOrigin;
 use crate::dict::TrieDictionary;
@@ -257,30 +257,112 @@ fn the_one_best_is_the_same_at_every_bound() {
     }
 }
 
+/// The Katakana path of a run, and the run's anchor (index 0 without
+/// history: the Model stage never touches it, and every fallback follows it).
+fn katakana_and_anchor(paths: &[ScoredPath]) -> (i64, i64) {
+    let k = paths
+        .iter()
+        .find(|p| p.origin == PathOrigin::Katakana)
+        .unwrap();
+    (k.pre_history_cost(), paths[0].pre_history_cost())
+}
+
 #[test]
-fn katakana_is_priced_from_the_admitted_worst() {
-    // Declared change: worst-priced Override candidates follow the list
-    // admission kept, so they move with T.
+fn fallback_prices_do_not_depend_on_the_population() {
+    // §27-8 T-B1: at n = 1 the list holds one model path, at n = 20 the
+    // fragments too, so a worst-based price differed between the widths.
     let dict = taberu();
-    let katakana = |t| {
-        let paths = run(&dict, None, "たべる", 20, 60, t);
+    let width = |n| {
+        let paths = run(&dict, None, "たべる", n, population(n, false), i64::MAX);
         let worst = paths
             .iter()
-            .filter(|p| !matches!(p.origin, PathOrigin::Katakana | PathOrigin::Numeric))
+            .filter(|p| p.priced_by.is_model())
             .map(ScoredPath::pre_history_cost)
             .max()
             .unwrap();
-        let k = paths
-            .iter()
-            .find(|p| p.origin == PathOrigin::Katakana)
-            .unwrap();
-        (k.viterbi_cost, worst)
+        (katakana_and_anchor(&paths).0, worst)
     };
-    let (bounded, bounded_worst) = katakana(0);
-    let (unbounded, unbounded_worst) = katakana(i64::MAX);
-    assert_eq!(bounded, bounded_worst + 10000);
-    assert_eq!(unbounded, unbounded_worst + 10000);
-    assert!(bounded < unbounded, "fixture: admission lowered the worst");
+    let (one, one_worst) = width(1);
+    let (twenty, twenty_worst) = width(20);
+    assert_ne!(one_worst, twenty_worst, "fixture: the worst differs");
+    assert_eq!(one, twenty);
+}
+
+#[test]
+fn learned_fallback_competes_with_a_learned_path_alike_at_every_width() {
+    // §27-8 T-B5: both surfaces learned, so #1 is the cheaper of price −
+    // boost. タベル's boost exceeds 食べる's by ~22000, between the
+    // worst-based prices of the two widths (n = 1: anchor + 10000, n = 20:
+    // the fragments' worst + 10000), so a worst base split the #1.
+    let dict = taberu();
+    let now = now_epoch();
+    let mut h = UserHistory::new();
+    h.record_at(&[("たべる".into(), "食べる".into())], now - 61 * 3600);
+    h.record_at(&[("たべる".into(), "タベル".into())], now);
+    h.record_at(&[("たべる".into(), "タベル".into())], now);
+    let top = |n| {
+        let paths = run(&dict, Some(&h), "たべる", n, population(n, true), i64::MAX);
+        paths[0].surface_key()
+    };
+    assert_eq!(top(1), "タベル");
+    assert_eq!(top(20), "タベル");
+}
+
+#[test]
+fn fallback_prices_follow_the_anchor_at_any_t() {
+    // §27-8 T-B2: anchor + offset at every T, i64::MAX (disabled) included,
+    // where an admission-limit base would saturate.
+    let dict = TrieDictionary::from_entries(vec![
+        ("にじゅうさん".into(), vec![e("に十三", 0)]),
+        ("さん".into(), vec![e("三", 0), e("産", 2000)]),
+    ]);
+    for t in [DEFAULT_CANDIDATE_MAX_COST_GAP, 12000, 3000, i64::MAX] {
+        let paths = run(&dict, None, "にじゅうさん", 20, 60, t);
+        let (katakana, anchor) = katakana_and_anchor(&paths);
+        assert_eq!(katakana - anchor, KATAKANA_POLICY_OFFSET, "T = {t}");
+        let price = |s: &str| {
+            paths
+                .iter()
+                .find(|p| p.surface_key() == s)
+                .unwrap_or_else(|| panic!("no {s} at T = {t}"))
+                .pre_history_cost()
+                - anchor
+        };
+        assert_eq!(price("二十三"), 0, "T = {t}");
+        assert_eq!(price("23"), NUMERIC_POLICY_OFFSET, "T = {t}");
+        assert_eq!(price("２３"), NUMERIC_POLICY_OFFSET + 1, "T = {t}");
+    }
+}
+
+#[test]
+fn fallbacks_follow_every_path_admission_kept_by_price_at_the_default_t() {
+    // §27-8 T-B3: the offsets are the default limit + 10000 / + 5000, read
+    // from the default T, never written as 8000.
+    let numbers = TrieDictionary::from_entries(vec![
+        (
+            "にじゅうさん".into(),
+            vec![e("に十三", 0), e("二重三", 7000)],
+        ),
+        ("さん".into(), vec![e("三", 0), e("産", 2000)]),
+    ]);
+    for (dict, kana) in [(&taberu(), "たべる"), (&numbers, "にじゅうさん")] {
+        let paths = run(dict, None, kana, 20, 60, DEFAULT_CANDIDATE_MAX_COST_GAP);
+        let anchor = paths[0].pre_history_cost();
+        let kept = paths
+            .iter()
+            .skip(1)
+            .filter(|p| p.priced_by.is_model() && !p.is_learned() && !p.is_identity())
+            .map(ScoredPath::pre_history_cost)
+            .max()
+            .unwrap_or(anchor);
+        assert!(kept <= anchor + DEFAULT_CANDIDATE_MAX_COST_GAP, "{kana}");
+        for p in paths.iter().filter(|p| {
+            p.origin == PathOrigin::Katakana
+                || (p.origin == PathOrigin::Numeric && p.pre_history_cost() > anchor)
+        }) {
+            assert!(p.pre_history_cost() > kept, "{kana}: {}", p.surface_key());
+        }
+    }
 }
 
 #[test]
