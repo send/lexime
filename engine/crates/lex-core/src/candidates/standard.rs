@@ -70,13 +70,14 @@ fn generate_normal(
     }
 
     let mut nbest_paths = Vec::with_capacity(scored.len());
-    // The N-best path that put surfaces[0] there (recorded for diagnostics).
-    let mut nbest_top = None;
+    // The stage that put surfaces[0] there, recorded where each stage decides
+    // index 0 (a store, free for the IME that passes no diagnostics).
+    let mut top: Option<TopSource> = None;
     for (i, path) in scored.into_iter().map(|p| p.into_segments()).enumerate() {
         let joined: String = path.iter().map(|s| s.surface.as_str()).collect();
         if !joined.is_empty() && seen.insert(joined.clone()) {
             if surfaces.is_empty() {
-                nbest_top = Some(i);
+                top = Some(TopSource::Path(i));
             }
             surfaces.push(joined);
         }
@@ -87,6 +88,9 @@ fn generate_normal(
     if let Some(HistoryAt { history: h, now }) = history {
         for (surface, _boost) in h.learned_surfaces(reading, now) {
             if seen.insert(surface.clone()) {
+                if surfaces.is_empty() {
+                    top = Some(TopSource::Injected);
+                }
                 if let Some(d) = diag.as_deref_mut() {
                     d.injected.push(surface.clone());
                 }
@@ -115,10 +119,13 @@ fn generate_normal(
         1
     };
     let kana_existing_pos = surfaces.iter().position(|s| s == reading);
-    let promoted = (kana_boost > 0 && kana_target == 0).then_some(TopSource::KanaPromoted {
-        from: kana_existing_pos,
-        kana_boost,
-    });
+    if kana_boost > 0 && kana_target == 0 {
+        // Index 0 is the kana, whether it moves there or already was.
+        top = Some(TopSource::KanaPromoted {
+            from: kana_existing_pos,
+            kana_boost,
+        });
+    }
     if kana_boost > 0 {
         match kana_existing_pos {
             Some(pos) if pos == kana_target => {} // already where we want it
@@ -134,6 +141,9 @@ fn generate_normal(
             }
         }
     } else if kana_existing_pos.is_none() {
+        if surfaces.is_empty() {
+            top = Some(TopSource::Kana);
+        }
         seen.insert(reading.to_string());
         surfaces.push(reading.to_string());
     }
@@ -178,17 +188,13 @@ fn generate_normal(
         }
     }
 
+    // The reading is always in the list (step 2), so index 0 was decided by
+    // step 1.5 or earlier, or by step 2 itself; predictions and lookups only
+    // append.
+    debug_assert!(top.is_some(), "no stage placed index 0");
+    debug_assert!(top != Some(TopSource::Kana) || surfaces[0] == reading);
     if let Some(d) = diag {
-        let injected_first = d.injected.first().filter(|s| surfaces.first() == Some(s));
-        // The reading is always in the list (step 2), ahead of predictions
-        // and lookups, so an empty N-best with nothing injected leaves the
-        // reading at index 0.
-        d.top_source = surfaces.first().map(|_| {
-            promoted
-                .or(nbest_top.map(TopSource::Path))
-                .or(injected_first.map(|_| TopSource::Injected))
-                .unwrap_or(TopSource::Kana)
-        });
+        d.top_source = top;
     }
 
     CandidateResponse {

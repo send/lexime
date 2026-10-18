@@ -47,8 +47,9 @@ pub struct PricedCandidates {
     pub diagnostics: CandidateDiagnostics,
 }
 
-/// What the Standard-mode generator records about the list it built. Empty
-/// for punctuation input, whose paths are not N-best paths.
+/// What the Standard-mode generator records about the list it built. For
+/// punctuation input, whose paths are not N-best paths, only `top_source`
+/// (`Punctuation`) is set.
 #[derive(Debug, Default)]
 pub struct CandidateDiagnostics {
     /// `prices[i]` is the price of `response.paths[i]`.

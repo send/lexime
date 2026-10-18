@@ -73,10 +73,6 @@ impl Width {
         }
     }
 
-    fn top_surface(&self) -> &str {
-        self.top.as_ref().map_or("", |t| t.surface.as_str())
-    }
-
     /// Whether the cost model's set of this width holds `surface`.
     pub fn has_model_path(&self, surface: &str) -> bool {
         self.model_paths.iter().any(|m| m.surface == surface)
@@ -87,6 +83,10 @@ impl Width {
 #[derive(Debug, Serialize)]
 pub struct StandardTop {
     pub surface: String,
+    /// The list's second candidate (`surfaces[1]`): what a Space pressed
+    /// while the 1-best is shown lands on, so a split whose `second` is the
+    /// 1-best makes that Space look like a no-op.
+    pub second: Option<String>,
     pub source: Option<TopSource>,
     /// The N-best path it is, only for `source = Path(i)` — the one case the
     /// price, origin and boost describe it.
@@ -179,7 +179,11 @@ pub struct Widths {
     /// The list's postprocess #0 is in the 1-best's cost-model set (set
     /// inclusion, not Viterbi rank: the rank is not prefix-closed past EOS
     /// dedup).
-    pub list_top_in_one_best_set: bool,
+    ///
+    /// `None` when the list's top is not a model path (origin Viterbi or
+    /// Resegment, priced by the model): the question of a population's
+    /// reach does not arise for an offer, a policy path or a repriced one.
+    pub list_top_in_one_best_set: Option<bool>,
 }
 
 /// Compute both widths. The 1-best decays history at `now_1best`, the list at
@@ -238,6 +242,7 @@ pub fn widths(
             _ => None,
         },
         surface,
+        second: tops.list.response.surfaces.get(1).cloned(),
         source,
     };
 
@@ -249,8 +254,11 @@ pub fn widths(
         now_list,
         has_history,
         split: tops.one_best != standard_top.surface,
-        list_top_in_one_best_set: !list.top_surface().is_empty()
-            && one_best.has_model_path(list.top_surface()),
+        list_top_in_one_best_set: list
+            .top
+            .as_ref()
+            .filter(|t| t.origin.is_model() && t.priced_by.is_model())
+            .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
         list,
         standard_top,
@@ -302,8 +310,10 @@ pub fn format_text(w: &Widths) -> String {
         top_line(w.list.top.as_ref()),
     ));
     out.push_str(&format!(
-        "  list #1 {} from {:?}\n",
-        w.standard_top.surface, w.standard_top.source
+        "  list #1 {} from {:?}, #2 {}\n",
+        w.standard_top.surface,
+        w.standard_top.source,
+        w.standard_top.second.as_deref().unwrap_or("(none)"),
     ));
     if let Some(p) = &w.standard_top.path {
         out.push_str(&format!("    path: {}\n", top_line(Some(p))));
@@ -312,7 +322,7 @@ pub fn format_text(w: &Widths) -> String {
         out.push_str(&format!("    promoted_from: {}\n", top_line(Some(p))));
     }
     out.push_str(&format!(
-        "  list top in 1-best set: {}\n  1-best set: {}\n  list set:   {}\n",
+        "  list top in 1-best set: {:?}\n  1-best set: {}\n  list set:   {}\n",
         w.list_top_in_one_best_set,
         set(&w.one_best),
         set(&w.list),
@@ -374,6 +384,9 @@ mod tests {
         assert_eq!(list.surface, "今日");
         assert_eq!((list.whole_path_boost, list.history_boost), (0, 0));
         assert_eq!(w.standard_top.surface, "今日");
+        // Space on the 1-best 京 lands on the list's #2: here the 1-best
+        // itself, so the Space would look like a no-op.
+        assert_eq!(w.standard_top.second.as_deref(), Some("京"));
         assert!(w.split, "the two nows split this reading");
 
         // The same pair swapped is the mirror image.
@@ -450,7 +463,11 @@ mod tests {
         assert_eq!(top.surface, "金谷や");
         let rank = top.viterbi_rank.unwrap();
         assert!(rank < w.one_best.population, "rank {rank} is inside K1");
-        assert!(!w.list_top_in_one_best_set, "but the 1-best's set lacks it");
+        assert_eq!(
+            w.list_top_in_one_best_set,
+            Some(false),
+            "but the 1-best's set lacks it"
+        );
         assert!(w.split);
         assert!(w.list.has_model_path("金谷や") && !w.one_best.has_model_path("金谷や"));
     }
@@ -461,10 +478,10 @@ mod tests {
     fn a_list_top_inside_the_one_best_population_is_in_its_set() {
         let (dict, conn) = deep_argmin_kanaya(5);
         let w = widths(&dict, Some(&conn), None, "かなや", T0, T0);
-        assert!(w.list_top_in_one_best_set && !w.split);
+        assert!(w.list_top_in_one_best_set == Some(true) && !w.split);
         let (dict, conn) = deep_argmin_kanaya(12);
         let w = widths(&dict, Some(&conn), None, "かなや", T0, T0);
-        assert!(!w.list_top_in_one_best_set && w.split);
+        assert!(w.list_top_in_one_best_set == Some(false) && w.split);
         assert_eq!(w.one_best.population, 10);
         assert_eq!(w.list.population, 60);
     }
@@ -483,6 +500,10 @@ mod tests {
             Some(TopSource::KanaPromoted { .. })
         ));
         assert!(w.standard_top.path.is_none());
+        // The promoted kana is not a model path: no inclusion question.
+        assert_eq!(w.list.top.as_ref().unwrap().surface, "きょう");
+        assert!(!w.list.top.as_ref().unwrap().origin.is_model());
+        assert_eq!(w.list_top_in_one_best_set, None);
 
         // A #1 with a history of its own keeps index 0: no promotion.
         let h = learned(&[&[("きょう", "京")]]);
