@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use lex_core::candidates::widths::production_tops;
 use lex_core::candidates::{
-    generate_candidates, generate_candidates_priced, generate_prediction_candidates,
-    CandidateResponse, PathPrice, PricedCandidates,
+    generate_candidates, generate_prediction_candidates, CandidateResponse, PathPrice,
+    PricedCandidates,
 };
 use lex_core::converter::{ConversionContext, PathOrigin};
 use lex_core::settings::settings;
