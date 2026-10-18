@@ -52,14 +52,7 @@ pub fn production_prediction_candidates(
     generate_prediction_candidates(ctx, reading, settings().candidates.max_results)
 }
 
-/// [`production_candidates`] with its [`lex_core::candidates::CandidateDiagnostics`] from the same
-/// run — so a price is always the price of the path the list shows.
-pub fn production_candidates_priced(
-    ctx: &ConversionContext<'_>,
-    reading: &str,
-) -> PricedCandidates {
-    generate_candidates_priced(ctx, reading, settings().candidates.max_results)
-}
+pub use lex_core::candidates::production_candidates_priced;
 
 /// Top-1 at each of the two widths the user sees — the production ones,
 /// nothing else, from [`production_tops`] (the generator `lextool widths`

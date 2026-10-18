@@ -61,7 +61,10 @@ pub struct CandidateDiagnostics {
     pub top_source: Option<TopSource>,
 }
 
-/// Which stage of the Standard generator the list's #1 comes from.
+/// Which stage of the Standard generator *placed* the list's #1 at index 0
+/// (a promotion included). Who put the surface in the list or set its price
+/// is `replay-commit-log`'s `Owner`; the two differ when a promoted kana is
+/// also an N-best path — as intended: M9 is judged on the placing stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum TopSource {
     /// The `i`-th N-best path (postprocess order); `i = 0` unless the
@@ -80,10 +83,6 @@ pub enum TopSource {
     Injected,
     /// The reading, appended with no learning (N-best empty).
     Kana,
-    /// A dictionary prediction (N-best empty).
-    Prediction,
-    /// A dictionary lookup entry (N-best empty).
-    Lookup,
     /// Punctuation input, which has no N-best.
     Punctuation,
 }
@@ -189,6 +188,20 @@ pub fn generate_candidates_priced(
     }
     let lattice = build_lattice(ctx.dict, reading);
     standard::generate_normal_priced(ctx, reading, max_results, &lattice)
+}
+
+/// [`generate_candidates_priced`] at the production list budget
+/// (`candidates.max_results`, the limit the async worker uses): the one place
+/// the tools ask for "the candidate list as the IME builds it".
+pub fn production_candidates_priced(
+    ctx: &ConversionContext<'_>,
+    reading: &str,
+) -> PricedCandidates {
+    generate_candidates_priced(
+        ctx,
+        reading,
+        crate::settings::settings().candidates.max_results,
+    )
 }
 
 /// Unified candidate generation from a pre-built lattice.

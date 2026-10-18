@@ -915,7 +915,8 @@ fn main() {
                                 }
                             }
                             AccuracyStatus::Fail => {
-                                // Baseline changed?
+                                // Baseline moved: the list's #1 change gets its own
+                                // line, and the details below name every moved width.
                                 if let (Some(ref bl), Some(ref ba)) =
                                     (&r.baseline, &r.baseline_actual)
                                 {
@@ -924,6 +925,9 @@ fn main() {
                                             "  \u{2717} {}: baseline changed (expected: {}, got: {})",
                                             r.reading, bl, ba
                                         );
+                                        for d in &r.details {
+                                            println!("      {}", d);
+                                        }
                                         continue;
                                     }
                                 }
@@ -1528,13 +1532,11 @@ fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult
         known,
         stale,
     } = rank_ops::judge_widths(case.width_issue.as_ref(), &observed);
-    // Neither width shows what the case expects: the user sees no right answer.
-    let no_width_right = observed
-        .iter()
-        .any(|m| matches!(m, rank_ops::WidthMismatch::OneBest(_)))
-        && observed
-            .iter()
-            .any(|m| matches!(m, rank_ops::WidthMismatch::ListTop { .. }));
+    // Neither width shows what it should (its want, or `expected`): the user
+    // sees no right answer. Any other disagreement is a Width failure.
+    let no_width_right = widths.one_best != case.expected
+        && widths.list_top() != want_list_top
+        && widths.list_top() != case.expected;
 
     let mut window = Vec::new();
     if let Some(ref w) = case.window {
@@ -1927,9 +1929,17 @@ mod tests {
         let r = eval_expecting("他", "");
         assert_eq!(r.failure, Some(Failure::Top1));
 
-        // (3) One width exempt, the other not: the user sees no right answer.
-        let r = eval(&format!("{issue}\nwindow_top1 = \"他\""));
+        // (3) One width exempt, the other not and not expected either: the
+        // user sees no right answer.
+        let r = eval_expecting("他", &issue);
         assert_eq!(r.failure, Some(Failure::Top1), "{:?}", r.details);
+
+        // (6) The list shows `expected` while `window_top1` wants something
+        // else, and the 1-best is wrong: a right answer is on screen, so
+        // this is a Width failure, not Top1.
+        let r = eval("window_top1 = \"他\"");
+        assert_eq!(r.failure, Some(Failure::Width), "{:?}", r.details);
+        assert_eq!(r.actual, "金谷");
 
         // (5) The named disagreement is gone (both widths show what the
         // case wants): the exemption is stale.

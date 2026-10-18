@@ -19,7 +19,7 @@ use crate::dict::Dictionary;
 use crate::settings::settings;
 use crate::user_history::UserHistory;
 
-use super::{generate_candidates_priced, PricedCandidates, TopSource};
+use super::{production_candidates_priced, PricedCandidates, TopSource};
 
 /// The top path of one width's postprocess output.
 #[derive(Debug, Clone, Serialize)]
@@ -126,7 +126,7 @@ pub fn production_tops(
 ) -> ProductionTops {
     ProductionTops {
         one_best: joined_surface(&ctx_1best.convert(reading)),
-        list: generate_candidates_priced(ctx_list, reading, settings().candidates.max_results),
+        list: production_candidates_priced(ctx_list, reading),
     }
 }
 

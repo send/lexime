@@ -155,7 +155,8 @@ impl<'a> ConversionContext<'a> {
 /// Per-keystroke budget: the Viterbi paths the 1-best (`n = 1`) works on
 /// without a history record to learn from. The 1-best runs synchronously on
 /// every keystroke, so its population is kept small (drawing the candidate
-/// list's 60 here made it about 2.2x slower, #361).
+/// list's 60 here made it about 2.2x slower, #361). It is also the floor of
+/// any N-best with `n <= 3` (a custom `nbest`), whose `3n` is below it.
 pub(crate) const KEYSTROKE_POPULATION: usize = 10;
 /// Per-keystroke budget with a history: gives the reranker and the history
 /// boost paths to work on. A learned path past 30 reaches the candidate list's

@@ -180,17 +180,14 @@ fn generate_normal(
 
     if let Some(d) = diag {
         let injected_first = d.injected.first().filter(|s| surfaces.first() == Some(s));
-        d.top_source = surfaces.first().map(|top| {
+        // The reading is always in the list (step 2), ahead of predictions
+        // and lookups, so an empty N-best with nothing injected leaves the
+        // reading at index 0.
+        d.top_source = surfaces.first().map(|_| {
             promoted
                 .or(nbest_top.map(TopSource::Path))
                 .or(injected_first.map(|_| TopSource::Injected))
-                .unwrap_or(if top == reading {
-                    TopSource::Kana
-                } else if ranked.iter().any(|(_, e)| e.surface == *top) {
-                    TopSource::Prediction
-                } else {
-                    TopSource::Lookup
-                })
+                .unwrap_or(TopSource::Kana)
         });
     }
 
