@@ -165,16 +165,13 @@ pub(crate) fn run_rewriters(
     paths: &mut Vec<ScoredPath>,
     reading: &str,
 ) {
-    let candidates: Vec<(ScoredPath, Option<PolicyPrice>)> = rewriters
+    let candidates = rewriters
         .iter()
         .flat_map(|rw| rw.generate(paths, reading))
-        .map(|p| (p, None))
         .collect();
     insert_candidates(
-        candidates,
+        Candidates::Model(candidates),
         paths,
-        RewriteStage::Model,
-        None,
         &mut super::postprocess::NoopObserver,
     );
 }
@@ -195,12 +192,21 @@ pub(crate) fn run_policy_rewriters<O: PostprocessObserver>(
     boost: Option<&dyn Fn(&mut ScoredPath)>,
     observer: &mut O,
 ) {
-    let candidates: Vec<(ScoredPath, Option<PolicyPrice>)> = rewriters
+    let candidates = rewriters
         .iter()
         .flat_map(|rw| rw.policy_candidates(reading))
-        .map(|(p, price)| (p, Some(price)))
         .collect();
-    insert_candidates(candidates, paths, RewriteStage::Override, boost, observer);
+    insert_candidates(Candidates::Override { candidates, boost }, paths, observer);
+}
+
+/// A stage's candidates: alternatives before history, or policy prices
+/// (with the history boost, when there is history) after the cut.
+enum Candidates<'a> {
+    Model(Vec<ScoredPath>),
+    Override {
+        candidates: Vec<(ScoredPath, PolicyPrice)>,
+        boost: Option<&'a dyn Fn(&mut ScoredPath)>,
+    },
 }
 
 /// Insert a stage's candidates, resolving duplicates and inserting in cost
@@ -210,15 +216,30 @@ pub(crate) fn run_policy_rewriters<O: PostprocessObserver>(
 /// Every rewriter generated from the stage's input list before anything is
 /// inserted, so no rewriter sees another's output: an offer is never a
 /// source, and the rewriters' order does not change what they generate.
-/// A candidate carries its policy price exactly in the Override stage.
+/// A candidate is boosted only where it is written: duplicates are resolved
+/// on prices before history, and a fallback that finds its surface listed
+/// is dropped without a history lookup.
 fn insert_candidates<O: PostprocessObserver>(
-    candidates: Vec<(ScoredPath, Option<PolicyPrice>)>,
+    candidates: Candidates<'_>,
     paths: &mut Vec<ScoredPath>,
-    stage: RewriteStage,
-    boost: Option<&dyn Fn(&mut ScoredPath)>,
     observer: &mut O,
 ) {
-    debug_assert!(boost.is_none() || stage == RewriteStage::Override);
+    let (stage, candidates, boost): (_, Vec<(ScoredPath, Option<PolicyPrice>)>, _) =
+        match candidates {
+            Candidates::Model(c) => (
+                RewriteStage::Model,
+                c.into_iter().map(|p| (p, None)).collect(),
+                None,
+            ),
+            Candidates::Override { candidates, boost } => (
+                RewriteStage::Override,
+                candidates
+                    .into_iter()
+                    .map(|(p, price)| (p, Some(price)))
+                    .collect(),
+                boost,
+            ),
+        };
     let boosted = |mut p: ScoredPath| {
         if let Some(b) = boost {
             b(&mut p);
@@ -234,7 +255,6 @@ fn insert_candidates<O: PostprocessObserver>(
     // Decided on the stage's input.
     let mut head = stage.holds_head(paths).then(|| paths.remove(0));
     for (candidate, policy) in candidates {
-        let candidate = boosted(candidate);
         let key = candidate.surface_key();
         let fallback = policy.is_some_and(|p| p.rule.is_fallback());
         let mut record = |by_candidate: bool| {
@@ -257,7 +277,7 @@ fn insert_candidates<O: PostprocessObserver>(
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
             None => {
                 record(true);
-                insert_by_cost(paths, candidate, stage);
+                insert_by_cost(paths, boosted(candidate), stage);
             }
             Some(_) if fallback => {}
             Some(i) => {
