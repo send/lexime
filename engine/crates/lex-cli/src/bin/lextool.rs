@@ -1934,6 +1934,18 @@ mod tests {
         let r = eval_expecting("他", &issue);
         assert_eq!(r.failure, Some(Failure::Top1), "{:?}", r.details);
 
+        // (7) `window_top1` K is what the list shows and the 1-best is not
+        // `expected`: the list is right by its own want, so Width, not Top1
+        // (dropping the list's want from the Top1 test turns this into Top1).
+        let r = eval_expecting("他", "window_top1 = \"金谷\"");
+        assert_eq!(r.failure, Some(Failure::Width), "{:?}", r.details);
+
+        // (8) The no-history baseline is held at both widths: one that
+        // matches the 1-best but not the list's #1 is a Baseline failure.
+        let r = eval(&format!("baseline = \"{one_best}\""));
+        assert_eq!(r.failure, Some(Failure::Baseline), "{:?}", r.details);
+        assert!(r.details.iter().any(|d| d.contains("candidate #1")));
+
         // (6) The list shows `expected` while `window_top1` wants something
         // else, and the 1-best is wrong: a right answer is on screen, so
         // this is a Width failure, not Top1.

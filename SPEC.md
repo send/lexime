@@ -697,7 +697,6 @@ macOS で動作する最小限の IME を構築。
 | `icon` | アイコンアセット生成 |
 | `clean` | ビルド成果物の削除 |
 | `explain` | 変換パイプラインの説明出力。`--json` では各経路に `origin`（分節を作った段）・`priced_by`（価格を付けた段）・`model_cost`（未 group の分節での、特徴量を足す前の Viterbi 価格）・`price_clamp`（model 以外の価格が model_cost + 特徴量からどれだけ動いたか — 提示の clamp や方針）・`repriced`（`priced_by != origin`）・`single_kanji_segments`（group 前の分節のうち読み 1 文字で漢字を含むもの全部、接続行列なしでは空。`role` と、1 文字漢字罰則の述語に当たるか `penalised` — 重みに依らず辞書の複合語免除込みで判定。その経路の価格に罰則が入ったかではない: 単独経路・Override の価格・かな救済は特徴量で値付けせず、提示の価格は clamp で動く (`price_clamp`)。分節表示は group 後なので 1 文字漢字罰則はここにだけ出す。text 出力では `1-char kanji (ungrouped)` 行）を出し、コスト差 admission で落ちた経路を `dropped_by_cost_gap`（text では `Dropped by cost gap`）に gap 順で出す。各経路の `viterbi_rank`（`viterbi_nbest` の出力順 = 表記の重複排除後の位置。Viterbi 由来で model 価格の経路だけ、他は null）も出す。あわせて `max_cost_gap`（設定値）・`cost_gap_bound`（実際に効く上限 `max(max_cost_gap, 4000)`）・`cost_gap_anchor`（gap の基準 = 履歴前 #1 の価格）を出す。 |
-| `widths` | 本番の 2 つの幅（同期 1-best / 候補列の #1）を並べて出す。幅ごとの母集団・先頭経路（origin・`priced_by`・履歴ブースト・Viterbi 順位）・cost model の経路集合と、候補列 #1 の出どころ（`standard_top.source`: N-best の i 番目 / かな昇格 / 注入 / …）。`--now` は両幅に、`--now-list-offset` は候補列側だけに足す（秒境界の感度）。入力は読み 1 つか `--input`（1 行 1 読み）、`--json` で 1 読み 1 行 |
 | `snapshot` | 変換スナップショット生成（N-best。Standard モードの本番候補列は `lextool snapshot --candidates`、Predictive モードは `--predictive` を直接呼ぶ（Predictive は履歴の bigram でしか差が出ないので `--history` と併用） — task は引数を渡さず出力先も N-best 用に固定） |
 | `diff-snapshot` | スナップショット差分比較（N-best。候補列同士の比較は `lextool diff-snapshot --candidates` / `--predictive` を直接呼ぶ。種別の違うファイルはエラー） |
 | `accuracy` | 変換精度テスト（accuracy-corpus.toml）。top-1 は本番の 2 つの幅（候補待ちの同期 1-best / 本番候補列の #1）を一様に判定し（どちらも期待値でなければ top1、片方だけ違えば width。`width_issue` は 1 幅だけ名指しで免除）、`[cases.window]` で本番候補列の上位 n 件に入る・入らない候補を検査する |
@@ -709,6 +708,8 @@ macOS で動作する最小限の IME を構築。
 | `settings-export` | デフォルト設定を `~/Library/Application Support/Lexime/settings.toml` にエクスポート |
 
 `lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻（履歴を開くときの容量 evict の採点を含む）を指定できる。省略時は起動時に壁時計を 1 回読む。`dictool` にも同じグローバル `--now` があり、`convert --history` が使う。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。`--now` は減衰の基準時刻を決めるだけで、その時点の履歴を再現しない — それより後に記録された学習も含まれ、減衰なし（経過 0）として数えられる。過去の状態は凍結コピーで再現する。
+
+`lextool widths`（mise タスクではなく lextool のサブコマンド）: 本番の 2 つの幅（同期 1-best / 候補列の #1）を並べて出す。幅ごとの母集団・先頭経路（origin・`priced_by`・履歴ブースト・Viterbi 順位）・cost model の経路集合と、候補列 #1 の出どころと #2 の表記（`standard_top.source` / `second`: N-best の i 番目 / かな昇格 / 注入 / …）。`--now` は両幅に、`--now-list-offset` は候補列側だけに足す（秒境界の感度）。入力は読み 1 つか `--input`（1 行 1 読み）、`--json` で 1 読み 1 行
 
 ### CI
 
