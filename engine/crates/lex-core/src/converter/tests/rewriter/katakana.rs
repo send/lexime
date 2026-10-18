@@ -1,25 +1,22 @@
 use crate::converter::postprocess::NoopObserver;
 use crate::converter::rewriter::{
-    run_rewriters, KatakanaRewriter, RewriteStage, Rewriter, KATAKANA_POLICY_OFFSET,
+    run_policy_rewriters, KatakanaRewriter, PolicyRewriter, KATAKANA_POLICY_OFFSET,
 };
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
+
+/// The rewriter's candidates without their prices.
+fn generated(rw: &dyn PolicyRewriter, reading: &str) -> Vec<ScoredPath> {
+    rw.policy_candidates(reading)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
+}
 
 #[test]
 fn test_katakana_rewriter_generates_candidate() {
     let rw = KatakanaRewriter { anchor: 3000 };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "きょう".into(),
-            surface: "今日".into(),
-            left_id: 10,
-            right_id: 10,
-            word_cost: 0,
-        }],
-        3000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "きょう");
+    let result = generated(&rw, "きょう");
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].surface_key(), "キョウ");
@@ -41,14 +38,7 @@ fn test_katakana_dedup_via_run_rewriters() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "きょう",
-        RewriteStage::Override,
-        None,
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "きょう", None, &mut NoopObserver);
 
     assert_eq!(
         paths.len(),
@@ -60,9 +50,8 @@ fn test_katakana_dedup_via_run_rewriters() {
 #[test]
 fn test_katakana_rewriter_empty_paths() {
     let rw = KatakanaRewriter { anchor: 0 };
-    let paths: Vec<ScoredPath> = Vec::new();
 
-    let result = rw.generate(&paths, "てすと");
+    let result = generated(&rw, "てすと");
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].surface_key(), "テスト");
@@ -87,14 +76,7 @@ fn test_katakana_fallback_does_not_reprice_its_surface() {
     let other = ScoredPath::single("てすと".into(), "手酢と".into(), 1000, PathOrigin::Viterbi);
     let rw = KatakanaRewriter { anchor: 1000 };
     for mut paths in [vec![learned()], vec![other, learned()]] {
-        run_rewriters(
-            &[&rw],
-            &mut paths,
-            "てすと",
-            RewriteStage::Override,
-            None,
-            &mut NoopObserver,
-        );
+        run_policy_rewriters(&[&rw], &mut paths, "てすと", None, &mut NoopObserver);
         let listed: Vec<&ScoredPath> = paths
             .iter()
             .filter(|p| p.surface_key() == "テスト")

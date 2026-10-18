@@ -11,26 +11,20 @@ use super::postprocess::PostprocessObserver;
 use super::reranker::FeaturePricer;
 use super::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
-/// A rewriter that generates new candidates from the N-best list.
+/// A rewriter that generates new candidates from the N-best list: an
+/// alternative to the model's ranking (the Model stage, [`run_rewriters`]).
 ///
 /// Implementations return new candidates without mutating the input.
 /// Deduplication and cost-ordered insertion are handled by `run_rewriters`.
 pub(crate) trait Rewriter {
     fn generate(&self, paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath>;
+}
 
-    /// [`Self::generate`]'s candidates with the policy each was priced by:
-    /// `None` for an alternative to the model's ranking (the default), set
-    /// by the Override stage's policy rewriters.
-    fn generate_priced(
-        &self,
-        paths: &[ScoredPath],
-        reading: &str,
-    ) -> Vec<(ScoredPath, Option<PolicyPrice>)> {
-        self.generate(paths, reading)
-            .into_iter()
-            .map(|p| (p, None))
-            .collect()
-    }
+/// A rewriter whose candidates are policy, not alternatives: each is priced
+/// by a [`PolicyPrice`] from the anchor, whatever the list holds (the
+/// Override stage, [`run_policy_rewriters`]).
+pub(crate) trait PolicyRewriter {
+    fn policy_candidates(&self, reading: &str) -> Vec<(ScoredPath, PolicyPrice)>;
 }
 
 /// How far above the anchor a katakana fallback is priced: the default
@@ -128,7 +122,7 @@ impl PolicyPrice {
 /// same history boost, so a learned number compound or katakana competes
 /// with the learned index 0 on price.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RewriteStage {
+enum RewriteStage {
     /// Alternatives to the model's ranking, before history: never touch
     /// index 0.
     Model,
@@ -164,29 +158,62 @@ impl RewriteStage {
     }
 }
 
-/// Run a stage's rewriters, resolving duplicates and inserting in cost
-/// order below a held index 0 ([`RewriteStage::holds_head`]). The head is
-/// held by identity — taken out of the list while candidates go in — so
-/// what it protects cannot shift when a path is removed and re-inserted.
-/// Every rewriter generates from the
-/// stage's input list before anything is inserted, so no rewriter sees
-/// another's output: an offer is never a source, and the rewriters' order
-/// does not change what they generate.
-///
-/// `boost` applies the history boost to a created path (the Override stage
-/// with history, [`super::reranker::apply_history_boost`]): its price is
-/// then the policy price minus the boost, and it is learned exactly when a
-/// history-reranked path with its surface would be. The stage then leaves
-/// the list in history reranking's form (the cheapest learned path first).
-/// The Model stage runs before history and passes `None`.
-///
-/// A policy fallback ([`PolicyRule::is_fallback`]) only adds a surface the
-/// list lacks. `observer` sees each policy price written to the list (a new
-/// path, or a duplicate repriced by it).
-pub(crate) fn run_rewriters<O: PostprocessObserver>(
+/// Run the Model stage's rewriters (before history): alternatives inserted
+/// in cost order, never touching index 0 ([`insert_candidates`]).
+pub(crate) fn run_rewriters(
     rewriters: &[&dyn Rewriter],
     paths: &mut Vec<ScoredPath>,
     reading: &str,
+) {
+    let candidates: Vec<(ScoredPath, Option<PolicyPrice>)> = rewriters
+        .iter()
+        .flat_map(|rw| rw.generate(paths, reading))
+        .map(|p| (p, None))
+        .collect();
+    insert_candidates(
+        candidates,
+        paths,
+        RewriteStage::Model,
+        None,
+        &mut super::postprocess::NoopObserver,
+    );
+}
+
+/// Run the Override stage's policy rewriters (after admission and the cut
+/// to n). `boost` applies the history boost to a created path
+/// ([`super::reranker::apply_history_boost`]): its price is then the policy
+/// price minus the boost, and it is learned exactly when a history-reranked
+/// path with its surface would be. The stage then leaves the list in history
+/// reranking's form (the cheapest learned path first). A fallback
+/// ([`PolicyRule::is_fallback`]) only adds a surface the list lacks.
+/// `observer` sees each policy price written to the list (a new path, or a
+/// duplicate it repriced).
+pub(crate) fn run_policy_rewriters<O: PostprocessObserver>(
+    rewriters: &[&dyn PolicyRewriter],
+    paths: &mut Vec<ScoredPath>,
+    reading: &str,
+    boost: Option<&dyn Fn(&mut ScoredPath)>,
+    observer: &mut O,
+) {
+    let candidates: Vec<(ScoredPath, Option<PolicyPrice>)> = rewriters
+        .iter()
+        .flat_map(|rw| rw.policy_candidates(reading))
+        .map(|(p, price)| (p, Some(price)))
+        .collect();
+    insert_candidates(candidates, paths, RewriteStage::Override, boost, observer);
+}
+
+/// Insert a stage's candidates, resolving duplicates and inserting in cost
+/// order below a held index 0 ([`RewriteStage::holds_head`]). The head is
+/// held by identity — taken out of the list while candidates go in — so
+/// what it protects cannot shift when a path is removed and re-inserted.
+/// Every rewriter generated from the stage's input list before anything is
+/// inserted, so no rewriter sees another's output: an offer is never a
+/// source, and the rewriters' order does not change what they generate.
+/// A candidate carries its policy price exactly in the Override stage.
+fn insert_candidates<O: PostprocessObserver>(
+    candidates: Vec<(ScoredPath, Option<PolicyPrice>)>,
+    paths: &mut Vec<ScoredPath>,
     stage: RewriteStage,
     boost: Option<&dyn Fn(&mut ScoredPath)>,
     observer: &mut O,
@@ -198,11 +225,6 @@ pub(crate) fn run_rewriters<O: PostprocessObserver>(
         }
         p
     };
-    let candidates: Vec<(ScoredPath, Option<PolicyPrice>)> = rewriters
-        .iter()
-        .flat_map(|rw| rw.generate_priced(paths, reading))
-        .map(|(p, policy)| (boosted(p), policy))
-        .collect();
     let rescue = PathOrigin::HiraganaVariant;
     let rescue_keys: Vec<String> = candidates
         .iter()
@@ -212,10 +234,11 @@ pub(crate) fn run_rewriters<O: PostprocessObserver>(
     // Decided on the stage's input.
     let mut head = stage.holds_head(paths).then(|| paths.remove(0));
     for (candidate, policy) in candidates {
+        let candidate = boosted(candidate);
         let key = candidate.surface_key();
         let fallback = policy.is_some_and(|p| p.rule.is_fallback());
-        let mut priced = |by_candidate: bool| {
-            if let Some(p) = policy.filter(|_| by_candidate) {
+        let mut record = |by_candidate: bool| {
+            if let (true, Some(p)) = (by_candidate, policy) {
                 observer.policy_priced(&key, p);
             }
         };
@@ -225,7 +248,7 @@ pub(crate) fn run_rewriters<O: PostprocessObserver>(
             // fallback. The Model stage leaves its head as it is.
             if stage == RewriteStage::Override && !fallback {
                 if let Some((resolved, by_candidate)) = resolve_duplicate(stage, candidate, h) {
-                    priced(by_candidate);
+                    record(by_candidate);
                     *h = boosted(resolved);
                 }
             }
@@ -233,7 +256,7 @@ pub(crate) fn run_rewriters<O: PostprocessObserver>(
         }
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
             None => {
-                priced(true);
+                record(true);
                 insert_by_cost(paths, candidate, stage);
             }
             Some(_) if fallback => {}
@@ -241,7 +264,7 @@ pub(crate) fn run_rewriters<O: PostprocessObserver>(
                 if let Some((resolved, by_candidate)) =
                     resolve_duplicate(stage, candidate, &paths[i])
                 {
-                    priced(by_candidate);
+                    record(by_candidate);
                     paths.remove(i);
                     insert_by_cost(paths, boosted(resolved), stage);
                 }
@@ -290,7 +313,7 @@ fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteS
 /// Every rewriter price is a standing contract (an offer ≤ source+2000, the
 /// kana rescue ≤ best+4000, Numeric #239), so the cheaper price wins and
 /// `priced_by` names whoever set it (the kana rescue's mark is settled after
-/// the stage, in [`run_rewriters`]). The segments come from the lattice side
+/// the stage, in [`insert_candidates`]). The segments come from the lattice side
 /// when there is one — committing the surface then records per-segment
 /// history (#271) — else the finer segmentation.
 fn resolve_duplicate(
@@ -336,6 +359,10 @@ fn resolve_duplicate(
     // (The Model stage runs before history.)
     resolved.history_boost = 0;
     resolved.whole_path_boost = 0;
+    if cheaper {
+        // A price admission did not judge.
+        resolved.admission_gap = None;
+    }
     Some((resolved, cheaper))
 }
 
@@ -466,7 +493,7 @@ pub(crate) struct KatakanaRewriter {
     pub anchor: i64,
 }
 
-impl KatakanaRewriter {
+impl PolicyRewriter for KatakanaRewriter {
     fn policy_candidates(&self, reading: &str) -> Vec<(ScoredPath, PolicyPrice)> {
         let price = PolicyPrice {
             rule: PolicyRule::KatakanaFallback,
@@ -474,26 +501,6 @@ impl KatakanaRewriter {
             cost_offset: 0,
         };
         vec![price.path(reading, hiragana_to_katakana(reading), PathOrigin::Katakana)]
-    }
-}
-
-impl Rewriter for KatakanaRewriter {
-    fn generate(&self, _paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
-        self.policy_candidates(reading)
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect()
-    }
-
-    fn generate_priced(
-        &self,
-        _paths: &[ScoredPath],
-        reading: &str,
-    ) -> Vec<(ScoredPath, Option<PolicyPrice>)> {
-        self.policy_candidates(reading)
-            .into_iter()
-            .map(|(p, price)| (p, Some(price)))
-            .collect()
     }
 }
 
@@ -701,26 +708,6 @@ pub(crate) struct NumericRewriter<'a> {
     pub anchor: i64,
 }
 
-impl Rewriter for NumericRewriter<'_> {
-    fn generate(&self, _paths: &[ScoredPath], reading: &str) -> Vec<ScoredPath> {
-        self.policy_candidates(reading)
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect()
-    }
-
-    fn generate_priced(
-        &self,
-        _paths: &[ScoredPath],
-        reading: &str,
-    ) -> Vec<(ScoredPath, Option<PolicyPrice>)> {
-        self.policy_candidates(reading)
-            .into_iter()
-            .map(|(p, price)| (p, Some(price)))
-            .collect()
-    }
-}
-
 impl NumericRewriter<'_> {
     fn price(&self, rule: PolicyRule, cost_offset: i64) -> PolicyPrice {
         PolicyPrice {
@@ -729,7 +716,9 @@ impl NumericRewriter<'_> {
             cost_offset,
         }
     }
+}
 
+impl PolicyRewriter for NumericRewriter<'_> {
     fn policy_candidates(&self, reading: &str) -> Vec<(ScoredPath, PolicyPrice)> {
         let mut candidates = Vec::new();
 
@@ -764,7 +753,9 @@ impl NumericRewriter<'_> {
 
         candidates
     }
+}
 
+impl NumericRewriter<'_> {
     /// Scan the lattice for counter (助数詞) nodes ending at the reading's tail.
     /// For each unique counter surface, try to parse the kana prefix as a number,
     /// and emit kanji / half-width / full-width counter compounds.
@@ -855,7 +846,10 @@ impl NumericRewriter<'_> {
             // Widen to i64 before subtraction: i16 - i16 can overflow if the
             // dictionary contains extreme positive/negative costs.
             let cost_offset = cand.cost as i64 - cheapest as i64;
-            let counter = |digits: String| format!("{digits}{}", cand.surface);
+            let counter = |mut digits: String| {
+                digits.push_str(cand.surface);
+                digits
+            };
 
             out.push(self.price(PolicyRule::CounterCompound, cost_offset).path(
                 reading,

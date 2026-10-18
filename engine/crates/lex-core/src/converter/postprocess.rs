@@ -126,14 +126,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     } else {
         &[]
     };
-    rewriter::run_rewriters(
-        variants,
-        paths,
-        kana,
-        rewriter::RewriteStage::Model,
-        None,
-        observer,
-    );
+    rewriter::run_rewriters(variants, paths, kana);
 
     observer.after_rerank(paths);
 
@@ -185,11 +178,10 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     let boost = history.map(|h| {
         move |p: &mut ScoredPath| reranker::apply_history_boost(p, h.history, conn, h.now)
     });
-    rewriter::run_rewriters(
+    rewriter::run_policy_rewriters(
         &[&numeric_rw, &katakana_rw],
         &mut top,
         kana,
-        rewriter::RewriteStage::Override,
         boost.as_ref().map(|b| b as &dyn Fn(&mut ScoredPath)),
         observer,
     );
@@ -210,7 +202,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
 /// The floor keeps the kana rescue's band (best + 4000) however the rescue's
 /// surface is priced. An offer is judged by its own price, which is never
 /// below its source's, so a dropped source takes its offers with it.
-/// `on_drop` sees each dropped path (explain lists them).
+/// `on_drop` sees each dropped path (explain lists them); each path kept by
+/// its price records its gap ([`ScoredPath::admission_gap`]).
 pub(super) fn admit_by_cost_gap(
     paths: &mut Vec<ScoredPath>,
     anchor: i64,
@@ -219,15 +212,18 @@ pub(super) fn admit_by_cost_gap(
 ) {
     let limit = anchor.saturating_add(admission_bound(max_gap));
     let mut first = true;
-    paths.retain(|p| {
-        let keep = std::mem::take(&mut first)
-            || p.pre_history_cost() <= limit
-            || p.is_learned()
-            || p.is_identity();
-        if !keep {
-            on_drop(p);
+    paths.retain_mut(|p| {
+        let exempt = std::mem::take(&mut first) || p.is_learned() || p.is_identity();
+        p.admission_gap = None;
+        if exempt {
+            return true;
         }
-        keep
+        if p.pre_history_cost() > limit {
+            on_drop(p);
+            return false;
+        }
+        p.admission_gap = Some(p.pre_history_cost().saturating_sub(anchor));
+        true
     });
 }
 

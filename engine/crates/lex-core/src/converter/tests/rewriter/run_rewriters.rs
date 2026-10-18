@@ -1,8 +1,8 @@
 use crate::converter::lattice::Lattice;
 use crate::converter::postprocess::NoopObserver;
 use crate::converter::rewriter::{
-    run_rewriters, HiraganaVariantRewriter, KatakanaRewriter, NumericRewriter,
-    PartialHiraganaRewriter, RewriteStage, Rewriter,
+    run_policy_rewriters, run_rewriters, HiraganaVariantRewriter, KatakanaRewriter,
+    NumericRewriter, PartialHiraganaRewriter, PolicyPrice, PolicyRewriter, PolicyRule, Rewriter,
 };
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
@@ -21,14 +21,7 @@ fn test_run_rewriters_applies_all() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "あ",
-        RewriteStage::Override,
-        None,
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "あ", None, &mut NoopObserver);
 
     assert_eq!(paths.len(), 2);
     // Katakana has higher cost, so inserted after 亜
@@ -82,14 +75,7 @@ fn test_run_rewriters_dedup_across_rewriters() {
         [[&hiragana_rw, &partial_rw], [&partial_rw, &hiragana_rw]];
     for order in orders {
         let mut paths = vec![best.clone()];
-        run_rewriters(
-            &order,
-            &mut paths,
-            "されます",
-            RewriteStage::Model,
-            None,
-            &mut NoopObserver,
-        );
+        run_rewriters(&order, &mut paths, "されます");
         let rescue: Vec<_> = paths
             .iter()
             .filter(|p| p.surface_key() == "されます")
@@ -129,14 +115,7 @@ fn test_run_rewriters_cost_ordered_insertion() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "にじゅうさん",
-        RewriteStage::Override,
-        None,
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "にじゅうさん", None, &mut NoopObserver);
 
     assert_eq!(paths[0].surface_key(), "二十三");
     assert_eq!(paths[0].viterbi_cost, 3000); // best_cost = 3000
@@ -180,6 +159,24 @@ impl Rewriter for Fixed {
     }
 }
 
+/// In the Override stage, each fixed candidate is a policy price at its own
+/// cost (a compound's rule: it may reprice a path with its surface).
+impl PolicyRewriter for Fixed {
+    fn policy_candidates(&self, _reading: &str) -> Vec<(ScoredPath, PolicyPrice)> {
+        self.0
+            .iter()
+            .map(|p| {
+                let price = PolicyPrice {
+                    rule: PolicyRule::NumericCompound,
+                    base: p.viterbi_cost,
+                    cost_offset: 0,
+                };
+                (p.clone(), price)
+            })
+            .collect()
+    }
+}
+
 fn surfaces(paths: &[ScoredPath]) -> Vec<String> {
     paths.iter().map(|p| p.surface_key()).collect()
 }
@@ -194,30 +191,28 @@ fn model_stage_never_touches_index_zero() {
         path("安", 10, PathOrigin::KanjiVariant),
         path("一", 5, PathOrigin::KanjiVariant),
     ]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&rw], &mut paths, "よみ");
     assert_eq!(surfaces(&paths), ["一", "安", "二"]);
     assert_eq!(paths[0].viterbi_cost, 1000, "index 0 is not repriced");
+}
+
+#[test]
+fn a_policy_reprice_drops_the_admission_verdict() {
+    let mut listed = path("同", 5000, PathOrigin::Viterbi);
+    listed.admission_gap = Some(4000);
+    let mut paths = vec![path("一", 1000, PathOrigin::Viterbi), listed];
+    let rw = Fixed(vec![path("同", 3000, PathOrigin::Numeric)]);
+    run_policy_rewriters(&[&rw], &mut paths, "よみ", None, &mut NoopObserver);
+    let same = paths.iter().find(|p| p.surface_key() == "同").unwrap();
+    assert_eq!(same.priced_by, PathOrigin::Numeric);
+    assert_eq!(same.admission_gap, None, "the price is not admission's");
 }
 
 #[test]
 fn override_stage_may_take_index_zero() {
     let mut paths = vec![path("一", 1000, PathOrigin::Viterbi)];
     let rw = Fixed(vec![path("数", 500, PathOrigin::Numeric)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Override,
-        None,
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "よみ", None, &mut NoopObserver);
     assert_eq!(surfaces(&paths), ["数", "一"]);
 }
 
@@ -228,14 +223,7 @@ fn cheaper_offer_reprices_a_listed_path_and_keeps_its_segments() {
         path("同", 5000, PathOrigin::Viterbi),
     ];
     let rw = Fixed(vec![path("同", 3000, PathOrigin::KanjiVariant)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&rw], &mut paths, "よみ");
     let same = &paths[1];
     assert_eq!(same.viterbi_cost, 3000);
     assert_eq!(same.priced_by, PathOrigin::KanjiVariant);
@@ -253,14 +241,7 @@ fn dearer_candidate_leaves_a_lattice_path_alone() {
         path("同", 5000, PathOrigin::Viterbi),
     ];
     let rw = Fixed(vec![path("同", 7000, PathOrigin::PartialHiragana)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&rw], &mut paths, "よみ");
     assert_eq!(paths[1].priced_by, PathOrigin::Viterbi);
     assert_eq!(paths[1].viterbi_cost, 5000);
 }
@@ -284,14 +265,7 @@ fn lattice_segments_replace_a_synthetic_path_even_when_dearer() {
         6000,
         PathOrigin::KanjiVariant,
     );
-    run_rewriters(
-        &[&Fixed(vec![lattice])],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&Fixed(vec![lattice])], &mut paths, "よみ");
     let same = &paths[1];
     assert_eq!(same.viterbi_cost, 5000, "the cheaper price stays");
     assert_eq!(same.priced_by, PathOrigin::HiraganaVariant);
@@ -328,14 +302,7 @@ fn kana_rescue_adopts_its_price_on_a_model_path() {
         5000,
         PathOrigin::HiraganaVariant,
     );
-    run_rewriters(
-        &[&Fixed(vec![rescue])],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&Fixed(vec![rescue])], &mut paths, "よみ");
     let hit = &paths[1];
     assert_eq!(hit.viterbi_cost, 5000);
     assert_eq!(hit.priced_by, PathOrigin::HiraganaVariant);
@@ -357,14 +324,7 @@ fn override_price_adoption_is_boosted_again() {
     boost(&mut learned);
     let mut paths = vec![path("一", 1000, PathOrigin::Viterbi), learned];
     let rw = Fixed(vec![path("十円", 500, PathOrigin::Numeric)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Override,
-        Some(&boost),
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "よみ", Some(&boost), &mut NoopObserver);
     let n = &paths[0];
     assert_eq!(n.surface_key(), "十円", "the learned path takes index 0");
     assert_eq!(n.priced_by, PathOrigin::Numeric);
@@ -399,11 +359,10 @@ fn override_price_is_chosen_before_history() {
         2100,
         PathOrigin::Katakana,
     )]);
-    run_rewriters(
+    run_policy_rewriters(
         &[&rw],
         &mut paths,
         "てれびげーむ",
-        RewriteStage::Override,
         Some(&boost),
         &mut NoopObserver,
     );
@@ -425,11 +384,10 @@ fn learned_candidate_undercutting_learned_top_demotes_it_to_its_price() {
     top.whole_path_boost = 1;
     let mut paths = vec![top, path("二重", 3000, PathOrigin::Viterbi)];
     let rw = Fixed(vec![path("二十", 2500, PathOrigin::Numeric)]);
-    run_rewriters(
+    run_policy_rewriters(
         &[&rw],
         &mut paths,
         "にじゅう",
-        RewriteStage::Override,
         Some(&boost),
         &mut NoopObserver,
     );
@@ -443,9 +401,6 @@ fn insertion_into_empty_or_unsorted_lists() {
         &[&Fixed(vec![path("甲", 5, PathOrigin::KanjiVariant)])],
         &mut paths,
         "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
     );
     assert_eq!(surfaces(&paths), ["甲"]);
 
@@ -459,9 +414,6 @@ fn insertion_into_empty_or_unsorted_lists() {
         &[&Fixed(vec![path("新", 2000, PathOrigin::KanjiVariant)])],
         &mut paths,
         "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
     );
     assert_eq!(surfaces(&paths), ["学", "新", "最", "三"]);
 }
@@ -477,26 +429,12 @@ fn ties_follow_in_the_model_stage_and_lead_in_the_override_stage() {
     // An offer at its source's price stays below the source.
     let mut paths = base();
     let rw = Fixed(vec![path("変", 3000, PathOrigin::KanjiVariant)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&rw], &mut paths, "よみ");
     assert_eq!(surfaces(&paths), ["一", "源", "変"]);
     // A policy candidate leads its tie (a number compound at the anchor).
     let mut paths = base();
     let rw = Fixed(vec![path("数", 3000, PathOrigin::Numeric)]);
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "よみ",
-        RewriteStage::Override,
-        None,
-        &mut NoopObserver,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "よみ", None, &mut NoopObserver);
     assert_eq!(surfaces(&paths), ["一", "数", "源"]);
 }
 
@@ -525,14 +463,7 @@ fn rewriters_generate_from_the_stage_input_only() {
         path("二", 2000, PathOrigin::Viterbi),
     ];
     let first = Fixed(vec![path("新", 1500, PathOrigin::PartialHiragana)]);
-    run_rewriters(
-        &[&first, &Echo],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&first, &Echo], &mut paths, "よみ");
     // Echo saw 一 and 二, not 新.
     assert_eq!(surfaces(&paths), ["一", "一'", "新", "二", "二'"]);
 }
@@ -584,14 +515,7 @@ fn a_kanji_variant_is_not_sourced_from_a_path_partial_repriced() {
         conn: None,
         pricer: &pricer,
     };
-    run_rewriters(
-        &[&partial, &kanji],
-        &mut paths,
-        "したほうくる",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&partial, &kanji], &mut paths, "したほうくる");
     let repriced = paths
         .iter()
         .find(|p| p.surface_key() == "したほうくる")
@@ -631,14 +555,7 @@ fn the_rescue_mark_does_not_depend_on_rewriter_order() {
     let mut results = Vec::new();
     for order in orders {
         let mut paths = base();
-        run_rewriters(
-            &order,
-            &mut paths,
-            "よみ",
-            RewriteStage::Model,
-            None,
-            &mut NoopObserver,
-        );
+        run_rewriters(&order, &mut paths, "よみ");
         let kana = paths.iter().find(|p| p.surface_key() == "かな").unwrap();
         assert_eq!(kana.priced_by, PathOrigin::HiraganaVariant);
         assert_eq!(kana.viterbi_cost, 2000);
@@ -654,14 +571,7 @@ fn a_model_price_is_not_marked_as_the_rescue() {
         path("かな", 3000, PathOrigin::Viterbi),
     ];
     let rescue = Fixed(vec![path("かな", 4000, PathOrigin::HiraganaVariant)]);
-    run_rewriters(
-        &[&rescue],
-        &mut paths,
-        "よみ",
-        RewriteStage::Model,
-        None,
-        &mut NoopObserver,
-    );
+    run_rewriters(&[&rescue], &mut paths, "よみ");
     assert_eq!(paths[1].priced_by, PathOrigin::Viterbi);
 }
 
@@ -688,11 +598,10 @@ fn repriced_learned_duplicate_demotes_the_learned_top_to_its_price() {
         learned("二十", 9000),
     ];
     let rw = Fixed(vec![path("二十", 3000, PathOrigin::Numeric)]);
-    run_rewriters(
+    run_policy_rewriters(
         &[&rw],
         &mut paths,
         "にじゅう",
-        RewriteStage::Override,
         Some(&boost),
         &mut NoopObserver,
     );
@@ -712,15 +621,14 @@ fn head_boost(p: &mut ScoredPath) {
 /// A learned X held at index 0 (pre-history 5000, boosted 4000) above a
 /// cheaper unlearned B, as history reranking leaves it; run `rewriters` in
 /// the given order.
-fn run_on_learned_head(rewriters: &[&dyn Rewriter]) -> Vec<(String, i64)> {
+fn run_on_learned_head(rewriters: &[&dyn PolicyRewriter]) -> Vec<(String, i64)> {
     let mut x = path("X", 5000, PathOrigin::Viterbi);
     head_boost(&mut x);
     let mut paths = vec![x, path("B", 3000, PathOrigin::Viterbi)];
-    run_rewriters(
+    run_policy_rewriters(
         rewriters,
         &mut paths,
         "よみ",
-        RewriteStage::Override,
         Some(&head_boost),
         &mut NoopObserver,
     );
@@ -754,11 +662,10 @@ fn displaced_learned_head_precedes_equal_prices() {
     head_boost(&mut x);
     let mut paths = vec![x, path("P", 500, PathOrigin::Viterbi)];
     let l = Fixed(vec![path("L1", 0, PathOrigin::Numeric)]);
-    run_rewriters(
+    run_policy_rewriters(
         &[&l],
         &mut paths,
         "よみ",
-        RewriteStage::Override,
         Some(&head_boost),
         &mut NoopObserver,
     );

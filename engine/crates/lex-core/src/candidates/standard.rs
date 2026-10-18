@@ -66,7 +66,7 @@ fn generate_normal(
         d.prices.extend(scored.iter().map(|p| PathPrice {
             cost: p.viterbi_cost,
             priced_by: p.priced_by,
-            cost_gap_exempt: p.is_learned() || p.is_identity(),
+            admission_gap: p.admission_gap,
         }));
     }
 

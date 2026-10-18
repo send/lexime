@@ -512,13 +512,12 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         .iter()
         .map(|scored| {
             let key = scored.surface_key();
-            let recorded = observer.policy.remove(&key);
-            let policy_price = recorded.filter(|_| is_override_priced(scored));
-            let consistent = match (is_override_priced(scored), recorded) {
-                (true, Some(p)) => p.cost() == scored.pre_history_cost(),
-                (false, None) => true,
-                _ => false,
-            };
+            let (policy_price, consistent) =
+                match (is_override_priced(scored), observer.policy.remove(&key)) {
+                    (true, Some(p)) => (Some(p), p.cost() == scored.pre_history_cost()),
+                    (false, None) => (None, true),
+                    (_, recorded) => (recorded.filter(|_| is_override_priced(scored)), false),
+                };
             if !consistent {
                 policy_price_inconsistent.push(key.clone());
             }

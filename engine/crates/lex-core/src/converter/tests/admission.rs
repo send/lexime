@@ -53,6 +53,25 @@ fn run(
 // ---------------------------------------------------------------------------
 
 #[test]
+fn admission_records_the_gap_it_kept_a_path_by() {
+    let mut learned = path("よみ", "学", 30_000);
+    learned.whole_path_boost = 1;
+    let mut paths = vec![
+        path("よみ", "一", 1000),
+        path("よみ", "内", 9000),
+        learned,
+        path("よみ", "よみ", 40_000),
+    ];
+    admit(&mut paths, 1000, 8000);
+    let gaps: Vec<Option<i64>> = paths.iter().map(|p| p.admission_gap).collect();
+    assert_eq!(
+        gaps,
+        [None, Some(8000), None, None],
+        "head and exempt: no verdict"
+    );
+}
+
+#[test]
 fn keeps_index_zero_and_paths_within_the_gap() {
     let mut paths = vec![
         path("よみ", "一", 1000),
