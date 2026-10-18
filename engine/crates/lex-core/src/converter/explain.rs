@@ -431,6 +431,19 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 // Public API
 // ---------------------------------------------------------------------------
 
+/// The `viterbi_rank` of a final path: its position in `viterbi_nbest`'s
+/// output, only for a path Viterbi made whose price the model still owns. A
+/// Viterbi path another stage repriced (`resolve_duplicate` keeps the
+/// existing path and writes the cheaper candidate's `priced_by` onto it) has
+/// no rank: its price is not the Viterbi one the rank describes.
+fn viterbi_rank_of(scored: &ScoredPath, ranks: &HashMap<String, usize>) -> Option<usize> {
+    if scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model() {
+        ranks.get(&scored.surface_key()).copied()
+    } else {
+        None
+    }
+}
+
 /// Run the full conversion pipeline and capture detailed cost breakdown.
 ///
 /// Uses `postprocess_observed` over the same oversample as production N-best
@@ -541,9 +554,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 model_cost,
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
-                viterbi_rank: (scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model())
-                    .then(|| observer.viterbi_ranks.get(&key).copied())
-                    .flatten(),
+                viterbi_rank: viterbi_rank_of(scored, &observer.viterbi_ranks),
                 single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
@@ -998,6 +1009,29 @@ mod tests {
                 p.surface()
             );
         }
+    }
+
+    /// A3/T-A3: a Viterbi path repriced by another stage (the clone path of
+    /// `resolve_duplicate`) keeps `origin == Viterbi` but has no rank.
+    #[test]
+    fn viterbi_rank_is_none_for_a_repriced_viterbi_path() {
+        let ranks = HashMap::from([(String::new(), 3usize)]);
+        let mut p = ScoredPath::new(Vec::new(), 0, PathOrigin::Viterbi);
+        assert_eq!(viterbi_rank_of(&p, &ranks), Some(3));
+        for other in [
+            PathOrigin::KanjiVariant,
+            PathOrigin::PartialHiragana,
+            PathOrigin::HiraganaVariant,
+            PathOrigin::Katakana,
+            PathOrigin::Numeric,
+        ] {
+            p.priced_by = other;
+            assert_eq!(viterbi_rank_of(&p, &ranks), None, "{other:?}");
+        }
+        let mut reseg = ScoredPath::new(Vec::new(), 0, PathOrigin::Resegment);
+        assert_eq!(viterbi_rank_of(&reseg, &ranks), None);
+        reseg.priced_by = PathOrigin::Resegment;
+        assert_eq!(viterbi_rank_of(&reseg, &ranks), None);
     }
 
     /// A path that never wins (カナ|や) cannot change which paths survive:
