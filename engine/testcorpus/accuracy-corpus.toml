@@ -37,8 +37,9 @@
 #                          rejected (use [cases.width_issue])
 #   [cases.width_issue] (optional) - A known width disagreement, named
 #                          exactly: issue = "#123" (required) and what the
-#                          disagreeing width shows — one_best = "…" and/or
-#                          list_top = "…" (never the expected value). Only
+#                          disagreeing width shows — one_best = "…" or
+#                          list_top = "…" (one of them, never both, never the
+#                          expected value). Only
 #                          that disagreement is reported without failing;
 #                          any other width or a different top-1 fails, and so
 #                          does the exemption once it no longer occurs. The
@@ -46,11 +47,17 @@
 #                          baseline width disagreement is fixed, or the case
 #                          is skipped with its issue
 #
-# Top-1 is checked at three widths and all must equal `expected`: the N-best
-# head (n=1), the synchronous 1-best shown while candidates are pending, and
-# the production candidate list's #1. They oversample differently, so rerank's
-# argmin can differ between the populations (#361). A disagreement fails the case
-# as "width"; `skip` would also silence the top-1 gate, so use width_issue.
+# Top-1 is checked at the two widths the user sees, and both must equal
+# `expected`: the synchronous 1-best shown while candidates are pending, and
+# the production candidate list's #1. They draw different populations (the
+# 1-best's budget is per keystroke, the list's is larger), so rerank's argmin
+# can differ between them (#361). The widths are judged alike. Neither equal
+# to `expected` fails the case as "top1"; one of them equal and the other not
+# fails it as "width" unless a width_issue names that disagreement. width_issue
+# names ONE width: exempting both would exempt the top-1 itself, which is a
+# `skip` with an issue (a skip also silences the baseline and window gates, so
+# prefer width_issue for a one-width disagreement). The no-history baseline
+# is held at both widths and is never exempt.
 #
 # [cases.window] (optional) - Rank-2+ expectations on the production candidate
 #   list (N-best + kana + predictions + lookup), placed right after its case:

@@ -63,6 +63,33 @@ enum Command {
         no_lattice: bool,
     },
 
+    /// Show the 1-best and the candidate list's #1 side by side, with what
+    /// either was drawn from (population, top path, price owner, history
+    /// boost, Viterbi rank, where the list's #1 came from). `--now` sets both
+    /// widths' decay time
+    Widths {
+        /// Path to the compiled dictionary file
+        dict_file: String,
+        /// Path to the compiled connection matrix file (optional)
+        #[arg(long)]
+        conn: Option<String>,
+        /// Path to user history file (optional)
+        #[arg(long)]
+        history: Option<String>,
+        /// Kana reading (or use --input)
+        reading: Option<String>,
+        /// File with one reading per line
+        #[arg(long, conflicts_with = "reading")]
+        input: Option<String>,
+        /// Move the candidate list's decay time this many seconds past the
+        /// 1-best's (the sensitivity of a split to a second boundary)
+        #[arg(long, default_value = "0")]
+        now_list_offset: u64,
+        /// One JSON object per reading instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Run readings from a file and record top-N results to JSONL
     Snapshot {
         /// Path to the compiled dictionary file
@@ -357,9 +384,11 @@ struct AccuracyResult {
 enum Failure {
     /// The no-history `baseline` moved.
     Baseline,
-    /// The N-best head at n=1 is not `expected`.
+    /// Neither width shows `expected`: the 1-best and the candidate list's #1
+    /// both differ from it (an exemption for one of them does not help).
     Top1,
-    /// Another display width disagrees on top-1.
+    /// One width shows `expected` and the other disagrees without an
+    /// exemption, or an exemption no longer matches.
     Width,
     /// A `[cases.window]` expectation is violated.
     Window,
@@ -376,7 +405,7 @@ impl Failure {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum AccuracyStatus {
     Pass,
@@ -665,6 +694,49 @@ fn main() {
             }
         }
 
+        Command::Widths {
+            dict_file,
+            conn,
+            history,
+            reading,
+            input,
+            now_list_offset,
+            json,
+        } => {
+            let readings: Vec<String> = match (reading, input) {
+                (Some(r), None) => vec![r],
+                (None, Some(path)) => read_readings(&path),
+                _ => {
+                    eprintln!("widths: pass a reading or --input <file>");
+                    process::exit(2);
+                }
+            };
+            let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history, now);
+            let now_list = now.saturating_add(now_list_offset);
+            for r in &readings {
+                let w = lex_core::candidates::widths::widths(
+                    &dict,
+                    conn.as_ref(),
+                    hist.as_ref(),
+                    r,
+                    now,
+                    now_list,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&w).expect("JSON serialization failed")
+                    );
+                } else {
+                    print!("{}", lex_core::candidates::widths::format_text(&w));
+                }
+            }
+        }
+
         Command::Accuracy {
             dict_file,
             conn_file,
@@ -843,7 +915,8 @@ fn main() {
                                 }
                             }
                             AccuracyStatus::Fail => {
-                                // Baseline changed?
+                                // Baseline moved: the list's #1 change gets its own
+                                // line, and the details below name every moved width.
                                 if let (Some(ref bl), Some(ref ba)) =
                                     (&r.baseline, &r.baseline_actual)
                                 {
@@ -852,6 +925,9 @@ fn main() {
                                             "  \u{2717} {}: baseline changed (expected: {}, got: {})",
                                             r.reading, bl, ba
                                         );
+                                        for d in &r.details {
+                                            println!("      {}", d);
+                                        }
                                         continue;
                                     }
                                 }
@@ -1396,8 +1472,10 @@ fn write_jsonl<T: Serialize>(path: &str, items: &[T]) -> Result<(), String> {
 }
 
 /// Evaluate one accuracy case. Gates run in order and the first to fail
-/// decides the result: no-history `baseline`, top-1 at n=1, then the other
-/// display widths and the `[cases.window]` expectations.
+/// decides the result: the no-history `baseline`, then the two production
+/// widths judged alike (the 1-best and the candidate list's #1), then the
+/// `[cases.window]` expectations. No width is privileged: a `width_issue`
+/// exempts one width's named disagreement, never the top-1 itself.
 fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult {
     // The no-history arms of a case run on the same context less its history.
     let plain_ctx = ConversionContext {
@@ -1430,45 +1508,35 @@ fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult
         ..base.clone()
     };
 
-    // No-history baseline: every width must still agree on it.
+    // No-history baseline: both widths must show it, and no exemption covers
+    // that — an exemption names a disagreement under the case's own history.
     let plain = case
         .baseline
         .as_ref()
         .map(|_| rank_ops::top1_widths(&plain_ctx, &case.reading));
-    let baseline_actual = plain.as_ref().map(|w| w.nbest_head.clone());
+    let baseline_actual = plain.as_ref().map(|w| w.list_top().to_string());
     if let (Some(want), Some(w)) = (&case.baseline, &plain) {
-        if w.nbest_head != *want {
-            return fail(
-                Failure::Baseline,
-                String::new(),
-                baseline_actual,
-                Vec::new(),
-            );
+        let moved = width_disagreements(w, want, want);
+        if !moved.is_empty() {
+            let details = moved.into_iter().map(|d| format!("baseline {d}")).collect();
+            return fail(Failure::Baseline, String::new(), baseline_actual, details);
         }
     }
 
     let widths = rank_ops::top1_widths(ctx, &case.reading);
-    let actual = widths.nbest_head.clone();
-    if actual != case.expected {
-        return fail(Failure::Top1, actual, baseline_actual, Vec::new());
-    }
-
+    let actual = widths.list_top().to_string();
     let want_list_top = case.window_top1.as_deref().unwrap_or(&case.expected);
     let observed = width_disagreements(&widths, &case.expected, want_list_top);
     let rank_ops::WidthVerdict {
-        unexempt: mut width,
+        unexempt: width,
         known,
         stale,
     } = rank_ops::judge_widths(case.width_issue.as_ref(), &observed);
-    // The no-history baseline is never exempt: an exemption names a
-    // disagreement under the case's own history.
-    if let (Some(want), Some(w)) = (&case.baseline, &plain) {
-        width.extend(
-            width_disagreements(w, want, want)
-                .into_iter()
-                .map(|d| format!("baseline {d}")),
-        );
-    }
+    // Neither width shows what it should (its want, or `expected`): the user
+    // sees no right answer. Any other disagreement is a Width failure.
+    let no_width_right = widths.one_best != case.expected
+        && widths.list_top() != want_list_top
+        && widths.list_top() != case.expected;
 
     let mut window = Vec::new();
     if let Some(ref w) = case.window {
@@ -1485,7 +1553,9 @@ fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult
         }
     }
 
-    let failure = if !window.is_empty() {
+    let failure = if no_width_right {
+        Some(Failure::Top1)
+    } else if !window.is_empty() {
         Some(Failure::Window)
     } else if !width.is_empty() || !stale.is_empty() {
         Some(Failure::Width)
@@ -1519,7 +1589,6 @@ fn eval_case(ctx: &ConversionContext<'_>, case: &AccuracyCase) -> AccuracyResult
     }
 }
 
-/// Widths other than the n=1 head that disagree with the expected top-1.
 fn pct(part: usize, whole: usize) -> f64 {
     if whole == 0 {
         0.0
@@ -1789,5 +1858,110 @@ mod tests {
                 "{sub}"
             );
         }
+    }
+
+    /// A reading whose 1-best (population 10) is a katakana spelling while
+    /// the candidate list (60) finds 金谷, rerank's argmin 13th in Viterbi
+    /// order — the M1 split (#361). `deep_argmin_kanaya` is the same shape
+    /// in lex-core's own tests.
+    fn split_dict() -> lex_core::dict::TrieDictionary {
+        use lex_core::dict::DictEntry;
+        let e = |surface: String, cost: i16| DictEntry {
+            surface,
+            cost,
+            left_id: 0,
+            right_id: 0,
+        };
+        let mut entries: Vec<DictEntry> = (0..12)
+            .map(|i| e(format!("カナヤ{}", "ア".repeat(i)), (i as i16) * 10))
+            .collect();
+        entries.push(e("金谷".into(), 120));
+        lex_core::dict::TrieDictionary::from_entries(vec![("かなや".into(), entries)])
+    }
+
+    fn eval_expecting(expected: &str, extra: &str) -> AccuracyResult {
+        let case: AccuracyCase = toml::from_str(&format!(
+            "reading = \"かなや\"\nexpected = \"{expected}\"\ncategory = \"t\"\n{extra}"
+        ))
+        .expect("valid case");
+        let dict = split_dict();
+        eval_case(&ConversionContext::new(&dict, None), &case)
+    }
+
+    fn eval(extra: &str) -> AccuracyResult {
+        eval_expecting("金谷", extra)
+    }
+
+    /// T-A6: the two production widths are judged alike (A2).
+    #[test]
+    fn the_width_gate_is_uniform() {
+        // The fixture splits: the 1-best shows a katakana spelling, the
+        // list's #1 is 金谷.
+        let dict = split_dict();
+        let w = rank_ops::top1_widths(&ConversionContext::new(&dict, None), "かなや");
+        assert_eq!(w.list_top(), "金谷");
+        assert_ne!(w.one_best, "金谷");
+        let one_best = w.one_best;
+
+        // No exemption: one width wrong is a Width failure.
+        let r = eval("");
+        assert_eq!(
+            (r.status, r.failure),
+            (AccuracyStatus::Fail, Some(Failure::Width))
+        );
+
+        // (1) The known 1-best disagreement is a Pass and does not stop the
+        // other gates: window and baseline still run.
+        let issue = format!("width_issue = {{ issue = \"#1\", one_best = \"{one_best}\" }}");
+        let r = eval(&issue);
+        assert_eq!(r.status, AccuracyStatus::Pass, "{:?}", r.details);
+        assert!(r.details.iter().any(|d| d.contains("known")));
+        let r = eval(&format!("{issue}\nbaseline = \"金谷\""));
+        assert_eq!(
+            r.failure,
+            Some(Failure::Baseline),
+            "no exemption for baseline"
+        );
+        let r = eval(&format!("{issue}\n[window]\nn = 1\nabsent = [\"金谷\"]"));
+        assert_eq!(r.failure, Some(Failure::Window), "{:?}", r.details);
+
+        // (2) Neither width is expected: Top1.
+        let r = eval_expecting("他", "");
+        assert_eq!(r.failure, Some(Failure::Top1));
+
+        // (3) One width exempt, the other not and not expected either: the
+        // user sees no right answer.
+        let r = eval_expecting("他", &issue);
+        assert_eq!(r.failure, Some(Failure::Top1), "{:?}", r.details);
+
+        // (7) `window_top1` K is what the list shows and the 1-best is not
+        // `expected`: the list is right by its own want, so Width, not Top1
+        // (dropping the list's want from the Top1 test turns this into Top1).
+        let r = eval_expecting("他", "window_top1 = \"金谷\"");
+        assert_eq!(r.failure, Some(Failure::Width), "{:?}", r.details);
+
+        // (8) The no-history baseline is held at both widths: one that
+        // matches the 1-best but not the list's #1 is a Baseline failure.
+        let r = eval(&format!("baseline = \"{one_best}\""));
+        assert_eq!(r.failure, Some(Failure::Baseline), "{:?}", r.details);
+        assert!(r.details.iter().any(|d| d.contains("candidate #1")));
+
+        // (6) The list shows `expected` while `window_top1` wants something
+        // else, and the 1-best is wrong: a right answer is on screen, so
+        // this is a Width failure, not Top1.
+        let r = eval("window_top1 = \"他\"");
+        assert_eq!(r.failure, Some(Failure::Width), "{:?}", r.details);
+        assert_eq!(r.actual, "金谷");
+
+        // (5) The named disagreement is gone (both widths show what the
+        // case wants): the exemption is stale.
+        let r = eval_expecting(
+            &one_best,
+            &format!(
+                "window_top1 = \"金谷\"\nwidth_issue = {{ issue = \"#1\", one_best = \"{one_best}x\" }}"
+            ),
+        );
+        assert_eq!(r.failure, Some(Failure::Width), "{:?}", r.details);
+        assert!(r.details.iter().any(|d| d.contains("update or remove")));
     }
 }

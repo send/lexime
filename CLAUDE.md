@@ -72,7 +72,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 ### 運用ルール
 
 - **skip 以外は全 pass を維持する**。fail があれば修正するか skip にする
-- **skip には issue リンク必須**（理由なし skip 禁止）。幅の不一致を報告のみにする `width_issue` も同じく issue リンク必須
+- **skip には issue リンク必須**（理由なし skip 禁止）。幅の不一致を報告のみにする `width_issue` も同じく issue リンク必須（1 幅だけを名指しする。両幅の免除は top-1 そのものの免除なので skip + issue で扱う）
 - skip ケースは定期的にレビューし、修正済みなら skip を外す
 - **コスト・重み・reranker・辞書ソース・変換パス変更時**: 事前に両方の accuracy テストで現状確認し、PR に before/after の結果を貼る
 - **変換精度バグの修正時**: regression カテゴリのケース追加を推奨

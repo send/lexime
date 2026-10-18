@@ -39,6 +39,20 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
+    /// The paths of the cost model's population (origin Viterbi or
+    /// Resegment) after rerank, before admission and the other stages: the
+    /// set a surface must be in for this run to have been able to choose it.
+    /// For callers comparing two populations (`candidates::widths`); not part
+    /// of the JSON output.
+    #[serde(skip)]
+    pub model_paths: Vec<ModelPath>,
+}
+
+/// A path of the cost model's population (see [`ExplainResult::model_paths`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelPath {
+    pub surface: String,
+    pub origin: PathOrigin,
 }
 
 /// A path cost-gap admission dropped.
@@ -120,6 +134,12 @@ pub struct ExplainPath {
     /// is shown here and not per segment). Empty without a connection
     /// matrix.
     pub single_kanji_segments: Vec<SingleKanjiSegment>,
+    /// Position in `viterbi_nbest`'s output (after its surface dedup, before
+    /// any stage reorders). Set only for a path Viterbi made and the model
+    /// priced (`origin == Viterbi`, `priced_by.is_model()`); `None` for a
+    /// resegment, an offer, a policy path or a path another stage repriced.
+    /// Tells a path the population cut from one it kept (#361).
+    pub viterbi_rank: Option<usize>,
 }
 
 /// A one-character-reading segment with kanji in its surface, whatever its
@@ -186,6 +206,11 @@ struct PreHistorySnapshot {
     segment_count: usize,
 }
 
+/// Each surface of the Viterbi output with its `viterbi_cost` and position
+/// (`viterbi_nbest` has already deduped by surface, so positions are
+/// consecutive).
+type ViterbiOutput = HashMap<String, (i64, usize)>;
+
 /// Diagnostic observer.
 ///
 /// Keys are `ScoredPath::surface_key()` — i.e. the concatenated surface — so
@@ -198,8 +223,8 @@ struct ExplainObserver<'a> {
     /// Needed so the displayed breakdown matches `history_rerank`'s
     /// function-word exclusion for per-segment unigram boosts.
     conn: Option<&'a ConnectionMatrix>,
-    /// viterbi_cost before resegment/rerank — the raw Viterbi output.
-    original_costs: HashMap<String, i64>,
+    /// The raw Viterbi output, before resegment / rerank.
+    viterbi: ViterbiOutput,
     /// State at the post-rerank / pre-history-rerank boundary.
     pre_history: HashMap<String, PreHistorySnapshot>,
     /// Breakdown and segment count of each final Override-priced path, as
@@ -216,6 +241,7 @@ struct ExplainObserver<'a> {
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
     anchor: i64,
+    model_paths: Vec<ModelPath>,
 }
 
 impl<'a> ExplainObserver<'a> {
@@ -228,7 +254,7 @@ impl<'a> ExplainObserver<'a> {
         Self {
             history,
             conn,
-            original_costs: HashMap::new(),
+            viterbi: HashMap::new(),
             pre_history: HashMap::new(),
             override_boosts: HashMap::new(),
             model_costs: HashMap::new(),
@@ -237,21 +263,31 @@ impl<'a> ExplainObserver<'a> {
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
             anchor: 0,
+            model_paths: Vec::new(),
         }
     }
 }
 
 impl PostprocessObserver for ExplainObserver<'_> {
     fn after_viterbi(&mut self, paths: &[ScoredPath]) {
-        self.original_costs = paths
+        self.viterbi = paths
             .iter()
-            .map(|p| (p.surface_key(), p.viterbi_cost))
+            .enumerate()
+            .map(|(rank, p)| (p.surface_key(), (p.viterbi_cost, rank)))
             .collect();
     }
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
         self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
+        self.model_paths = paths
+            .iter()
+            .filter(|p| p.origin.is_model())
+            .map(|p| ModelPath {
+                surface: p.surface_key(),
+                origin: p.origin,
+            })
+            .collect();
         for p in paths {
             let breakdown = match self.history {
                 Some(h) => compute_history_boost(p, h.history, self.conn, h.now),
@@ -392,10 +428,23 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 // Public API
 // ---------------------------------------------------------------------------
 
+/// The `viterbi_rank` of a final path: its position in `viterbi_nbest`'s
+/// output, only for a path Viterbi made whose price the model still owns. A
+/// Viterbi path another stage repriced (`resolve_duplicate` keeps the
+/// existing path and writes the cheaper candidate's `priced_by` onto it) has
+/// no rank: its price is not the Viterbi one the rank describes.
+fn viterbi_rank_of(scored: &ScoredPath, viterbi: &ViterbiOutput) -> Option<usize> {
+    if scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model() {
+        viterbi.get(&scored.surface_key()).map(|&(_, rank)| rank)
+    } else {
+        None
+    }
+}
+
 /// Run the full conversion pipeline and capture detailed cost breakdown.
 ///
 /// Uses `postprocess_observed` over the same oversample as production N-best
-/// (`nbest_oversample`) to follow the exact same pipeline as production
+/// (`population`) to follow the exact same pipeline as production
 /// conversion, with an observer that records cost snapshots at each stage
 /// for diagnostic output. History decays against the caller's `now`.
 pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainResult {
@@ -415,6 +464,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             cost_gap_bound: max_cost_gap.max(RESCUE_OFFSET),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
+            model_paths: Vec::new(),
         };
     }
 
@@ -424,7 +474,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         .collect();
 
     let cost_fn = DefaultCostFunction::new(conn);
-    let oversample = super::nbest_oversample(n, history.is_some());
+    let oversample = super::population(n, history.is_some());
     let mut raw_paths = viterbi_nbest(&lattice, &cost_fn, oversample);
 
     let mut observer = ExplainObserver::new(conv);
@@ -453,9 +503,9 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             let pre = scored.pre_history_cost();
             let original = if scored.priced_by.is_model() {
                 observer
-                    .original_costs
+                    .viterbi
                     .get(&key)
-                    .copied()
+                    .map(|&(cost, _)| cost)
                     .or(model_cost)
                     .unwrap_or(pre)
             } else {
@@ -501,6 +551,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 model_cost,
                 price_clamp,
                 repriced: scored.priced_by != scored.origin,
+                viterbi_rank: viterbi_rank_of(scored, &observer.viterbi),
                 single_kanji_segments: observer.single_kanji.remove(&key).unwrap_or_default(),
             }
         })
@@ -515,6 +566,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         cost_gap_bound: ctx.max_cost_gap.max(RESCUE_OFFSET),
         cost_gap_anchor: observer.anchor,
         dropped_by_cost_gap,
+        model_paths: std::mem::take(&mut observer.model_paths),
     }
 }
 
@@ -777,28 +829,6 @@ mod tests {
         assert!(!best.segments.is_empty());
     }
 
-    /// A lattice whose top-1 depends on the oversample through rerank's
-    /// argmin (#361): the three cheapest Viterbi paths are katakana / Latin
-    /// spellings the script feature penalises; 金谷 is 4th in Viterbi order
-    /// but cheapest after features. An oversample of 3 (n=1) never sees it.
-    /// Every dictionary path is one segment.
-    fn oversample_sensitive() -> (TrieDictionary, ConnectionMatrix) {
-        let e = crate::converter::testutil::entry_with_id;
-        let dict = TrieDictionary::from_entries(vec![(
-            "かなや".into(),
-            vec![
-                e("カナヤ", 0, 1),
-                e("KANAYA", 10, 2),
-                e("kanaya", 20, 3),
-                e("金谷", 30, 4),
-            ],
-        )]);
-        (
-            dict,
-            ConnectionMatrix::new_owned(5, 0, 0, Vec::new(), vec![0i16; 25]),
-        )
-    }
-
     /// The #353 record: the two cheapest paths (可|な|や, 課|な|や) have two
     /// 4000 transitions; カナ|や connects at 0 but is the 4th-cheapest path.
     /// A stage that measured from the population's minimum rather than the
@@ -822,13 +852,23 @@ mod tests {
     }
 
     /// explain describes the production N-best: same paths, same order, at
-    /// every n. The oversample decides which paths rerank sees, so a
-    /// different population can swap even the top-1. The learned arms run
-    /// on the multi-segment fixture, whose 仮名屋 / カナや are not the #1.
+    /// every n. The population decides which paths rerank sees, so a
+    /// different population can swap even the top-1: the two deep fixtures
+    /// put rerank's argmin at Viterbi's 13th path (no history) and a learned
+    /// path at its 41st, so the populations 10 / 12 / 15 (no history) and
+    /// 30 / 50 (history) of n = 1..=6 each see a different set (#361). The
+    /// other learned arms run on the multi-segment fixture, whose 仮名屋 /
+    /// カナや are not the #1.
     #[test]
     fn test_explain_paths_match_production_nbest() {
         let now = now_epoch();
-        let sensitive = oversample_sensitive();
+        let deep_argmin = crate::converter::testutil::deep_argmin_kanaya(12);
+        let deep_learned = crate::converter::testutil::deep_learned_kanaya(40);
+        let mut deep_h = UserHistory::new();
+        deep_h.record(&[(
+            "かなや".into(),
+            crate::converter::testutil::DEEP_LEARNED.into(),
+        )]);
         let multi_segment = multi_segment_kanaya();
         // Admission drops 可|な|や here: explain must observe the same drops
         // production makes.
@@ -847,8 +887,9 @@ mod tests {
         );
         let mut rotated_at = 0;
         for ((dict, conn), history, is_stale) in [
-            (&sensitive, None, false),
-            (&sensitive, Some(&h), false),
+            (&deep_argmin, None, false),
+            (&deep_argmin, Some(&h), false),
+            (&deep_learned, Some(&deep_h), false),
             (&multi_segment, None, false),
             (&multi_segment, Some(&h), false),
             (&multi_segment, Some(&learned), false),
@@ -888,6 +929,27 @@ mod tests {
             }
         }
         assert_eq!(rotated_at, 5, "the stale arm rotates at every n >= 2");
+        // The deep fixtures are not hollow: the top-1 does depend on n, on the
+        // side of the cut the populations above put it.
+        let top = |(dict, conn): &(TrieDictionary, ConnectionMatrix), h, n| {
+            explain(
+                &crate::converter::ConversionContext::new(dict, Some(conn)).with_history(h, now),
+                "かなや",
+                n,
+            )
+            .paths[0]
+                .surface()
+        };
+        assert_ne!(top(&deep_argmin, None, 1), top(&deep_argmin, None, 5));
+        assert_eq!(top(&deep_argmin, None, 5), "金谷");
+        assert_ne!(
+            top(&deep_learned, Some(&deep_h), 1),
+            top(&deep_learned, Some(&deep_h), 2)
+        );
+        assert_eq!(
+            top(&deep_learned, Some(&deep_h), 2),
+            crate::converter::testutil::DEEP_LEARNED
+        );
         let (dict, conn) = &far;
         let result = explain(
             &crate::converter::ConversionContext::new(dict, Some(conn)),
@@ -901,15 +963,72 @@ mod tests {
                 .any(|d| d.surface == "可なや"),
             "the far arm has an admission drop, so explain == production is checked across one"
         );
-        // The fixture is sensitive: the two populations disagree on top-1.
-        let (dict, conn) = sensitive;
-        let head = |n| {
-            crate::converter::convert_nbest(&dict, Some(&conn), "かなや", n)[0]
-                .iter()
-                .map(|s| s.surface.as_str())
-                .collect::<String>()
-        };
-        assert_ne!(head(1), head(20));
+    }
+
+    /// A3/T-A3: `viterbi_rank` is the position in `viterbi_nbest`'s output
+    /// (after its surface dedup), on a path Viterbi made and the model priced.
+    /// 可奈屋 is reached by 可奈|屋 (cheaper) and by one entry; the dup takes
+    /// no position, so 加南屋 is at 3, not 4. Rerank's katakana penalty moves
+    /// カナヤ to the end of the final order, but not its rank.
+    #[test]
+    fn viterbi_rank_is_the_position_in_the_deduped_viterbi_output() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![
+            (
+                "かなや".into(),
+                vec![
+                    e("金谷", 0, 1),
+                    e("可奈屋", 20, 1),
+                    e("加南屋", 40, 1),
+                    e("カナヤ", 5, 1),
+                ],
+            ),
+            ("かな".into(), vec![e("可奈", 5, 1)]),
+            ("や".into(), vec![e("屋", 5, 1)]),
+        ]);
+        let conn = ConnectionMatrix::new_owned(2, 0, 0, Vec::new(), vec![0i16; 4]);
+        let ctx = crate::converter::ConversionContext::new(&dict, Some(&conn));
+        let result = explain(&ctx, "かなや", 20);
+        let rank = |surface: &str| path_by_surface(&result, surface).viterbi_rank;
+        assert_eq!(rank("金谷"), Some(0));
+        assert_eq!(rank("カナヤ"), Some(1));
+        assert_eq!(rank("可奈屋"), Some(2));
+        assert_eq!(rank("加南屋"), Some(3));
+        // Not a Viterbi path priced by the model: a variant offer.
+        let variant = path_by_surface(&result, "かなや");
+        assert_ne!(variant.origin, PathOrigin::Viterbi);
+        assert_eq!(variant.viterbi_rank, None);
+        for p in &result.paths {
+            assert_eq!(
+                p.viterbi_rank.is_some(),
+                p.origin == PathOrigin::Viterbi && p.priced_by.is_model(),
+                "{}",
+                p.surface()
+            );
+        }
+    }
+
+    /// A3/T-A3: a Viterbi path repriced by another stage (the clone path of
+    /// `resolve_duplicate`) keeps `origin == Viterbi` but has no rank.
+    #[test]
+    fn viterbi_rank_is_none_for_a_repriced_viterbi_path() {
+        let ranks = ViterbiOutput::from([(String::new(), (0, 3usize))]);
+        let mut p = ScoredPath::new(Vec::new(), 0, PathOrigin::Viterbi);
+        assert_eq!(viterbi_rank_of(&p, &ranks), Some(3));
+        for other in [
+            PathOrigin::KanjiVariant,
+            PathOrigin::PartialHiragana,
+            PathOrigin::HiraganaVariant,
+            PathOrigin::Katakana,
+            PathOrigin::Numeric,
+        ] {
+            p.priced_by = other;
+            assert_eq!(viterbi_rank_of(&p, &ranks), None, "{other:?}");
+        }
+        let mut reseg = ScoredPath::new(Vec::new(), 0, PathOrigin::Resegment);
+        assert_eq!(viterbi_rank_of(&reseg, &ranks), None);
+        reseg.priced_by = PathOrigin::Resegment;
+        assert_eq!(viterbi_rank_of(&reseg, &ranks), None);
     }
 
     /// A path that never wins (カナ|や) cannot change which paths survive:

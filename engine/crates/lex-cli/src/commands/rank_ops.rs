@@ -15,11 +15,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use lex_core::candidates::widths::production_tops;
 use lex_core::candidates::{
-    generate_candidates, generate_candidates_priced, generate_prediction_candidates,
-    CandidateResponse, PathPrice, PricedCandidates,
+    generate_candidates, generate_prediction_candidates, CandidateResponse, PathPrice,
+    PricedCandidates,
 };
-use lex_core::converter::{ConversionContext, ConvertedSegment, PathOrigin};
+use lex_core::converter::{ConversionContext, PathOrigin};
 use lex_core::settings::settings;
 
 /// Candidates shown on the first page of the candidate window. Mirrors
@@ -27,10 +28,7 @@ use lex_core::settings::settings;
 /// owns the value; change both together.
 pub const PAGE_SIZE: usize = 9;
 
-/// Concatenated surface of a conversion path.
-pub fn joined_surface(segments: &[ConvertedSegment]) -> String {
-    segments.iter().map(|s| s.surface.as_str()).collect()
-}
+pub use lex_core::converter::joined_surface;
 
 /// The candidate list as the IME builds it: N-best + learned injection +
 /// kana + predictions + lookup, at `candidates.max_results` — the limit the
@@ -54,21 +52,14 @@ pub fn production_prediction_candidates(
     generate_prediction_candidates(ctx, reading, settings().candidates.max_results)
 }
 
-/// [`production_candidates`] with its [`lex_core::candidates::CandidateDiagnostics`] from the same
-/// run — so a price is always the price of the path the list shows.
-pub fn production_candidates_priced(
-    ctx: &ConversionContext<'_>,
-    reading: &str,
-) -> PricedCandidates {
-    generate_candidates_priced(ctx, reading, settings().candidates.max_results)
-}
+pub use lex_core::candidates::production_candidates_priced;
 
-/// Top-1 at each width the user can see. They oversample differently, so
-/// rerank's argmin can differ between the populations and so can the top-1
-/// (#361).
+/// Top-1 at each of the two widths the user sees — the production ones,
+/// nothing else, from [`production_tops`] (the generator `lextool widths`
+/// reads too). They draw different populations (the 1-best's budget is per
+/// keystroke, the list's is larger), so rerank's argmin can differ between
+/// them and so can the top-1 (#361).
 pub struct Top1Widths {
-    /// N-best head at n=1 — the historical accuracy gate.
-    pub nbest_head: String,
     /// Synchronous 1-best shown while candidates are pending (the session's
     /// deferred-candidates response).
     pub one_best: String,
@@ -83,12 +74,10 @@ impl Top1Widths {
 }
 
 pub fn top1_widths(ctx: &ConversionContext<'_>, reading: &str) -> Top1Widths {
-    let lattice = ctx.build_lattice(reading);
-    let head = ctx.convert_nbest_from_lattice(&lattice, 1);
+    let tops = production_tops(ctx, ctx, reading);
     Top1Widths {
-        nbest_head: head.first().map(|p| joined_surface(p)).unwrap_or_default(),
-        one_best: joined_surface(&ctx.convert_from_lattice(&lattice)),
-        list: production_candidates(ctx, reading),
+        one_best: tops.one_best,
+        list: tops.list.response,
     }
 }
 
@@ -135,9 +124,11 @@ pub fn width_disagreements(w: &Top1Widths, expected: &str, list_top: &str) -> Ve
 }
 
 /// A known width disagreement, named exactly: the issue tracking it and the
-/// top-1 each disagreeing width shows. Only that disagreement is exempt —
-/// any other width, a different top-1, or the no-history baseline still
+/// top-1 of the one disagreeing width. Only that disagreement is exempt —
+/// the other width, a different top-1, or the no-history baseline still
 /// fails the case, and so does the exemption once it no longer occurs.
+/// Naming both widths is rejected ([`WidthIssue::validate`]): it would exempt
+/// the top-1 itself, which is a skip with an issue.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WidthIssue {
@@ -172,7 +163,14 @@ impl WidthIssue {
             ));
         }
         if self.one_best.is_none() && self.list_top.is_none() {
-            return Err("must name the disagreement it covers (one_best and/or list_top)".into());
+            return Err("must name the disagreement it covers (one_best or list_top)".into());
+        }
+        if self.one_best.is_some() && self.list_top.is_some() {
+            return Err(
+                "names both widths (one_best and list_top): that exempts the top-1 itself, \
+                 which is a skip with an issue"
+                    .into(),
+            );
         }
         if self.one_best.as_deref() == Some(expected) {
             return Err(format!(
@@ -783,6 +781,7 @@ pub fn diff_baseline(
 mod tests {
     use super::*;
     use lex_core::candidates::CandidateDiagnostics;
+    use lex_core::converter::ConvertedSegment;
 
     fn resp(surfaces: &[&str], nbest: &[&str]) -> CandidateResponse {
         CandidateResponse {
@@ -953,6 +952,7 @@ absent = ["x"]"#
                 })
                 .collect(),
             injected: injected.iter().map(|s| s.to_string()).collect(),
+            ..CandidateDiagnostics::default()
         };
         ReadingView::new(
             reading,
@@ -1067,6 +1067,7 @@ absent = ["x"]"#
                         })
                         .collect(),
                     injected: Vec::new(),
+                    ..CandidateDiagnostics::default()
                 },
             },
         );
@@ -1216,6 +1217,9 @@ absent = ["x"]"#
             "names the expected value"
         );
         assert!(issue(None, Some("期")).validate("期", "期").is_err());
+        // T-A6 (4): both widths named exempts the top-1 itself (a skip).
+        let both = issue(Some("他"), Some("二個")).validate("期", "期");
+        assert!(both.unwrap_err().contains("both widths"));
         let mut unlinked = issue(None, Some("二個"));
         unlinked.issue = "later".into();
         assert!(unlinked.validate("期", "期").is_err());

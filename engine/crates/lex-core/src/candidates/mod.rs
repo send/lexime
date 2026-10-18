@@ -11,6 +11,7 @@ use crate::converter::{
 
 pub mod predictive;
 pub mod standard;
+pub mod widths;
 
 #[cfg(test)]
 mod now_tests;
@@ -46,8 +47,9 @@ pub struct PricedCandidates {
     pub diagnostics: CandidateDiagnostics,
 }
 
-/// What the Standard-mode generator records about the list it built. Empty
-/// for punctuation input, whose paths are not N-best paths.
+/// What the Standard-mode generator records about the list it built. For
+/// punctuation input, whose paths are not N-best paths, only `top_source`
+/// (`Punctuation`) is set.
 #[derive(Debug, Default)]
 pub struct CandidateDiagnostics {
     /// `prices[i]` is the price of `response.paths[i]`.
@@ -55,6 +57,35 @@ pub struct CandidateDiagnostics {
     /// Learned surfaces the history-injection stage added to the list (those
     /// no N-best path had already placed), in list order.
     pub injected: Vec<String>,
+    /// Which stage put the list's #1 (`response.surfaces[0]`) there. `None`
+    /// for an empty reading.
+    pub top_source: Option<TopSource>,
+}
+
+/// Which stage of the Standard generator *placed* the list's #1 at index 0
+/// (a promotion included). Who put the surface in the list or set its price
+/// is `replay-commit-log`'s `Owner`; the two differ when a promoted kana is
+/// also an N-best path — as intended: M9 is judged on the placing stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum TopSource {
+    /// The `i`-th N-best path (postprocess order); `i = 0` unless the
+    /// N-best's first paths were empty.
+    Path(usize),
+    /// The reading itself, placed at index 0 by the kana promotion (a learned
+    /// kana over a #1 with no history of its own, `standard.rs`). Recorded
+    /// whenever that branch decides index 0, even when the kana was already
+    /// there (then `from == Some(0)`).
+    KanaPromoted {
+        /// Its position in the list before the promotion, if it was there.
+        from: Option<usize>,
+        kana_boost: i64,
+    },
+    /// A learned surface the injection stage added (N-best empty).
+    Injected,
+    /// The reading, appended with no learning (N-best empty).
+    Kana,
+    /// Punctuation input, which has no N-best.
+    Punctuation,
 }
 
 /// The final price of an N-best path and the stage that set it.
@@ -150,11 +181,28 @@ pub fn generate_candidates_priced(
     if reading.is_empty() || punctuation_alternatives(reading).is_some() {
         return PricedCandidates {
             response: generate_candidates(ctx, reading, max_results),
-            diagnostics: CandidateDiagnostics::default(),
+            diagnostics: CandidateDiagnostics {
+                top_source: (!reading.is_empty()).then_some(TopSource::Punctuation),
+                ..CandidateDiagnostics::default()
+            },
         };
     }
     let lattice = build_lattice(ctx.dict, reading);
     standard::generate_normal_priced(ctx, reading, max_results, &lattice)
+}
+
+/// [`generate_candidates_priced`] at the production list budget
+/// (`candidates.max_results`, the limit the async worker uses): the one place
+/// the tools ask for "the candidate list as the IME builds it".
+pub fn production_candidates_priced(
+    ctx: &ConversionContext<'_>,
+    reading: &str,
+) -> PricedCandidates {
+    generate_candidates_priced(
+        ctx,
+        reading,
+        crate::settings::settings().candidates.max_results,
+    )
 }
 
 /// Unified candidate generation from a pre-built lattice.

@@ -134,10 +134,7 @@ pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
     ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
 }
 
-/// The surface a conversion path spells.
-pub fn joined(path: &[super::ConvertedSegment]) -> String {
-    path.iter().map(|s| s.surface.as_str()).collect()
-}
+pub use super::joined_surface as joined;
 
 /// A moment ahead of any wall clock a test runs under: a history last used
 /// here ages as 0 against the clock (a negative age saturates), so a read that
@@ -201,4 +198,54 @@ pub fn far_multi_segment_kanaya() -> (TrieDictionary, ConnectionMatrix) {
         dict,
         ConnectionMatrix::new_owned(6, 0, 0, Vec::new(), costs),
     )
+}
+
+/// `かなや` with `depth` katakana spellings (cheapest in Viterbi order, but
+/// penalised by rerank's script feature) ahead of 金谷, so that 金谷 is
+/// rerank's argmin without a history and Viterbi's `depth + 1`-th path.
+/// A population of at most `depth` never sees it (#361). Every path is one
+/// segment.
+pub fn deep_argmin_kanaya(depth: usize) -> (TrieDictionary, ConnectionMatrix) {
+    let mut entries: Vec<DictEntry> = (0..depth)
+        .map(|i| entry_with_id(&format!("カナヤ{}", "ア".repeat(i)), (i as i16) * 10, 1))
+        .collect();
+    entries.push(entry_with_id("金谷", (depth as i16) * 10, 1));
+    (
+        TrieDictionary::from_entries(vec![("かなや".into(), entries)]),
+        ConnectionMatrix::new_owned(2, 0, 0, Vec::new(), vec![0i16; 4]),
+    )
+}
+
+/// `かなや` with `rank` kanji spellings in Viterbi order and 学習 at
+/// position `rank + 1`. Learned once, it is the #1 of any population that
+/// reaches it and nothing else is. Every path is one segment.
+pub fn deep_learned_kanaya(rank: usize) -> (TrieDictionary, ConnectionMatrix) {
+    let mut entries: Vec<DictEntry> = (0..rank)
+        .map(|i| {
+            let c = char::from_u32(0x4E00 + i as u32).unwrap();
+            entry_with_id(&c.to_string(), (i as i16) * 10, 1)
+        })
+        .collect();
+    entries.push(entry_with_id(DEEP_LEARNED, (rank as i16) * 10, 1));
+    (
+        TrieDictionary::from_entries(vec![("かなや".into(), entries)]),
+        ConnectionMatrix::new_owned(2, 0, 0, Vec::new(), vec![0i16; 4]),
+    )
+}
+
+/// The surface [`deep_learned_kanaya`] puts at the learned position.
+pub const DEEP_LEARNED: &str = "学習";
+
+/// A history that learned each sentence (reading, surface pairs) once, at
+/// [`T0`].
+pub fn learned(sentences: &[&[(&str, &str)]]) -> crate::user_history::UserHistory {
+    let mut h = crate::user_history::UserHistory::new();
+    for pairs in sentences {
+        let segs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|&(r, s)| (r.to_string(), s.to_string()))
+            .collect();
+        h.record_at(&segs, T0);
+    }
+    h
 }

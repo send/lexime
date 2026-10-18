@@ -195,6 +195,21 @@ impl Fixture {
             run(name, &args, &[]);
         }
         run(
+            "widths --json",
+            &[
+                "widths",
+                &dict,
+                "--conn",
+                &conn,
+                "--history",
+                &hist,
+                "--input",
+                &readings,
+                "--json",
+            ],
+            &[],
+        );
+        run(
             "accuracy --history",
             &[
                 "accuracy",
