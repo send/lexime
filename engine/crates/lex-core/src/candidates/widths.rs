@@ -183,6 +183,9 @@ pub struct Widths {
     /// `None` when the list's top is not a model path (origin Viterbi or
     /// Resegment, priced by the model): the question of a population's
     /// reach does not arise for an offer, a policy path or a repriced one.
+    /// Also `None` for punctuation input, whose list the Standard generator
+    /// builds from the punctuation table, not from the N-best: `list` is then
+    /// explain's N-best, a pipeline production did not run for this list.
     pub list_top_in_one_best_set: Option<bool>,
 }
 
@@ -257,6 +260,7 @@ pub fn widths(
         list_top_in_one_best_set: list
             .top
             .as_ref()
+            .filter(|_| standard_top.source != Some(TopSource::Punctuation))
             .filter(|t| t.origin.is_model() && t.priced_by.is_model())
             .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
@@ -510,6 +514,21 @@ mod tests {
         let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
         assert_eq!(w.standard_top.source, Some(TopSource::Path(0)));
         assert_eq!(w.standard_top.path.as_ref().unwrap().surface, "京");
+    }
+
+    /// Punctuation input: the list comes from the punctuation table, so the
+    /// N-best explain runs for `list` did not build it and no inclusion is
+    /// reported, even where that N-best's #0 is a model path.
+    #[test]
+    fn a_punctuation_list_reports_no_inclusion() {
+        let e = entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![("。".into(), vec![e("。", 0, 1)])]);
+        let w = widths(&dict, None, None, "。", T0, T0);
+        assert_eq!(w.standard_top.source, Some(TopSource::Punctuation));
+        assert!(w.standard_top.path.is_none());
+        let top = w.list.top.as_ref().expect("explain's N-best has a #0");
+        assert!(top.origin.is_model() && top.priced_by.is_model());
+        assert_eq!(w.list_top_in_one_best_set, None);
     }
 
     /// The 1-best and the list's #1 are the production ones: the same
