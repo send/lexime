@@ -74,6 +74,12 @@ pub(crate) struct ScoredPath {
     /// keeps. Recorded by `apply_history_boost` — in history reranking, and
     /// in the Override stage for the paths it creates or reprices.
     pub whole_path_boost: i64,
+    /// Cost-gap admission's verdict: the path's pre-history cost above the
+    /// anchor, for a path admission kept by that price. `None` for the head
+    /// and the exempt paths (learned, the typed kana), which it keeps
+    /// whatever their price, and for a price set after admission (a policy
+    /// candidate, or a path one repriced). Diagnostics only (replay bins it).
+    pub admission_gap: Option<i64>,
     /// Who produced `segments`.
     pub origin: PathOrigin,
     /// Who set `viterbi_cost` (differs from `origin` when a duplicate's
@@ -89,6 +95,7 @@ impl ScoredPath {
             viterbi_cost: cost,
             history_boost: 0,
             whole_path_boost: 0,
+            admission_gap: None,
             origin,
             priced_by: origin,
         }

@@ -448,6 +448,12 @@ category = "numeric"
 tags = ["kanji"]
 note = "辞書エントリ 百(ひゃく) が Viterbi top-1。NumericRewriter の単漢字候補(低優先度)とは別"
 
+# The number and katakana fallbacks (anchor + 13000 / + 18000, #361 F3) stay
+# on the first page after the dictionary path and the kana.
+[cases.window]
+n = 9
+present_nbest = ["100", "１００", "ヒャク"]
+
 [[cases]]
 reading = "いちまん"
 expected = "一万"

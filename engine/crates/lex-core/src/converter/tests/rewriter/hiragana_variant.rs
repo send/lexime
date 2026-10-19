@@ -1,4 +1,4 @@
-use crate::converter::rewriter::{run_rewriters, HiraganaVariantRewriter, RewriteStage, Rewriter};
+use crate::converter::rewriter::{run_rewriters, HiraganaVariantRewriter, Rewriter};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
 #[test]
@@ -107,7 +107,7 @@ fn test_hiragana_variant_dedup_via_run_rewriters() {
         ),
     ];
 
-    run_rewriters(&[&rw], &mut paths, "され", RewriteStage::Model, None);
+    run_rewriters(&[&rw], &mut paths, "され");
 
     assert_eq!(paths.len(), 2, "should not add duplicate hiragana variant");
 }

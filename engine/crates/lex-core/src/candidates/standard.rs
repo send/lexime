@@ -66,6 +66,7 @@ fn generate_normal(
         d.prices.extend(scored.iter().map(|p| PathPrice {
             cost: p.viterbi_cost,
             priced_by: p.priced_by,
+            admission_gap: p.admission_gap,
         }));
     }
 

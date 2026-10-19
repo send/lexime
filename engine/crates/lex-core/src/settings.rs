@@ -198,7 +198,9 @@ pub struct HistorySettings {
 /// (b3) still fails above 8000, so no T passes; the filter's removal changed
 /// none of these counts. 8000 stays until the rule is re-decided (#375).
 /// Re-run the rule when rank>0 selections grow by 200, when a change to T
-/// is proposed, and when the Mozc pin moves (#273).
+/// is proposed, and when the Mozc pin moves (#273). Changing the value
+/// fails the compile-time assert on the katakana / number policy offsets
+/// (`converter::rewriter`), which then have to be re-decided (plan §27-8).
 pub const DEFAULT_CANDIDATE_MAX_COST_GAP: i64 = 8000;
 
 #[derive(Debug, Clone, Deserialize)]

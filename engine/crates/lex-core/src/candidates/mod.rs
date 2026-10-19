@@ -96,6 +96,11 @@ pub struct PathPrice {
     /// can cost less than the first.
     pub cost: i64,
     pub priced_by: PathOrigin,
+    /// The pre-history gap to the anchor admission kept the path by
+    /// ([`crate::converter`]'s `ScoredPath::admission_gap`); `None` when
+    /// admission did not judge the price: the head, a learned or kana path,
+    /// a Numeric / Katakana price.
+    pub admission_gap: Option<i64>,
 }
 
 /// Look up punctuation alternatives for a reading.

@@ -1,7 +1,18 @@
 use crate::converter::lattice::Lattice;
-use crate::converter::rewriter::{run_rewriters, NumericRewriter, RewriteStage, Rewriter};
+use crate::converter::postprocess::NoopObserver;
+use crate::converter::rewriter::{
+    run_policy_rewriters, NumericRewriter, PolicyRewriter, NUMERIC_POLICY_OFFSET,
+};
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
+
+/// The rewriter's candidates without their prices.
+fn generated(rw: &dyn PolicyRewriter, reading: &str) -> Vec<ScoredPath> {
+    rw.policy_candidates(reading)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
+}
 
 /// Build a tiny ConnectionMatrix where POS id `counter_id` is tagged as
 /// counter (role 7). Other ids default to ContentWord (role 0).
@@ -26,27 +37,16 @@ fn test_numeric_rewriter_generates_candidates() {
         connection: None,
         anchor: 3000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "にじゅうさん".into(),
-            surface: "に十三".into(),
-            left_id: 10,
-            right_id: 10,
-            word_cost: 0,
-        }],
-        3000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "にじゅうさん");
+    let result = generated(&rw, "にじゅうさん");
 
     assert_eq!(result.len(), 3);
     assert_eq!(result[0].surface_key(), "二十三");
-    assert_eq!(result[0].viterbi_cost, 3000); // compound → best_cost
+    assert_eq!(result[0].viterbi_cost, 3000); // compound → the anchor
     assert_eq!(result[1].surface_key(), "23");
-    assert_eq!(result[1].viterbi_cost, 3000 + 5000);
+    assert_eq!(result[1].viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
     assert_eq!(result[2].surface_key(), "２３");
-    assert_eq!(result[2].viterbi_cost, 3000 + 5001);
+    assert_eq!(result[2].viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET + 1);
 }
 
 #[test]
@@ -68,13 +68,7 @@ fn test_numeric_rewriter_kanji_duplicate_skip() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(
-        &[&rw],
-        &mut paths,
-        "にじゅうさん",
-        RewriteStage::Override,
-        None,
-    );
+    run_policy_rewriters(&[&rw], &mut paths, "にじゅうさん", None, &mut NoopObserver);
 
     // Kanji already exists, only halfwidth + fullwidth added
     assert_eq!(paths.len(), 3);
@@ -102,12 +96,12 @@ fn test_numeric_rewriter_single_char_kanji_low_priority() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "じゅう", RewriteStage::Override, None);
+    run_policy_rewriters(&[&rw], &mut paths, "じゅう", None, &mut NoopObserver);
 
-    // 十 is single-char → base_cost (not best_cost), all after 中
+    // 十 is single-char → a fallback (anchor + NUMERIC_POLICY_OFFSET), all after 中
     assert_eq!(paths[0].surface_key(), "中");
     let kanji = paths.iter().find(|p| p.surface_key() == "十").unwrap();
-    assert_eq!(kanji.viterbi_cost, 3000 + 5000);
+    assert_eq!(kanji.viterbi_cost, 3000 + NUMERIC_POLICY_OFFSET);
 }
 
 #[test]
@@ -117,19 +111,8 @@ fn test_numeric_rewriter_skips_non_numeric() {
         connection: None,
         anchor: 1000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "きょう".into(),
-            surface: "今日".into(),
-            left_id: 0,
-            right_id: 0,
-            word_cost: 0,
-        }],
-        1000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "きょう");
+    let result = generated(&rw, "きょう");
 
     assert!(
         result.is_empty(),
@@ -156,7 +139,7 @@ fn test_numeric_rewriter_skips_duplicate() {
         PathOrigin::Viterbi,
     )];
 
-    run_rewriters(&[&rw], &mut paths, "いち", RewriteStage::Override, None);
+    run_policy_rewriters(&[&rw], &mut paths, "いち", None, &mut NoopObserver);
 
     // Half-width "1" already exists; kanji "一" (single-char) + full-width "１" added
     assert_eq!(paths.len(), 3);
@@ -189,25 +172,14 @@ fn test_numeric_counter_generates_kanji_compound() {
         connection: Some(&conn),
         anchor: 5000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "さんぜんえん".into(),
-            surface: "産前園".into(),
-            left_id: 1,
-            right_id: 1,
-            word_cost: 0,
-        }],
-        5000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "さんぜんえん");
+    let result = generated(&rw, "さんぜんえん");
 
     let kanji = result
         .iter()
         .find(|p| p.surface_key() == "三千円")
         .expect("should generate 三千円");
-    // Cheapest counter at the position is anchored at best_cost - 500
+    // Cheapest counter at the position is anchored at anchor - COUNTER_COMPOUND_DISCOUNT
     // (lifts the kanji compound above the existing top-1).
     assert_eq!(kanji.viterbi_cost, 4500);
     assert!(result.iter().any(|p| p.surface_key() == "3000円"));
@@ -242,19 +214,8 @@ fn test_numeric_counter_dedupes_multi_pos_counter() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "ごえん".into(),
-            surface: "ご縁".into(),
-            left_id: 1,
-            right_id: 1,
-            word_cost: 0,
-        }],
-        4000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "ごえん");
+    let result = generated(&rw, "ごえん");
 
     let kanji_count = result.iter().filter(|p| p.surface_key() == "五円").count();
     assert_eq!(
@@ -278,19 +239,8 @@ fn test_numeric_counter_skips_when_prefix_not_a_number() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "あいえん".into(),
-            surface: "愛縁".into(),
-            left_id: 1,
-            right_id: 1,
-            word_cost: 0,
-        }],
-        4000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "あいえん");
+    let result = generated(&rw, "あいえん");
 
     assert!(result.iter().all(|p| !p.surface_key().contains('円')));
 }
@@ -304,19 +254,8 @@ fn test_numeric_counter_disabled_without_lattice_or_conn() {
         connection: None,
         anchor: 5000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "さんぜんえん".into(),
-            surface: "産前園".into(),
-            left_id: 0,
-            right_id: 0,
-            word_cost: 0,
-        }],
-        5000,
-        PathOrigin::Viterbi,
-    )];
 
-    let result = rw.generate(&paths, "さんぜんえん");
+    let result = generated(&rw, "さんぜんえん");
 
     assert!(result.is_empty());
 }
@@ -340,21 +279,10 @@ fn test_numeric_counter_deterministic_order_on_cost_tie() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "ごねん".into(),
-            surface: "ご年".into(),
-            left_id: 1,
-            right_id: 1,
-            word_cost: 0,
-        }],
-        4000,
-        PathOrigin::Viterbi,
-    )];
 
     let mut emit_orders: Vec<Vec<String>> = Vec::new();
     for _ in 0..5 {
-        let result = rw.generate(&paths, "ごねん");
+        let result = generated(&rw, "ごねん");
         let kanji_order: Vec<String> = result
             .iter()
             .filter(|p| p.surface_key().starts_with("五"))
@@ -391,20 +319,9 @@ fn test_numeric_counter_extreme_cost_no_overflow() {
         connection: Some(&conn),
         anchor: 4000,
     };
-    let paths = vec![ScoredPath::new(
-        vec![RichSegment {
-            reading: "ごえん".into(),
-            surface: "ご縁".into(),
-            left_id: 1,
-            right_id: 1,
-            word_cost: 0,
-        }],
-        4000,
-        PathOrigin::Viterbi,
-    )];
 
     // Should not panic; should still emit candidates for both counters.
-    let result = rw.generate(&paths, "ごえん");
+    let result = generated(&rw, "ごえん");
     assert!(result.iter().any(|p| p.surface_key() == "五円"));
     assert!(result.iter().any(|p| p.surface_key() == "五園"));
 }
@@ -442,12 +359,12 @@ fn learned_surface_outranks_number_compound() {
                 p.whole_path_boost = 1000;
             }
         };
-        run_rewriters(
-            &[&rw as &dyn Rewriter],
+        run_policy_rewriters(
+            &[&rw as &dyn PolicyRewriter],
             paths,
             "にじゅうさん",
-            RewriteStage::Override,
             Some(&boost),
+            &mut NoopObserver,
         )
     };
 
@@ -503,12 +420,12 @@ fn learned_index0_takes_its_compound_price() {
         p
     };
     let run = |mut paths: Vec<ScoredPath>| {
-        run_rewriters(
-            &[&rw as &dyn Rewriter],
+        run_policy_rewriters(
+            &[&rw as &dyn PolicyRewriter],
             &mut paths,
             "にじゅう",
-            RewriteStage::Override,
             Some(&boost),
+            &mut NoopObserver,
         );
         paths.iter().map(|p| p.surface_key()).collect::<Vec<_>>()
     };
