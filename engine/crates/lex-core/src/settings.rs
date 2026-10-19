@@ -184,23 +184,52 @@ pub struct HistorySettings {
 
 /// Default upper bound on a candidate's cost above the pre-history #1.
 ///
-/// Chosen by a rule, not by hand: the smallest T for which, replaying the
-/// commit log's rank>0 selections without history, (b1) lost + pushed off
-/// page 1 ≤ 1% of selections, (b2′) selections in the bin just below T
-/// ((T−2000, T]) ≤ 0.5%, and (b3) both accuracy corpora, the 3-width top-1
-/// check and every window pass (windows that pin admission are re-picked
-/// first). On 2026-09-28: 447 selections, 4 lost at 8000 (5 at 6000), 1 in
-/// (6000, 8000]. Re-run on 2026-10-01 with the structure filter measured
-/// from the #1 (#353): 505 selections, (b1) 1 at 8000 (3 at 6000), 2 in
-/// (6000, 8000] (19 in (4000, 6000]), and (b3) passes only at 8000 — still
-/// 8000. Re-run on 2026-10-14 after the structure filter was removed (#366):
-/// 589 selections, (b1) 0 at 8000, but 3 in (6000, 8000] — over (b2′) — and
-/// (b3) still fails above 8000, so no T passes; the filter's removal changed
-/// none of these counts. 8000 stays until the rule is re-decided (#375).
-/// Re-run the rule when rank>0 selections grow by 200, when a change to T
-/// is proposed, and when the Mozc pin moves (#273). Changing the value
-/// fails the compile-time assert on the katakana / number policy offsets
-/// (`converter::rewriter`), which then have to be re-decided (plan §27-8).
+/// Chosen by a rule, not by hand (re-decided in #375). Replay the commit
+/// log's rank>0 selections without history; lost(T) counts the selections
+/// listed by the same binary with the bound disabled (`i64::MAX`) and not
+/// listed at T. T is the smallest value on the 2000 grid for which
+/// (b1) lost(T) ≤ 1% of selections, (b1m) lost(T − 2000) ≤ 1% too (a
+/// margin of one bin against price drift), and (b3) both accuracy corpora
+/// pass at both widths with every window (windows that pin admission are
+/// re-picked first). The verdict is taken on the configuration that would
+/// ship — a new T also moves the policy offsets below — and a `--settings`
+/// arm only narrows the candidates. The incumbent is held while no
+/// verdict exists, even when it fails a criterion; the failing criterion
+/// is recorded here. A change that moves prices restarts the evaluation.
+/// Selections pushed off page 1 belong in (b1) too, but against which
+/// baseline is undecided (#375); until then (b1) counts lost only.
+/// Evidence for raising T comes almost only from rows logged before
+/// admission existed (later rows cannot show a surface admission
+/// dropped, unless it was learned), so (b1) passing at a higher T as the
+/// log grows is not by itself a reason to raise it: each run also states
+/// (b1) on those rows.
+///
+/// Earlier runs, for the record. They counted lost + pushed off page 1.
+/// The first compared against main before admission existed, close to the
+/// bound disabled; the next two compared against main at its default T,
+/// so at 8000 they show only what the change itself moved and are not
+/// lost counts. They also applied a since-retired criterion, (b2′): at most
+/// 0.5% of selections in (T − 2000, T].
+/// - 2026-09-28: 443 selections, 4 at 8000 (5 at 6000).
+/// - 2026-10-01 (#353): 505 selections, 1 at 8000, 3 at 6000 (vs main).
+/// - 2026-10-14 (#366): 589 selections, 0 at 8000 (vs main); no T passed
+///   (b2′) and (b3) together.
+/// - 2026-10-19 (#375): 594 selections (445 before admission), lost
+///   24 / 6 / 4 / 2 / 0 at 4000 to 12000. (b1) passes from 8000 (4 ≤ 4.45
+///   on the pre-admission rows too); (b1m) fails at 8000 (6 > 5.94; 5 >
+///   4.45). (b3) fails at 6000 on a window and at 10000 and above on the
+///   `さんど` history case, whose expected surface is re-decided in #393's
+///   fix (not a veto until then). Not measured on a shipping configuration,
+///   so there is no verdict: 8000 is held, and the evaluation restarts on
+///   the shipping configuration after #393's fix.
+///
+/// Re-run after a change that moves prices (#393, the Mozc pin #273), when
+/// a change to T is proposed, and re-check (b1m) every 200 new rank>0
+/// selections. Selections later removed with Fn+Delete still count as
+/// wanted, a bias of unknown size until deletions are logged (#394).
+/// Changing the value fails the compile-time assert on the katakana /
+/// number policy offsets (`converter::rewriter`), which then have to be
+/// re-decided.
 pub const DEFAULT_CANDIDATE_MAX_COST_GAP: i64 = 8000;
 
 #[derive(Debug, Clone, Deserialize)]
