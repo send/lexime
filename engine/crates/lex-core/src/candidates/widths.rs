@@ -53,7 +53,12 @@ impl TopPath {
 /// price and the history boost see it. Two widths' entries for one surface
 /// tell a split whose cause is who prices (or segments) the surface apart
 /// from which population drew it (#393).
-#[derive(Debug, Clone, Serialize)]
+///
+/// The list is explain's N-best through postprocess. Surfaces the production
+/// list adds after it (an injected learned surface, a promoted or appended
+/// kana) are absent unless that N-best also holds them, and where it does,
+/// the entry is that path's price, which did not decide a promotion.
+#[derive(Debug, Serialize)]
 pub struct ListEntry {
     pub origin: PathOrigin,
     pub priced_by: PathOrigin,
@@ -67,7 +72,7 @@ pub struct ListEntry {
 
 impl ListEntry {
     /// The entry of the first path of `r` carrying `surface`, `None` when
-    /// the width's final list has none.
+    /// none of its paths does.
     fn find(r: &ExplainResult, surface: &str) -> Option<Self> {
         r.path(surface).map(|p| Self {
             origin: p.origin,
@@ -226,11 +231,17 @@ pub struct Widths {
     /// dedup). By surface, whoever made or priced the list's top: a policy
     /// path or an offer is asked the same, so a census sorts a split by
     /// whether the 1-best's population reached the surface, not by who
-    /// priced it in the list.
+    /// priced it in the list. A surface no lattice path can make (a katakana
+    /// or kana offer, an injected learned surface) is `Some(false)`: no
+    /// population reaches it. The surface asked is explain's #0, not the
+    /// production list's #1 (`standard_top.surface`), which `surfaces` covers.
+    /// Before #393's tools change only a model-made #0 was asked, and every
+    /// other top was `None`.
     ///
-    /// `None` when the list has no #0, and for punctuation input, whose list the Standard generator
-    /// builds from the punctuation table, not from the N-best: `list` is then
-    /// explain's N-best, a pipeline production did not run for this list.
+    /// `None` when the list has no #0, and for punctuation input, whose list
+    /// the Standard generator builds from the punctuation table, not from the
+    /// N-best: `list` is then explain's N-best, a pipeline production did not
+    /// run for this list.
     pub list_top_in_one_best_set: Option<bool>,
 }
 
@@ -300,9 +311,7 @@ pub fn widths(
         .into_iter()
         .map(|s| SurfaceAcrossWidths {
             one_best: ListEntry::find(&one_best, &s),
-            list: list_is_production
-                .then(|| ListEntry::find(&list, &s))
-                .flatten(),
+            list: ListEntry::find(&list, &s).filter(|_| list_is_production),
             surface: s,
         })
         .collect();
