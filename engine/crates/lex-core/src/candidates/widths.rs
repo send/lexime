@@ -228,17 +228,16 @@ pub struct Widths {
     /// Whether the 1-best produced the list's postprocess #0 surface as a
     /// model path: that surface is in the 1-best's cost-model set (set
     /// inclusion, not Viterbi rank: the rank is not prefix-closed past EOS
-    /// dedup). By surface, whoever made or priced the list's top: a policy
-    /// path or an offer is asked the same, so a census sorts a split by
-    /// whether the 1-best's population reached the surface, not by who
-    /// priced it in the list. A surface no lattice path can make (a katakana
-    /// or kana offer, an injected learned surface) is `Some(false)`: no
-    /// population reaches it. The surface asked is explain's #0, not the
-    /// production list's #1 (`standard_top.surface`), which `surfaces` covers.
-    /// Before #393's tools change only a model-made #0 was asked, and every
-    /// other top was `None`.
+    /// dedup). Asked of a model path and of an Override-stage one (Numeric,
+    /// Katakana) alike, whoever priced it: the Override stage may take over a
+    /// lattice surface, so a census sorts a split by whether the 1-best's
+    /// population reached the surface, not by who priced it in the list
+    /// (#393). The surface asked is explain's #0, not the production list's
+    /// #1 (`standard_top.surface`), which `surfaces` covers.
     ///
-    /// `None` when the list has no #0, and for punctuation input, whose list
+    /// `None` when the list has no #0; when that #0 is a Model-stage offer or
+    /// rescue (a variant, a partial-kana path), whose surface no population
+    /// is asked to reach; and for punctuation input, whose list
     /// the Standard generator builds from the punctuation table, not from the
     /// N-best: `list` is then explain's N-best, a pipeline production did not
     /// run for this list.
@@ -328,12 +327,17 @@ pub fn widths(
         list_top_in_one_best_set: list
             .top
             .as_ref()
-            .filter(|_| list_is_production)
+            .filter(|t| list_is_production && (t.origin.is_model() || is_override(t.origin)))
             .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
         list,
         standard_top,
     })
+}
+
+/// Made by the Override stage (the numeric and katakana policy rewriters).
+fn is_override(origin: PathOrigin) -> bool {
+    matches!(origin, PathOrigin::Numeric | PathOrigin::Katakana)
 }
 
 fn top_line(t: Option<&TopPath>) -> String {
@@ -596,7 +600,7 @@ mod tests {
         assert_eq!(w.list.top.as_ref().unwrap().surface, "きょう");
         assert!(!w.list.top.as_ref().unwrap().origin.is_model());
         assert!(!w.one_best.has_model_path("きょう"));
-        assert_eq!(w.list_top_in_one_best_set, Some(false));
+        assert_eq!(w.list_top_in_one_best_set, None);
 
         // A #1 with a history of its own keeps index 0: no promotion.
         let h = learned(&[&[("きょう", "京")]]);
@@ -725,5 +729,34 @@ mod tests {
         assert_eq!(kyo.list.as_ref().unwrap().history_boost, 0);
         assert!(kyou.one_best.is_none());
         assert_eq!(kyou.list.as_ref().unwrap().history_boost, 0);
+    }
+
+    /// An Override-stage top (origin Numeric or Katakana) is asked, whoever
+    /// made the surface: here a learned 23 and a learned テスト, which no
+    /// lattice path makes, so the 1-best's set lacks them (`Some(false)`,
+    /// not `None`).
+    #[test]
+    fn an_override_stage_list_top_is_asked_whatever_its_origin() {
+        let e = entry_with_id;
+        let numeric = (
+            numeric_compound_dict(),
+            "にじゅうさん",
+            "23",
+            PathOrigin::Numeric,
+        );
+        let katakana = (
+            TrieDictionary::from_entries(vec![("てすと".into(), vec![e("手酢と", 0, 1)])]),
+            "てすと",
+            "テスト",
+            PathOrigin::Katakana,
+        );
+        for (dict, reading, surface, origin) in [numeric, katakana] {
+            let h = learned(&[&[(reading, surface)]]);
+            let w = widths(&dict, None, Some(&h), reading, T0, T0);
+            let top = w.list.top.as_ref().unwrap();
+            assert_eq!((top.surface.as_str(), top.origin), (surface, origin));
+            assert!(!w.one_best.has_model_path(surface));
+            assert_eq!(w.list_top_in_one_best_set, Some(false), "{surface}");
+        }
     }
 }
