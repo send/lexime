@@ -229,18 +229,18 @@ pub struct Widths {
     /// model path: that surface is in the 1-best's cost-model set (set
     /// inclusion, not Viterbi rank: the rank is not prefix-closed past EOS
     /// dedup). Asked of a model path and of an Override-stage one (Numeric,
-    /// Katakana) alike, whoever priced it: the Override stage may take over a
+    /// Katakana) alike, by surface: the Override stage may take over a
     /// lattice surface, so a census sorts a split by whether the 1-best's
     /// population reached the surface, not by who priced it in the list
     /// (#393). The surface asked is explain's #0, not the production list's
     /// #1 (`standard_top.surface`), which `surfaces` covers.
     ///
-    /// `None` when the list has no #0; when that #0 is a Model-stage offer or
-    /// rescue (a variant, a partial-kana path), whose surface no population
-    /// is asked to reach; and for punctuation input, whose list
-    /// the Standard generator builds from the punctuation table, not from the
-    /// N-best: `list` is then explain's N-best, a pipeline production did not
-    /// run for this list.
+    /// `None` when the list has no #0; when that #0 was made or priced by a
+    /// Model-stage offer or rescue (a variant, a partial-kana path), whose
+    /// split is the offer's composition (#271), not a population's reach;
+    /// and for punctuation input, whose list the Standard generator builds
+    /// from the punctuation table, not from the N-best: `list` is then
+    /// explain's N-best, a pipeline production did not run for this list.
     pub list_top_in_one_best_set: Option<bool>,
 }
 
@@ -327,7 +327,7 @@ pub fn widths(
         list_top_in_one_best_set: list
             .top
             .as_ref()
-            .filter(|t| list_is_production && (t.origin.is_model() || is_override(t.origin)))
+            .filter(|t| list_is_production && asked(t.origin) && asked(t.priced_by))
             .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
         list,
@@ -335,9 +335,12 @@ pub fn widths(
     })
 }
 
-/// Made by the Override stage (the numeric and katakana policy rewriters).
-fn is_override(origin: PathOrigin) -> bool {
-    matches!(origin, PathOrigin::Numeric | PathOrigin::Katakana)
+/// The stages whose paths `list_top_in_one_best_set` asks about: the cost
+/// model's and the Override stage's (the numeric and katakana policy
+/// rewriters). A Model-stage offer or rescue, as the maker or the price's
+/// owner, is not.
+fn asked(origin: PathOrigin) -> bool {
+    origin.is_model() || matches!(origin, PathOrigin::Numeric | PathOrigin::Katakana)
 }
 
 fn top_line(t: Option<&TopPath>) -> String {
@@ -758,5 +761,27 @@ mod tests {
             assert!(!w.one_best.has_model_path(surface));
             assert_eq!(w.list_top_in_one_best_set, Some(false), "{surface}");
         }
+    }
+
+    /// A lattice path whose price a Model-stage offer took (origin Viterbi,
+    /// priced by HiraganaVariant) is not asked: its split is the offer's
+    /// composition (#271), not a population's reach.
+    #[test]
+    fn a_lattice_path_priced_by_an_offer_is_not_asked() {
+        let e = entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "きょう".into(),
+            vec![e("今日", 0, 1), e("きょう", 9000, 1)],
+        )]);
+        let h = learned(&[&[("きょう", "きょう")]]);
+        let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
+        let top = w.list.top.as_ref().unwrap();
+        assert_eq!(top.surface, "きょう");
+        assert_eq!(
+            (top.origin, top.priced_by),
+            (PathOrigin::Viterbi, PathOrigin::HiraganaVariant)
+        );
+        assert!(w.one_best.has_model_path("きょう"));
+        assert_eq!(w.list_top_in_one_best_set, None);
     }
 }
