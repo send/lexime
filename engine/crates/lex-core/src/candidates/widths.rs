@@ -69,17 +69,14 @@ impl ListEntry {
     /// The entry of the first path of `r` carrying `surface`, `None` when
     /// the width's final list has none.
     fn find(r: &ExplainResult, surface: &str) -> Option<Self> {
-        r.paths
-            .iter()
-            .find(|p| p.surface() == surface)
-            .map(|p| Self {
-                origin: p.origin,
-                priced_by: p.priced_by,
-                final_cost: p.final_cost,
-                history_boost: p.history_boost,
-                history_segment_count: p.history_segment_count,
-                segments: p.segments.len(),
-            })
+        r.path(surface).map(|p| Self {
+            origin: p.origin,
+            priced_by: p.priced_by,
+            final_cost: p.final_cost,
+            history_boost: p.history_boost,
+            history_segment_count: p.history_segment_count,
+            segments: p.segments.len(),
+        })
     }
 }
 
@@ -285,11 +282,7 @@ pub fn widths(
             _ => None,
         },
         promoted_from: match source {
-            Some(TopSource::KanaPromoted { .. }) => list
-                .paths
-                .iter()
-                .find(|p| p.surface() == reading)
-                .map(TopPath::of),
+            Some(TopSource::KanaPromoted { .. }) => list.path(reading).map(TopPath::of),
             _ => None,
         },
         surface,
@@ -297,20 +290,22 @@ pub fn widths(
         source,
     };
 
-    let mut surfaces: Vec<SurfaceAcrossWidths> = Vec::new();
-    let of_interest = [
-        one_best.paths.first().map(ExplainPath::surface),
-        Some(standard_top.surface.clone()),
-    ];
-    for s in of_interest.into_iter().flatten().filter(|s| !s.is_empty()) {
-        if surfaces.iter().all(|x| x.surface != s) {
-            surfaces.push(SurfaceAcrossWidths {
-                one_best: ListEntry::find(&one_best, &s),
-                list: ListEntry::find(&list, &s),
-                surface: s,
-            });
-        }
-    }
+    // Punctuation input: the list comes from the punctuation table, not from
+    // the N-best explain ran for `list`, so nothing is read off that N-best.
+    let list_is_production = standard_top.source != Some(TopSource::Punctuation);
+    let mut of_interest = vec![tops.one_best.clone(), standard_top.surface.clone()];
+    of_interest.dedup();
+    of_interest.retain(|s| !s.is_empty());
+    let surfaces = of_interest
+        .into_iter()
+        .map(|s| SurfaceAcrossWidths {
+            one_best: ListEntry::find(&one_best, &s),
+            list: list_is_production
+                .then(|| ListEntry::find(&list, &s))
+                .flatten(),
+            surface: s,
+        })
+        .collect();
 
     let one_best = Width::of(&one_best, population(1, has_history));
     let list = Width::of(&list, population(nbest, has_history));
@@ -324,7 +319,7 @@ pub fn widths(
         list_top_in_one_best_set: list
             .top
             .as_ref()
-            .filter(|_| standard_top.source != Some(TopSource::Punctuation))
+            .filter(|_| list_is_production)
             .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
         list,
@@ -395,7 +390,7 @@ pub fn format_text(w: &Widths) -> String {
         set(&w.list),
     ));
     let entry = |e: &Option<ListEntry>| {
-        e.as_ref().map_or("-".to_string(), |e| {
+        e.as_ref().map_or("(none)".to_string(), |e| {
             format!(
                 "{:?}/{:?} cost {} boost {} segs {}/{}",
                 e.origin,
@@ -591,6 +586,7 @@ mod tests {
         // The promoted kana is no model path: the 1-best did not make it.
         assert_eq!(w.list.top.as_ref().unwrap().surface, "きょう");
         assert!(!w.list.top.as_ref().unwrap().origin.is_model());
+        assert!(!w.one_best.has_model_path("きょう"));
         assert_eq!(w.list_top_in_one_best_set, Some(false));
 
         // A #1 with a history of its own keeps index 0: no promotion.
@@ -617,6 +613,7 @@ mod tests {
 
     /// The list's #1 is a surface of interest even where explain's #0 is not
     /// it (here the punctuation table's, against the dictionary's N-best).
+    /// That N-best is not the list, so no surface carries a list entry.
     #[test]
     fn the_lists_first_candidate_is_a_surface_of_interest_beside_explains_top() {
         let e = entry_with_id;
@@ -626,6 +623,7 @@ mod tests {
         assert_eq!(w.standard_top.surface, "。");
         let surfaces: Vec<&str> = w.surfaces.iter().map(|s| s.surface.as_str()).collect();
         assert_eq!(surfaces, ["終", "。"]);
+        assert!(w.surfaces.iter().all(|s| s.list.is_none()));
     }
 
     /// The 1-best and the list's #1 are the production ones: the same
@@ -672,18 +670,6 @@ mod tests {
         );
         assert!(w.one_best.has_model_path("二十三"));
         assert_eq!(w.list_top_in_one_best_set, Some(true));
-    }
-
-    /// A top the 1-best did not produce as a model path is `Some(false)`
-    /// whoever made it: the promoted kana is no model path of the 1-best.
-    #[test]
-    fn a_non_model_list_top_the_one_best_lacks_is_not_in_its_set() {
-        let dict = test_dict();
-        let h = learned(&[&[("きょう", "きょう")]]);
-        let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
-        assert!(!w.list.top.as_ref().unwrap().origin.is_model());
-        assert!(!w.one_best.has_model_path("きょう"));
-        assert_eq!(w.list_top_in_one_best_set, Some(false));
     }
 
     /// Each surface of interest carries its entry in both widths' final
