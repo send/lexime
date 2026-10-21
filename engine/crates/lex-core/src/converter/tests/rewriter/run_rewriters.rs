@@ -671,3 +671,153 @@ fn displaced_learned_head_precedes_equal_prices() {
     );
     assert_eq!(surfaces(&paths), ["L1", "X", "P"]);
 }
+
+// ---------------------------------------------------------------------------
+// #393: a number compound's path does not depend on the population
+// ---------------------------------------------------------------------------
+
+/// A lattice path of the compound's surface in two segments.
+fn two_segment(surface: (&str, &str), cost: i64) -> ScoredPath {
+    ScoredPath::new(
+        vec![seg("よ", surface.0), seg("み", surface.1)],
+        cost,
+        PathOrigin::Viterbi,
+    )
+}
+
+/// A boost that depends on the segments, as the history formula does: the
+/// whole pair (数段, w = 100) is 6w on one segment and 5w + its segment's
+/// per-segment 300 / 2 on two, and 段 learned on its own lifts only the
+/// two-segment path.
+fn segment_boost(p: &mut ScoredPath) {
+    if p.surface_key() != "数段" {
+        return;
+    }
+    let (boost, whole) = if p.segments.len() == 1 {
+        (600, 600)
+    } else {
+        (500 + 300 / 2, 500)
+    };
+    p.viterbi_cost -= boost;
+    p.history_boost = boost;
+    p.whole_path_boost = whole;
+}
+
+/// What the stage wrote for the compound, and the order around it.
+fn compound_after(mut paths: Vec<ScoredPath>, compound_cost: i64) -> (ScoredPath, Vec<String>) {
+    let rw = Fixed(vec![path("数段", compound_cost, PathOrigin::Numeric)]);
+    run_policy_rewriters(
+        &[&rw],
+        &mut paths,
+        "よみ",
+        Some(&segment_boost),
+        &mut NoopObserver,
+    );
+    let compound = paths
+        .iter()
+        .find(|p| p.surface_key() == "数段")
+        .unwrap()
+        .clone();
+    (compound, surfaces(&paths))
+}
+
+fn written(p: &ScoredPath) -> (usize, PathOrigin, PathOrigin, i64, i64, i64, Option<i64>) {
+    (
+        p.segments.len(),
+        p.origin,
+        p.priced_by,
+        p.viterbi_cost,
+        p.history_boost,
+        p.whole_path_boost,
+        p.admission_gap,
+    )
+}
+
+/// §29-6 T-393-1: whether a costlier two-segment lattice path with the
+/// compound's surface survived (the N-best) or not (the 1-best), the stage
+/// writes the same path for the compound: one segment, made and priced by
+/// Numeric, boosted on its own, in the same place.
+#[test]
+fn a_compound_is_written_the_same_whatever_duplicate_survived() {
+    let mut duplicate = two_segment(("数", "段"), 1200);
+    duplicate.admission_gap = Some(200);
+    let with = vec![
+        path("甲", 900, PathOrigin::Viterbi),
+        duplicate,
+        path("乙", 1500, PathOrigin::Viterbi),
+    ];
+    let without = vec![
+        path("甲", 900, PathOrigin::Viterbi),
+        path("乙", 1500, PathOrigin::Viterbi),
+    ];
+    let (a, order_a) = compound_after(with, 1000);
+    let (b, order_b) = compound_after(without, 1000);
+    assert_eq!(written(&a), written(&b));
+    assert_eq!(order_a, order_b);
+    assert_eq!(
+        written(&a),
+        (
+            1,
+            PathOrigin::Numeric,
+            PathOrigin::Numeric,
+            400,
+            600,
+            600,
+            None
+        )
+    );
+}
+
+/// §29-6 T-393-2 (R1t): a lattice path at exactly the compound's price is
+/// replaced by the compound, as a tie goes to policy on insertion (#239) —
+/// so the anchor path the N-best re-inserts and the 1-best cuts gives way
+/// to the same path at both widths.
+#[test]
+fn a_compound_replaces_a_lattice_path_of_its_price() {
+    let with = vec![
+        two_segment(("数", "段"), 1000),
+        path("乙", 1500, PathOrigin::Viterbi),
+    ];
+    let without = vec![path("乙", 1500, PathOrigin::Viterbi)];
+    let (a, order_a) = compound_after(with, 1000);
+    let (b, order_b) = compound_after(without, 1000);
+    assert_eq!(written(&a), written(&b));
+    assert_eq!(order_a, order_b);
+    assert_eq!(a.priced_by, PathOrigin::Numeric);
+}
+
+/// §29-6 T-393-3: a lattice path cheaper than the compound stays as it is,
+/// segments, owner and price.
+#[test]
+fn a_cheaper_lattice_path_keeps_its_surface() {
+    let (kept, _) = compound_after(vec![two_segment(("数", "段"), 900)], 1000);
+    assert_eq!(
+        written(&kept),
+        (2, PathOrigin::Viterbi, PathOrigin::Viterbi, 900, 0, 0, None)
+    );
+}
+
+/// §29-6 T-393-4 (R2): a held learned head with the compound's surface is
+/// replaced in place by the compound, learned alike and boosted as one
+/// segment. That it stays first relies on the fixture: no other learned
+/// path is cheaper.
+#[test]
+fn a_learned_head_of_the_compounds_surface_becomes_the_compound() {
+    let mut head = two_segment(("数", "段"), 5000);
+    segment_boost(&mut head);
+    let (compound, order) = compound_after(vec![head, path("乙", 3000, PathOrigin::Viterbi)], 4000);
+    assert_eq!(order, ["数段", "乙"]);
+    assert!(compound.is_learned());
+    assert_eq!(
+        written(&compound),
+        (
+            1,
+            PathOrigin::Numeric,
+            PathOrigin::Numeric,
+            3400,
+            600,
+            600,
+            None
+        )
+    );
+}

@@ -136,7 +136,7 @@ pub struct ExplainPath {
     /// where there is no `model_cost`.
     pub price_clamp: Option<i64>,
     /// The price was set by another stage than the one that made the
-    /// segments (an offer, the kana rescue or Numeric adopted over them).
+    /// segments (an offer or the kana rescue adopted over them).
     pub repriced: bool,
     /// The path's one-character-reading segments with kanji in the surface,
     /// taken before `group_segments` merges them into a neighbour (the
@@ -468,9 +468,9 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 
 /// The `viterbi_rank` of a final path: its position in `viterbi_nbest`'s
 /// output, only for a path Viterbi made whose price the model still owns. A
-/// Viterbi path another stage repriced (`resolve_duplicate` keeps the
-/// existing path and writes the cheaper candidate's `priced_by` onto it) has
-/// no rank: its price is not the Viterbi one the rank describes.
+/// Viterbi path a Model-stage candidate repriced (`resolve_duplicate` keeps
+/// the existing path and writes the cheaper candidate's `priced_by` onto it)
+/// has no rank: its price is not the Viterbi one the rank describes.
 fn viterbi_rank_of(scored: &ScoredPath, viterbi: &ViterbiOutput) -> Option<usize> {
     if scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model() {
         viterbi.get(&scored.surface_key()).map(|&(_, rank)| rank)
@@ -815,8 +815,8 @@ mod tests {
 
     /// §27-8 T-B6 / T-B7: every policy path carries the rule that priced it,
     /// with `final_cost + history_boost == policy_price.cost()`, including
-    /// 二十三, a Viterbi path the number compound repriced (the duplicate's
-    /// segments stay, the price is the compound's, #239).
+    /// 二十三, whose Viterbi path the number compound replaced: one segment,
+    /// made and priced by Numeric (#393).
     #[test]
     fn policy_prices_are_recorded_where_the_override_stage_writes_them() {
         let e = crate::converter::testutil::entry_with_id;
@@ -846,8 +846,13 @@ mod tests {
             assert_eq!(p.final_cost + p.history_boost, price.cost(), "{surface}");
         }
         let compound = path_by_surface(&result, "二十三");
-        assert_eq!(compound.origin, PathOrigin::Viterbi, "segments kept");
-        assert_eq!(compound.priced_by, PathOrigin::Numeric);
+        assert_eq!(
+            (compound.origin, compound.priced_by, compound.repriced),
+            (PathOrigin::Numeric, PathOrigin::Numeric, false),
+            "the compound's own path"
+        );
+        assert_eq!(compound.segments.len(), 1);
+        assert_eq!(compound.model_cost, None);
         assert_eq!(path_by_surface(&result, "に十三").policy_price, None);
     }
 

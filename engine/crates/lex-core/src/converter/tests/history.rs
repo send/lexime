@@ -363,3 +363,110 @@ fn population_values() {
         assert_eq!(population(n, history), want, "n={n} history={history}");
     }
 }
+
+/// 二段 / 二弾: a number + counter (弾 and 段, counters at 0 and 50) whose
+/// lattice path 二|段 costs 2050 over the anchor 二|弾 (the connection
+/// 二 → 段 adds 2000; a compound's counter offset is the word cost only, 50).
+/// 段 committed on its own once boosts the lattice path's 段 segment by
+/// 1500: enough to lift the compound 二段 over 二弾 by its segments, not
+/// enough to lift 二|段 into the 1-best's one model path. So only the
+/// N-best keeps a lattice path with the compound's surface.
+fn nidan() -> (
+    crate::dict::TrieDictionary,
+    crate::dict::connection::ConnectionMatrix,
+) {
+    use crate::converter::testutil::entry_with_id;
+    let e = entry_with_id;
+    let dict = crate::dict::TrieDictionary::from_entries(vec![
+        ("に".into(), vec![e("二", 0, 1)]),
+        ("だん".into(), vec![e("弾", 0, 2), e("段", 50, 3)]),
+    ]);
+    let n = 4;
+    let costs: String = (0..n * n)
+        .map(|i| {
+            if i == n + 3 || i == 3 * n + 1 {
+                "2000\n"
+            } else {
+                "0\n"
+            }
+        })
+        .collect();
+    let conn = crate::dict::connection::ConnectionMatrix::from_text_with_roles(
+        &format!("{n} {n}\n{costs}"),
+        0,
+        0,
+        vec![0, 0, 7, 7],
+    )
+    .unwrap();
+    (dict, conn)
+}
+
+/// §29-6 T-393-6 / T-393-9 (#393): a number compound's path does not depend
+/// on the population. The 1-best and the N-best price 二段 from the same
+/// anchor and write the compound itself, one segment, boosted on its own —
+/// whether or not a lattice path with its surface survived the cut — so the
+/// two widths agree, and explain recomputes the boost from those segments.
+#[test]
+fn a_number_compound_is_boosted_the_same_at_every_width() {
+    use crate::converter::explain::explain;
+    let now = now_epoch();
+    let (dict, conn) = nidan();
+    let mut h = UserHistory::new();
+    h.record_at(&[("だん".into(), "段".into())], now);
+    let ctx =
+        crate::converter::ConversionContext::new(&dict, Some(&conn)).with_history(Some(&h), now);
+    // The fixture reaches its case: the N-best's population holds the
+    // lattice path 二|段 (the dictionary has no 二段 node).
+    let bare = crate::converter::ConversionContext::new(&dict, Some(&conn));
+    assert!(
+        explain(&bare, "にだん", 20)
+            .model_paths
+            .iter()
+            .any(|p| p.surface == "二段" && p.origin == crate::converter::PathOrigin::Viterbi),
+        "the N-best holds 二|段"
+    );
+
+    let one_best = joined(&ctx.convert("にだん"));
+    let list = joined(&ctx.convert_nbest("にだん", 20)[0]);
+    assert_eq!((one_best.as_str(), list.as_str()), ("二弾", "二弾"));
+
+    let compound = |n: usize| {
+        let result = explain(&ctx, "にだん", n);
+        assert!(result.policy_price_inconsistent.is_empty());
+        let p = path_by(&result, "二段");
+        assert_eq!(
+            p.history_breakdown.applied(p.history_segment_count),
+            p.history_boost,
+            "n = {n}"
+        );
+        (
+            p.segments.len(),
+            p.history_segment_count,
+            p.origin,
+            p.priced_by,
+            p.history_boost,
+            p.final_cost,
+        )
+    };
+    assert_eq!(compound(1), compound(20));
+    assert_eq!(
+        compound(20),
+        (
+            1,
+            1,
+            crate::converter::PathOrigin::Numeric,
+            crate::converter::PathOrigin::Numeric,
+            0,
+            compound(1).5
+        )
+    );
+}
+
+fn path_by<'a>(
+    result: &'a crate::converter::explain::ExplainResult,
+    surface: &str,
+) -> &'a crate::converter::explain::ExplainPath {
+    result
+        .path(surface)
+        .unwrap_or_else(|| panic!("{surface} listed"))
+}

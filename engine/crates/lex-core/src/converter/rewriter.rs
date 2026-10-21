@@ -115,6 +115,24 @@ impl PolicyPrice {
     }
 }
 
+/// How a candidate resolves a listed path with its surface. Decided once
+/// per candidate from its stage and rule, so the three forms live in one
+/// place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DuplicatePolicy {
+    /// Leave the listed path as it is: a fallback never reprices a path
+    /// already on the list ([`PolicyRule::is_fallback`]).
+    Skip,
+    /// Replace the listed path with the candidate when the candidate costs
+    /// no more before history: a number compound is policy, so its path —
+    /// one segment, boosted on its own — is the same whatever the list held
+    /// (#393). Ties go to the candidate, as in [`RewriteStage::precedes_ties`].
+    Select,
+    /// Merge the two: the cheaper price, the lattice side's segments
+    /// (#271). The Model stage's alternatives, before history.
+    Compose,
+}
+
 /// Where a group of rewriters runs, which decides what it may override.
 /// Neither stage lets an unlearned path displace a learned index 0: history
 /// reranking put the cheapest learned path there, and a learned surface
@@ -183,8 +201,10 @@ pub(crate) fn run_rewriters(
 /// path with its surface would be. The stage then leaves the list in history
 /// reranking's form (the cheapest learned path first). A fallback
 /// ([`PolicyRule::is_fallback`]) only adds a surface the list lacks.
-/// `observer` sees each policy price written to the list (a new path, or a
-/// duplicate it repriced).
+/// A number compound that costs no more than a listed path with its surface
+/// replaces that path ([`DuplicatePolicy::Select`]). `observer` sees each
+/// policy price written to the list (a new path, or a duplicate it
+/// replaced).
 pub(crate) fn run_policy_rewriters<O: PostprocessObserver>(
     rewriters: &[&dyn PolicyRewriter],
     paths: &mut Vec<ScoredPath>,
@@ -224,22 +244,31 @@ fn insert_candidates<O: PostprocessObserver>(
     paths: &mut Vec<ScoredPath>,
     observer: &mut O,
 ) {
-    let (stage, candidates, boost): (_, Vec<(ScoredPath, Option<PolicyPrice>)>, _) =
-        match candidates {
-            Candidates::Model(c) => (
-                RewriteStage::Model,
-                c.into_iter().map(|p| (p, None)).collect(),
-                None,
-            ),
-            Candidates::Override { candidates, boost } => (
-                RewriteStage::Override,
-                candidates
-                    .into_iter()
-                    .map(|(p, price)| (p, Some(price)))
-                    .collect(),
-                boost,
-            ),
-        };
+    type Candidate = (ScoredPath, Option<PolicyPrice>, DuplicatePolicy);
+    let (stage, candidates, boost): (_, Vec<Candidate>, _) = match candidates {
+        Candidates::Model(c) => (
+            RewriteStage::Model,
+            c.into_iter()
+                .map(|p| (p, None, DuplicatePolicy::Compose))
+                .collect(),
+            None,
+        ),
+        Candidates::Override { candidates, boost } => (
+            RewriteStage::Override,
+            candidates
+                .into_iter()
+                .map(|(p, price)| {
+                    let duplicate = if price.rule.is_fallback() {
+                        DuplicatePolicy::Skip
+                    } else {
+                        DuplicatePolicy::Select
+                    };
+                    (p, Some(price), duplicate)
+                })
+                .collect(),
+            boost,
+        ),
+    };
     let boosted = |mut p: ScoredPath| {
         if let Some(b) = boost {
             b(&mut p);
@@ -249,48 +278,56 @@ fn insert_candidates<O: PostprocessObserver>(
     let rescue = PathOrigin::HiraganaVariant;
     let rescue_keys: Vec<String> = candidates
         .iter()
-        .filter(|(c, _)| c.priced_by == rescue)
-        .map(|(c, _)| c.surface_key())
+        .filter(|(c, ..)| c.priced_by == rescue)
+        .map(|(c, ..)| c.surface_key())
         .collect();
     // Decided on the stage's input.
     let mut head = stage.holds_head(paths).then(|| paths.remove(0));
-    for (candidate, policy) in candidates {
+    for (candidate, policy, duplicate) in candidates {
         let key = candidate.surface_key();
-        let fallback = policy.is_some_and(|p| p.rule.is_fallback());
-        let mut record = |by_candidate: bool| {
-            if let (true, Some(p)) = (by_candidate, policy) {
-                observer.policy_priced(&key, p);
+        // What the stage did with a policy price: wrote it, or skipped it.
+        let mut report = |written: bool| {
+            if let Some(p) = policy {
+                if written {
+                    observer.policy_priced(&key, p);
+                } else {
+                    observer.policy_skipped(&key, p);
+                }
             }
         };
         if let Some(h) = head.as_mut().filter(|h| h.surface_key_eq(&key)) {
             // A held Override head is learned, and so is a candidate with its
-            // surface: that one may reprice it in place, unless it is a
-            // fallback. The Model stage leaves its head as it is.
-            if let (true, Some(p)) = (fallback, policy) {
-                observer.policy_skipped(&key, p);
-            } else if stage == RewriteStage::Override {
-                if let Some((resolved, by_candidate)) = resolve_duplicate(stage, candidate, h) {
-                    record(by_candidate);
-                    *h = boosted(resolved);
+            // surface: a number compound replaces it in place. The Model
+            // stage leaves its head as it is.
+            match duplicate {
+                DuplicatePolicy::Skip => report(false),
+                DuplicatePolicy::Select => {
+                    if let Some((resolved, by_candidate)) =
+                        resolve_duplicate(duplicate, candidate, h)
+                    {
+                        if by_candidate {
+                            report(true);
+                        }
+                        *h = boosted(resolved);
+                    }
                 }
+                DuplicatePolicy::Compose => {}
             }
             continue;
         }
         match paths.iter().position(|p| p.surface_key_eq(&key)) {
             None => {
-                record(true);
+                report(true);
                 insert_by_cost(paths, boosted(candidate), stage);
             }
-            Some(_) if fallback => {
-                if let Some(p) = policy {
-                    observer.policy_skipped(&key, p);
-                }
-            }
+            Some(_) if duplicate == DuplicatePolicy::Skip => report(false),
             Some(i) => {
                 if let Some((resolved, by_candidate)) =
-                    resolve_duplicate(stage, candidate, &paths[i])
+                    resolve_duplicate(duplicate, candidate, &paths[i])
                 {
-                    record(by_candidate);
+                    if by_candidate {
+                        report(true);
+                    }
                     paths.remove(i);
                     insert_by_cost(paths, boosted(resolved), stage);
                 }
@@ -332,31 +369,47 @@ fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteS
 
 /// Decide what a candidate does to an existing path with the same surface.
 /// Returns the path to re-insert in the existing one's place, priced before
-/// history (the caller boosts it again, so the boost matches its segments),
-/// with whether its price is the candidate's, or `None` to leave the list
-/// as it is.
+/// history (the caller boosts it, so the boost matches its segments), with
+/// whether its price is the candidate's, or `None` to leave the list as it
+/// is. Prices are compared before history: the boost belongs to the
+/// segments, and the resolved path is boosted on its own.
 ///
-/// Every rewriter price is a standing contract (an offer ≤ source+2000, the
-/// kana rescue ≤ best+4000, Numeric #239), so the cheaper price wins and
-/// `priced_by` names whoever set it (the kana rescue's mark is settled after
-/// the stage, in [`insert_candidates`]). The segments come from the lattice side
-/// when there is one — committing the surface then records per-segment
-/// history (#271) — else the finer segmentation.
+/// [`DuplicatePolicy::Select`] keeps whichever path costs less (the
+/// candidate on a tie), whole: a number compound written to the list is the
+/// candidate itself, so its segments, origin and boost do not depend on
+/// whether admission or the cut to n kept a duplicate (#393).
+///
+/// [`DuplicatePolicy::Compose`]: every Model-stage price is a standing
+/// contract (an offer ≤ source+2000, the kana rescue ≤ best+4000), so the
+/// cheaper price wins and `priced_by` names whoever set it (the kana
+/// rescue's mark is settled after the stage, in [`insert_candidates`]). The
+/// segments come from the lattice side when there is one — committing the
+/// surface then records per-segment history (#271) — else the finer
+/// segmentation.
 fn resolve_duplicate(
-    stage: RewriteStage,
+    duplicate: DuplicatePolicy,
     candidate: ScoredPath,
     existing: &ScoredPath,
 ) -> Option<(ScoredPath, bool)> {
-    // The Model stage runs before history: there is no boost to keep.
+    match duplicate {
+        DuplicatePolicy::Skip => return None,
+        DuplicatePolicy::Select => {
+            // A policy candidate is new: no boost yet, no admission verdict.
+            debug_assert!(candidate.history_boost == 0 && candidate.admission_gap.is_none());
+            return (candidate.pre_history_cost() <= existing.pre_history_cost())
+                .then_some((candidate, true));
+        }
+        DuplicatePolicy::Compose => {}
+    }
+    // The Model stage runs before history: there is no boost to keep, so
+    // taking the candidate's segments but not its price cannot leave a price
+    // the resolved path's boost no longer describes.
     debug_assert!(
-        stage == RewriteStage::Override
-            || (candidate.history_boost == 0
-                && existing.history_boost == 0
-                && candidate.whole_path_boost == 0
-                && existing.whole_path_boost == 0)
+        candidate.history_boost == 0
+            && existing.history_boost == 0
+            && candidate.whole_path_boost == 0
+            && existing.whole_path_boost == 0
     );
-    // Who sets the price is decided before history: the boost belongs to the
-    // segments, and the resolved path is boosted again on its own.
     let cheaper = candidate.pre_history_cost() < existing.pre_history_cost();
     let take_segments = !existing.origin.is_lattice_path()
         && (candidate.origin.is_lattice_path()
@@ -364,10 +417,6 @@ fn resolve_duplicate(
     if !cheaper && !take_segments {
         return None;
     }
-    // Taking the candidate's segments but not its price would keep a price
-    // the resolved path's boost no longer describes; only the Model stage
-    // (no boosts yet) can.
-    debug_assert!(cheaper || stage == RewriteStage::Model);
     let (cost, priced_by) = if cheaper {
         (candidate.pre_history_cost(), candidate.priced_by)
     } else {
@@ -380,11 +429,6 @@ fn resolve_duplicate(
     };
     resolved.viterbi_cost = cost;
     resolved.priced_by = priced_by;
-    // The boost belongs to the (reading, surface) and the segments, not to
-    // who set the price: the caller applies it again to the resolved path.
-    // (The Model stage runs before history.)
-    resolved.history_boost = 0;
-    resolved.whole_path_boost = 0;
     if cheaper {
         // A price admission did not judge.
         resolved.admission_gap = None;
