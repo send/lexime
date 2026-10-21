@@ -183,6 +183,13 @@ impl ExplainPath {
     }
 }
 
+impl ExplainResult {
+    /// The first path carrying `surface`, `None` when no path does.
+    pub fn path(&self, surface: &str) -> Option<&ExplainPath> {
+        self.paths.iter().find(|p| p.surface() == surface)
+    }
+}
+
 /// A segment within a conversion path, with full cost breakdown.
 #[derive(Debug, Serialize)]
 pub struct ExplainSegment {
@@ -877,9 +884,7 @@ mod tests {
 
     fn path_by_surface<'r>(result: &'r ExplainResult, surface: &str) -> &'r ExplainPath {
         result
-            .paths
-            .iter()
-            .find(|p| p.surface() == surface)
+            .path(surface)
             .unwrap_or_else(|| panic!("no path {surface}"))
     }
 

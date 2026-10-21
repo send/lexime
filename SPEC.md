@@ -711,7 +711,7 @@ macOS で動作する最小限の IME を構築。
 
 `lextool` は全サブコマンド共通の `--now <epoch>`（Unix 秒）で、学習履歴の減衰の基準時刻（履歴を開くときの容量 evict の採点を含む）を指定できる。省略時は起動時に壁時計を 1 回読む。`dictool` にも同じグローバル `--now` があり、`convert --history` が使う。同じ `--now` で走らせれば、時間を置いても snapshot / explain / accuracy / replay-commit-log / history-audit の出力が一致する（accuracy の corpus `[[history]]` の seeding も同じ値）。replay-commit-log は全行をこの値で再生する（行の `t` ではない）。`--now` は減衰の基準時刻を決めるだけで、その時点の履歴を再現しない — それより後に記録された学習も含まれ、減衰なし（経過 0）として数えられる。過去の状態は凍結コピーで再現する。
 
-`lextool widths`（mise タスクではなく lextool のサブコマンド）: 本番の 2 つの幅（同期 1-best / 候補列の #1）を並べて出す。幅ごとの母集団・先頭経路（origin・`priced_by`・履歴ブースト・Viterbi 順位）・cost model の経路集合と、候補列 #1 の出どころと #2 の表記（`standard_top.source` / `second`: N-best の i 番目 / かな昇格 / 注入 / …）。`--now` は両幅に、`--now-list-offset` は候補列側だけに足す（秒境界の感度）。入力は読み 1 つか `--input`（1 行 1 読み）、`--json` で 1 読み 1 行
+`lextool widths`（mise タスクではなく lextool のサブコマンド）: 本番の 2 つの幅（同期 1-best / 候補列の #1）を並べて出す。幅ごとの母集団・先頭経路（origin・`priced_by`・履歴ブースト・Viterbi 順位）・cost model の経路集合と、候補列 #1 の出どころと #2 の表記（`standard_top.source` / `second`: N-best の i 番目 / かな昇格 / 注入 / …）。1-best の #0 と候補列 #1 の表記ごとに、両幅の最終列でのその表記の経路（`origin`・`priced_by`・最終価格・履歴ブースト・分節数。無ければ null。句読点入力は候補列側を null）を `surfaces` に添える（割れの表記を他方の幅がどう価格付け・分節しているか）。`list_top_in_one_best_set` は「1-best が候補列側 explain の #0（`list.top`）の表記を model 経路として作ったか」で、model 経路と Override 段（数詞・カタカナ）の経路を、価格の持ち主に依らず表記で判定する（Model 段の提示・救済が作った、または価格を付けた top と、句読点入力は null）。`surfaces` の候補列側は explain の N-best の経路で、注入・かな昇格など N-best の後に本番が足す表記はその N-best に無ければ null。`--now` は両幅に、`--now-list-offset` は候補列側だけに足す（秒境界の感度）。入力は読み 1 つか `--input`（1 行 1 読み）、`--json` で 1 読み 1 行
 
 ### CI
 

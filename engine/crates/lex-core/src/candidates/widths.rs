@@ -49,6 +49,51 @@ impl TopPath {
     }
 }
 
+/// A surface's path in one width's final list (postprocess output), as the
+/// price and the history boost see it. Two widths' entries for one surface
+/// tell a split whose cause is who prices (or segments) the surface apart
+/// from which population drew it (#393).
+///
+/// The list is explain's N-best through postprocess. Surfaces the production
+/// list adds after it (an injected learned surface, a promoted or appended
+/// kana) are absent unless that N-best also holds them, and where it does,
+/// the entry is that path's price, which did not decide a promotion.
+#[derive(Debug, Serialize)]
+pub struct ListEntry {
+    pub origin: PathOrigin,
+    pub priced_by: PathOrigin,
+    pub final_cost: i64,
+    pub history_boost: i64,
+    /// The boost's normalization denominator (`ExplainPath::history_segment_count`).
+    pub history_segment_count: usize,
+    /// Segments of the final path (after grouping).
+    pub segments: usize,
+}
+
+impl ListEntry {
+    /// The entry of the first path of `r` carrying `surface`, `None` when
+    /// none of its paths does.
+    fn find(r: &ExplainResult, surface: &str) -> Option<Self> {
+        r.path(surface).map(|p| Self {
+            origin: p.origin,
+            priced_by: p.priced_by,
+            final_cost: p.final_cost,
+            history_boost: p.history_boost,
+            history_segment_count: p.history_segment_count,
+            segments: p.segments.len(),
+        })
+    }
+}
+
+/// One surface of interest (a width's #0, the list's #1) as each width's
+/// final list holds it; `None` where that list lacks the surface.
+#[derive(Debug, Serialize)]
+pub struct SurfaceAcrossWidths {
+    pub surface: String,
+    pub one_best: Option<ListEntry>,
+    pub list: Option<ListEntry>,
+}
+
 /// One width: the population it drew and what postprocess put first.
 #[derive(Debug, Serialize)]
 pub struct Width {
@@ -174,17 +219,27 @@ pub struct Widths {
     /// The candidate list's N-best width (`n = candidates.nbest`).
     pub list: Width,
     pub standard_top: StandardTop,
+    /// The 1-best's #0 and the list's #1 (`standard_top.surface`), distinct (the two surfaces
+    /// of a split), each with its entry in both widths' final lists — the
+    /// other width's side of the surface.
+    pub surfaces: Vec<SurfaceAcrossWidths>,
     /// The 1-best is not the list's #1.
     pub split: bool,
-    /// The list's postprocess #0 is in the 1-best's cost-model set (set
+    /// Whether the 1-best produced the list's postprocess #0 surface as a
+    /// model path: that surface is in the 1-best's cost-model set (set
     /// inclusion, not Viterbi rank: the rank is not prefix-closed past EOS
-    /// dedup).
+    /// dedup). Asked of a model path and of an Override-stage one (Numeric,
+    /// Katakana) alike, by surface: the Override stage may take over a
+    /// lattice surface, so a census sorts a split by whether the 1-best's
+    /// population reached the surface, not by who priced it in the list
+    /// (#393). The surface asked is explain's #0, not the production list's
+    /// #1 (`standard_top.surface`), which `surfaces` covers.
     ///
-    /// `None` when the list's top is not a model path (origin Viterbi or
-    /// Resegment, priced by the model): the question of a population's
-    /// reach does not arise for an offer, a policy path or a repriced one.
-    /// Also `None` for punctuation input, whose list the Standard generator
-    /// builds from the punctuation table, not from the N-best: `list` is then
+    /// `None` when the list has no #0; when that #0 was made or priced by a
+    /// Model-stage offer or rescue (a variant, a partial-kana path), whose
+    /// split is the offer's composition (#271), not a population's reach;
+    /// and for punctuation input, whose list the Standard generator builds
+    /// from the punctuation table, not from the N-best: `list` is then
     /// explain's N-best, a pipeline production did not run for this list.
     pub list_top_in_one_best_set: Option<bool>,
 }
@@ -237,17 +292,28 @@ pub fn widths(
             _ => None,
         },
         promoted_from: match source {
-            Some(TopSource::KanaPromoted { .. }) => list
-                .paths
-                .iter()
-                .find(|p| p.surface() == reading)
-                .map(TopPath::of),
+            Some(TopSource::KanaPromoted { .. }) => list.path(reading).map(TopPath::of),
             _ => None,
         },
         surface,
         second: tops.list.response.surfaces.get(1).cloned(),
         source,
     };
+
+    // Punctuation input: the list comes from the punctuation table, not from
+    // the N-best explain ran for `list`, so nothing is read off that N-best.
+    let list_is_production = standard_top.source != Some(TopSource::Punctuation);
+    let mut of_interest = vec![tops.one_best.clone(), standard_top.surface.clone()];
+    of_interest.dedup();
+    of_interest.retain(|s| !s.is_empty());
+    let surfaces = of_interest
+        .into_iter()
+        .map(|s| SurfaceAcrossWidths {
+            one_best: ListEntry::find(&one_best, &s),
+            list: ListEntry::find(&list, &s).filter(|_| list_is_production),
+            surface: s,
+        })
+        .collect();
 
     let one_best = Width::of(&one_best, population(1, has_history));
     let list = Width::of(&list, population(nbest, has_history));
@@ -257,16 +323,24 @@ pub fn widths(
         now_list,
         has_history,
         split: tops.one_best != standard_top.surface,
+        surfaces,
         list_top_in_one_best_set: list
             .top
             .as_ref()
-            .filter(|_| standard_top.source != Some(TopSource::Punctuation))
-            .filter(|t| t.origin.is_model() && t.priced_by.is_model())
+            .filter(|t| list_is_production && asked(t.origin) && asked(t.priced_by))
             .map(|t| one_best.has_model_path(&t.surface)),
         one_best,
         list,
         standard_top,
     })
+}
+
+/// The stages whose paths `list_top_in_one_best_set` asks about: the cost
+/// model's and the Override stage's (the numeric and katakana policy
+/// rewriters). A Model-stage offer or rescue, as the maker or the price's
+/// owner, is not.
+fn asked(origin: PathOrigin) -> bool {
+    origin.is_model() || matches!(origin, PathOrigin::Numeric | PathOrigin::Katakana)
 }
 
 fn top_line(t: Option<&TopPath>) -> String {
@@ -331,6 +405,27 @@ pub fn format_text(w: &Widths) -> String {
         set(&w.one_best),
         set(&w.list),
     ));
+    let entry = |e: &Option<ListEntry>| {
+        e.as_ref().map_or("(none)".to_string(), |e| {
+            format!(
+                "{:?}/{:?} cost {} boost {} segs {}/{}",
+                e.origin,
+                e.priced_by,
+                e.final_cost,
+                e.history_boost,
+                e.history_segment_count,
+                e.segments,
+            )
+        })
+    };
+    for s in &w.surfaces {
+        out.push_str(&format!(
+            "  surface {}: 1-best [{}] list [{}]\n",
+            s.surface,
+            entry(&s.one_best),
+            entry(&s.list),
+        ));
+    }
     out
 }
 
@@ -504,9 +599,10 @@ mod tests {
             Some(TopSource::KanaPromoted { .. })
         ));
         assert!(w.standard_top.path.is_none());
-        // The promoted kana is not a model path: no inclusion question.
+        // The promoted kana is no model path: the 1-best did not make it.
         assert_eq!(w.list.top.as_ref().unwrap().surface, "きょう");
         assert!(!w.list.top.as_ref().unwrap().origin.is_model());
+        assert!(!w.one_best.has_model_path("きょう"));
         assert_eq!(w.list_top_in_one_best_set, None);
 
         // A #1 with a history of its own keeps index 0: no promotion.
@@ -531,6 +627,21 @@ mod tests {
         assert_eq!(w.list_top_in_one_best_set, None);
     }
 
+    /// The list's #1 is a surface of interest even where explain's #0 is not
+    /// it (here the punctuation table's, against the dictionary's N-best).
+    /// That N-best is not the list, so no surface carries a list entry.
+    #[test]
+    fn the_lists_first_candidate_is_a_surface_of_interest_beside_explains_top() {
+        let e = entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![("。".into(), vec![e("終", 0, 1)])]);
+        let w = widths(&dict, None, None, "。", T0, T0);
+        assert_eq!(w.list.top.as_ref().unwrap().surface, "終");
+        assert_eq!(w.standard_top.surface, "。");
+        let surfaces: Vec<&str> = w.surfaces.iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(surfaces, ["終", "。"]);
+        assert!(w.surfaces.iter().all(|s| s.list.is_none()));
+    }
+
     /// The 1-best and the list's #1 are the production ones: the same
     /// strings `convert` and `generate_candidates` return.
     #[test]
@@ -549,5 +660,128 @@ mod tests {
                 super::super::generate_candidates(&ctx, "きょう", 20).surfaces[0]
             );
         }
+    }
+
+    /// The two-path fixture of the policy tests: a number compound the
+    /// Override stage prices at the anchor, over a model path of its own.
+    fn numeric_compound_dict() -> TrieDictionary {
+        let e = entry_with_id;
+        TrieDictionary::from_entries(vec![(
+            "にじゅうさん".into(),
+            vec![e("に十三", 0, 1), e("二十三", 2000, 1)],
+        )])
+    }
+
+    /// The inclusion question is about the surface, not about who priced the
+    /// list's top: a number compound priced by Numeric is asked the same as a
+    /// model-priced path, and the 1-best made 二十三 as a model path.
+    #[test]
+    fn a_policy_priced_list_top_is_asked_by_surface() {
+        let dict = numeric_compound_dict();
+        let w = widths(&dict, None, None, "にじゅうさん", T0, T0);
+        let top = w.list.top.as_ref().unwrap();
+        assert_eq!(
+            (top.surface.as_str(), top.priced_by),
+            ("二十三", PathOrigin::Numeric)
+        );
+        assert!(w.one_best.has_model_path("二十三"));
+        assert_eq!(w.list_top_in_one_best_set, Some(true));
+    }
+
+    /// Each surface of interest carries its entry in both widths' final
+    /// lists, and null where a list lacks it. Here the 1-best (a list of one)
+    /// holds the segments and owner the compound got from the Numeric stage,
+    /// the list holds the lattice's segments of the same surface, priced by
+    /// Numeric alike.
+    #[test]
+    fn a_surface_carries_its_entry_in_both_widths_final_lists() {
+        let dict = numeric_compound_dict();
+        let w = widths(&dict, None, None, "にじゅうさん", T0, T0);
+        assert_eq!(w.surfaces.len(), 1);
+        let s = &w.surfaces[0];
+        assert_eq!(s.surface, "二十三");
+        let (one, list) = (s.one_best.as_ref().unwrap(), s.list.as_ref().unwrap());
+        assert_eq!(
+            (one.origin, one.priced_by),
+            (PathOrigin::Numeric, PathOrigin::Numeric)
+        );
+        assert_eq!(
+            (list.origin, list.priced_by),
+            (PathOrigin::Viterbi, PathOrigin::Numeric)
+        );
+        assert_eq!((one.segments, one.history_segment_count), (1, 1));
+        assert_eq!((list.final_cost, list.history_boost), (3000, 0));
+        assert_eq!(one.final_cost, 3000);
+    }
+
+    /// A split's two surfaces (the 1-best's #0 and the list's #1), each with
+    /// the other width's side: 京 is the 1-best's at one half-life (boost
+    /// 5 x 1500), 今日 the list's at STALE (no boost); the list, drawn from
+    /// the larger population, holds 京 too, with its decayed price; the
+    /// 1-best's list of one has no 今日.
+    #[test]
+    fn a_split_carries_the_other_widths_side_of_both_surfaces() {
+        let dict = test_dict();
+        let h = learned(&[&[("きょう", "京")]]);
+        let w = widths(&dict, None, Some(&h), "きょう", half(), STALE);
+        assert!(w.split);
+        let surfaces: Vec<&str> = w.surfaces.iter().map(|s| s.surface.as_str()).collect();
+        assert_eq!(surfaces, ["京", "今日"]);
+        let (kyo, kyou) = (&w.surfaces[0], &w.surfaces[1]);
+        assert!(kyo.one_best.as_ref().unwrap().history_boost > 0);
+        assert_eq!(kyo.list.as_ref().unwrap().history_boost, 0);
+        assert!(kyou.one_best.is_none());
+        assert_eq!(kyou.list.as_ref().unwrap().history_boost, 0);
+    }
+
+    /// An Override-stage top (origin Numeric or Katakana) is asked, whoever
+    /// made the surface: here a learned 23 and a learned テスト, which no
+    /// lattice path makes, so the 1-best's set lacks them (`Some(false)`,
+    /// not `None`).
+    #[test]
+    fn an_override_stage_list_top_is_asked_whatever_its_origin() {
+        let e = entry_with_id;
+        let numeric = (
+            numeric_compound_dict(),
+            "にじゅうさん",
+            "23",
+            PathOrigin::Numeric,
+        );
+        let katakana = (
+            TrieDictionary::from_entries(vec![("てすと".into(), vec![e("手酢と", 0, 1)])]),
+            "てすと",
+            "テスト",
+            PathOrigin::Katakana,
+        );
+        for (dict, reading, surface, origin) in [numeric, katakana] {
+            let h = learned(&[&[(reading, surface)]]);
+            let w = widths(&dict, None, Some(&h), reading, T0, T0);
+            let top = w.list.top.as_ref().unwrap();
+            assert_eq!((top.surface.as_str(), top.origin), (surface, origin));
+            assert!(!w.one_best.has_model_path(surface));
+            assert_eq!(w.list_top_in_one_best_set, Some(false), "{surface}");
+        }
+    }
+
+    /// A lattice path whose price a Model-stage offer took (origin Viterbi,
+    /// priced by HiraganaVariant) is not asked: its split is the offer's
+    /// composition (#271), not a population's reach.
+    #[test]
+    fn a_lattice_path_priced_by_an_offer_is_not_asked() {
+        let e = entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "きょう".into(),
+            vec![e("今日", 0, 1), e("きょう", 9000, 1)],
+        )]);
+        let h = learned(&[&[("きょう", "きょう")]]);
+        let w = widths(&dict, None, Some(&h), "きょう", T0, T0);
+        let top = w.list.top.as_ref().unwrap();
+        assert_eq!(top.surface, "きょう");
+        assert_eq!(
+            (top.origin, top.priced_by),
+            (PathOrigin::Viterbi, PathOrigin::HiraganaVariant)
+        );
+        assert!(w.one_best.has_model_path("きょう"));
+        assert_eq!(w.list_top_in_one_best_set, None);
     }
 }
