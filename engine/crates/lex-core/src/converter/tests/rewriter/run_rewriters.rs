@@ -579,11 +579,11 @@ fn a_model_price_is_not_marked_as_the_rescue() {
     assert_eq!(paths[1].priced_by, PathOrigin::Viterbi);
 }
 
-/// A learned duplicate repriced below the learned index 0 takes index 0
-/// through learned_first, so the index 0 it replaces goes back to its price
+/// A learned listed path a compound replaces below the learned index 0 takes
+/// index 0 through learned_first, so the index 0 it replaces goes back to its price
 /// instead of staying at index 1 (Codex R1 on #363).
 #[test]
-fn repriced_learned_duplicate_demotes_the_learned_top_to_its_price() {
+fn a_learned_path_replaced_below_the_learned_top_demotes_it_to_its_price() {
     let boost = |p: &mut ScoredPath| {
         if matches!(p.surface_key().as_str(), "荷重" | "二十") {
             p.viterbi_cost -= 1000;

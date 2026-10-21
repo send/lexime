@@ -130,7 +130,7 @@ pub struct ExplainPath {
     /// single segment (kana rescue, Numeric, Katakana).
     pub model_cost: Option<i64>,
     /// For a path not priced by the model (an offer, the kana rescue, a
-    /// policy price, or a path one of them repriced): its price before
+    /// policy price, or a path an offer or the kana rescue repriced): its price before
     /// history minus `model_cost` and the rerank features — what the offer
     /// clamp or the policy moved it by. `None` for model-priced paths and
     /// where there is no `model_cost`.

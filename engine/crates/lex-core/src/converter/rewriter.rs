@@ -299,22 +299,17 @@ fn insert_candidates<O: PostprocessObserver>(
         };
         // Where the candidate's surface is listed: the held head, or a path
         // of the list.
-        let slot = if head.as_ref().is_some_and(|h| h.surface_key_eq(&key)) {
-            Some(Slot::Head)
-        } else {
-            paths
+        let listed = match head.as_ref().filter(|h| h.surface_key_eq(&key)) {
+            Some(h) => Some((Slot::Head, h)),
+            None => paths
                 .iter()
                 .position(|p| p.surface_key_eq(&key))
-                .map(Slot::At)
+                .map(|i| (Slot::At(i), &paths[i])),
         };
-        let Some(slot) = slot else {
+        let Some((slot, existing)) = listed else {
             report(true);
             insert_by_cost(paths, boosted(candidate), stage);
             continue;
-        };
-        let existing = match slot {
-            Slot::Head => head.as_ref().expect("the head slot holds the head"),
-            Slot::At(i) => &paths[i],
         };
         let resolved = match DuplicatePolicy::of(policy) {
             DuplicatePolicy::Skip => {

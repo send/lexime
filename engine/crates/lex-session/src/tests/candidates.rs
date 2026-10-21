@@ -532,23 +532,53 @@ fn a_number_compound_head_is_one_segment_for_records_and_stability() {
         .iter()
         .any(|p| p.surface == "二段" && p.origin == lex_core::converter::PathOrigin::Viterbi));
 
-    let history = Arc::new(std::sync::RwLock::new(UserHistory::new()));
-    let mut session = InputSession::new(dict.clone(), Some(conn), Some(history));
-    type_string(&mut session, "nidann");
-    let comp = session.comp();
+    let session = |defer: bool| {
+        let history = Arc::new(std::sync::RwLock::new(UserHistory::new()));
+        let mut session = InputSession::new(dict.clone(), Some(conn.clone()), Some(history));
+        session.set_defer_candidates(defer);
+        type_string(&mut session, "nidann");
+        session
+    };
+    let committed = |session: &mut InputSession| {
+        session.handle_key(KeyEvent::Enter);
+        match session.take_history_records().into_iter().next() {
+            Some(LearningRecord::Committed {
+                surface, segments, ..
+            }) => (surface, segments),
+            other => panic!("expected Committed record, got {other:?}"),
+        }
+    };
+
+    // The candidate list: the lattice path with the compound's surface is
+    // listed, and the compound replaced it.
+    let mut listed = session(false);
+    let comp = listed.comp();
     assert_eq!(comp.candidates.surfaces[0], "二段");
     assert_eq!(comp.candidates.paths[0].len(), 1, "the compound's own path");
     assert_eq!(comp.stability.prev_first_seg_reading, None, "reset");
     assert_eq!(comp.stability.count, 0);
+    assert_eq!(
+        committed(&mut listed),
+        ("二段".into(), None),
+        "the whole pair only"
+    );
 
-    session.handle_key(KeyEvent::Enter);
-    let records = session.take_history_records();
-    let LearningRecord::Committed {
-        surface, segments, ..
-    } = &records[0]
-    else {
-        panic!("expected Committed record");
-    };
-    assert_eq!(surface, "二段");
-    assert_eq!(segments, &None, "the whole pair only");
+    // Provisional (the 1-best, before the list arrives): the same record.
+    let mut provisional = session(true);
+    assert_eq!(
+        provisional.comp().candidates.paths.len(),
+        1,
+        "fixture: provisional"
+    );
+    assert_eq!(committed(&mut provisional), ("二段".into(), None));
+
+    // Fn+Delete removes the whole pair only, as the commit recorded it.
+    let mut deleted = session(false);
+    deleted.handle_key(KeyEvent::ForwardDelete);
+    match deleted.take_history_records().as_slice() {
+        [LearningRecord::Deletion { segments }] => {
+            assert_eq!(segments, &[("にだん".to_string(), "二段".to_string())]);
+        }
+        other => panic!("expected one Deletion record, got {other:?}"),
+    }
 }
