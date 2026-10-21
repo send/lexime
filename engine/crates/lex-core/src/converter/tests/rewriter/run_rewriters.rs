@@ -123,7 +123,7 @@ fn test_run_policy_rewriters_cost_ordered_insertion() {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate resolution and insertion (resolve_duplicate / insert_by_cost)
+// Duplicate resolution and insertion (select / compose_duplicate, insert_by_cost)
 // ---------------------------------------------------------------------------
 
 fn path(surface: &str, cost: i64, origin: PathOrigin) -> ScoredPath {

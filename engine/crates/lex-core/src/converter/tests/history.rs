@@ -433,7 +433,7 @@ fn a_number_compound_is_boosted_the_same_at_every_width() {
     let compound = |n: usize| {
         let result = explain(&ctx, "にだん", n);
         assert!(result.policy_price_inconsistent.is_empty());
-        let p = path_by(&result, "二段");
+        let p = result.path("二段").expect("二段 listed");
         assert_eq!(
             p.history_breakdown.applied(p.history_segment_count),
             p.history_boost,
@@ -448,25 +448,17 @@ fn a_number_compound_is_boosted_the_same_at_every_width() {
             p.final_cost,
         )
     };
-    assert_eq!(compound(1), compound(20));
+    let (one, all) = (compound(1), compound(20));
+    assert_eq!(one, all);
     assert_eq!(
-        compound(20),
+        all,
         (
             1,
             1,
             crate::converter::PathOrigin::Numeric,
             crate::converter::PathOrigin::Numeric,
             0,
-            compound(1).5
+            one.5
         )
     );
-}
-
-fn path_by<'a>(
-    result: &'a crate::converter::explain::ExplainResult,
-    surface: &str,
-) -> &'a crate::converter::explain::ExplainPath {
-    result
-        .path(surface)
-        .unwrap_or_else(|| panic!("{surface} listed"))
 }

@@ -468,7 +468,7 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 
 /// The `viterbi_rank` of a final path: its position in `viterbi_nbest`'s
 /// output, only for a path Viterbi made whose price the model still owns. A
-/// Viterbi path a Model-stage candidate repriced (`resolve_duplicate` keeps
+/// Viterbi path a Model-stage candidate repriced (`compose_duplicate` keeps
 /// the existing path and writes the cheaper candidate's `priced_by` onto it)
 /// has no rank: its price is not the Viterbi one the rank describes.
 fn viterbi_rank_of(scored: &ScoredPath, viterbi: &ViterbiOutput) -> Option<usize> {
@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     /// A3/T-A3: a Viterbi path repriced by another stage (the clone path of
-    /// `resolve_duplicate`) keeps `origin == Viterbi` but has no rank.
+    /// `compose_duplicate`) keeps `origin == Viterbi` but has no rank.
     #[test]
     fn viterbi_rank_is_none_for_a_repriced_viterbi_path() {
         let ranks = ViterbiOutput::from([(String::new(), (0, 3usize))]);
