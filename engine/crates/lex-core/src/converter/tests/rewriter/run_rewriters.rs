@@ -160,7 +160,8 @@ impl Rewriter for Fixed {
 }
 
 /// In the Override stage, each fixed candidate is a policy price at its own
-/// cost (a compound's rule: it may reprice a path with its surface).
+/// cost (a compound's rule: it replaces a listed path with its surface
+/// that costs no less).
 impl PolicyRewriter for Fixed {
     fn policy_candidates(&self, _reading: &str) -> Vec<(ScoredPath, PolicyPrice)> {
         self.0
@@ -197,14 +198,17 @@ fn model_stage_never_touches_index_zero() {
 }
 
 #[test]
-fn a_policy_reprice_drops_the_admission_verdict() {
+fn a_compound_replacing_a_listed_path_carries_no_admission_verdict() {
     let mut listed = path("同", 5000, PathOrigin::Viterbi);
     listed.admission_gap = Some(4000);
     let mut paths = vec![path("一", 1000, PathOrigin::Viterbi), listed];
     let rw = Fixed(vec![path("同", 3000, PathOrigin::Numeric)]);
     run_policy_rewriters(&[&rw], &mut paths, "よみ", None, &mut NoopObserver);
     let same = paths.iter().find(|p| p.surface_key() == "同").unwrap();
-    assert_eq!(same.priced_by, PathOrigin::Numeric);
+    assert_eq!(
+        (same.origin, same.priced_by),
+        (PathOrigin::Numeric, PathOrigin::Numeric)
+    );
     assert_eq!(same.admission_gap, None, "the price is not admission's");
 }
 

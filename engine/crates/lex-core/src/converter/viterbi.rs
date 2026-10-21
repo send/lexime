@@ -79,7 +79,7 @@ pub(crate) struct ScoredPath {
     /// anchor, for a path admission kept by that price. `None` for the head
     /// and the exempt paths (learned, the typed kana), which it keeps
     /// whatever their price, and for a price set after admission (a policy
-    /// candidate, or a path one repriced). Diagnostics only (replay bins it).
+    /// candidate). Diagnostics only (replay bins it).
     pub admission_gap: Option<i64>,
     /// Who produced `segments`.
     pub origin: PathOrigin,

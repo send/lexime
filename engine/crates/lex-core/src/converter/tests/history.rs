@@ -439,6 +439,13 @@ fn a_number_compound_is_boosted_the_same_at_every_width() {
             p.history_boost,
             "n = {n}"
         );
+        // The breakdown describes the compound, not the lattice path of its
+        // surface it replaced.
+        assert_eq!(
+            p.viterbi_cost + p.rerank_delta + p.price_clamp.unwrap_or(0) - p.history_boost,
+            p.final_cost,
+            "n = {n}"
+        );
         (
             p.segments.len(),
             p.history_segment_count,

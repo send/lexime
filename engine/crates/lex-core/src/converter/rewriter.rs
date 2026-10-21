@@ -297,39 +297,46 @@ fn insert_candidates<O: PostprocessObserver>(
                 }
             }
         };
-        let in_head = head.as_ref().is_some_and(|h| h.surface_key_eq(&key));
-        let index = (!in_head)
-            .then(|| paths.iter().position(|p| p.surface_key_eq(&key)))
-            .flatten();
-        let listed = if in_head {
-            head.as_ref()
+        // Where the candidate's surface is listed: the held head, or a path
+        // of the list.
+        let slot = if head.as_ref().is_some_and(|h| h.surface_key_eq(&key)) {
+            Some(Slot::Head)
         } else {
-            index.map(|i| &paths[i])
+            paths
+                .iter()
+                .position(|p| p.surface_key_eq(&key))
+                .map(Slot::At)
         };
-        let Some(existing) = listed else {
+        let Some(slot) = slot else {
             report(true);
             insert_by_cost(paths, boosted(candidate), stage);
             continue;
+        };
+        let existing = match slot {
+            Slot::Head => head.as_ref().expect("the head slot holds the head"),
+            Slot::At(i) => &paths[i],
         };
         let resolved = match DuplicatePolicy::of(policy) {
             DuplicatePolicy::Skip => {
                 report(false);
                 continue;
             }
-            // A held Override head is learned, and so is a candidate with its
-            // surface: a number compound replaces it in place. The Model
-            // stage leaves its head as it is.
-            DuplicatePolicy::Compose if in_head => continue,
+            // The Model stage leaves its head as it is.
+            DuplicatePolicy::Compose if slot == Slot::Head => continue,
             DuplicatePolicy::Compose => compose_duplicate(candidate, existing),
+            // A held Override head is learned, and so is a candidate with
+            // its surface: a number compound replaces it in place, as it
+            // replaces a path of the list.
             DuplicatePolicy::Select => select_duplicate(candidate, existing),
         };
         let Some(resolved) = resolved else { continue };
         report(true);
-        if let Some(i) = index {
-            paths.remove(i);
-            insert_by_cost(paths, boosted(resolved), stage);
-        } else {
-            head = Some(boosted(resolved));
+        match slot {
+            Slot::Head => head = Some(boosted(resolved)),
+            Slot::At(i) => {
+                paths.remove(i);
+                insert_by_cost(paths, boosted(resolved), stage);
+            }
         }
     }
     if let Some(h) = head {
@@ -348,6 +355,15 @@ fn insert_candidates<O: PostprocessObserver>(
             p.priced_by = rescue;
         }
     }
+}
+
+/// Where a candidate's surface is listed in [`insert_candidates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// The held index 0 ([`RewriteStage::holds_head`]).
+    Head,
+    /// A path of the list, at this index.
+    At(usize),
 }
 
 /// Insert before the first entry that costs more, or at least as much when

@@ -546,8 +546,10 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             // A model-priced path shows its raw Viterbi cost (or, missed by
             // the observer, its model cost) and the rerank delta. Any other
             // price is split into model cost + features + clamp/policy.
-            // Numeric / Katakana are added after history_rerank, so they
-            // have no snapshot; their boost is the Override stage's.
+            // Numeric / Katakana make their paths after history_rerank, so
+            // they have no snapshot: one under their surface belongs to a
+            // lattice path they replaced or the cut to n dropped (#393).
+            // Their boost is the Override stage's.
             let model = observer.model_costs.get(&key).copied();
             let model_cost = model.map(|(m, _)| m);
             let pre = scored.pre_history_cost();
@@ -564,10 +566,13 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             let price_clamp = model
                 .filter(|_| !scored.priced_by.is_model())
                 .map(|(m, adj)| pre - (m + adj));
+            let made_by_policy =
+                matches!(scored.origin, PathOrigin::Numeric | PathOrigin::Katakana);
             let snapshot = observer
                 .pre_history
                 .get(&key)
                 .copied()
+                .filter(|_| !made_by_policy)
                 .unwrap_or(PreHistorySnapshot {
                     cost: original,
                     breakdown: HistoryBoostBreakdown::default(),
