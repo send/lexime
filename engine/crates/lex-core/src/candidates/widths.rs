@@ -689,10 +689,9 @@ mod tests {
     }
 
     /// Each surface of interest carries its entry in both widths' final
-    /// lists, and null where a list lacks it. Here the 1-best (a list of one)
-    /// holds the segments and owner the compound got from the Numeric stage,
-    /// the list holds the lattice's segments of the same surface, priced by
-    /// Numeric alike.
+    /// lists, and null where a list lacks it. Here both widths hold the
+    /// compound's own path, though only the list kept the lattice's path of
+    /// the same surface: the Override stage replaced it (#393).
     #[test]
     fn a_surface_carries_its_entry_in_both_widths_final_lists() {
         let dict = numeric_compound_dict();
@@ -707,9 +706,10 @@ mod tests {
         );
         assert_eq!(
             (list.origin, list.priced_by),
-            (PathOrigin::Viterbi, PathOrigin::Numeric)
+            (PathOrigin::Numeric, PathOrigin::Numeric)
         );
         assert_eq!((one.segments, one.history_segment_count), (1, 1));
+        assert_eq!((list.segments, list.history_segment_count), (1, 1));
         assert_eq!((list.final_cost, list.history_boost), (3000, 0));
         assert_eq!(one.final_cost, 3000);
     }

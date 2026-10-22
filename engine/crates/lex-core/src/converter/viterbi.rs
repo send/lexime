@@ -72,18 +72,20 @@ pub(crate) struct ScoredPath {
     /// The whole-path part of `history_boost`: > 0 marks a surface committed
     /// for this reading (`is_learned`), which cost-gap admission always
     /// keeps. Recorded by `apply_history_boost` — in history reranking, and
-    /// in the Override stage for the paths it creates or reprices.
+    /// in the Override stage for the paths it creates (a number compound
+    /// that replaces a listed path is one it creates).
     pub whole_path_boost: i64,
     /// Cost-gap admission's verdict: the path's pre-history cost above the
     /// anchor, for a path admission kept by that price. `None` for the head
     /// and the exempt paths (learned, the typed kana), which it keeps
     /// whatever their price, and for a price set after admission (a policy
-    /// candidate, or a path one repriced). Diagnostics only (replay bins it).
+    /// candidate). Diagnostics only (replay bins it).
     pub admission_gap: Option<i64>,
     /// Who produced `segments`.
     pub origin: PathOrigin,
-    /// Who set `viterbi_cost` (differs from `origin` when a duplicate's
-    /// price was adopted by another stage).
+    /// Who set `viterbi_cost` (differs from `origin` when a Model-stage
+    /// candidate's price was adopted over a listed path's segments, or a
+    /// kana rescue's mark was set on another stage's path).
     pub priced_by: PathOrigin,
 }
 
