@@ -36,6 +36,14 @@ mise run test
 mise run build && mise run install && mise run reload
 ```
 
+### 計測・レビューの道具
+
+使い方は各ファイルの先頭コメントが正。出力のうち PR / issue に貼るのは集計値だけ (§設計哲学)。
+
+- `scripts/codex-review-fetch.sh <PR> [<since>]` — Codex レビューの 3 経路取得と verdict (§PR レビュー対応フロー)
+- `scripts/replay-window.py` — 撤回条件 (PR-G 型) の窓: rank>0 の充足数 (`--count-only`) と、前後 2 バイナリでの同 `--now` replay
+- `scripts/bench/build-probe.sh` + `probe-bench.py wall|ins` — 腕ごとの lextool / speed probe のビルドと、A/A 付き round-robin の速度・命令数。同一計算の判定は命令数で行う (wall はコード配置だけで ±5% 動く)
+
 ## ワークフロー
 
 main に直接コミットしない。必ず以下の流れで作業する:
