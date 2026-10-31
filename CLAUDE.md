@@ -36,6 +36,13 @@ mise run test
 mise run build && mise run install && mise run reload
 ```
 
+### 計測の道具
+
+使い方は各ファイルの先頭コメントが正。出力のうち PR / issue に貼るのは集計値だけ (§設計哲学)。
+
+- `scripts/replay-window.py` — 撤回条件 (PR-G 型) の窓: rank>0 の充足数 (`count`) と、前後 2 バイナリでの同 `--now` replay
+- `scripts/bench/build-probe.sh` + `probe-bench.py wall|ins` — 別ビルド (腕) どうしの A/B: 腕ごとの lextool / speed probe のビルドと、凍結履歴・同 `--now` での A/A 付き round-robin の速度・命令数。同一計算の判定は命令数で行う (wall はコード配置だけで ±5% 動く)。同一ツリー内の関数単位の計測は `mise run bench` (criterion)
+
 ## ワークフロー
 
 main に直接コミットしない。必ず以下の流れで作業する:
