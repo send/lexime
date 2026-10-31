@@ -44,16 +44,22 @@ Inherited from the Copilot era (reviewer-agnostic, still applies):
 `300s` — poll cadence while waiting for Codex's review to land, **NOT a
 latency prediction**.
 
+## wakeup_surface_threshold
+
+`~30min` — how long one `@codex review` trigger is given, counted from the
+trigger comment, before it is treated as dropped (SKILL.md Step 5.5 (2)).
+Set above the observed latency below, so a normal-but-slow review is not cut
+off; it overrides the generic SKILL.md `~15 min` default.
+
 Observed on elidex (user-confirmed 2026-06-21, #390): a single Codex review
 normally takes **~15 minutes** to land. So:
 
 - **~15 min is NORMAL, not stuck** — do not re-trigger or surface-as-slow at
   ~14-15 min; the review is almost certainly still running, and re-triggering
   interrupts/duplicates it.
-- **Surface / re-trigger threshold = ~25-30 min** of zero Codex activity on
-  head (no formal review, no marker-bearing issue-comment, no inline thread).
-  The generic SKILL.md "~15 min" sanity cap is too aggressive for this
-  reviewer.
+- **Surface / re-trigger threshold = `wakeup_surface_threshold` above** —
+  ~30 min after the trigger of zero Codex activity on head (no formal
+  review, no marker-bearing issue-comment, no inline thread).
 
 ## reviewer
 
@@ -63,7 +69,28 @@ normally takes **~15 minutes** to land. So:
   comparisons or it false-negatives every inline finding (elidex
   `#316`/`#337`).
 - `name`: Codex (OpenAI Codex Cloud, ChatGPT **Pro**)
-- `trigger`: `@codex review` (posted as a PR comment to re-trigger each round)
+- `trigger`: `@codex review`
+  - The literal comment body, posted to re-trigger each round. Write only
+    the body here; Step 1 posts and searches for exactly this value.
+- `error_verdict_match`: `Something went wrong` — Codex's error comment
+  (`Codex Review: Something went wrong. Try again later by commenting
+  "@codex review"`): no marker, no badge, no blob link. The trigger was
+  consumed and failed; re-post at once (SKILL.md Step 1 error shape).
+- `status_comment_match`: `codex-pull-request-review-summary` — the
+  HTML-comment tag of Codex's "Codex Review Summary" status table (`Review |
+  Status | Commit | Review trigger`), created on the push and edited in
+  place. Neither a finding nor a verdict (SKILL.md Step 1 status-widget
+  shape; elidex `#510` R12).
+- `body_finding_match`: `shields.io/badge/P` — Codex renders each
+  line-anchored body finding with a P-badge image. The global ORs this with
+  its always-on generic `/blob/<sha>/…#L…` detector, so it can only add
+  matches.
+- `non_verdict_signals`: the 👍 reaction and the status table's `Completed`
+  row — an auto-review can end with only these and no comment, which is not
+  an assessment. Surface-to-user shape: a bot 👍 dated *after your own manual
+  trigger* with no comment (do not re-post; tell the user).
+- `auto_review_trusted`: `false` — trigger yourself even though Codex
+  automatic review is ON (memory: auto review has failed to arm, `#301`).
 - `assessed_commit_marker`: `Reviewed commit:` — appears in BOTH
   formal-review bodies AND Codex's dry-verdict issue-comment, followed by
   `` `<sha>` ``. Step 1 reads the latest assessed commit from this marker
