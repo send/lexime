@@ -73,6 +73,9 @@ normally takes **~15 minutes** to land. So:
   a formal review. A dry-verdict comment on the current head IS a dry round;
   keying head-staleness on `pulls/{n}/reviews` alone false-stalls every dry
   round (elidex `#322`/`#337`).
+- `fetch`: `bash scripts/codex-review-fetch.sh <PR> <trigger time, ISO Z>`
+  each round (defined in `external-review/project.md` `reviewer`). A TERMINAL
+  claim quotes its counts line ("0 of N"), not just the verdict.
 
 The genuine Pro Codex responds as `chatgpt-codex-connector[bot]`; `@codex`
 with a non-`review` instruction starts a Pro-billed Codex cloud task (fine —

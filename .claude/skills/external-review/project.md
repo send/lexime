@@ -67,6 +67,11 @@ citation; no "edge / diminishing-returns" bucket. lexime-specific bias:
   dry-verdict comment on head = clean pass; keying the head check on
   `pulls/{n}/reviews` alone false-reports "stale review" (elidex
   `#322`/`#337`).
+- `fetch`: `bash scripts/codex-review-fetch.sh <PR> [<trigger time, ISO Z>]`
+  reads all three channels in full (threads by cursor, REST `--paginate`),
+  prints the counts, and ends with a JSON verdict (`assessed_commit`,
+  `findings`, `unresolved_threads`, `dry_verdict`). It applies every rule
+  above; use it for the Step-1 fetch instead of hand-written queries.
 
 **Identity caveat**: the genuine Pro Codex responds as
 `chatgpt-codex-connector[bot]`. `@codex review` requests a review; `@codex`
