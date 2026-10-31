@@ -20,13 +20,17 @@
 # history (DIR/user_history.lxud and its .wal: opening a history may evict
 # and rewrite it). The app directory's user_dict.lxuw / settings.toml
 # (`replay-commit-log --app-dir`, the configuration the app runs with) is
-# copied once, so a running app that edits them cannot split the arms. The
+# copied once, so a running app that edits them cannot split the arms; pass
+# a copy taken at the freeze to replay under the configuration at install
+# rather than today's. The
 # base arm writes the baseline over the whole cut log; both arms report on
 # the window (`--from-line L`), the new arm against that baseline. Both
 # binaries must take `--now` (E2n, #390, and later).
 #
-# It prints counts only. The output directory holds the cut log and, with
-# --verbose, each selection's reading and surface: personal input — keep it
+# It prints counts only, and fails unless both arms replayed exactly the N
+# selections of the window. The output directory holds the cut log, the
+# window's bounds and `--now` (window.txt: the time of a correction) and,
+# with --verbose, each selection's reading and surface: personal input — keep it
 # local, put only the counts in a PR or issue. What counts as a withdrawal
 # (which movement, of which selections) is the plan's, read from the
 # verbose files; this script stops at the counts every plan shares.
@@ -139,12 +143,19 @@ def main():
     finally:
         shutil.rmtree(work)
 
-    print(f"window: lines {a.start_line}..{end} ({end + 1 - a.start_line} lines, {a.rows} rank>0), --now {now}")
+    with open(os.path.join(a.out, "window.txt"), "w", encoding="utf-8") as f:
+        f.write(f"lines {a.start_line}..{end} --now {now}\n")
+    d = new["baseline"]
+    if not (base["selections"] == new["selections"] == a.rows and d["only_current"] == d["only_baseline"] == 0):
+        sys.exit(f"replay-window: lextool replayed a different window: selections base {base['selections']} "
+                 f"new {new['selections']} (expected {a.rows}), only_current {d['only_current']} "
+                 f"only_baseline {d['only_baseline']} — the line filter here has drifted from rank_ops")
+    print(f"window: {end + 1 - a.start_line} lines, {a.rows} rank>0 (bounds and --now in window.txt)")
     for name, r in (("base", base), ("new", new)):
         print(f"  {name:5s} selections {r['selections']:5d}  page 1 {r['in_page']:5d}"
               f"  in list {r['in_list']:5d}  absent {r['absent']:5d}"
               f"  learned #1 {r['gap_below_top']:5d}")
-    print("  new against base: " + json.dumps(new["baseline"]))
+    print("  new against base: " + json.dumps(d))
 
 
 if __name__ == "__main__":

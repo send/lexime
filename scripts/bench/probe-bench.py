@@ -10,7 +10,8 @@
 # own process) is added after it, so every delta has its noise floor beside
 # it. Each (lap, arm) is one process on a fresh copy of H (and H.wal) at the
 # same --now; each lap starts one arm later than the last, so position in
-# the lap (page cache, thermal state) and drift land on every arm alike.
+# the lap (page cache, thermal state) and drift land on every arm alike —
+# --laps is rounded up to a multiple of the arm count for that.
 #
 # wall: the probe's own timing (min and median over laps of total_mean_ns,
 #   delta vs base). Waits for the 1-minute load to fall to LOADMAX (env,
@@ -92,12 +93,13 @@ def main():
     if len({n for n, _ in arms}) != len(arms):
         p.error("arm names must be distinct (base2 is the added A/A arm)")
     base = arms[0][0]
+    laps = -(-a.laps // len(arms)) * len(arms)
     measure = wall if a.cmd == "wall" else ins
 
     res = {n: [] for n, _ in arms}
     work = tempfile.mkdtemp(prefix="probe-bench-")
     try:
-        for lap in range(a.laps):
+        for lap in range(laps):
             k = lap % len(arms)
             for n, b in arms[k:] + arms[:k]:
                 m = measure(a, b, work)
