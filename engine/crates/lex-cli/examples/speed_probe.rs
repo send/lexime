@@ -6,7 +6,10 @@
 //! readings file picked by a seeded shuffle; each mode prints
 //! `<mode> total_mean_ns <ns>`, the sum over the inputs of the per-input
 //! mean. `--oneshot` instead writes "reading<TAB>1-best" for every line of
-//! the readings file and exits (no timing).
+//! the readings file and exits (no timing). hist1 / nohist1 time
+//! `convert_from_lattice` on a lattice built outside the timed loop (the
+//! session reuses its lattice across keystrokes); cands times
+//! `generate_candidates` whole, lattice included.
 //!
 //! Pass the same `--now` to every arm: history decay is read at that time.
 //! The history is opened (and may be rewritten), so give each run its own

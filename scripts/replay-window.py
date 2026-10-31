@@ -39,24 +39,42 @@ import sys
 import tempfile
 
 
+def is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def selection(line):
+    """The line's `t` if lextool replays it as a selection: UTF-8 JSON of
+    the shape {t: u64, reading, surface, rank: usize} with rank > 0
+    (rank_ops::read_selections). Anything else — a torn line included —
+    lextool skips, and so does the window."""
+    try:
+        r = json.loads(line.decode("utf-8"))
+    except ValueError:  # UnicodeDecodeError is a ValueError
+        return None
+    if (isinstance(r, dict) and is_int(r.get("t")) and isinstance(r.get("reading"), str)
+            and isinstance(r.get("surface"), str) and is_int(r.get("rank")) and r["rank"] > 0):
+        return r["t"]
+    return None
+
+
 def window(log, start, rows):
-    """Lines of `log`, the index of the window's last line (None if not
-    full), and the rank>0 lines seen from `start` on."""
-    with open(log, encoding="utf-8") as f:
-        lines = f.readlines()
+    """Lines of `log` (bytes, split on b"\\n" as lextool does), the index and
+    `t` of the window's last line (None, None if not full), and the
+    selections seen from `start` on."""
+    with open(log, "rb") as f:
+        parts = f.read().split(b"\n")
+    lines = [p + b"\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
     if start > len(lines):
         sys.exit(f"replay-window: --start-line {start} is past the log ({len(lines)} lines)")
     seen = 0
     for i in range(start, len(lines)):
-        try:
-            rank = json.loads(lines[i]).get("rank")
-        except (ValueError, AttributeError):
-            continue
-        if isinstance(rank, int) and not isinstance(rank, bool) and rank > 0:
+        t = selection(lines[i])
+        if t is not None:
             seen += 1
             if seen == rows:
-                return lines, i, seen
-    return lines, None, seen
+                return lines, i, t, seen
+    return lines, None, None, seen
 
 
 def fresh(src_dir, names, work):
@@ -95,18 +113,20 @@ def main():
     cmds["replay"].add_argument("--verbose", action="store_true")
     a = p.parse_args()
 
-    lines, end, seen = window(a.log, a.start_line, a.rows)
+    lines, end, now, seen = window(a.log, a.start_line, a.rows)
     if a.cmd == "count":
         print(f"rank>0 from line {a.start_line}: {seen}/{a.rows}, log {len(lines)} lines"
               + (f", window ends at line {end}" if end is not None else ""))
         return
+    if not os.path.isdir(a.app_dir):
+        # lextool refuses a missing --app-dir; an empty copy would hide the typo.
+        sys.exit(f"replay-window: --app-dir {a.app_dir} is not a directory")
     if end is None:
         sys.exit(f"replay-window: the window is not full: {seen}/{a.rows} rank>0 lines from line {a.start_line}")
-    now = json.loads(lines[end])["t"]
 
     os.makedirs(a.out, exist_ok=True)
     log = os.path.join(a.out, "window.jsonl")
-    with open(log, "w", encoding="utf-8") as f:
+    with open(log, "wb") as f:
         f.writelines(lines[: end + 1])
     work = tempfile.mkdtemp(prefix="work-", dir=a.out)
     try:

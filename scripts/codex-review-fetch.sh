@@ -15,7 +15,8 @@
 # "0 findings" reads as "0 of N".
 #
 # The last line is a JSON verdict: assessed_commit (from the `Reviewed
-# commit:` marker, the latest across reviews and comments), on_head, findings
+# commit:` marker or a Completed row of the summary comment, the latest
+# across reviews and comments), on_head, findings
 # (P-badge bodies and non-verdict comments, on head and after <since>),
 # unresolved_threads (the bot's, any commit: a thread carries none),
 # dry_verdict (a dry verdict on head after <since>, both counts 0),
@@ -42,10 +43,11 @@ cursor="" page=1
 while :; do
   after=""
   [[ -n $cursor ]] && after=", after: \"$cursor\""
+  f=$run/threads_$(printf %04d "$page").json
   gh api graphql -f query="{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $pr) { reviewThreads(first: 100$after) { totalCount pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 1) { nodes { databaseId createdAt path line body author { login } } } } } } } }" \
-    >"$run/threads_$page.json"
-  has=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$run/threads_$page.json")
-  cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$run/threads_$page.json")
+    >"$f"
+  has=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$f")
+  cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$f")
   [[ $has == true ]] || break
   page=$((page + 1))
 done
@@ -59,7 +61,7 @@ gh api --paginate "repos/$repo/issues/$pr/comments" \
 jq -rs '[.[].data.repository.pullRequest.reviewThreads] | "threads: totalCount=\(.[0].totalCount) fetched=\([.[].nodes[]]|length) hasNextPage=\(.[-1].pageInfo.hasNextPage)"' "$run"/threads_*.json
 echo "scanned: $(jq length "$run/reviews.json") bot reviews ($(jq '[.[]|select(.body|test("shields.io/badge/P"))]|length' "$run/reviews.json") with P-badge bodies), $(jq length "$run/comments.json") bot comments"
 jq -s --arg bot "$bot_bare" '[.[].data.repository.pullRequest.reviewThreads.nodes] | flatten
-  | map(select(.isResolved == false and (.comments.nodes[0].author.login | sub("\\[bot\\]$";"")) == $bot))
+  | map(select(.isResolved == false and ((.comments.nodes[0].author.login // "") | sub("\\[bot\\]$";"")) == $bot))
   | map({thread: .id, path: .comments.nodes[0].path, line: .comments.nodes[0].line, body: .comments.nodes[0].body})' \
   "$run"/threads_*.json >"$run/unresolved.json"
 echo "-- unresolved bot threads:"
@@ -70,14 +72,23 @@ echo "-- comments:"
 jq -r '.[] | "\(.at) upd=\(.updated) \(.body[0:200]|gsub("\n";" "))"' "$run/comments.json"
 unresolved=$(jq length "$run/unresolved.json")
 jq -rn --arg head "$head" --arg marker "$marker" --arg dry "$dry" --arg err "$err" --arg status "$status" --arg since "$since" --argjson unresolved "$unresolved" '
-  ([inputs]|add|map(. + {
+  ([inputs]|add) as $raw
+  # A clean auto-review after a push posts no `Reviewed commit:` comment: it
+  # only rewrites the pinned summary row to `**Completed** <datetime> |
+  # `<sha7>`` (and reacts 👍) — lexime #332. Each Completed row is a dry
+  # assessment of its commit at its own time (findings would arrive as a
+  # review or thread, counted below). The same rule as gh-pr-merge-head-guard.sh.
+  | ([$raw[] | select((.body//"")|test($status)) | .body
+      | scan("\\*\\*Completed\\*\\*[^|\\n]*datetime=\"([^\"]+)\"[^|\\n]*\\|\\s*`([0-9a-f]{7,40})`")
+      | {kind: "summary", at: (.[0]|sub("\\.[0-9]+Z$";"Z")), commit: .[1], body: ""}]) as $rows
+  | ($raw + $rows | map(. + {
       assessed: (((((.body//"")|capture($marker+"[^`]*`(?<c>[0-9a-f]{7,40})").c) // ((.body//"")|capture("/blob/(?<c>[0-9a-f]{7,40})/").c) // .commit) // "")[0:10]),
-      is_dry: ((.body//"")|test($dry)), is_err: ((.body//"")|test($err)),
+      is_dry: (.kind == "summary" or ((.body//"")|test($dry))), is_err: ((.body//"")|test($err)),
       is_status: ((.body//"")|test($status)), has_badge: ((.body//"")|test("shields.io/badge/P"))})) as $all
-  | ($all|map(select(.assessed[0:7]==$head[0:7] and .at > $since))) as $round
+  | ($all|map(select(.assessed != "" and .assessed[0:7]==$head[0:7] and .at > $since))) as $round
   | ($round|map(select(.has_badge or (.kind=="comment" and (.is_dry|not) and (.is_err|not) and (.is_status|not))))) as $fi
-  | {assessed_commit: ($all|map(select(.is_status|not))|sort_by(.at)|last|.assessed),
-     on_head: (($all|map(select(.assessed[0:7]==$head[0:7]))|length) > 0),
+  | {assessed_commit: ($all|map(select((.is_status|not) and .assessed != ""))|sort_by(.at)|last|.assessed),
+     on_head: (($all|map(select(.assessed != "" and .assessed[0:7]==$head[0:7]))|length) > 0),
      findings: ($fi|length),
      unresolved_threads: $unresolved,
      dry_verdict: (($round|map(.is_dry)|any) and ($fi|length) == 0 and $unresolved == 0),
