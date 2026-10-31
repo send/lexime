@@ -41,6 +41,8 @@ citation; no "edge / diminishing-returns" bucket. lexime-specific bias:
 
 ## classification_calibration
 
+- Codex badges: **P1 ≈ CRITICAL/IMPORTANT, P2 ≈ IMPORTANT/MINOR** —
+  re-derive via the breaks-test anyway; don't trust the badge.
 - Dev-tool performance findings (`dictool` subcommands, corpus-mining paths)
   are **WONTFIX by policy** — resolve as "acceptable for runtime profile",
   do not auto-fix. Runtime (IME hot-path) perf findings are real.
@@ -57,8 +59,13 @@ citation; no "edge / diminishing-returns" bucket. lexime-specific bias:
   inline finding false-negatives (elidex `#316`/`#337`).
 - `name`: Codex (genuine OpenAI Codex Cloud, ChatGPT **Pro** —
   loop-affordable, no per-credit cost; *not* GitHub Copilot credits)
-- `trigger`: `@codex review` (or Codex automatic review, enabled at
-  chatgpt.com/codex — ON for this repo since 2026-07-03)
+- `trigger`: `@codex review`
+  - The literal comment body. Codex automatic review (chatgpt.com/codex) is
+    also ON for this repo since 2026-07-03, but it is not trusted
+    (`auto_review_trusted` below).
+- `error_verdict_match`, `status_comment_match`, `body_finding_match`,
+  `non_verdict_signals`, `auto_review_trusted`: defined in
+  `external-converge/project.md` § reviewer (same reviewer, same Step 1).
 - `assessed_commit_marker`: `Reviewed commit:` — in BOTH formal-review bodies
   AND the dry-verdict issue-comment, followed by `` `<sha>` ``; read the
   latest assessed commit from this marker across reviews + issue-comments.

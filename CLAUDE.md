@@ -63,7 +63,7 @@ main に直接コミットしない。必ず以下の流れで作業する:
 
 このリポジトリ固有の運用ルール:
 
-- **Codex automatic review が全 PR に自動で付く** (chatgpt.com/codex 設定)。再レビューは PR コメント `@codex review` で依頼する。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
+- **Codex automatic review は全 PR に付くが、信頼しない** (chatgpt.com/codex 設定。不発がある — #301)。初回も再レビューも PR コメント `@codex review` を自分で投稿する (overlay の `auto_review_trusted: false`)。`review` 以外の `@codex <指示>` は Codex cloud task として実行される (同じ Pro 課金)。応答者の identity 確認は overlay の Identity caveat 参照
 - **CI 確認**: `gh pr checks {number}` で全チェック pass を確認
 - **マージ前にユーザー確認**: CI pass + レビュー対応完了後でも、`gh pr merge` の前に必ずユーザーに確認を取る (`gh pr merge --auto` 禁止)
 
