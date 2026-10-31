@@ -44,22 +44,26 @@ Inherited from the Copilot era (reviewer-agnostic, still applies):
 `300s` — poll cadence while waiting for Codex's review to land, **NOT a
 latency prediction**.
 
-Observed on elidex (user-confirmed 2026-06-21, #390): a single Codex review
-normally takes **~15 minutes** to land. So:
+Observed on elidex (user-confirmed 2026-07-18): a Codex review commonly
+takes **~30 minutes** to land, range ~15-30 min and sometimes longer (the
+earlier "~15 min normal", #390 on 2026-06-21, was the low end).
+Manually-triggered rounds have been far faster (under 4 min in three samples
+on 2026-07-28), too few to retune on. So:
 
-- **~15 min is NORMAL, not stuck** — do not re-trigger or surface-as-slow at
-  ~14-15 min; the review is almost certainly still running, and re-triggering
-  interrupts/duplicates it.
+- **~30 min is NORMAL, not stuck** — after a trigger, do not re-trigger or
+  surface-as-slow inside that window; the review is almost certainly still
+  running, and re-triggering interrupts/duplicates it.
 - **Surface / re-trigger threshold = `wakeup_surface_threshold` below** —
-  ~30 min after the trigger of zero Codex activity on head (no formal
-  review, no marker-bearing issue-comment, no inline thread).
+  measured from the trigger, with no Codex review, comment or inline thread
+  on head since.
 
 ## wakeup_surface_threshold
 
-`~30min` — how long one `@codex review` trigger is given, counted from the
+`~45min` — how long one `@codex review` trigger is given, counted from the
 trigger comment, before it is treated as dropped (SKILL.md Step 5.5 (2)).
-Set above the observed latency in `wakeup_poll`, so a normal-but-slow review
-is not cut off; it overrides the generic SKILL.md `~15 min` default.
+Set well above the ~30 min latency in `wakeup_poll`, so a normal-but-slow
+review is not cut off (elidex uses the same value for the same reviewer); it
+overrides the generic SKILL.md `~15 min` default.
 
 ## reviewer
 
@@ -72,23 +76,26 @@ is not cut off; it overrides the generic SKILL.md `~15 min` default.
 - `trigger`: `@codex review`
   - The literal comment body, posted to re-trigger each round. Write only
     the body here; Step 1 posts and searches for exactly this value.
-- `error_verdict_match`: `Something went wrong` — Codex's error comment
-  (`Codex Review: Something went wrong. Try again later by commenting
-  "@codex review"`): no marker, no badge, no blob link. The trigger was
+- `error_verdict_match`: `Codex Review: Something went wrong` — the start of
+  Codex's error comment, which goes on to ask for a new trigger: no marker,
+  no badge, no blob link. The trigger was
   consumed and failed; re-post at once (SKILL.md Step 1 error shape).
 - `status_comment_match`: `codex-pull-request-review-summary` — the
   HTML-comment tag of Codex's "Codex Review Summary" status table (`Review |
   Status | Commit | Review trigger`), created on the push and edited in
   place. Neither a finding nor a verdict (SKILL.md Step 1 status-widget
   shape; elidex `#510` R12).
-- `body_finding_match`: `shields.io/badge/P` — Codex renders each
-  line-anchored body finding with a P-badge image. The global ORs this with
+- `body_finding_match`: `shields\.io/badge/P[0-9]` — Codex renders each
+  line-anchored body finding with a P0-P3 severity badge image. The global ORs this with
   its always-on generic `/blob/<sha>/…#L…` detector, so it can only add
   matches.
 - `non_verdict_signals`: the 👍 reaction and the status table's `Completed`
   row — an auto-review can end with only these and no comment, which is not
-  an assessment. Surface-to-user shape: a bot 👍 dated *after your own manual
-  trigger* with no comment (do not re-post; tell the user).
+  an assessment (`gh-pr-merge-head-guard.sh` counts a `Completed` row on
+  head as reviewed for the merge check only; it is still no verdict here).
+  Surface-to-user shape: your manual trigger for the current head reaches
+  `wakeup_surface_threshold` with no Codex comment or review since, but a
+  bot 👍 dated after it (do not re-post; tell the user).
 - `auto_review_trusted`: `false` — trigger yourself even though Codex
   automatic review is ON (it has failed to arm: `#301`).
 - `assessed_commit_marker`: `Reviewed commit:` — appears in BOTH
