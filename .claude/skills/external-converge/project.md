@@ -44,22 +44,22 @@ Inherited from the Copilot era (reviewer-agnostic, still applies):
 `300s` — poll cadence while waiting for Codex's review to land, **NOT a
 latency prediction**.
 
-## wakeup_surface_threshold
-
-`~30min` — how long one `@codex review` trigger is given, counted from the
-trigger comment, before it is treated as dropped (SKILL.md Step 5.5 (2)).
-Set above the observed latency below, so a normal-but-slow review is not cut
-off; it overrides the generic SKILL.md `~15 min` default.
-
 Observed on elidex (user-confirmed 2026-06-21, #390): a single Codex review
 normally takes **~15 minutes** to land. So:
 
 - **~15 min is NORMAL, not stuck** — do not re-trigger or surface-as-slow at
   ~14-15 min; the review is almost certainly still running, and re-triggering
   interrupts/duplicates it.
-- **Surface / re-trigger threshold = `wakeup_surface_threshold` above** —
+- **Surface / re-trigger threshold = `wakeup_surface_threshold` below** —
   ~30 min after the trigger of zero Codex activity on head (no formal
   review, no marker-bearing issue-comment, no inline thread).
+
+## wakeup_surface_threshold
+
+`~30min` — how long one `@codex review` trigger is given, counted from the
+trigger comment, before it is treated as dropped (SKILL.md Step 5.5 (2)).
+Set above the observed latency in `wakeup_poll`, so a normal-but-slow review
+is not cut off; it overrides the generic SKILL.md `~15 min` default.
 
 ## reviewer
 
@@ -90,7 +90,7 @@ normally takes **~15 minutes** to land. So:
   an assessment. Surface-to-user shape: a bot 👍 dated *after your own manual
   trigger* with no comment (do not re-post; tell the user).
 - `auto_review_trusted`: `false` — trigger yourself even though Codex
-  automatic review is ON (memory: auto review has failed to arm, `#301`).
+  automatic review is ON (it has failed to arm: `#301`).
 - `assessed_commit_marker`: `Reviewed commit:` — appears in BOTH
   formal-review bodies AND Codex's dry-verdict issue-comment, followed by
   `` `<sha>` ``. Step 1 reads the latest assessed commit from this marker
