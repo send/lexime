@@ -42,7 +42,7 @@ cursor="" page=1
 while :; do
   after=""
   [[ -n $cursor ]] && after=", after: \"$cursor\""
-  gh api graphql -f query="{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $pr) { reviewThreads(first: 100$after) { totalCount pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 3) { nodes { databaseId createdAt path line body author { login } } } } } } } }" \
+  gh api graphql -f query="{ repository(owner: \"$owner\", name: \"$name\") { pullRequest(number: $pr) { reviewThreads(first: 100$after) { totalCount pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 1) { nodes { databaseId createdAt path line body author { login } } } } } } } }" \
     >"$run/threads_$page.json"
   has=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$run/threads_$page.json")
   cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$run/threads_$page.json")
@@ -58,16 +58,17 @@ gh api --paginate "repos/$repo/issues/$pr/comments" \
 
 jq -rs '[.[].data.repository.pullRequest.reviewThreads] | "threads: totalCount=\(.[0].totalCount) fetched=\([.[].nodes[]]|length) hasNextPage=\(.[-1].pageInfo.hasNextPage)"' "$run"/threads_*.json
 echo "scanned: $(jq length "$run/reviews.json") bot reviews ($(jq '[.[]|select(.body|test("shields.io/badge/P"))]|length' "$run/reviews.json") with P-badge bodies), $(jq length "$run/comments.json") bot comments"
-echo "-- unresolved bot threads:"
 jq -s --arg bot "$bot_bare" '[.[].data.repository.pullRequest.reviewThreads.nodes] | flatten
   | map(select(.isResolved == false and (.comments.nodes[0].author.login | sub("\\[bot\\]$";"")) == $bot))
-  | .[] | {thread: .id, path: .comments.nodes[0].path, line: .comments.nodes[0].line, body: .comments.nodes[0].body}' "$run"/threads_*.json
+  | map({thread: .id, path: .comments.nodes[0].path, line: .comments.nodes[0].line, body: .comments.nodes[0].body})' \
+  "$run"/threads_*.json >"$run/unresolved.json"
+echo "-- unresolved bot threads:"
+jq '.[]' "$run/unresolved.json"
 echo "-- P-badge review bodies:"
 jq '.[] | select(.body|test("shields.io/badge/P")) | {commit: (.commit//"")[0:10], at, body}' "$run/reviews.json"
 echo "-- comments:"
 jq -r '.[] | "\(.at) upd=\(.updated) \(.body[0:200]|gsub("\n";" "))"' "$run/comments.json"
-unresolved=$(jq -s --arg bot "$bot_bare" '[.[].data.repository.pullRequest.reviewThreads.nodes] | flatten
-  | map(select(.isResolved == false and (.comments.nodes[0].author.login | sub("\\[bot\\]$";"")) == $bot)) | length' "$run"/threads_*.json)
+unresolved=$(jq length "$run/unresolved.json")
 jq -rn --arg head "$head" --arg marker "$marker" --arg dry "$dry" --arg err "$err" --arg status "$status" --arg since "$since" --argjson unresolved "$unresolved" '
   ([inputs]|add|map(. + {
       assessed: (((((.body//"")|capture($marker+"[^`]*`(?<c>[0-9a-f]{7,40})").c) // ((.body//"")|capture("/blob/(?<c>[0-9a-f]{7,40})/").c) // .commit) // "")[0:10]),

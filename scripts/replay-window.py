@@ -5,21 +5,22 @@
 # install, at the same `--now`, and the per-selection movement is compared.
 # python 3.9, as the Xcode python is.
 #
-#   replay-window.py --log commit-log.jsonl --start-line L [--rows 200] --count-only
-#   replay-window.py --log commit-log.jsonl --start-line L [--rows 200]
+#   replay-window.py count  --log commit-log.jsonl --start-line L [--rows 200]
+#   replay-window.py replay --log commit-log.jsonl --start-line L [--rows 200]
 #       --frozen DIR --app-dir DIR --dict lexime.dict --conn lexime.conn
 #       --base LEXTOOL --new LEXTOOL --out DIR [--verbose]
 #
 # L is the commit log's line count recorded at the freeze: the window is the
 # lines from L on, up to and including the N-th rank>0 line (a `rank` that is
-# an integer > 0). --count-only prints how far the window has filled and
-# exits 0 whether or not it is full.
+# an integer > 0). `count` prints how far the window has filled and exits 0
+# whether or not it is full.
 #
 # The replay cuts the log at the window's last line, takes that line's `t` as
 # `--now` for both arms, and gives each run a fresh copy of the frozen
 # history (DIR/user_history.lxud and its .wal: opening a history may evict
-# and rewrite it) and of the app directory's user_dict.lxuw / settings.toml
-# (`replay-commit-log --app-dir`, the configuration the app runs with). The
+# and rewrite it). The app directory's user_dict.lxuw / settings.toml
+# (`replay-commit-log --app-dir`, the configuration the app runs with) is
+# copied once, so a running app that edits them cannot split the arms. The
 # base arm writes the baseline over the whole cut log; both arms report on
 # the window (`--from-line L`), the new arm against that baseline. Both
 # binaries must take `--now` (E2n, #390, and later).
@@ -66,17 +67,16 @@ def fresh(src_dir, names, work):
     return d
 
 
-def replay(a, binary, log, now, work, extra, name):
+def replay(a, binary, log, now, work, app, extra, name, verbose=False):
     hist = fresh(a.frozen, ("user_history.lxud", "user_history.lxud.wal"), work)
-    app = fresh(a.app_dir, ("user_dict.lxuw", "settings.toml"), work)
     cmd = [binary, "--now", str(now), "replay-commit-log", a.dict, a.conn, log,
-           "--history", os.path.join(hist, "user_history.lxud"), "--app-dir", app, "--json"] + extra
+           "--history", os.path.join(hist, "user_history.lxud"), "--app-dir", app, "--json"] + extra + (["--verbose"] if verbose else [])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"replay-window: {name}: exit {r.returncode}\n{r.stderr[-2000:]}")
     with open(os.path.join(a.out, name + ".json"), "w", encoding="utf-8") as f:
         f.write(r.stdout)
-    if "--verbose" in extra:
+    if verbose:
         with open(os.path.join(a.out, name + ".verbose"), "w", encoding="utf-8") as f:
             f.write(r.stderr)
     return json.loads(r.stdout)
@@ -84,23 +84,22 @@ def replay(a, binary, log, now, work, extra, name):
 
 def main():
     p = argparse.ArgumentParser(description="Replay a withdrawal window under two binaries (see the header)")
-    p.add_argument("--log", required=True)
-    p.add_argument("--start-line", type=int, required=True)
-    p.add_argument("--rows", type=int, default=200)
-    p.add_argument("--count-only", action="store_true")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    cmds = {"count": sub.add_parser("count"), "replay": sub.add_parser("replay")}
+    for c in cmds.values():
+        c.add_argument("--log", required=True)
+        c.add_argument("--start-line", type=int, required=True)
+        c.add_argument("--rows", type=int, default=200)
     for k in ("frozen", "app-dir", "dict", "conn", "base", "new", "out"):
-        p.add_argument("--" + k)
-    p.add_argument("--verbose", action="store_true")
+        cmds["replay"].add_argument("--" + k, required=True)
+    cmds["replay"].add_argument("--verbose", action="store_true")
     a = p.parse_args()
 
     lines, end, seen = window(a.log, a.start_line, a.rows)
-    if a.count_only:
+    if a.cmd == "count":
         print(f"rank>0 from line {a.start_line}: {seen}/{a.rows}, log {len(lines)} lines"
               + (f", window ends at line {end}" if end is not None else ""))
         return
-    missing = [k for k in ("frozen", "app_dir", "dict", "conn", "base", "new", "out") if getattr(a, k) is None]
-    if missing:
-        p.error("replay needs --" + ", --".join(m.replace("_", "-") for m in missing))
     if end is None:
         sys.exit(f"replay-window: the window is not full: {seen}/{a.rows} rank>0 lines from line {a.start_line}")
     now = json.loads(lines[end])["t"]
@@ -111,12 +110,12 @@ def main():
         f.writelines(lines[: end + 1])
     work = tempfile.mkdtemp(prefix="work-", dir=a.out)
     try:
+        app = fresh(a.app_dir, ("user_dict.lxuw", "settings.toml"), work)
         baseline = os.path.join(a.out, "base.baseline")
-        v = ["--verbose"] if a.verbose else []
         win = ["--from-line", str(a.start_line)]
-        replay(a, a.base, log, now, work, ["--emit-baseline", baseline], "base-full")
-        base = replay(a, a.base, log, now, work, win + v, "base")
-        new = replay(a, a.new, log, now, work, win + v + ["--baseline", baseline], "new")
+        replay(a, a.base, log, now, work, app, ["--emit-baseline", baseline], "base-full")
+        base = replay(a, a.base, log, now, work, app, win, "base", a.verbose)
+        new = replay(a, a.new, log, now, work, app, win + ["--baseline", baseline], "new", a.verbose)
     finally:
         shutil.rmtree(work)
 
