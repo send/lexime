@@ -109,7 +109,11 @@ class Fail(Exception):
 
 
 def registry_deps():
-    """Sorted (name, version) of every registry package in the lock."""
+    """Sorted (name, version) of every registry package in the lock.
+
+    The same selection as current_deps() in scripts/check-quarantine.sh (bash,
+    so not shared): change one, change the other.
+    """
     if FIXTURE:
         with open(os.path.join(FIXTURE, "metadata.json"), "rb") as f:
             raw = f.read()

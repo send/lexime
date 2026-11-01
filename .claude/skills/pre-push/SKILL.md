@@ -44,7 +44,8 @@ mise run test   # = screen → lint (CI と同じ固定 toolchain) → workspace
 | swift | `mise run compile-swift && mise run test-swift` |
 | read-pin | `mise run test-read-pin` (CI では無条件 job — diff を問わず毎回走らせる) |
 | task-screen | `mise run test-task-screen` (CI では無条件 job — diff を問わず毎回走らせる) |
-| screen + audit | `mise run test-check-sources && mise run test-check-ghsa && mise run audit` (CI の screen job の source check / GHSA check テスト (無条件 job — diff を問わず毎回走らせる)、続けて screen + audit job。`audit` は自前で先に screen を通す) |
+| screen (テスト) | `mise run test-check-sources && mise run test-check-ghsa` (CI の screen job で走る source check / GHSA check のテスト。CI では無条件 — diff を問わず毎回走らせる) |
+| audit | `mise run audit` (CI の screen + audit job。`audit` は自前で先に screen を通す。GHSA 照会のためネットワークが要る) |
 | msrv | `cd engine && cargo +<toolchain> check --workspace --locked` (`<toolchain>` は ci.yml の msrv job が指定する toolchain 値をそのまま使う — 正規化・別ソース参照をしない。未導入なら `rustup toolchain install <toolchain>`) |
 | CodeQL / Analyze | ローカル等価なし — CI に委ねる |
 

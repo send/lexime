@@ -657,14 +657,19 @@ description = "Screen, then the dependency checks (locked check, cargo-deny, GHS
 # RustSec one. The script sends the token to api.github.com only, but the
 # variable is in the environment of every command of this task (cargo check
 # runs dependencies' build scripts): see check-ghsa.py's Network note.
+# It runs first because it builds nothing (cargo metadata only), so a lock
+# naming a version GitHub lists as malware fails here before this task's own
+# `cargo check` runs that crate's build script. That is detection, not
+# prevention: CI's lint and test jobs have already built the lock by then,
+# and keeping a build from running is the screen's job (scripts/screen.sh).
 # A run list, not a script, so the log echoes each command and shows which
 # check failed; it stops at the first.
 depends = ["screen"]
 dir = "{{config_root}}/engine"
 run = [
+  "python3 -I ../scripts/check-ghsa.py",
   "cargo check --locked",
   "cargo deny check",
-  "python3 -I ../scripts/check-ghsa.py",
   "cargo vet check",
   "cargo machete",
 ]
