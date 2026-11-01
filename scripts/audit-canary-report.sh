@@ -3,33 +3,37 @@
 # audit canary's verdict. Run by the `report` job of
 # .github/workflows/audit-canary.yml.
 #
-# Input (env): STATE, RUN_URL; gh auth via GH_TOKEN/GH_REPO.
-#   failure: open the issue, or update the open one. Its body always links
-#     the latest run. A comment, which notifies, is added only when the issue
-#     is opened, so a failure that persists stays quiet day to day.
+# Input (env): STATE, IDS, RUN_URL; gh auth via GH_TOKEN/GH_REPO.
+#   STATE  success | failure — the outcome of `mise run audit` (after one
+#          retry in the workflow, so a single transient outage is not one).
+#   IDS    the advisory ids (RUSTSEC-… / GHSA-…) the failing run's log named,
+#          comma-separated and sorted; empty when the failure names none (a
+#          yanked crate, cargo-vet, machete, a tool or network failure).
+#   failure: open the issue, or update the open one; its body always links the
+#     latest run. A comment, which notifies, is added when the issue opens and
+#     whenever the id set changes, so a failure that persists unchanged stays
+#     quiet in the issue (the red scheduled run still notifies; that is meant:
+#     an advisory one has decided to live with belongs in deny.toml's ignore,
+#     which makes the audit pass).
 #   success: close the open issue, if any.
 #
-# The verdict is the outcome of `mise run audit` only, not its findings: the
-# run log names them, and the log text never goes into the issue (it comes
-# from tool output, so nothing here has to be escaped for markdown). A failure
-# that is the network or a registry outage rather than an advisory reads the
-# same here; the run log tells them apart.
-#
-# The issue is found by the marker comment in its body, not by title or
-# search, as in scripts/lint-canary-report.sh: a retitled issue still dedupes,
-# and only bot-authored issues count (anyone can paste the marker into an
-# issue of their own in a public repo).
+# Only the ids reach the issue, never log text: they are checked against the
+# id shapes below, so nothing from tool output has to be escaped for markdown.
 set -euo pipefail
+# shellcheck source=scripts/canary-issue.sh
+source "$(dirname "$0")/canary-issue.sh"
 
-marker='<!-- audit-canary -->'
+marker='<!-- audit-canary'
 title='dependency audit fails on main'
 
-[[ $STATE =~ ^(success|failure)$ ]] || { echo "report: bad STATE '$STATE'" >&2; exit 1; }
-[[ $RUN_URL =~ ^https://github\.com/[A-Za-z0-9._/-]+$ ]] || { echo "report: bad RUN_URL '$RUN_URL'" >&2; exit 1; }
+need() { [[ ${!1} =~ $2 ]] || { echo "report: bad $1 '${!1}'" >&2; exit 1; }; }
+id='(RUSTSEC-[0-9]{4}-[0-9]{4}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})'
+need STATE '^(success|failure)$'
+need IDS "^($id(,$id)*)?$"
+need RUN_URL '^https://github\.com/[A-Za-z0-9._/-]+$'
 
-number=$(gh issue list --state open --limit 1000 --json number,author,body --jq '
-  map(select(.author.is_bot and (.body | contains("'"$marker"'"))))
-  | sort_by(.number) | .[0] | select(.) | .number')
+found=$(canary_open_issue "$marker")
+IFS=$'\t' read -r number old <<<"$found" || true
 
 if [ "$STATE" = success ]; then
   if [ -n "$number" ]; then
@@ -41,11 +45,24 @@ if [ "$STATE" = success ]; then
   exit 0
 fi
 
-body=$(cat <<EOF
-$marker
-\`mise run audit\` fails on main: a dependency check (cargo-deny, the GHSA check, cargo-vet or machete) no longer passes for the lock main has. The run log names the check and the findings; it can also be an outage of crates.io or the GitHub Advisory API, which the log shows as a request failure.
+fingerprint="$marker ids=$IDS -->"
+# shellcheck disable=SC2016 # literal backticks: markdown code spans
+if [ -n "$IDS" ]; then
+  verdict="\`mise run audit\` fails on main. Advisories named in the log: \`$(printf '%s' "$IDS" | sed 's/,/`, `/g')\`."
+else
+  verdict="\`mise run audit\` fails on main, and the log names no advisory id: read the run for which check failed."
+fi
 
-Fix the dependency (bump to the patched version), or accept the advisory in \`engine/deny.toml\` \`[advisories] ignore\` with a reason.
+body=$(cat <<EOF
+$fingerprint
+$verdict
+
+The run log names the failing check. What fixes it depends on which:
+
+- **an advisory** (cargo-deny, or the GHSA check \`scripts/check-ghsa.py\`): bump to the patched version, or accept it with a reason in \`engine/deny.toml\` \`[advisories] ignore\`;
+- **a yanked crate** (\`yanked = "deny"\`): move to a version that is not yanked;
+- **cargo-vet / cargo-machete**: an audit or exemption in \`engine/supply-chain/\`, or an unused dependency to drop;
+- **a tool or service**: a new cargo-deny / cargo-vet / machete release, or an outage of crates.io, the advisory DB or the GitHub Advisory API (the workflow already retried once). ci.yml's audit job uses the same unpinned tools, so a tool change fails PRs the same way.
 
 Last checked: $RUN_URL
 
@@ -60,4 +77,9 @@ if [ -z "$number" ]; then
 fi
 
 gh issue edit "$number" --body "$body" >/dev/null
-echo "report: #$number still failing, refreshed its last-checked link"
+if [ "$old" = "$fingerprint" ]; then
+  echo "report: #$number unchanged, refreshed its last-checked link"
+else
+  gh issue comment "$number" --body "$verdict ([run]($RUN_URL))" >/dev/null
+  echo "report: #$number updated, advisory set changed"
+fi

@@ -752,8 +752,8 @@ mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift` / `read-pin` /
 
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
-| `audit` | ubuntu-latest | 毎日 + `workflow_dispatch` | `scripts/screen.sh` を先に通してから main で `mise run audit`（ci.yml の audit job と同じ task。ci.yml では `core` フィルタに当たる PR / push でしか走らないので、lock に以前からある依存へ後から出た advisory をここで拾う）。audit の失敗は判定として `report` に渡し、このジョブは赤にしない。赤 = 判定前に壊れた（screen の失敗を含む） |
-| `report` | ubuntu-latest | `audit` が判定を出した時（main のみ） | 追跡 issue「dependency audit fails on main」を 1 件だけ維持: 失敗なら open・最終確認 run へのリンク更新、通れば close（`issues: write` はこのジョブだけ。`scripts/audit-canary-report.sh`）。失敗なら issue 更新後にこのジョブが赤。network / registry の障害も失敗として報告される（run のログで区別） |
+| `audit` | ubuntu-latest | 毎日 + `workflow_dispatch` | `scripts/screen.sh` を先に通してから main で `mise run audit`（ci.yml の audit job と同じ task・同じ非固定ツール。ci.yml では `core` フィルタに当たる PR / push でしか走らないので、lock に以前からある依存へ後から出た advisory をここで拾う）。失敗したら 60 秒後に 1 回だけ再実行し、その結果を判定とする（一時的な障害で issue を開かない）。判定とログ中の advisory id（形で照合した id のみ）を `report` に渡す。main では判定でこのジョブを赤にせず、dispatch した branch では失敗で赤。赤 = 判定前に壊れた（screen の失敗を含む）。timeout 30 分 |
+| `report` | ubuntu-latest | `audit` が判定を出した時（main のみ） | 追跡 issue「dependency audit fails on main」を 1 件だけ維持: 失敗なら open・最終確認 run へのリンク更新、advisory id の集合が変わった時だけコメントで通知、通れば close（`issues: write` はこのジョブだけ。`scripts/audit-canary-report.sh`、issue の特定は lint-canary と共有の `scripts/canary-issue.sh`）。失敗なら issue 更新後にこのジョブが赤。再実行後も続く network / registry の障害も失敗として報告される（run のログで区別） |
 
 > これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks --hidden` で一覧できる。hidden task は `lint-toolchain` のように他 task から呼ばれる部品）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
