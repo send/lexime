@@ -11,6 +11,7 @@ fs-err
 getrandom
 httparse
 libc
+nix
 num-traits
 proc-macro2
 quote
