@@ -114,11 +114,14 @@ def registry_deps():
         with open(os.path.join(FIXTURE, "metadata.json"), "rb") as f:
             raw = f.read()
     else:
-        proc = subprocess.run(
-            ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
-            cwd=os.path.join(ROOT, "engine"),
-            capture_output=True,
-        )
+        try:
+            proc = subprocess.run(
+                ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
+                cwd=os.path.join(ROOT, "engine"),
+                capture_output=True,
+            )
+        except OSError as e:  # cargo not on PATH: a FAIL line, not a traceback
+            raise Fail("cannot run cargo metadata: %r" % e)
         if proc.returncode != 0:
             raise Fail("cargo metadata failed: " + proc.stderr.decode(errors="replace").strip())
         raw = proc.stdout
@@ -178,8 +181,7 @@ def _advisories_tokens(text):
             if c in "\"'":
                 kind, value, i = _lex_string(text, i)
                 tok = (kind, value)
-            elif _WORD.match(text, i):
-                m = _WORD.match(text, i)
+            elif (m := _WORD.match(text, i)) is not None:
                 tok, i = ("w", m.group()), m.end()
             else:
                 tok, i = ("p", c), i + 1
