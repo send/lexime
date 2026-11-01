@@ -10,11 +10,11 @@
 #     unchanged week stays quiet.
 #   current: close the open issue, if any.
 #
-# The issue is found by the marker comment in its body, not by title or
-# search, so a retitled issue still dedupes and there is no search-index lag.
-# Only bot-authored issues count: the repo is public, and anyone can paste the
-# marker into an issue of their own.
+# The issue is found by its marker (scripts/canary-issue.sh, shared with the
+# audit canary's report).
 set -euo pipefail
+# shellcheck source=scripts/canary-issue.sh
+source "$(dirname "$0")/canary-issue.sh"
 
 marker='<!-- lint-canary'
 title='lint pin is behind stable'
@@ -30,12 +30,7 @@ need LINTS '^[A-Za-z0-9_:,]*$'
 
 # "<number>\t<marker line>" of the open issue, or nothing. The marker line
 # holds the last verdict's fingerprint, compared below.
-found=$(gh issue list --state open --limit 1000 --json number,author,body --jq '
-  map(select(.author.is_bot and (.body | contains("'"$marker"'"))))
-  | sort_by(.number) | .[0] | select(.)
-  | [.number, (.body | split("\n") | map(rtrimstr("\r"))
-               | map(select(startswith("'"$marker"'"))) | .[0] // "")]
-  | @tsv')
+found=$(canary_open_issue "$marker")
 IFS=$'\t' read -r number old <<<"$found" || true
 
 if [ "$STATE" = current ]; then

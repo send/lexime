@@ -1,0 +1,144 @@
+name: Audit canary
+
+# Runs the dependency audit (`mise run audit`: cargo-deny, the GHSA check,
+# cargo-vet, machete) on main every day. ci.yml runs the same task only when a
+# PR or push touches the `core` filter, so an advisory published against a
+# dependency that has sat in Cargo.lock for months would otherwise surface
+# only on the next such PR, which it would then block for a cause it did not
+# introduce (#402). A signal, not a gate: it never runs on pull_request or
+# push. The tracking issue it drives is in scripts/audit-canary-report.sh.
+#
+# GitHub disables scheduled workflows in a public repo after 60 days with no
+# repository activity (it emails a warning first). If the canary goes quiet,
+# check that it is still enabled before concluding main is clean.
+on:
+  schedule:
+    # Daily 04:23 UTC. A security signal, so the latency is a day rather than
+    # lint-canary's week; the run is a cargo check plus the audit tools.
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# As in ci.yml: mise reads only mise.toml, so no other committed mise config
+# can redefine the audit task this workflow runs.
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: mise.toml
+
+concurrency:
+  group: audit-canary
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    # A hung request would otherwise run to the 6-hour default and end
+    # `cancelled`, which `report` does not act on.
+    timeout-minutes: 30
+    outputs:
+      state: ${{ steps.audit.outcome }}
+      ids: ${{ steps.ids.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for quarantine diff against main
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # As in lint-canary: the same screen as ci.yml's `screen` job, first,
+      # because cargo executes dependency build scripts. `mise run audit`
+      # screens again ([tasks.screen]); this step stays so that a screen
+      # failure fails the job here instead of being reported as an audit
+      # finding.
+      - name: Supply-chain screen
+        run: bash scripts/screen.sh
+
+      # Restore (never save) the cache ci.yml's audit job builds on main
+      # under the same key. After the screen, not before: rust-cache runs an
+      # unlocked `cargo metadata` for its key, and `mise run audit` screens
+      # again with `--locked` checks anyway.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+          shared-key: engine
+          save-if: false
+
+      - name: Install audit tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-vet,cargo-machete
+
+      - uses: ./.github/actions/setup-mise
+
+      # The checks live only in mise.toml ([tasks.audit]), as for ci.yml's
+      # audit job, with the same unpinned tools: the canary shows what a PR's
+      # audit would say on main today, tool releases included.
+      # One retry, so a single transient outage (crates.io, the advisory DB,
+      # the GitHub Advisory API) is not a verdict; the second run's result is.
+      # continue-on-error keeps the job green so `report` runs; the step's
+      # outcome (`failure`) is the verdict it reads. GITHUB_TOKEN: the same as
+      # ci.yml's audit step (the GHSA check's rate limit; visible to this whole
+      # step, including dependency build scripts).
+      - name: Audit
+        id: audit
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mise run audit 2>&1 | tee audit.log && exit 0
+          echo "::warning::audit failed; retrying once in 60s"
+          sleep 60
+          mise run audit 2>&1 | tee audit.log
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # The advisory ids the failing run named, for the issue's fingerprint:
+      # ids only, matched by shape, never log text.
+      - name: Advisory ids
+        id: ids
+        if: steps.audit.outcome == 'failure'
+        run: |
+          ids=$(grep -oE 'RUSTSEC-[0-9]{4}-[0-9]{4}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}' audit.log | sort -u | paste -sd, - || true)
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+
+      # `report` acts on main only, so on a dispatched branch this is where a
+      # failing audit turns the run red.
+      - name: Fail a branch run when the audit fails
+        if: steps.audit.outcome == 'failure' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::mise run audit fails on ${GITHUB_REF_NAME}"
+          exit 1
+
+  # Split from `audit` so the job that executes dependency build scripts never
+  # holds a token that can write issues. Only main reports: a dispatch on a
+  # branch would otherwise close the issue for a lock main does not have. A
+  # literal, because a `schedule` event's payload carries no
+  # `repository.default_branch`.
+  report:
+    needs: audit
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      contains(fromJSON('["success", "failure"]'), needs.audit.outputs.state)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-shoutx
+
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STATE: ${{ needs.audit.outputs.state }}
+          IDS: ${{ needs.audit.outputs.ids }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/audit-canary-report.sh
+
+      - name: Fail the run when the audit fails
+        if: needs.audit.outputs.state == 'failure'
+        run: |
+          shoutx github-actions:error 'mise run audit fails on main; see the tracking issue'
+          exit 1
