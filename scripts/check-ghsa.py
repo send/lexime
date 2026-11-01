@@ -54,8 +54,10 @@
 # (Authorization goes in as an unredirected header). That is about where *this
 # script* sends it: in CI the variable is in the environment of the whole
 # `mise run audit` step, which includes the build scripts of dependencies that
-# cargo runs. It is the same exposure as the accuracy job's step and as the
-# token actions/checkout leaves in .git/config (permission: contents: read).
+# cargo runs (the accuracy job's step is the same). Narrowing that within one
+# step would not hold: a build script can read its ancestors' environment
+# under /proc. The token is contents: read on a public repository and dies
+# with the job (#402 follow-up).
 # When the quota is gone (403/429 with X-RateLimit-Remaining: 0) the FAIL says
 # so, and whether the run was anonymous.
 #
