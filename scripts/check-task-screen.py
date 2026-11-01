@@ -47,6 +47,7 @@ NO_BUILD = {
     "trace-log": "tail",
     "icon": "scripts/icon.sh (sips / iconutil)",
     "test-read-pin": "shell tests of the pin readers",
+    "test-check-ghsa": "python over JSON fixtures, no cargo and no network",
     "test-check-sources": "cargo generate-lockfile / metadata on fixtures with no registry dependency",
     "test-task-screen": "this check and its tests",
 }

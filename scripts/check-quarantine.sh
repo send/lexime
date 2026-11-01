@@ -20,7 +20,8 @@ fi
 # (name, version) of every registry dependency in the working tree's lock, as
 # cargo reads it (`cargo metadata`, which resolves without building). A hand
 # parser would skip packages whose keys are spelled differently but mean the
-# same to cargo (#345), and so leave them unchecked.
+# same to cargo (#345), and so leave them unchecked. scripts/check-ghsa.py's
+# registry_deps() makes the same selection in Python: change both together.
 current_deps() {
     (cd engine && cargo metadata --locked --all-features --format-version 1) | python3 -c '
 import json, sys

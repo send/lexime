@@ -28,8 +28,9 @@ toml = { workspace = true }
 # Kept as a hard dep (not optional) since the CLI is a build/dev tool and
 # not shipped with the IME itself.
 # 9.0.5 is a security floor (GHSA-m665-v7pm-7grj, Zip Cloaking). The advisory
-# is not in RustSec, so cargo deny cannot catch a lockfile below it; keep the
-# floor until it is.
+# is GHSA-only (not in RustSec, which cargo deny reads), so
+# scripts/check-ghsa.py is what catches a lockfile below it; the floor stays
+# as the manifest-level guard.
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Used by `dictool candidates corpus` only — Wikipedia dumps ship as bz2.
 # Streaming decompress so we never materialize the full ~14GB XML on disk.
