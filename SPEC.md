@@ -739,7 +739,7 @@ macOS で動作する最小限の IME を構築。
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。
 
-mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift` / `read-pin` / `task-screen`、lint-canary の `canary`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。`claude.yml` を含む 3 ワークフローとも `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
+mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift` / `read-pin` / `task-screen`、lint-canary の `canary`、audit-canary の `audit`）は `.github/actions/setup-mise` 経由で、`mise.toml` の `min_version` と同じ版の mise を入れる（ローカルではその版が下限）。`claude.yml` を含む 4 ワークフローとも `MISE_OVERRIDE_CONFIG_FILENAMES=mise.toml` で `mise.toml` 以外の mise 設定（task を上書きし得る `.mise.toml` / `mise.local.toml` 等）を読まない。@claude bot（`claude.yml`）は同じ版を sha256 とともにインラインで固定し、版と sha256 は常時走る `read-pin` ジョブが pin と突き合わせる。bump 手順は `mise.toml` の `min_version` のコメント。
 
 `.github/workflows/lint-canary.yml`（シグナルであって gate ではない。PR / push では走らない）:
 
@@ -747,6 +747,13 @@ mise を使うジョブ（`lint` / `accuracy` / `audit` / `swift` / `read-pin` /
 |---|---|---|---|
 | `canary` | ubuntu-latest | 毎週月曜 + `workflow_dispatch` | `ci.yml` の `screen` と同じ `scripts/screen.sh` を先に通してから、浮動 `stable` で `mise run lint`（`LINT_TOOLCHAIN=stable`、`scripts/lint-canary.sh`）。このジョブが赤 = 判定前に壊れたか、stable が pin より新しくないのに lint が落ちた（pin の古さのシグナルではない） |
 | `report` | ubuntu-latest | `canary` が判定を出した時（main のみ） | 追跡 issue「lint pin is behind stable」を 1 件だけ維持: behind / free bump なら open・更新、pin が追いついたら close（`issues: write` はこのジョブだけ）。behind（stable が pin より新しく lint が落ちる）なら issue 更新後にこのジョブが赤 |
+
+`.github/workflows/audit-canary.yml`（シグナルであって gate ではない。PR / push では走らない。#402）:
+
+| ジョブ | 環境 | 条件 | 内容 |
+|---|---|---|---|
+| `audit` | ubuntu-latest | 毎日 + `workflow_dispatch` | `scripts/screen.sh` を先に通してから main で `mise run audit`（ci.yml の audit job と同じ task。ci.yml では `core` フィルタに当たる PR / push でしか走らないので、lock に以前からある依存へ後から出た advisory をここで拾う）。audit の失敗は判定として `report` に渡し、このジョブは赤にしない。赤 = 判定前に壊れた（screen の失敗を含む） |
+| `report` | ubuntu-latest | `audit` が判定を出した時（main のみ） | 追跡 issue「dependency audit fails on main」を 1 件だけ維持: 失敗なら open・最終確認 run へのリンク更新、通れば close（`issues: write` はこのジョブだけ。`scripts/audit-canary-report.sh`）。失敗なら issue 更新後にこのジョブが赤。network / registry の障害も失敗として報告される（run のログで区別） |
 
 > これらの表と上の mise タスク表は**概観**であり正準ではない。正準は `.github/workflows/` 以下と `mise.toml`（`mise tasks --hidden` で一覧できる。hidden task は `lint-toolchain` のように他 task から呼ばれる部品）。齟齬があれば向こうが正 — 書き写しは drift するので、ジョブやタスクの増減をここへ反映し忘れても壊れない前提で読むこと。
 
