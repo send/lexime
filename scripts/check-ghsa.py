@@ -9,17 +9,28 @@
 # This asks the GitHub Advisory API about the lock's (name, version) pairs,
 # in chunks that never hold one crate twice, so that an advisory matched in a
 # chunk is about the one locked version of each crate it names there (no
-# version-range evaluation here, and no second query to attribute it).
+# version-range evaluation here). An advisory that names two or more crates of
+# one chunk is attributed by asking about each of those pairs alone.
+#
+# Advisory types: `reviewed` and `malware`, two queries per chunk (the API's
+# default is `reviewed` alone, which leaves malware out: GHSA-jwh4-228v-r358,
+# arrayref 0.3.10, is only returned for type=malware). `unreviewed` is not
+# asked: its package/version mapping is not checked by GitHub, so `affects`
+# matching on it cannot be relied on, and it would be noise in a gate.
 #
 # What it reports and what it leaves out:
-#   - A GHSA that references RustSec (rustsec.org or the advisory-db repo) is
+#   - A GHSA that references a RustSec advisory (a rustsec.org/advisories/
+#     RUSTSEC-* page, or a RUSTSEC-yyyy-nnnn file in the advisory-db repo) is
 #     left to cargo-deny, which already fails on it; reporting both would make
-#     one finding two failures to ignore, in two places.
+#     one finding two failures to ignore, in two places. A link to an
+#     advisory-db issue or pull request is not that: the advisory-db issue for
+#     a malware report carries no RUSTSEC id, and cargo-deny does not see it.
 #   - A withdrawn advisory is not a finding.
 #   - An id under `[advisories] ignore` in engine/deny.toml is reported as
 #     ignored and does not fail. That list is the one place to accept an
 #     advisory: cargo-deny only warns about a GHSA id there ("unknown
-#     advisory", exit 0), so it can hold ours too.
+#     advisory", exit 0), so it can hold ours too. The list is read by hand
+#     (see ignored_ids): Python 3.9 (macOS's /usr/bin/python3) has no tomllib.
 #
 # What it asks about: every registry dependency in the lock, each run, as
 # cargo reads it (`cargo metadata`, which resolves without building; a hand
@@ -31,8 +42,9 @@
 # API documents, is a FAIL, never a pass. What cannot be checked is not clean
 # (the same stance as scripts/check-quarantine.sh).
 #
-# Network: unauthenticated the API allows 60 requests/hour, which a run (about
-# one request per 100 dependencies) stays far under; GITHUB_TOKEN / GH_TOKEN,
+# Network: unauthenticated the API allows 60 requests/hour, which a run (two
+# requests per 100 dependencies, plus one per crate of an advisory that names
+# several) stays far under; GITHUB_TOKEN / GH_TOKEN,
 # when set, only raises that limit and is sent to api.github.com alone.
 #
 # Test injection (the one, for scripts/check-ghsa-test.sh only): with
@@ -47,16 +59,19 @@
 import json
 import os
 import re
+import http.client
 import subprocess
 import sys
 import time
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
-CHUNK = 100  # `affects` takes at most 100 entries; per_page caps at 100 too
+# Pairs per request. Not an API limit (151 entries still answer); the limit is the
+# URL's length (HTTP 414), and 100 keeps it comfortably short. per_page caps at 100.
+CHUNK = 100
+TYPES = ("reviewed", "malware")
 MAX_PAGES = 50  # a runaway Link chain is a bug, not data
 ATTEMPTS = 3
 TIMEOUT = 30
@@ -85,7 +100,7 @@ def registry_deps():
         raw = proc.stdout
     try:
         packages = json.loads(raw)["packages"]
-        return sorted(
+        deps = sorted(
             {
                 (p["name"], p["version"])
                 for p in packages
@@ -94,18 +109,45 @@ def registry_deps():
         )
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise Fail("unreadable cargo metadata output: %r" % e)
+    if not deps:
+        raise Fail("no registry dependencies found in cargo metadata (nothing was checked)")
+    return deps
+
+
+_HEADING = re.compile(r"^\s*\[")
+_ID = r"GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}"
+# `id = "GHSA-..."` (an inline table's key), or a bare string element
+# (`["GHSA-..", ..]` or one per line) that is not the value of some `key =`.
+_IGNORED = re.compile(
+    r'(?<![\w-])id\s*=\s*"(%s)"|(?:^|[\[,])\s*"(%s)"\s*(?=[,\]]|$)' % (_ID, _ID), re.M
+)
 
 
 def ignored_ids():
-    """GHSA ids under [advisories] ignore in deny.toml (strings or {id = ..})."""
+    """GHSA ids under [advisories] in deny.toml, picked out by hand.
+
+    Not a TOML parse (no tomllib before Python 3.10, and the supported macOS
+    ships 3.9). A miss only ever errs toward "not ignored", i.e. stricter, so
+    this need not read every TOML spelling: an entry it cannot see is a FAIL
+    the author then writes in the plain form. The other way (picking up an id
+    that is not an ignore) is kept narrow instead: only the [advisories]
+    section, comments dropped, and only `id = "GHSA-.."` or a bare string.
+    Entries like { crate = "foo@1.2.3", reason = ".." } are simply not picked.
+    """
     path = os.path.join(FIXTURE, "deny.toml") if FIXTURE else os.path.join(ROOT, "engine", "deny.toml")
     try:
-        with open(path, "rb") as f:
-            entries = tomllib.load(f).get("advisories", {}).get("ignore", [])
-        ids = {e if isinstance(e, str) else e["id"] for e in entries}
-    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, ValueError) as e:
         raise Fail("cannot read the ignore list in %s: %r" % (path, e))
-    return {i for i in ids if isinstance(i, str) and i.startswith("GHSA-")}
+    section, kept = None, []
+    for line in lines:
+        if _HEADING.match(line) and re.match(r"^\s*\[+[^\]]*\]+\s*(#.*)?$", line):
+            section = line.split("#")[0].strip()
+            continue
+        if section == "[advisories]":
+            kept.append(line.split("#")[0])
+    return {a or b for a, b in _IGNORED.findall("\n".join(kept))}
 
 
 _requests = 0
@@ -148,7 +190,7 @@ def http_get(url):
             last = "HTTP %d" % e.code
             if e.code < 500 and e.code != 429:
                 break  # a 4xx will not change by asking again
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
             last = repr(e)
         except ValueError as e:
             raise Fail("answer is not JSON (%s): %r" % (url, e))
@@ -163,11 +205,12 @@ def next_link(link):
     return None
 
 
-def advisories_affecting(pairs):
-    """Every advisory the API lists for these (name, version) pairs."""
+def advisories_affecting(pairs, kind):
+    """Every advisory of this type the API lists for these (name, version) pairs."""
     query = urllib.parse.urlencode(
         {
             "ecosystem": "rust",
+            "type": kind,
             "affects": ",".join("%s@%s" % p for p in pairs),
             "per_page": 100,
         },
@@ -204,8 +247,16 @@ def validate(adv):
         raise Fail("unexpected advisory shape: %.200s" % json.dumps(adv))
 
 
+_RUSTSEC_ID = re.compile(r"RUSTSEC-\d{4}-\d{4}")
+
+
 def covered_by_rustsec(adv):
-    return any("rustsec.org" in r or "github.com/rustsec/advisory-db" in r for r in adv["references"])
+    """References a RustSec advisory itself, not just the advisory-db repo."""
+    return any(
+        "rustsec.org/advisories/RUSTSEC-" in r
+        or ("github.com/rustsec/advisory-db/" in r and _RUSTSEC_ID.search(r))
+        for r in adv["references"]
+    )
 
 
 def chunks(deps):
@@ -237,15 +288,26 @@ def main():
     ignore = ignored_ids()
 
     # ghsa_id -> (advisory, the locked (name, version) pairs it names). Within a
-    # chunk a name is one version, so the pairs are read off the advisory.
+    # chunk a name is one version, so a single named crate gives the pair
+    # directly; several are told apart by asking about each pair alone.
     seen = {}
     for chunk in chunks(deps):
         version_of = dict(chunk)
-        for adv in advisories_affecting(chunk):
-            names = {v["package"]["name"] for v in adv["vulnerabilities"]} & version_of.keys()
-            if not names:
-                raise Fail("advisory %s names none of the crates asked about" % adv["ghsa_id"])
-            seen.setdefault(adv["ghsa_id"], (adv, set()))[1].update((n, version_of[n]) for n in names)
+        for kind in TYPES:
+            for adv in advisories_affecting(chunk, kind):
+                ghsa_id = adv["ghsa_id"]
+                names = sorted({v["package"]["name"] for v in adv["vulnerabilities"]} & version_of.keys())
+                if not names:
+                    raise Fail("advisory %s names none of the crates asked about" % ghsa_id)
+                if len(names) > 1:
+                    names = [
+                        n
+                        for n in names
+                        if any(a["ghsa_id"] == ghsa_id for a in advisories_affecting([(n, version_of[n])], kind))
+                    ]
+                    if not names:
+                        raise Fail("advisory %s names several crates but none alone (cannot attribute)" % ghsa_id)
+                seen.setdefault(ghsa_id, (adv, set()))[1].update((n, version_of[n]) for n in names)
 
     withdrawn = rustsec = 0
     ignored, findings = [], []
@@ -265,9 +327,12 @@ def main():
     for adv, pairs in findings:
         for name, version in sorted(pairs):
             count += 1
+            label = adv.get("severity") or "unknown"
+            if adv.get("type") == "malware":
+                label += ", malware"
             print(
                 "ghsa: FAIL %s@%s — %s (%s) %s — patched: %s"
-                % (name, version, adv["ghsa_id"], adv.get("severity") or "unknown", adv.get("summary", ""), patched(adv, name))
+                % (name, version, adv["ghsa_id"], label, adv.get("summary", ""), patched(adv, name))
             )
     summary = "%d deps, %d withdrawn, %d also in RustSec (cargo-deny's), %d ignored, %d found" % (
         len(deps), withdrawn, rustsec, len(ignored), count,
