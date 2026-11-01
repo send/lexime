@@ -46,6 +46,8 @@ jobs:
               - 'scripts/check-quarantine.sh'
               - 'scripts/check-build-scripts.sh'
               - 'scripts/check-sources.sh'
+              - 'scripts/check-ghsa.py'
+              - 'scripts/check-ghsa-test.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
@@ -429,7 +431,14 @@ jobs:
       # The checks live only in mise.toml ([tasks.audit]). It screens again
       # first; as in `lint`, the `screen` job is the pass that counts, since
       # rust-cache's unlocked `cargo metadata` runs before it.
+      - run: mise run test-check-ghsa
+
+      # GITHUB_TOKEN: as in accuracy, runners share the anonymous API quota;
+      # scripts/check-ghsa.py (GitHub Advisory API) sends the token to
+      # api.github.com only, for the rate limit.
       - run: mise run audit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   swift:
     needs: [changes, screen]

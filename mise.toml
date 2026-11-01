@@ -628,6 +628,10 @@ cargo +"$tc" fmt --all
 description = "Test the screen's source check scripts/check-sources.sh (as CI's screen job does)"
 run = "bash scripts/check-sources-test.sh"
 
+[tasks.test-check-ghsa]
+description = "Test the GHSA advisory check scripts/check-ghsa.py (as CI's audit job does)"
+run = "bash scripts/check-ghsa-test.sh"
+
 [tasks.test-task-screen]
 description = "Check that every task that builds depends on screen, and test that check (as CI's task-screen job does)"
 run = "bash scripts/check-task-screen-test.sh"
@@ -637,7 +641,7 @@ description = "Test the pin reader scripts/read-pin.sh and its wrappers (as CI's
 run = "bash scripts/read-pin-test.sh"
 
 [tasks.audit]
-description = "Screen, then the dependency checks (locked check, cargo-deny, cargo-vet, machete) — CI's audit job runs this task"
+description = "Screen, then the dependency checks (locked check, cargo-deny, GHSA-only advisories, cargo-vet, machete) — CI's audit job runs this task"
 # The one definition of these checks: CI's audit job runs this task rather
 # than cargo lines of its own. Add a check here, not to a caller (a check
 # needing a new cargo tool also goes in that job's install-action list).
@@ -645,6 +649,11 @@ description = "Screen, then the dependency checks (locked check, cargo-deny, car
 # task that builds. (It was once a hidden audit-deps task that CI ran
 # unscreened, "reached only via audit" — but nothing held a caller to that,
 # and a task listing it beside "screen" would have run the two at once.)
+# check-ghsa.py covers what cargo-deny cannot: it reads RustSec only, so an
+# advisory published to GitHub alone (GHSA-m665-v7pm-7grj, #402) passes it.
+# It queries the GitHub Advisory API for the lock's crates (needs network;
+# GITHUB_TOKEN / GH_TOKEN, when set, raises the rate limit) and is accepted
+# through engine/deny.toml's `[advisories] ignore`, like a RustSec one.
 # A run list, not a script, so the log echoes each command and shows which
 # check failed; it stops at the first.
 depends = ["screen"]
@@ -652,6 +661,7 @@ dir = "{{config_root}}/engine"
 run = [
   "cargo check --locked",
   "cargo deny check",
+  "python3 -I ../scripts/check-ghsa.py",
   "cargo vet check",
   "cargo machete",
 ]
