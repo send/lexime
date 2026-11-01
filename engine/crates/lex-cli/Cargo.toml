@@ -27,7 +27,7 @@ toml = { workspace = true }
 # Used by `dictool candidates mine` only — SudachiDict releases ship as ZIP.
 # Kept as a hard dep (not optional) since the CLI is a build/dev tool and
 # not shipped with the IME itself.
-zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Used by `dictool candidates corpus` only — Wikipedia dumps ship as bz2.
 # Streaming decompress so we never materialize the full ~14GB XML on disk.
 bzip2 = "0.4"
