@@ -47,7 +47,6 @@ jobs:
               - 'scripts/check-build-scripts.sh'
               - 'scripts/check-sources.sh'
               - 'scripts/check-ghsa.py'
-              - 'scripts/check-ghsa-test.sh'
               - 'engine/supply-chain/**'
               - '.github/workflows/ci.yml'
               # mise.toml defines the gates themselves (this workflow's lint
@@ -124,6 +123,14 @@ jobs:
       # configs, and a parser that misses a spelling fails open (#345).
       - name: Test the source check
         run: bash scripts/check-sources-test.sh
+
+      # The GHSA check's tests (no cargo, no network: JSON fixtures). Here and
+      # not in `audit` for the reason `read-pin` is unconditional: its inputs
+      # (check-ghsa-test.sh) sit in no other filter, so a path filter would be
+      # one more hand-kept list, and a check that each input is in some filter
+      # (#302) could not catch a path missing from it.
+      - name: Test the GHSA check
+        run: bash scripts/check-ghsa-test.sh
 
       - name: Supply-chain screen
         run: bash scripts/screen.sh
@@ -431,8 +438,7 @@ jobs:
       # The checks live only in mise.toml ([tasks.audit]). It screens again
       # first; as in `lint`, the `screen` job is the pass that counts, since
       # rust-cache's unlocked `cargo metadata` runs before it.
-      - run: mise run test-check-ghsa
-
+      #
       # GITHUB_TOKEN: as in accuracy, runners share the anonymous API quota;
       # scripts/check-ghsa.py (GitHub Advisory API) sends the token to
       # api.github.com only, for the rate limit.

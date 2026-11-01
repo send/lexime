@@ -6,7 +6,10 @@
 # Why: cargo-deny reads the RustSec database only, so an advisory published to
 # GitHub alone is invisible to it. GHSA-m665-v7pm-7grj (zip <= 9.0.4) sat in
 # main unnoticed for that reason (#402); #401 could only pin a floor by hand.
-# This asks the GitHub Advisory API about the lock's (name, version) pairs.
+# This asks the GitHub Advisory API about the lock's (name, version) pairs,
+# in chunks that never hold one crate twice, so that an advisory matched in a
+# chunk is about the one locked version of each crate it names there (no
+# version-range evaluation here, and no second query to attribute it).
 #
 # What it reports and what it leaves out:
 #   - A GHSA that references RustSec (rustsec.org or the advisory-db repo) is
@@ -35,7 +38,7 @@
 # Test injection (the one, for scripts/check-ghsa-test.sh only): with
 # CHECK_GHSA_FIXTURE=<dir> set, nothing touches the network or cargo.
 #   <dir>/metadata.json     stands in for `cargo metadata` output
-#   <dir>/deny.toml         stands in for engine/deny.toml (absent = no ignores)
+#   <dir>/deny.toml         stands in for engine/deny.toml (required)
 #   <dir>/response-<k>.json the k-th request's answer (0-based, in request
 #                           order): {"headers": {"Link": ...}, "body": <API body>}
 #                           A missing file is a request failure.
@@ -96,8 +99,6 @@ def registry_deps():
 def ignored_ids():
     """GHSA ids under [advisories] ignore in deny.toml (strings or {id = ..})."""
     path = os.path.join(FIXTURE, "deny.toml") if FIXTURE else os.path.join(ROOT, "engine", "deny.toml")
-    if FIXTURE and not os.path.exists(path):
-        return set()
     try:
         with open(path, "rb") as f:
             entries = tomllib.load(f).get("advisories", {}).get("ignore", [])
@@ -200,30 +201,26 @@ def validate(adv):
         )
     )
     if not ok:
-        raise Fail("unexpected advisory shape: %.200s" % json.dumps(adv)[:200])
+        raise Fail("unexpected advisory shape: %.200s" % json.dumps(adv))
 
 
 def covered_by_rustsec(adv):
     return any("rustsec.org" in r or "github.com/rustsec/advisory-db" in r for r in adv["references"])
 
 
-def affected_pairs(adv, versions_by_name):
-    """Which locked (name, version) the advisory is about.
+def chunks(deps):
+    """Lists of at most CHUNK pairs, none holding a crate name twice.
 
-    The query matched the advisory to some pair in a chunk but the answer does
-    not say which. A crate locked at one version is that version; at several,
-    ask again per version rather than evaluate version ranges here.
+    deps is sorted, so the n-th version of each name goes to layer n; a crate
+    locked at two versions is asked about in two requests, never one.
     """
-    pairs = []
-    for name in sorted({v["package"]["name"] for v in adv["vulnerabilities"]} & versions_by_name.keys()):
-        versions = versions_by_name[name]
-        if len(versions) > 1:
-            versions = [
-                v for v in versions
-                if any(a["ghsa_id"] == adv["ghsa_id"] for a in advisories_affecting([(name, v)]))
-            ]
-        pairs += [(name, v) for v in versions]
-    return pairs
+    layers, seen = [], {}
+    for name, version in deps:
+        n = seen[name] = seen.get(name, -1) + 1
+        if n == len(layers):
+            layers.append([])
+        layers[n].append((name, version))
+    return [layer[i : i + CHUNK] for layer in layers for i in range(0, len(layer), CHUNK)]
 
 
 def patched(adv, name):
@@ -237,19 +234,22 @@ def main():
     if FIXTURE:
         print("ghsa: using test fixture %s (no network)" % FIXTURE)
     deps = registry_deps()
-    versions_by_name = {}
-    for name, version in deps:
-        versions_by_name.setdefault(name, []).append(version)
     ignore = ignored_ids()
 
+    # ghsa_id -> (advisory, the locked (name, version) pairs it names). Within a
+    # chunk a name is one version, so the pairs are read off the advisory.
     seen = {}
-    for i in range(0, len(deps), CHUNK):
-        for adv in advisories_affecting(deps[i : i + CHUNK]):
-            seen.setdefault(adv["ghsa_id"], adv)
+    for chunk in chunks(deps):
+        version_of = dict(chunk)
+        for adv in advisories_affecting(chunk):
+            names = {v["package"]["name"] for v in adv["vulnerabilities"]} & version_of.keys()
+            if not names:
+                raise Fail("advisory %s names none of the crates asked about" % adv["ghsa_id"])
+            seen.setdefault(adv["ghsa_id"], (adv, set()))[1].update((n, version_of[n]) for n in names)
 
     withdrawn = rustsec = 0
     ignored, findings = [], []
-    for ghsa_id, adv in sorted(seen.items()):
+    for ghsa_id, (adv, pairs) in sorted(seen.items()):
         if adv.get("withdrawn_at"):
             withdrawn += 1
         elif covered_by_rustsec(adv):
@@ -257,14 +257,13 @@ def main():
         elif ghsa_id in ignore:
             ignored.append(adv)
         else:
-            findings.append(adv)
+            findings.append((adv, pairs))
 
     for adv in ignored:
         print("ghsa: ignored %s (deny.toml) — %s" % (adv["ghsa_id"], adv.get("summary", "")))
     count = 0
-    for adv in findings:
-        pairs = affected_pairs(adv, versions_by_name) or [(v["package"]["name"], "?") for v in adv["vulnerabilities"]]
-        for name, version in pairs:
+    for adv, pairs in findings:
+        for name, version in sorted(pairs):
             count += 1
             print(
                 "ghsa: FAIL %s@%s — %s (%s) %s — patched: %s"

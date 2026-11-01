@@ -629,7 +629,7 @@ description = "Test the screen's source check scripts/check-sources.sh (as CI's 
 run = "bash scripts/check-sources-test.sh"
 
 [tasks.test-check-ghsa]
-description = "Test the GHSA advisory check scripts/check-ghsa.py (as CI's audit job does)"
+description = "Test the GHSA advisory check scripts/check-ghsa.py (as CI's screen job does)"
 run = "bash scripts/check-ghsa-test.sh"
 
 [tasks.test-task-screen]

@@ -724,7 +724,7 @@ macOS で動作する最小限の IME を構築。
 | ジョブ | 環境 | 条件 | 内容 |
 |---|---|---|---|
 | `changes` | ubuntu-latest | 常時 | パスフィルタ検出（core / session / ffi / cli / corpus / swift） |
-| `screen` | ubuntu-latest | 常時 | `scripts/check-sources-test.sh` の後に `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。検査の追加はスクリプト側に（呼び出し元はスクリプト冒頭に列挙） |
+| `screen` | ubuntu-latest | 常時 | `scripts/check-sources-test.sh` と `scripts/check-ghsa-test.sh`（GHSA 検査のテスト。入力が他のフィルタに無いので `audit` ではなくここで無条件に走らせる）の後に `scripts/screen.sh`（crates.io 以外の source（Cargo.lock は cargo 自身に読ませる）と repo 内の cargo config（依存の取得元を変え得るため一律）を拒否 + quarantine + build.rs ベースライン検査）。cargo を呼ぶ全ジョブをこれが gate する。検査の追加はスクリプト側に（呼び出し元はスクリプト冒頭に列挙） |
 | `task-screen` | ubuntu-latest | 常時 | `scripts/check-task-screen-test.sh`（上表の `test-task-screen`。build する全 mise task が `screen` に依存し、bot がそれ以外の build を許されていないこと） |
 | `read-pin` | ubuntu-latest | 常時 | `scripts/read-pin-test.sh`（Mozc SHA が #332 以前の読み取りと同一バイトであること、mise の全インストールが `mise.toml` の `min_version` に従うこと、claude.yml の sha256 が pin の linux-x64 バイナリのものであることも検査） |
 | `lint` | ubuntu-latest | Rust 変更時 | `mise run lint`（上表の `lint` task） |
@@ -734,7 +734,7 @@ macOS で動作する最小限の IME を構築。
 | `test-engine` | ubuntu-latest | core/session/ffi 変更時 | `cargo test -p lex_engine --features trace` |
 | `test-cli` | ubuntu-latest | core/cli 変更時 | `cargo test -p lex-cli` |
 | `accuracy` | ubuntu-latest | core/cli/corpus 変更時 | `mise run accuracy` + `mise run accuracy-history`（Mozc スナップショットは `mozc-pin.txt` で固定。各 task が screen を再度通すので全履歴 checkout） |
-| `audit` | ubuntu-latest | core 変更時 | `mise run test-check-ghsa` の後に `mise run audit`（上表の `audit` task。screen を再度通すので全履歴 checkout） |
+| `audit` | ubuntu-latest | core 変更時 | `mise run audit`（上表の `audit` task。screen を再度通すので全履歴 checkout） |
 | `swift` | macos-latest | engine または Swift 変更時 | `mise run compile-swift && mise run test-swift`（`uniffi-gen` 経由で screen を再度通すので全履歴 checkout） |
 
 Rust ジョブは `Swatinem/rust-cache@v2` を使い、多くは `shared-key: engine` を共有する（`msrv` は toolchain 固定、`lint` は固定 toolchain の版をキーに含める、`accuracy` は release プロファイルのため専用キー、`screen` は意図的にキャッシュなし）。理由は各ジョブのコメント参照。

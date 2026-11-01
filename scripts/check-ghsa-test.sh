@@ -39,7 +39,8 @@ response() {
 }
 
 # fixture [<name version> ...]: metadata.json for these registry packages,
-# plus a path package and a git package that must not be asked about.
+# plus a path package and a git package that must not be asked about, and an
+# empty-ignore deny.toml (a case that needs ignores overwrites it).
 fixture() {
   local dir pkgs="" sep=""
   dir=$(mktemp -d "$tmp/case.XXXXXX")
@@ -50,6 +51,7 @@ fixture() {
   done
   printf '{"packages":[{"name":"lex-core","version":"0.1.0","source":null},{"name":"gitdep","version":"0.1.0","source":"git+file:///x"},%s],"workspace_members":[]}\n' \
     "$pkgs" >"$dir/metadata.json"
+  printf '[advisories]\n' >"$dir/deny.toml"
   echo "$dir"
 }
 
@@ -139,22 +141,46 @@ grep -qxF "https://api.github.com/advisories?page=2" "$dir/requests.log" ||
 
 dir=$(fixture $(for i in $(seq 1 150); do echo "c$i 1.0.0"; done))
 response "$dir" 0 "[]"
-response "$dir" 1 "[$(advisory $ZIP_GHSA "$GH_REFS" null c150)]"
-expect "150 dependencies are asked in two chunks" fail "ghsa: FAIL c150@1.0.0" "$dir"
+response "$dir" 1 "[$(advisory $ZIP_GHSA "$GH_REFS" null c99)]"
+expect "150 dependencies are asked in two chunks" fail "ghsa: FAIL c99@1.0.0" "$dir"
 [[ $(wc -l <"$dir/requests.log") -eq 2 ]] ||
   { echo "FAIL 150 dependencies make two requests"; cat "$dir/requests.log"; fails=$((fails + 1)); }
 
-# A crate locked at two versions: the advisory is attributed by asking per
-# version (requests 1 and 2), not guessed.
-dir=$(fixture zip 8.0.0 zip 9.0.0)
-response "$dir" 0 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
-response "$dir" 1 "[]"
-response "$dir" 2 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
+# A crate locked at two versions is never asked about twice in one request, so
+# a match is the version of that request: zip@8.0.0 shares request 0 with
+# serde, zip@9.0.0 goes to request 1, and only the latter is named.
+dir=$(fixture zip 8.0.0 zip 9.0.0 serde 1.0.0)
+response "$dir" 0 "[]"
+response "$dir" 1 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
 expect "two locked versions: only the affected one is named" fail "ghsa: FAIL zip@9.0.0" "$dir"
 if grep -qF "zip@8.0.0 —" "$tmp/out"; then
   echo "FAIL two locked versions: the unaffected one is named"
   fails=$((fails + 1))
 fi
+[[ $(sed -n 1p "$dir/requests.log") == *"affects=serde@1.0.0,zip@8.0.0&per_page=100" && \
+   $(sed -n 2p "$dir/requests.log") == *"affects=zip@9.0.0&per_page=100" && \
+   $(wc -l <"$dir/requests.log") -eq 2 ]] ||
+  { echo "FAIL two locked versions: requests are not [serde, zip@8] then [zip@9]"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+# The older version affected instead: the same layers, the other attribution.
+dir=$(fixture zip 8.0.0 zip 9.0.0)
+response "$dir" 0 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
+response "$dir" 1 "[]"
+expect "two locked versions: the first version's match names only it" fail "ghsa: FAIL zip@8.0.0" "$dir"
+if grep -qF "zip@9.0.0 —" "$tmp/out"; then
+  echo "FAIL two locked versions: the other version is named"
+  fails=$((fails + 1))
+fi
+# Both versions affected: one advisory, two names in the report.
+dir=$(fixture zip 8.0.0 zip 9.0.0)
+response "$dir" 0 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
+response "$dir" 1 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
+expect "two locked versions, both affected: both are named" fail "ghsa: FAIL zip@9.0.0" "$dir"
+grep -qF "ghsa: FAIL zip@8.0.0" "$tmp/out" ||
+  { echo "FAIL both affected: zip@8.0.0 not named"; fails=$((fails + 1)); }
+# An advisory naming no crate of the request it came back for is not attributable.
+dir=$(fixture serde 1.0.0)
+response "$dir" 0 "[$(advisory $ZIP_GHSA "$GH_REFS")]"
+expect "advisory naming none of the asked crates fails" fail "names none of the crates asked about" "$dir"
 
 if [[ $fails -gt 0 ]]; then
   echo "check-ghsa-test: $fails failed"
