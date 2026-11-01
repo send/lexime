@@ -4,9 +4,11 @@
 # and locally by `mise run test-check-ghsa`. CHECK_GHSA_PY picks the
 # interpreter (default python3); the script must run on macOS's 3.9.
 #
-# No network and no cargo: each case is a directory handed to the script's one
-# test injection point (CHECK_GHSA_FIXTURE, documented at the top of
-# check-ghsa.py). The metadata and advisory JSON have the shape of the real
+# No network, no cargo, no gh: each case is a directory handed to the script's
+# one test injection point (CHECK_GHSA_FIXTURE, documented at the top of
+# check-ghsa.py). It replaces only urllib's opener, so header assembly, the host
+# check, retries, the 4xx cut-off, Link following and JSON parsing are the
+# production code. The metadata and advisory JSON have the shape of the real
 # `cargo metadata` and GitHub /advisories answers (ghsa_id, severity, summary,
 # references as a list of URLs, withdrawn_at, vulnerabilities[].package.name,
 # vulnerabilities[].first_patched_version), copied from a live
@@ -49,11 +51,25 @@ malware_advisory() {
     "$MALWARE_GHSA" "$MALWARE_REFS"
 }
 
-# response <fixture dir> <k> <body json> [Link header]
+# response <fixture dir> <k> <body json> [Link header]: the k-th attempt gets 200
 response() {
   local link=${4:-}
   link=${link//\"/\\\"} # the header's rel="next" quotes, escaped for JSON
-  printf '{"headers":{"Link":"%s"},"body":%s}\n' "$link" "$3" >"$1/response-$2.json"
+  printf '{"status":200,"headers":{"Link":"%s"},"body":%s}\n' "$link" "$3" >"$1/response-$2.json"
+}
+
+# fail_response <fixture dir> <k> <status> [<remaining>]: an error answer in the
+# shape of the API's (message body; X-RateLimit-Remaining when given)
+fail_response() {
+  local rl=""
+  [[ -n ${4:-} ]] && rl=",\"X-RateLimit-Remaining\":\"$4\""
+  printf '{"status":%s,"headers":{"Content-Type":"application/json; charset=utf-8"%s},"body":{"message":"API rate limit exceeded for 203.0.113.7.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting","status":"%s"}}\n' \
+    "$3" "$rl" "$3" >"$1/response-$2.json"
+}
+
+# raise_response <fixture dir> <k> <IncompleteRead|URLError|TimeoutError>
+raise_response() {
+  printf '{"raise":"%s"}\n' "$3" >"$1/response-$2.json"
 }
 
 # fixture [<name version> ...]: metadata.json for these registry packages,
@@ -81,7 +97,9 @@ expect() {
     fails=$((fails + 1))
     return
   fi
-  CHECK_GHSA_FIXTURE=$dir "$PY" -I "$check" >"$tmp/out" 2>&1 || rc=$?
+  # No token from the caller's environment, unless the case sets CASE_TOKEN.
+  env -u GITHUB_TOKEN -u GH_TOKEN ${CASE_TOKEN:+GITHUB_TOKEN=$CASE_TOKEN} \
+    CHECK_GHSA_FIXTURE=$dir "$PY" -I "$check" >"$tmp/out" 2>&1 || rc=$?
   if { [[ $want == 0 && $rc -eq 0 ]] || [[ $want == fail && $rc -ne 0 ]]; } &&
     grep -qF -- "$line" "$tmp/out"; then
     echo "ok   $name"
@@ -159,6 +177,20 @@ zip_case "$(printf '[advisories]\nignore = []\n\n[bans]\nskip = [\n  { id = "%s"
 expect "an id outside [advisories] is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
 zip_case "$(printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2025-0141", reason = "unrelated to %s" },\n]' "$ZIP_GHSA")"
 expect "an id inside a reason string is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
+# The quoting spellings of a reason that merely mentions an id. A regex that
+# read `["GHSA-.."]` anywhere in the section took each of them for an ignore.
+zip_case "$(printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2025-0141", reason = '"'"'superseded by ["%s"]'"'"' },\n]' "$ZIP_GHSA")"
+expect "an id in a literal ('..') string is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
+zip_case "$(printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2025-0141", reason = "see [\\"%s\\"]" },\n]' "$ZIP_GHSA")"
+expect "an id in an escaped basic string is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
+zip_case "$(printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2025-0141", reason = """\nwas ["%s"]\n""" },\n]' "$ZIP_GHSA")"
+expect "an id in a multi-line basic string is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
+zip_case "$(printf "[advisories]\nignore = [\n  { id = 'RUSTSEC-2025-0141', reason = '''\nwas [\"%s\"]\n''' },\n]" "$ZIP_GHSA")"
+expect "an id in a multi-line literal string is not an ignore" fail "ghsa: FAIL zip@9.0.0" "$dir"
+zip_case "$(printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2025-0141", reason = "a # b" }, # then\n  { id = "%s", reason = "x # y" },\n]' "$ZIP_GHSA")"
+expect "a # inside a string is not a comment" 0 "ghsa: ignored $ZIP_GHSA" "$dir"
+zip_case "$(printf "[advisories]\nignore = [\n  { id = '%s', reason = 'x' },\n]" "$ZIP_GHSA")"
+expect "a literal-quoted id is an ignore" 0 "ghsa: ignored $ZIP_GHSA" "$dir"
 zip_case "[advisories]"
 rm "$dir/deny.toml"
 expect "unreadable deny.toml fails" fail "cannot read the ignore list" "$dir"
@@ -256,22 +288,23 @@ response "$dir" 1 "[]"
 expect "advisory naming none of the asked crates fails" fail "names none of the crates asked about" "$dir"
 
 # --- an advisory naming several crates of one chunk ---
-# Request order: the chunk (reviewed), then each named crate alone (serde, zip),
-# then the chunk as malware. Only zip's own query returns it.
+# Request order: the chunk as reviewed, the chunk as malware, then (only for an
+# advisory that is reported) each named crate alone, serde then zip. Only zip's
+# own query returns it.
 dir=$(fixture zip 9.0.0 serde 1.0.0)
 response "$dir" 0 "[$(advisory2 $ZIP_GHSA "$GH_REFS")]"
 response "$dir" 1 "[]"
-response "$dir" 2 "[$(advisory2 $ZIP_GHSA "$GH_REFS")]"
-response "$dir" 3 "[]"
+response "$dir" 2 "[]"
+response "$dir" 3 "[$(advisory2 $ZIP_GHSA "$GH_REFS")]"
 expect "advisory naming two crates: only the one it is returned for alone is named" fail "ghsa: FAIL zip@9.0.0 — $ZIP_GHSA (high) Two crates" "$dir"
 if grep -qF "serde@1.0.0 —" "$tmp/out"; then
   echo "FAIL two-crate advisory: the unaffected crate is named"
   fails=$((fails + 1))
 fi
 [[ $(sed -n 1p "$dir/requests.log") == *"type=reviewed"*"affects=serde@1.0.0,zip@9.0.0&"* && \
-   $(sed -n 2p "$dir/requests.log") == *"type=reviewed"*"affects=serde@1.0.0&per_page=100" && \
-   $(sed -n 3p "$dir/requests.log") == *"type=reviewed"*"affects=zip@9.0.0&per_page=100" && \
-   $(sed -n 4p "$dir/requests.log") == *"type=malware"*"affects=serde@1.0.0,zip@9.0.0&"* && \
+   $(sed -n 2p "$dir/requests.log") == *"type=malware"*"affects=serde@1.0.0,zip@9.0.0&"* && \
+   $(sed -n 3p "$dir/requests.log") == *"type=reviewed"*"affects=serde@1.0.0&per_page=100" && \
+   $(sed -n 4p "$dir/requests.log") == *"type=reviewed"*"affects=zip@9.0.0&per_page=100" && \
    $(wc -l <"$dir/requests.log") -eq 4 ]] ||
   { echo "FAIL two-crate advisory: request order"; cat "$dir/requests.log"; fails=$((fails + 1)); }
 # Neither crate alone returns it: not attributable, so a FAIL.
@@ -281,6 +314,129 @@ response "$dir" 1 "[]"
 response "$dir" 2 "[]"
 response "$dir" 3 "[]"
 expect "advisory naming two crates that neither alone returns fails" fail "cannot attribute" "$dir"
+# Two advisories naming the same two crates: each pair is asked about once.
+OTHER_GHSA="GHSA-aaaa-bbbb-cccc"
+dir=$(fixture zip 9.0.0 serde 1.0.0)
+response "$dir" 0 "[$(advisory2 $ZIP_GHSA "$GH_REFS"),$(advisory2 $OTHER_GHSA "$GH_REFS")]"
+response "$dir" 1 "[]"
+response "$dir" 2 "[$(advisory2 $ZIP_GHSA "$GH_REFS"),$(advisory2 $OTHER_GHSA "$GH_REFS")]"
+response "$dir" 3 "[$(advisory2 $ZIP_GHSA "$GH_REFS"),$(advisory2 $OTHER_GHSA "$GH_REFS")]"
+expect "two advisories on the same two crates are both reported" fail "$OTHER_GHSA" "$dir"
+[[ $(wc -l <"$dir/requests.log") -eq 4 ]] ||
+  { echo "FAIL attribution is asked once per pair, not once per advisory"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+# An advisory that is not a finding is not attributed: no requests beyond the chunk's.
+for kind in withdrawn rustsec ignored; do
+  dir=$(fixture zip 9.0.0 serde 1.0.0)
+  case $kind in
+    withdrawn) adv=$(advisory2 $ZIP_GHSA "$GH_REFS" | sed 's/"withdrawn_at":null/"withdrawn_at":"2026-10-30T00:00:00Z"/') ;;
+    rustsec) adv=$(advisory2 $ZIP_GHSA "$RUSTSEC_REFS") ;;
+    ignored)
+      adv=$(advisory2 $ZIP_GHSA "$GH_REFS")
+      printf '[advisories]\nignore = ["%s"]\n' "$ZIP_GHSA" >"$dir/deny.toml"
+      ;;
+  esac
+  response "$dir" 0 "[$adv]"
+  response "$dir" 1 "[]"
+  expect "a $kind two-crate advisory passes without attribution" 0 "ghsa: ok" "$dir"
+  [[ $(wc -l <"$dir/requests.log") -eq 2 ]] ||
+    { echo "FAIL a $kind advisory was attributed (extra requests)"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+done
+
+# --- the HTTP layer (production code over a fake opener) ---
+# A 500 then a 200: retried.
+dir=$(fixture zip 9.0.5)
+fail_response "$dir" 0 500
+response "$dir" 1 "[]"
+response "$dir" 2 "[]"
+expect "a 500 is retried" 0 "ghsa: ok" "$dir"
+# IncompleteRead (an HTTPException) then a 200: retried.
+dir=$(fixture zip 9.0.5)
+raise_response "$dir" 0 IncompleteRead
+response "$dir" 1 "[]"
+response "$dir" 2 "[]"
+expect "an IncompleteRead is retried" 0 "ghsa: ok" "$dir"
+dir=$(fixture zip 9.0.5)
+raise_response "$dir" 0 URLError
+raise_response "$dir" 1 TimeoutError
+response "$dir" 2 "[]"
+response "$dir" 3 "[]"
+expect "a URLError and a timeout are retried" 0 "ghsa: ok" "$dir"
+# 429 on every attempt: ATTEMPTS (3) requests, then FAIL.
+dir=$(fixture zip 9.0.5)
+for k in 0 1 2 3; do fail_response "$dir" $k 429; done
+expect "a 429 is retried ATTEMPTS times, then fails" fail "request failed" "$dir"
+[[ $(wc -l <"$dir/requests.log") -eq 3 ]] ||
+  { echo "FAIL 429: want 3 attempts"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+# A 404 is not asked again.
+dir=$(fixture zip 9.0.5)
+for k in 0 1 2; do fail_response "$dir" $k 404; done
+expect "a 404 stops at the first attempt and fails" fail "HTTP 404" "$dir"
+[[ $(wc -l <"$dir/requests.log") -eq 1 ]] ||
+  { echo "FAIL 404: want 1 attempt"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+# A Link to another host is refused (the token must not follow it).
+dir=$(fixture zip 9.0.5)
+response "$dir" 0 "[]" '<https://evil.example/advisories?page=2>; rel="next"'
+response "$dir" 1 "[]"
+expect "a next link to another host fails" fail "refusing to request https://evil.example/advisories?page=2" "$dir"
+[[ $(wc -l <"$dir/requests.log") -eq 1 ]] ||
+  { echo "FAIL a foreign Link was requested"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+# A body that is not JSON is its own message.
+dir=$(fixture zip 9.0.5)
+printf '{"status":200,"headers":{},"raw":"<html>"}\n' >"$dir/response-0.json"
+expect "a non-JSON body fails" fail "answer is not JSON" "$dir"
+
+# --- the token ---
+# Authorization goes in unredirected (so a redirect does not carry it), and
+# not among the ordinary headers.
+dir=$(fixture zip 9.0.5)
+response "$dir" 0 "[]"
+response "$dir" 1 "[]"
+CASE_TOKEN=test-token-not-real expect "a token is sent" 0 "ghsa: ok" "$dir"
+grep -qxF 'U {"Authorization": "Bearer test-token-not-real"}' "$dir/request-headers.log" ||
+  { echo "FAIL the token is not an unredirected Authorization header"; cat "$dir/request-headers.log"; fails=$((fails + 1)); }
+if grep -q '^H .*Authorization' "$dir/request-headers.log"; then
+  echo "FAIL the token is also among the redirect-following headers"
+  fails=$((fails + 1))
+fi
+# No token (and the fixture mode never runs gh): anonymous, nothing sent.
+dir=$(fixture zip 9.0.5)
+response "$dir" 0 "[]"
+response "$dir" 1 "[]"
+expect "no token is an anonymous run" 0 "ghsa: ok" "$dir"
+grep -qxF 'U {}' "$dir/request-headers.log" ||
+  { echo "FAIL an anonymous run sent an Authorization header"; cat "$dir/request-headers.log"; fails=$((fails + 1)); }
+# The quota is gone: 403 with X-RateLimit-Remaining 0, and no retry.
+dir=$(fixture zip 9.0.5)
+fail_response "$dir" 0 403 0
+expect "403 with no quota left says so (anonymous)" fail \
+  'HTTP 403, API rate limit exhausted; set GITHUB_TOKEN/GH_TOKEN or `gh auth login` (this run: anonymous)' "$dir"
+[[ $(wc -l <"$dir/requests.log") -eq 1 ]] ||
+  { echo "FAIL rate limit: want 1 attempt"; cat "$dir/requests.log"; fails=$((fails + 1)); }
+dir=$(fixture zip 9.0.5)
+fail_response "$dir" 0 403 0
+CASE_TOKEN=test-token-not-real expect "403 with no quota left says so (with a token)" fail "(this run: token from GITHUB_TOKEN)" "$dir"
+# A 403 with quota left is not a rate limit.
+dir=$(fixture zip 9.0.5)
+fail_response "$dir" 0 403 59
+expect "403 with quota left is a plain failure" fail "HTTP 403" "$dir"
+if grep -qF "rate limit exhausted" "$tmp/out"; then
+  echo "FAIL a 403 with quota left was called a rate limit"
+  fails=$((fails + 1))
+fi
+
+# --- unused ignore ---
+dir=$(fixture zip 9.0.5)
+response "$dir" 0 "[]"
+response "$dir" 1 "[]"
+printf '[advisories]\nignore = [{ id = "%s", reason = "x" }]\n' "$OTHER_GHSA" >"$dir/deny.toml"
+expect "an ignore that matches nothing warns, and does not fail" 0 \
+  "ghsa: warning — ignore $OTHER_GHSA (deny.toml) matched no advisory for the locked versions; remove it?" "$dir"
+zip_case "$(printf '[advisories]\nignore = ["%s"]' "$ZIP_GHSA")"
+expect "an ignore that matched is not warned about" 0 "ghsa: ignored $ZIP_GHSA" "$dir"
+if grep -qF "ghsa: warning" "$tmp/out"; then
+  echo "FAIL a used ignore was warned about"
+  fails=$((fails + 1))
+fi
 
 if [[ $fails -gt 0 ]]; then
   echo "check-ghsa-test: $fails failed"

@@ -652,8 +652,11 @@ description = "Screen, then the dependency checks (locked check, cargo-deny, GHS
 # check-ghsa.py covers what cargo-deny cannot: it reads RustSec only, so an
 # advisory published to GitHub alone (GHSA-m665-v7pm-7grj, #402) passes it.
 # It queries the GitHub Advisory API for the lock's crates (needs network;
-# GITHUB_TOKEN / GH_TOKEN, when set, raises the rate limit) and is accepted
-# through engine/deny.toml's `[advisories] ignore`, like a RustSec one.
+# GITHUB_TOKEN / GH_TOKEN, or locally `gh auth token`, raises the rate limit)
+# and is accepted through engine/deny.toml's `[advisories] ignore`, like a
+# RustSec one. The script sends the token to api.github.com only, but the
+# variable is in the environment of every command of this task (cargo check
+# runs dependencies' build scripts): see check-ghsa.py's Network note.
 # A run list, not a script, so the log echoes each command and shows which
 # check failed; it stops at the first.
 depends = ["screen"]

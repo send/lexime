@@ -439,9 +439,13 @@ jobs:
       # first; as in `lint`, the `screen` job is the pass that counts, since
       # rust-cache's unlocked `cargo metadata` runs before it.
       #
-      # GITHUB_TOKEN: as in accuracy, runners share the anonymous API quota;
-      # scripts/check-ghsa.py (GitHub Advisory API) sends the token to
-      # api.github.com only, for the rate limit.
+      # GITHUB_TOKEN: as in accuracy, runners share the anonymous API quota,
+      # so scripts/check-ghsa.py (GitHub Advisory API) needs it for the rate
+      # limit. That script sends it to api.github.com only (and not on to a
+      # redirect), but the variable is in the environment of this whole step,
+      # including the build scripts of dependencies that cargo runs. It is the
+      # exposure accuracy's step already has, and about that of the token
+      # actions/checkout keeps in .git/config (permission: contents: read).
       - run: mise run audit
         env:
           GITHUB_TOKEN: ${{ github.token }}
