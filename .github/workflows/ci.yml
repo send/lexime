@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Every actions/checkout here sets persist-credentials: false: no later step
+# runs git against the remote (the repository is public, so fetches need no
+# token), and otherwise the job token would sit in .git/config, readable by
+# every dependency build script the job runs. lint-canary.yml and
+# audit-canary.yml do the same; claude.yml is left as the action expects.
 # mise reads only mise.toml. By default it also merges .mise.toml,
 # mise.local.toml and others, which override its tasks: a committed one could
 # redefine a gate task (lint, audit, ...) without touching the `core`
@@ -31,6 +36,8 @@ jobs:
       swift: ${{ steps.filter.outputs.swift }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -110,6 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
@@ -149,6 +157,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # claude.yml installs mise by sha256 without running anything from the
       # checkout, so the hash cannot be read from the pin. Installing the pin
@@ -181,6 +191,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-mise
 
@@ -197,6 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       # Pinned, not `stable` — see engine/lint-toolchain.txt. `mise run lint`
@@ -238,6 +251,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Enforce the declared MSRV. Keep this version in sync with
       # `rust-version` in engine/Cargo.toml ([workspace.package]): a dependency
@@ -261,6 +276,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -277,6 +294,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -296,6 +315,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -312,6 +333,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -348,6 +371,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
@@ -419,6 +443,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
@@ -443,9 +468,10 @@ jobs:
       # so scripts/check-ghsa.py (GitHub Advisory API) needs it for the rate
       # limit. That script sends it to api.github.com only (and not on to a
       # redirect), but the variable is in the environment of this whole step,
-      # including the build scripts of dependencies that cargo runs. It is the
-      # exposure accuracy's step already has, and about that of the token
-      # actions/checkout keeps in .git/config (permission: contents: read).
+      # including the build scripts of dependencies that cargo runs, as in
+      # accuracy's step. Unsetting it around cargo alone would not narrow it (a
+      # build script can read its ancestors' environment under /proc); it is
+      # contents: read on a public repository and dies with the job.
       - run: mise run audit
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -464,6 +490,7 @@ jobs:
       # since rust-cache's unlocked `cargo metadata` runs before them.
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       - uses: dtolnay/rust-toolchain@stable
