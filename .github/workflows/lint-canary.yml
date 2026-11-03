@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0  # needed for quarantine diff against main
 
       # Not the runner image's preinstalled stable, which can lag a release by
@@ -91,6 +92,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-shoutx
 
