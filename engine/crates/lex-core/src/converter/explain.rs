@@ -130,13 +130,13 @@ pub struct ExplainPath {
     /// single segment (kana rescue, Numeric, Katakana).
     pub model_cost: Option<i64>,
     /// For a path not priced by the model (an offer, the kana rescue, a
-    /// policy price, or a path one of them repriced): its price before
+    /// policy price, or a path an offer or the kana rescue repriced): its price before
     /// history minus `model_cost` and the rerank features — what the offer
     /// clamp or the policy moved it by. `None` for model-priced paths and
     /// where there is no `model_cost`.
     pub price_clamp: Option<i64>,
     /// The price was set by another stage than the one that made the
-    /// segments (an offer, the kana rescue or Numeric adopted over them).
+    /// segments (an offer or the kana rescue adopted over them).
     pub repriced: bool,
     /// The path's one-character-reading segments with kanji in the surface,
     /// taken before `group_segments` merges them into a neighbour (the
@@ -468,9 +468,9 @@ fn explain_segments(scored: &ScoredPath, conn: Option<&ConnectionMatrix>) -> Vec
 
 /// The `viterbi_rank` of a final path: its position in `viterbi_nbest`'s
 /// output, only for a path Viterbi made whose price the model still owns. A
-/// Viterbi path another stage repriced (`resolve_duplicate` keeps the
-/// existing path and writes the cheaper candidate's `priced_by` onto it) has
-/// no rank: its price is not the Viterbi one the rank describes.
+/// Viterbi path a Model-stage candidate repriced (`compose_duplicate` keeps
+/// the existing path and writes the cheaper candidate's `priced_by` onto it)
+/// has no rank: its price is not the Viterbi one the rank describes.
 fn viterbi_rank_of(scored: &ScoredPath, viterbi: &ViterbiOutput) -> Option<usize> {
     if scored.origin == PathOrigin::Viterbi && scored.priced_by.is_model() {
         viterbi.get(&scored.surface_key()).map(|&(_, rank)| rank)
@@ -546,8 +546,10 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             // A model-priced path shows its raw Viterbi cost (or, missed by
             // the observer, its model cost) and the rerank delta. Any other
             // price is split into model cost + features + clamp/policy.
-            // Numeric / Katakana are added after history_rerank, so they
-            // have no snapshot; their boost is the Override stage's.
+            // Numeric / Katakana make their paths after history_rerank, so
+            // they have no snapshot: one under their surface belongs to a
+            // lattice path they replaced or the cut to n dropped (#393).
+            // Their boost is the Override stage's.
             let model = observer.model_costs.get(&key).copied();
             let model_cost = model.map(|(m, _)| m);
             let pre = scored.pre_history_cost();
@@ -564,10 +566,13 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             let price_clamp = model
                 .filter(|_| !scored.priced_by.is_model())
                 .map(|(m, adj)| pre - (m + adj));
+            let made_by_policy =
+                matches!(scored.origin, PathOrigin::Numeric | PathOrigin::Katakana);
             let snapshot = observer
                 .pre_history
                 .get(&key)
                 .copied()
+                .filter(|_| !made_by_policy)
                 .unwrap_or(PreHistorySnapshot {
                     cost: original,
                     breakdown: HistoryBoostBreakdown::default(),
@@ -815,8 +820,8 @@ mod tests {
 
     /// §27-8 T-B6 / T-B7: every policy path carries the rule that priced it,
     /// with `final_cost + history_boost == policy_price.cost()`, including
-    /// 二十三, a Viterbi path the number compound repriced (the duplicate's
-    /// segments stay, the price is the compound's, #239).
+    /// 二十三, whose Viterbi path the number compound replaced: one segment,
+    /// made and priced by Numeric (#393).
     #[test]
     fn policy_prices_are_recorded_where_the_override_stage_writes_them() {
         let e = crate::converter::testutil::entry_with_id;
@@ -846,8 +851,13 @@ mod tests {
             assert_eq!(p.final_cost + p.history_boost, price.cost(), "{surface}");
         }
         let compound = path_by_surface(&result, "二十三");
-        assert_eq!(compound.origin, PathOrigin::Viterbi, "segments kept");
-        assert_eq!(compound.priced_by, PathOrigin::Numeric);
+        assert_eq!(
+            (compound.origin, compound.priced_by, compound.repriced),
+            (PathOrigin::Numeric, PathOrigin::Numeric, false),
+            "the compound's own path"
+        );
+        assert_eq!(compound.segments.len(), 1);
+        assert_eq!(compound.model_cost, None);
         assert_eq!(path_by_surface(&result, "に十三").policy_price, None);
     }
 
@@ -1144,7 +1154,7 @@ mod tests {
     }
 
     /// A3/T-A3: a Viterbi path repriced by another stage (the clone path of
-    /// `resolve_duplicate`) keeps `origin == Viterbi` but has no rank.
+    /// `compose_duplicate`) keeps `origin == Viterbi` but has no rank.
     #[test]
     fn viterbi_rank_is_none_for_a_repriced_viterbi_path() {
         let ranks = ViterbiOutput::from([(String::new(), (0, 3usize))]);

@@ -77,6 +77,11 @@ repeat = 2
 segments = [["さん", "さん"], ["ど", "℃"]]
 repeat = 2
 
+# #393: 段 committed once on its own (the shape of a per-segment record)
+[[history]]
+segments = [["だん", "段"]]
+repeat = 1
+
 [[history]]
 segments = [["おねがいします", "お願いします"]]
 repeat = 5
@@ -205,7 +210,15 @@ expected = "さん℃"
 baseline = "三度"
 category = "numeric"
 tags = ["history", "numeric", "counter", "width", "partial-hiragana"]
-note = "さん|℃ を 2 回選んだ履歴 (per-segment)。さん℃ は 3|℃ の表記ゆれ提示 (かなノード さん、src+2000 上限) で、実経路 さん|℃ が 1-best の oversample に入っているかどうかに関わらず同じ価格になる。以前は実経路が oversample 外の 1-best だけ方針価格で さん℃、N-best は 三度 と幅で割れていた"
+note = "(前提) 1 回誤変換した後に さん℃ を何回か誤って選んだ場面: さん|℃ を 2 回選んだ履歴 (per-segment)。さん℃ は 3|℃ の表記ゆれ提示 (かなノード さん、src+2000 上限) で、実経路 さん|℃ が 1-best の oversample に入っているかどうかに関わらず同じ価格になる。方針の複合語 三℃ は重複 三|℃ の生存に依らず読み全体の学習でしか持ち上がらない (#393) ので、両幅・全 T で さん℃。以前は実経路が oversample 外の 1-best だけ方針価格で さん℃、N-best は 三度 と幅で割れていた"
+
+[[cases]]
+reading = "はっぴゃくだん"
+expected = "八百弾"
+baseline = "八百弾"
+category = "numeric"
+tags = ["history", "numeric", "counter", "width", "regression"]
+note = "#393 のガード: 段 を単独で 1 回確定した記録 (per-segment と同形) があっても、数詞複合語 八百段 (方針価格) は読み全体の学習でしか持ち上がらない — 1-best と候補列で同じ。八百段 の lattice 重複 八百|段 は admission gap 1893 (床 4000 未満 = どの T でも候補列に残る) で、修正前は候補列だけが重複の分節で boost して #1 = 八百段、1-best (重複が切られる) は 八百弾 と割れていた。期待値 八百弾 は、八百段 と 八百弾 が助数詞位置の cost_offset で 63 違う結果であって表記の品質の判断ではない。前提: 1 回分の per-seg boost 1500 が差 63 より大きく、重複の gap 1893 より小さいこと (2 回にすると重複が 1-best の先頭に入り旧コードでも割れない)。baseline (履歴なし、両幅) が 八百段 に動いたら前提ごと崩れているので読みを選び直す (さんびゃくだん は このファイルの さん→さん の seed で さん白檀 になり、修正前も割れないので使えない)。期待値は #376 の裁定に従う — per-segment が #1 を動かしてよいと決まったら両幅 八百段 に変える"
 
 # ═══════════════════════════════════════════════════════════════════
 # Cost-gap admission: a surface committed for the reading stays

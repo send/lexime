@@ -376,12 +376,15 @@ fn learned_surface_outranks_number_compound() {
     assert_eq!(paths[1].surface_key(), "二十三");
 
     // The learned surface is the compound the rewriter generates: learned on
-    // both sides, so the compound's price (anchor 3000 − boost) reprices it
-    // and it keeps its boost.
+    // both sides, so the compound replaces it with its own path, priced
+    // anchor 3000 − its own boost.
     let mut paths = vec![path("二十三", 5000, 1000)];
     run(&mut paths, true);
     assert_eq!(paths[0].surface_key(), "二十三");
-    assert_eq!(paths[0].priced_by, PathOrigin::Numeric);
+    assert_eq!(
+        (paths[0].origin, paths[0].priced_by),
+        (PathOrigin::Numeric, PathOrigin::Numeric)
+    );
     assert_eq!(
         (paths[0].viterbi_cost, paths[0].whole_path_boost),
         (2000, 1000)

@@ -27,7 +27,8 @@ pub(crate) trait PostprocessObserver {
     /// (the pre-history #1's cost).
     fn dropped_by_cost_gap(&mut self, _path: &ScoredPath, _anchor: i64) {}
     /// Called when the Override stage writes a policy price onto the path
-    /// with surface `key` (a new path, or a duplicate it repriced).
+    /// with surface `key` (a new path, or one replacing a listed path with
+    /// its surface).
     fn policy_priced(&mut self, _key: &str, _price: rewriter::PolicyPrice) {}
     /// Called when a policy fallback finds its surface `key` already listed
     /// and leaves the list as it is.

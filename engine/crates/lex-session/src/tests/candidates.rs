@@ -499,3 +499,86 @@ fn auto_commit_and_stability_follow_learned_top() {
         "auto-commit commits the learned #1's first segment"
     );
 }
+
+/// §29-6 T-393-7 / T-393-8 (#393): a number compound at the head is its own
+/// path, one segment, though the lattice spells its surface in two groups
+/// (二 | 段 as a noun; the compound comes from 段 as a counter). So
+/// committing it records the whole pair only, and the stability tracker
+/// resets on it instead of counting 二's reading (and auto-commit, which
+/// needs four segments, cannot commit part of the number).
+#[test]
+fn a_number_compound_head_is_one_segment_for_records_and_stability() {
+    use crate::types::LearningRecord;
+    use lex_core::dict::connection::ConnectionMatrix;
+    use lex_core::user_history::UserHistory;
+    let e = |surface: &str, cost: i16, id: u16| DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: id,
+        right_id: id,
+    };
+    let dict: Arc<dyn Dictionary> = Arc::new(TrieDictionary::from_entries(vec![
+        ("に".into(), vec![e("二", 0, 1)]),
+        ("だん".into(), vec![e("段", 0, 3), e("段", 10, 2)]),
+    ]));
+    let text = format!("4 4\n{}", "0\n".repeat(16));
+    let conn =
+        Arc::new(ConnectionMatrix::from_text_with_roles(&text, 0, 0, vec![0, 0, 7, 0]).unwrap());
+    // The fixture: the model's best is the two-group lattice path 二|段.
+    let ctx = lex_core::converter::ConversionContext::new(&*dict, Some(&*conn));
+    let model = lex_core::converter::explain::explain(&ctx, "にだん", 20);
+    assert!(model
+        .model_paths
+        .iter()
+        .any(|p| p.surface == "二段" && p.origin == lex_core::converter::PathOrigin::Viterbi));
+
+    let session = |defer: bool| {
+        let history = Arc::new(std::sync::RwLock::new(UserHistory::new()));
+        let mut session = InputSession::new(dict.clone(), Some(conn.clone()), Some(history));
+        session.set_defer_candidates(defer);
+        type_string(&mut session, "nidann");
+        session
+    };
+    let committed = |session: &mut InputSession| {
+        session.handle_key(KeyEvent::Enter);
+        match session.take_history_records().into_iter().next() {
+            Some(LearningRecord::Committed {
+                surface, segments, ..
+            }) => (surface, segments),
+            other => panic!("expected Committed record, got {other:?}"),
+        }
+    };
+
+    // The candidate list: the lattice path with the compound's surface is
+    // listed, and the compound replaced it.
+    let mut listed = session(false);
+    let comp = listed.comp();
+    assert_eq!(comp.candidates.surfaces[0], "二段");
+    assert_eq!(comp.candidates.paths[0].len(), 1, "the compound's own path");
+    assert_eq!(comp.stability.prev_first_seg_reading, None, "reset");
+    assert_eq!(comp.stability.count, 0);
+    assert_eq!(
+        committed(&mut listed),
+        ("二段".into(), None),
+        "the whole pair only"
+    );
+
+    // Provisional (the 1-best, before the list arrives): the same record.
+    let mut provisional = session(true);
+    assert_eq!(
+        provisional.comp().candidates.paths.len(),
+        1,
+        "fixture: provisional"
+    );
+    assert_eq!(committed(&mut provisional), ("二段".into(), None));
+
+    // Fn+Delete removes the whole pair only, as the commit recorded it.
+    let mut deleted = session(false);
+    deleted.handle_key(KeyEvent::ForwardDelete);
+    match deleted.take_history_records().as_slice() {
+        [LearningRecord::Deletion { segments }] => {
+            assert_eq!(segments, &[("にだん".to_string(), "二段".to_string())]);
+        }
+        other => panic!("expected one Deletion record, got {other:?}"),
+    }
+}
