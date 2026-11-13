@@ -19,10 +19,10 @@ what a generic reviewer misses:
   accuracy corpora (`mise run accuracy` / `mise run accuracy-history`) in the
   PR description (CLAUDE.md § 変換精度テスト). Flag cost/weight changes that
   lack that evidence.
-- **Dictionary correctness, both directions** (CLAUDE.md § 設計哲学
-  「辞書がソースオブトゥルース」): flag ranking problems patched with costs
-  instead of structure, and also dictionary data (POS, costs) kept or set
-  wrong so that rankings stay unchanged or a threshold passes.
+- **The dictionary is not a ranking knob** (CLAUDE.md § 設計哲学
+  「辞書がソースオブトゥルース」): flag structural ranking problems patched
+  with costs, and also POS/costs set or left linguistically wrong to keep
+  rankings unchanged or pass a threshold.
 - **Corpus discipline**: an accuracy-corpus `skip` (or `width_issue`) without
   an issue link is a violation (理由なし skip 禁止); a new history-corpus case
   without a `baseline` (expected result with no history), or a history-corpus
