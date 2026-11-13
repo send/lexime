@@ -45,6 +45,23 @@ pub fn parse_mozc_id_def(
     Ok(map)
 }
 
+/// Look up `tag` (a full 7-field POS tag) in a map from [`parse_mozc_id_def`].
+///
+/// Fails when the tag is absent — a silent fallback here is exactly the drift
+/// #279 exists to prevent. Shared by every source that assigns POS by tag
+/// (extras, symbols); `source_label` names the caller in the error.
+pub fn resolve_tag(
+    map: &std::collections::HashMap<String, u16>,
+    tag: &str,
+    source_label: &str,
+) -> Result<u16, DictSourceError> {
+    map.get(tag).copied().ok_or_else(|| {
+        DictSourceError::Parse(format!(
+            "'{tag}' not found in id.def — cannot assign the {source_label} POS id"
+        ))
+    })
+}
+
 /// Extract the contiguous ID range for function words (助詞 and 助動詞) from Mozc `id.def`.
 ///
 /// Returns `(min_id, max_id)`. If no matching entries are found, returns `(0, 0)`.

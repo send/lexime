@@ -488,21 +488,23 @@ impl DictSource for MozcSource {
             '\t',
             |fields| {
                 if fields.len() < 5 {
-                    return None;
+                    return Ok(None);
                 }
                 let reading = fields[0];
-                let (left_id, right_id, cost) = parse_id_cost(fields)?;
+                let Some((left_id, right_id, cost)) = parse_id_cost(fields) else {
+                    return Ok(None);
+                };
                 let surface = fields[4];
                 if !is_hiragana(reading) {
-                    return None;
+                    return Ok(None);
                 }
-                Some(ParsedLine {
+                Ok(Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
                     left_id,
                     right_id,
                     cost,
-                })
+                }))
             },
         )
     }
