@@ -712,9 +712,10 @@ impl Tally {
 }
 
 /// Replay every rank>0 selection in `log` from 0-based line `from_line`
-/// (`all_ranks`: every selection, rank 0 included). Returns the counts and one baseline line per selection (for
-/// `--emit-baseline` / `--baseline`). A log with no rank>0 selection is a
-/// valid, all-zero measurement. `verbose` prints per-selection content to
+/// (`all_ranks`: every selection, rank 0 included). Returns the counts and
+/// one baseline line per selection (for `--emit-baseline` / `--baseline`).
+/// A log with no selection in the chosen set (rank>0, or any rank under
+/// `all_ranks`) is a valid, all-zero measurement. `verbose` prints per-selection content to
 /// stderr (local inspection only). Every line replays at the one `now`
 /// (not the line's `t`).
 pub fn replay(

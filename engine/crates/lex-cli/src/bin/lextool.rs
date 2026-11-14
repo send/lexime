@@ -52,9 +52,10 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
-        /// Number of N-best paths to show
-        #[arg(short, long, default_value = "10")]
-        n: usize,
+        /// N-best size (default: `[candidates] nbest`, what production
+        /// builds the candidate list from; the result's `n` is the size used)
+        #[arg(short, long)]
+        n: Option<usize>,
         /// Output as JSON instead of text
         #[arg(long)]
         json: bool,
@@ -672,7 +673,8 @@ fn main() {
             use lex_core::converter::explain;
 
             let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history, now);
-            // Over-fetch when filtering by surface
+            let n = n.unwrap_or(lex_core::settings::settings().candidates.nbest);
+            // Over-fetch when filtering by surface (the result's `n` says so)
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
             let ctx = ConversionContext::new(&dict, conn.as_ref()).with_history(hist.as_ref(), now);
             let mut result = explain::explain(&ctx, &reading, fetch_n);

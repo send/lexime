@@ -3,15 +3,15 @@
 # python 3.9, as the Xcode python is.
 #
 #   probe-bench.py wall|ins --readings R --user-dict U --history H --now EPOCH
-#       [--dict D --conn C] [--modes hist1,nohist1,cands] [--laps 10]
+#       [--modes hist1,nohist1,cands] [--laps 10]
 #       [--iters 200] [--count 200] [--warmup 20] [--out DIR]
-#       name=binary[:dict[:conn]] ...
+#       name=binary:dict:conn ...
 #
-# An arm is (binary, dict, conn): `base=probe:dict_before:conn`,
-# `new=probe:dict_after:conn`. A field left empty (or an omitted trailing one:
-# `name=probe`, `name=probe::conn2`) is the common --dict / --conn, which then
-# must be given. Paths cannot contain ':' or '='. An arm that differs only in
-# its dict is an arm like any other; the A/A arm repeats the base's triple.
+# An arm is (binary, dict, conn), written `name=binary:dict:conn` and only
+# so: `base=probe:dict_before:conn`, `new=probe:dict_after:conn`. Paths cannot
+# contain ':' or '='. An arm that differs only in its dict is an arm like any
+# other; the A/A arm repeats the base's triple. Each arm's dict and conn
+# sha256 are printed at the start.
 #
 # The first arm is the base; an A/A arm "base2" (the base binary again, its
 # own process) is added after it, so every delta has its noise floor beside
@@ -26,9 +26,12 @@
 # ins: instructions retired and cycles elapsed of the whole process, from
 #   /usr/bin/time -l (macOS). Instructions are what decides "same
 #   computation": wall moves ±5% with code layout alone, instructions ±0.3%.
+#   They count the whole process, so for arms whose dicts differ the load of
+#   the dictionary is in the difference (recorded only; the header says so).
 #
 # With --out, the per-run numbers go to DIR/<cmd>.json.
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -76,15 +79,22 @@ def ins(a, arm, work):
     return out
 
 
-def parse_arm(spec, dict_, conn):
-    """name=binary[:dict[:conn]] -> (name, (binary, dict, conn)); an empty
-    or omitted dict / conn is the common one. None if malformed."""
+def parse_arm(spec):
+    """name=binary:dict:conn -> (name, (binary, dict, conn)); None if it is
+    not exactly that."""
     name, eq, rest = spec.partition("=")
     parts = rest.split(":")
-    if not eq or not name or not parts[0] or len(parts) > 3:
+    if not eq or not name or len(parts) != 3 or not all(parts):
         return None
-    parts += [""] * (3 - len(parts))
-    return name, (parts[0], parts[1] or dict_, parts[2] or conn)
+    return name, tuple(parts)
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def pct(x, base):
@@ -96,8 +106,6 @@ def main():
     p.add_argument("cmd", choices=("wall", "ins"))
     for k in ("readings", "user-dict", "history"):
         p.add_argument("--" + k, required=True)
-    p.add_argument("--dict")
-    p.add_argument("--conn")
     p.add_argument("--now", type=int, required=True)
     p.add_argument("--modes", default="hist1,nohist1,cands")
     p.add_argument("--laps", type=int, default=10)
@@ -105,13 +113,15 @@ def main():
     p.add_argument("--count", type=int, default=200)
     p.add_argument("--warmup", type=int, default=20)
     p.add_argument("--out")
-    p.add_argument("arms", nargs="+", metavar="name=binary[:dict[:conn]]")
+    p.add_argument("arms", nargs="+", metavar="name=binary:dict:conn")
     a = p.parse_args()
-    arms = [parse_arm(x, a.dict, a.conn) for x in a.arms]
+    arms = [parse_arm(x) for x in a.arms]
     if any(x is None for x in arms):
-        p.error("arms are name=binary[:dict[:conn]]")
-    if any(d is None or c is None for _, (_, d, c) in arms):
-        p.error("an arm without its own dict / conn needs the common --dict / --conn")
+        p.error("arms are name=binary:dict:conn (all three, nothing else)")
+    for n, paths in arms:
+        for path in paths:
+            if not os.path.isfile(path):
+                p.error(f"arm {n}: {path} is not a file")
     arms.insert(1, ("base2", arms[0][1]))
     if len({n for n, _ in arms}) != len(arms):
         p.error("arm names must be distinct (base2 is the added A/A arm)")
@@ -122,8 +132,11 @@ def main():
     res = {n: [] for n, _ in arms}
     work = tempfile.mkdtemp(prefix="probe-bench-")
     try:
+        if a.cmd == "ins":
+            print("note: instructions are of the whole process (/usr/bin/time -l): for arms "
+                  "whose dict differs, the dictionary load is in the difference (recorded only)")
         for n, (b, d, c) in arms:
-            print(f"arm {n}: {b} {d} {c}")
+            print(f"arm {n}: {b} {d} dict_sha256={sha256(d)} {c} conn_sha256={sha256(c)}")
         for lap in range(laps):
             k = lap % len(arms)
             for n, b in arms[k:] + arms[:k]:

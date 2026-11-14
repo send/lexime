@@ -7,16 +7,17 @@
 #
 #   replay-window.py count  --log commit-log.jsonl --start-line L [--rows 200]
 #   replay-window.py replay --log commit-log.jsonl --start-line L [--rows 200]
-#       --frozen DIR --app-dir DIR --base LEXTOOL --new LEXTOOL --out DIR
-#       [--dict lexime.dict --conn lexime.conn]
-#       [--base-dict D --base-conn C --new-dict D --new-conn C]
+#       --frozen DIR --app-dir DIR --out DIR
+#       --base LEXTOOL --base-dict D --base-conn C
+#       --new   LEXTOOL --new-dict D  --new-conn C
 #       [--all-ranks] [--verbose]
 #
-# An arm is (binary, dict, conn). --dict / --conn are the common ones; a
-# per-arm --base-dict etc. overrides them for that arm (a change that only
-# moves the dictionary needs each arm to read its own: with the same dict
-# on both, the movement is zero by construction). Every arm's dict and conn
-# must come from one of the two; the old `--dict D --conn C` form still works.
+# An arm is (binary, dict, conn), each given for each arm: a change that only
+# moves the dictionary needs each arm to read its own (with the same dict on
+# both, the movement is zero by construction). The same triple on both arms
+# is allowed (an A/A run). Each arm's three paths and their sha256 go to
+# window.txt and stdout, so a result names the artifacts it was measured on.
+# `--out` must be absent or empty (a finished window is never overwritten).
 #
 # L is the commit log's line count recorded at the freeze: the window is the
 # lines from L on, up to and including the N-th rank>0 line (a `rank` that is
@@ -36,7 +37,7 @@
 # binaries must take `--now` (E2n, #390, and later).
 #
 # --all-ranks passes lextool `--all-ranks` (rank 0 selections are replayed
-# too). The window itself is unchanged (still from L to the N-th rank>0 line);
+# too; both arms need a lextool from PR2a-t on, which has the flag). The window itself is unchanged (still from L to the N-th rank>0 line);
 # the check becomes: both arms replayed every selection in that line range,
 # rank 0 included, the same number.
 #
@@ -48,6 +49,7 @@
 # (which movement, of which selections) is the plan's, read from the
 # verbose files; this script stops at the counts every plan shares.
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -100,6 +102,19 @@ def count_selections(lines, start, end):
     return sum(selection(l, 0) is not None for l in lines[start : end + 1])
 
 
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def describe(name, arm):
+    """One line per arm: its binary, dict and conn with their sha256."""
+    return f"arm {name}: " + " ".join(f"{k}={v} sha256={sha256(v)}" for k, v in zip(("bin", "dict", "conn"), arm))
+
+
 def fresh(src_dir, names, work):
     d = tempfile.mkdtemp(dir=work)
     for n in names:
@@ -132,21 +147,12 @@ def main():
         c.add_argument("--log", required=True)
         c.add_argument("--start-line", type=int, required=True)
         c.add_argument("--rows", type=int, default=200)
-    for k in ("frozen", "app-dir", "base", "new", "out"):
+    for k in ("frozen", "app-dir", "out", "base", "base-dict", "base-conn",
+              "new", "new-dict", "new-conn"):
         cmds["replay"].add_argument("--" + k, required=True)
-    for k in ("dict", "conn", "base-dict", "base-conn", "new-dict", "new-conn"):
-        cmds["replay"].add_argument("--" + k)
     cmds["replay"].add_argument("--all-ranks", action="store_true")
     cmds["replay"].add_argument("--verbose", action="store_true")
     a = p.parse_args()
-
-    if a.cmd == "replay":
-        for arm in ("base", "new"):
-            for k in ("dict", "conn"):
-                v = getattr(a, f"{arm}_{k}") or getattr(a, k)
-                if v is None:
-                    p.error(f"replay needs --{arm}-{k} or the common --{k}")
-                setattr(a, f"{arm}_{k}", v)
 
     lines, end, now, seen = window(a.log, a.start_line, a.rows)
     if a.cmd == "count":
@@ -159,6 +165,14 @@ def main():
     if end is None:
         sys.exit(f"replay-window: the window is not full: {seen}/{a.rows} rank>0 lines from line {a.start_line}")
 
+    if os.path.exists(a.out) and (not os.path.isdir(a.out) or os.listdir(a.out)):
+        sys.exit(f"replay-window: --out {a.out} exists and is not an empty directory (not overwritten)")
+    arms = {"base": (a.base, a.base_dict, a.base_conn), "new": (a.new, a.new_dict, a.new_conn)}
+    for name, arm in arms.items():
+        for path in arm:
+            if not os.path.isfile(path):
+                sys.exit(f"replay-window: arm {name}: {path} is not a file")
+    arm_lines = [describe(name, arm) for name, arm in arms.items()]
     os.makedirs(a.out, exist_ok=True)
     log = os.path.join(a.out, "window.jsonl")
     with open(log, "wb") as f:
@@ -168,8 +182,7 @@ def main():
         app = fresh(a.app_dir, ("user_dict.lxuw", "settings.toml"), work)
         baseline = os.path.join(a.out, "base.baseline")
         win = ["--from-line", str(a.start_line)]
-        base_arm = (a.base, a.base_dict, a.base_conn)
-        new_arm = (a.new, a.new_dict, a.new_conn)
+        base_arm, new_arm = arms["base"], arms["new"]
         replay(a, base_arm, log, now, work, app, ["--emit-baseline", baseline], "base-full")
         base = replay(a, base_arm, log, now, work, app, win, "base", a.verbose)
         new = replay(a, new_arm, log, now, work, app, win + ["--baseline", baseline], "new", a.verbose)
@@ -178,6 +191,8 @@ def main():
 
     with open(os.path.join(a.out, "window.txt"), "w", encoding="utf-8") as f:
         f.write(f"lines {a.start_line}..{end} --now {now}\n")
+        f.write(f"mode {'--all-ranks' if a.all_ranks else 'rank>0'}\n")
+        f.writelines(l + "\n" for l in arm_lines)
     d = new["baseline"]
     expect = count_selections(lines, a.start_line, end) if a.all_ranks else a.rows
     if not (base["selections"] == new["selections"] == expect and d["only_current"] == d["only_baseline"] == 0):
@@ -186,7 +201,8 @@ def main():
                  f"only_baseline {d['only_baseline']} — the line filter here has drifted from rank_ops")
     print(f"window: {end + 1 - a.start_line} lines, {a.rows} rank>0"
           + (f", {expect} selections with --all-ranks" if a.all_ranks else "")
-          + " (bounds and --now in window.txt)")
+          + " (bounds, --now and mode in window.txt)")
+    print("\n".join(arm_lines))
     for name, r in (("base", base), ("new", new)):
         print(f"  {name:5s} selections {r['selections']:5d}  page 1 {r['in_page']:5d}"
               f"  in list {r['in_list']:5d}  absent {r['absent']:5d}"

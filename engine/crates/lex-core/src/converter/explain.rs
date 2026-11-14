@@ -27,6 +27,10 @@ pub use super::rewriter::{PolicyPrice, PolicyRule};
 #[derive(Debug, Serialize)]
 pub struct ExplainResult {
     pub reading: String,
+    /// The N-best size the pipeline ran with (`explain`'s `n`). The measured
+    /// list is the one production builds at `[candidates] nbest`; a result
+    /// at another n is not that list.
+    pub n: usize,
     pub lattice_char_count: usize,
     pub lattice_nodes: Vec<ExplainNode>,
     pub paths: Vec<ExplainPath>,
@@ -218,7 +222,10 @@ impl ExplainResult {
 /// `length_variance_cost` is `rerank_delta`. `None` (JSON null, `—` in the
 /// text) where the path's price does not carry that part: the model columns
 /// where `model_cost` is `None`, the rerank columns where the features are
-/// not in the price (a lone path rerank left unpriced, a synthetic path).
+/// not in the price (a lone path rerank left unpriced, a synthetic path;
+/// also a path the kana rescue re-made on the lattice's segmentation —
+/// `priced_by` is `HiraganaVariant` — whose segments are the lattice's but
+/// whose price the rescue set).
 #[derive(Debug, Serialize)]
 pub struct ExplainSegment {
     pub reading: String,
@@ -441,6 +448,9 @@ struct PathColumns {
     /// read for these columns to be theirs.
     texts: Vec<(String, String)>,
     length_variance_cost: i64,
+    /// What the production pricer's `adjustment` returns for the path: the
+    /// price, as opposed to the rows' display split of it.
+    adjustment: i64,
 }
 
 impl PathColumns {
@@ -464,10 +474,11 @@ impl PathColumns {
             .sum()
     }
 
-    /// The rerank features' price of the ungrouped segments: the rerank
-    /// columns summed plus the length-variance term.
+    /// The rerank features' price of the ungrouped segments: the production
+    /// pricer's value (the rerank columns plus the length-variance term sum
+    /// to it; a test pins that).
     fn rerank_adjustment(&self) -> i64 {
-        self.length_variance_cost + self.rows.iter().map(|r| r.rerank.total()).sum::<i64>()
+        self.adjustment
     }
 }
 
@@ -518,6 +529,7 @@ impl ExplainObserver<'_> {
             rows,
             texts,
             length_variance_cost,
+            adjustment: self.pricer.adjustment(p),
         }
     }
 }
@@ -630,6 +642,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
     if kana.is_empty() || n == 0 {
         return ExplainResult {
             reading: kana.to_string(),
+            n,
             lattice_char_count: 0,
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
@@ -771,6 +784,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
 
     ExplainResult {
         reading: kana.to_string(),
+        n,
         lattice_char_count: lattice.char_count,
         lattice_nodes,
         paths,
@@ -1927,6 +1941,7 @@ mod tests {
             rows: vec![RowColumns::default(); 2],
             texts: vec![("あい".into(), "愛".into()), ("う".into(), "卯".into())],
             length_variance_cost: 0,
+            adjustment: 0,
         };
         let same = ScoredPath::new(
             vec![seg("あい", "愛"), seg("う", "卯")],

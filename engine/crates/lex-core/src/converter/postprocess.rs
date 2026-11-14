@@ -272,16 +272,18 @@ pub(super) fn group_segments(segments: &mut Vec<RichSegment>, conn: &ConnectionM
     let mut morphemes = std::mem::take(segments).into_iter();
     *segments = spans
         .into_iter()
-        .map(|span| {
+        .filter_map(|span| {
             // A group is its first morpheme with the rest's reading and
-            // surface appended and the last one's right id.
-            let mut group = morphemes.next().expect("spans cover the segments");
-            for seg in morphemes.by_ref().take(span.len() - 1) {
+            // surface appended and the last one's right id. The spans
+            // partition the segments, so each takes at least one.
+            let mut members = morphemes.by_ref().take(span.len());
+            let mut group = members.next()?;
+            for seg in members {
                 group.reading.push_str(&seg.reading);
                 group.surface.push_str(&seg.surface);
                 group.right_id = seg.right_id;
             }
-            group
+            Some(group)
         })
         .collect();
 }

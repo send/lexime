@@ -10,8 +10,11 @@
 #
 # The sha256 of all four (and the probe source) is printed: record them, with
 # the commit, beside the frozen history. Pass them on as
-# `replay-window.py --base-dict/--base-conn/--new-dict/--new-conn` and
-# `probe-bench.py name=probe-<tag>:lexime-<tag>.dict:lexime-<tag>.conn`.
+# `replay-window.py --base/--base-dict/--base-conn/--new/--new-dict/
+# --new-conn` and `probe-bench.py name=probe-<tag>:lexime-<tag>.dict:lexime-<tag>.conn`.
+# The worktree must be clean (the sha256 of the artifacts must correspond to
+# the printed commit): a dirty one is an error. The probe source put in
+# place below is the one exception, and is restored.
 # The dict / conn come from the worktree's `mise run dict` / `mise run conn`
 # (the pinned Mozc data must be there: copy mozc-raw into a fresh worktree).
 #
@@ -32,7 +35,11 @@ here=$(cd "$(dirname "$0")/../.." && pwd)
 probe=engine/crates/lex-cli/examples/speed_probe.rs
 
 git -C "$wt" log -1 --format='%H %s'
-git -C "$wt" status --short
+if [[ -n $(git -C "$wt" status --porcelain) ]]; then
+  git -C "$wt" status --short >&2
+  echo "build-probe: $wt is dirty: the artifacts would not correspond to its commit" >&2
+  exit 1
+fi
 mkdir -p "$out"
 (cd "$wt" && mise run screen)
 (cd "$wt" && mise run dict && mise run conn)

@@ -38,19 +38,18 @@ impl<'a> FeaturePricer<'a> {
         }
     }
 
-    /// Feature adjustment rerank adds to `path`'s Viterbi cost: the
-    /// segments' amounts ([`Self::parts`]) plus the length-variance term.
+    /// Feature adjustment rerank adds to `path`'s Viterbi cost: the path's
+    /// features priced at the weights. The one price formula (the weight
+    /// tuner prices candidates the same way).
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
-        self.fcfg
-            .segment_features(path)
-            .map(|f| self.weights.segment(&f).total())
-            .sum::<i64>()
-            + self.fcfg.length_variance_cost(path, &self.weights)
+        self.fcfg.extract(path).weighted_cost(&self.weights)
     }
 
-    /// What [`Self::adjustment`] is made of: each segment's amounts, in path
-    /// order, and the path-level length-variance term. Their sum is the
-    /// adjustment, by construction.
+    /// What [`Self::adjustment`] is made of, for display: each segment's
+    /// amounts, in path order, and the path-level length-variance term. Both
+    /// read the same per-segment features `extract` sums, and the weights
+    /// are linear, so the segments' totals plus the term equal the
+    /// adjustment (a test pins it).
     pub fn parts(&self, path: &ScoredPath) -> (Vec<SegmentRerank>, i64) {
         let segments = self
             .fcfg
@@ -579,6 +578,43 @@ mod tests {
         want.sort_unstable();
         assert_eq!(got, want);
         assert!(paths[0].viterbi_cost <= paths[1].viterbi_cost);
+    }
+
+    /// `adjustment` is the production price (`extract` then the weights);
+    /// explain shows it as per-segment parts plus the length-variance term.
+    /// The weights are linear, so the two agree: every term live here.
+    #[test]
+    fn adjustment_equals_the_parts_it_is_displayed_as() {
+        // 1 = content word, 2 = function word.
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 1], 2, 2);
+        let weights = FeatureWeights {
+            length_variance: 7,
+            te_kanji: 300,
+            single_kanji: 1000,
+        };
+        let pricer = FeaturePricer::with_weights(weights, Some(&conn), None);
+        let paths = [
+            path(
+                vec![
+                    seg("あいう", "あいう", 1),
+                    seg("で", "で", 2),
+                    seg("み", "見", 1),
+                    seg("かきくけこ", "書き句", 1),
+                ],
+                100,
+            ),
+            path(vec![seg("ね", "根", 1)], 100),
+            path(vec![seg("かくにん", "確認", 1), seg("ね", "値", 1)], 100),
+        ];
+        for p in &paths {
+            let (parts, lv) = pricer.parts(p);
+            let total: i64 = parts.iter().map(|r| r.total()).sum::<i64>() + lv;
+            assert_eq!(pricer.adjustment(p), total);
+        }
+        let (parts, lv) = pricer.parts(&paths[0]);
+        assert!(lv != 0, "fixture: the variance term is live");
+        assert!(parts.iter().any(|r| r.te_form_kanji_penalty != 0));
+        assert!(parts.iter().any(|r| r.single_char_kanji_penalty != 0));
     }
 
     #[test]
