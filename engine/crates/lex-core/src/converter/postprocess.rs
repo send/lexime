@@ -21,6 +21,9 @@ use super::ConversionContext;
 pub(crate) trait PostprocessObserver {
     /// Called after viterbi paths are collected, before resegment/rerank.
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
+    /// Called right after rerank, with whether it priced the paths (it
+    /// leaves a lone path alone).
+    fn reranked(&mut self, _priced: bool) {}
     /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
     /// Called for each path cost-gap admission drops, with the gap's base
@@ -105,7 +108,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     paths.extend(reseg_paths);
 
     let pricer = reranker::FeaturePricer::new(conn, dict);
-    reranker::rerank(paths, &pricer);
+    let priced = reranker::rerank(paths, &pricer);
+    observer.reranked(priced);
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
     // user picked like any other path (whole-path boosts ×5 can promote a
@@ -264,55 +268,61 @@ pub(super) fn group_segments(segments: &mut Vec<RichSegment>, conn: &ConnectionM
     if segments.len() <= 1 {
         return;
     }
+    let spans = group_spans(segments, conn);
+    let mut morphemes = std::mem::take(segments).into_iter();
+    *segments = spans
+        .into_iter()
+        .filter_map(|span| {
+            // A group is its first morpheme with the rest's reading and
+            // surface appended and the last one's right id. The spans
+            // partition the segments, so each takes at least one.
+            let mut members = morphemes.by_ref().take(span.len());
+            let mut group = members.next()?;
+            for seg in members {
+                group.reading.push_str(&seg.reading);
+                group.surface.push_str(&seg.surface);
+                group.right_id = seg.right_id;
+            }
+            Some(group)
+        })
+        .collect();
+}
 
-    let mut grouped: Vec<RichSegment> = Vec::new();
-    let mut current: Option<RichSegment> = None;
+/// The groups [`group_segments`] forms, as ranges of `segments` (the one
+/// definition of the grouping; explain sums per-morpheme costs over them).
+pub(super) fn group_spans(
+    segments: &[RichSegment],
+    conn: &ConnectionMatrix,
+) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut open = false; // the last span is a group that can still grow
     let mut pending_prefix = false;
 
-    for seg in segments.drain(..) {
+    for (i, seg) in segments.iter().enumerate() {
         let is_fw = conn.is_function_word(seg.left_id);
         let attach_to_prev = is_fw || conn.is_suffix(seg.left_id); // FunctionWord, Suffix, or Counter
 
         if attach_to_prev {
-            // Merge into current group if one exists
-            if let Some(cur) = current.as_mut() {
-                cur.reading.push_str(&seg.reading);
-                cur.surface.push_str(&seg.surface);
-                cur.right_id = seg.right_id;
-            } else {
-                // No preceding group — standalone
-                grouped.push(seg);
+            // Joins the open group; with none, stands alone.
+            match spans.last_mut().filter(|_| open) {
+                Some(last) => last.end = i + 1,
+                None => spans.push(i..i + 1),
             }
         } else if conn.is_prefix(seg.left_id) {
-            // Prefix: flush current group, start new one that will absorb next CW
-            if let Some(cur) = current.take() {
-                grouped.push(cur);
-            }
-            current = Some(seg);
+            // Prefix: close the open group, start one that will absorb the next CW
+            spans.push(i..i + 1);
+            open = true;
             pending_prefix = true;
-        } else {
-            // ContentWord
-            if pending_prefix {
-                // Merge CW into the pending prefix group
-                if let Some(cur) = current.as_mut() {
-                    cur.reading.push_str(&seg.reading);
-                    cur.surface.push_str(&seg.surface);
-                    cur.right_id = seg.right_id;
-                }
-                pending_prefix = false;
-            } else {
-                // New group
-                if let Some(cur) = current.take() {
-                    grouped.push(cur);
-                }
-                current = Some(seg);
+        } else if pending_prefix {
+            // ContentWord joins the pending prefix group
+            if let Some(last) = spans.last_mut() {
+                last.end = i + 1;
             }
+            pending_prefix = false;
+        } else {
+            spans.push(i..i + 1);
+            open = true;
         }
     }
-
-    if let Some(cur) = current {
-        grouped.push(cur);
-    }
-
-    *segments = grouped;
+    spans
 }

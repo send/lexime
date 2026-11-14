@@ -52,9 +52,10 @@ enum Command {
         /// Path to user history file (optional)
         #[arg(long)]
         history: Option<String>,
-        /// Number of N-best paths to show
-        #[arg(short, long, default_value = "10")]
-        n: usize,
+        /// N-best size (default: `[candidates] nbest`, what production
+        /// builds the candidate list from; the result's `n` is the size used)
+        #[arg(short, long)]
+        n: Option<usize>,
         /// Output as JSON instead of text
         #[arg(long)]
         json: bool,
@@ -249,6 +250,11 @@ enum Command {
         /// --emit-baseline
         #[arg(long, default_value = "0")]
         from_line: usize,
+        /// Replay every selection, rank 0 included, not only the rank>0 ones
+        /// (the rank-0 lines are the choices the list already had first).
+        /// The window is the same lines; only the selection changes
+        #[arg(long)]
+        all_ranks: bool,
         /// Print each selection's reading and surface to stderr (local only;
         /// never paste this output into a PR or issue)
         #[arg(long)]
@@ -667,13 +673,11 @@ fn main() {
             use lex_core::converter::explain;
 
             let (dict, conn, hist) = open_resources(&dict_file, conn.as_deref(), &history, now);
-            // Over-fetch when filtering by surface
+            let n = n.unwrap_or(lex_core::settings::settings().candidates.nbest);
+            // Over-fetch when filtering by surface (the result's `n` says so)
             let fetch_n = if surface.is_some() { n.max(20) } else { n };
-            let mut result = explain::explain(
-                &ConversionContext::new(&dict, conn.as_ref()).with_history(hist.as_ref(), now),
-                &reading,
-                fetch_n,
-            );
+            let ctx = ConversionContext::new(&dict, conn.as_ref()).with_history(hist.as_ref(), now);
+            let mut result = explain::explain(&ctx, &reading, fetch_n);
 
             if let Some(ref filter) = surface {
                 result.paths.retain(|p| p.surface().contains(filter));
@@ -685,9 +689,27 @@ fn main() {
             }
 
             if json {
+                // Stage 3's prediction list, from the Standard generator run
+                // on the same dictionary, matrix, history and `now`. It lives
+                // in the candidates layer, which the converter's explain does
+                // not depend on, so it is added here.
+                #[derive(Serialize)]
+                struct Out<'a> {
+                    #[serde(flatten)]
+                    result: &'a explain::ExplainResult,
+                    stage3_predictions: Vec<lex_core::candidates::Prediction>,
+                }
+                let out = Out {
+                    result: &result,
+                    stage3_predictions: lex_core::candidates::production_candidates_priced(
+                        &ctx, &reading,
+                    )
+                    .diagnostics
+                    .predictions,
+                };
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&result).expect("JSON serialization failed")
+                    serde_json::to_string_pretty(&out).expect("JSON serialization failed")
                 );
             } else {
                 print!("{}", explain::format_text(&result));
@@ -1317,6 +1339,7 @@ fn main() {
             baseline,
             emit_baseline,
             from_line,
+            all_ranks,
             verbose,
             json,
         } => {
@@ -1340,12 +1363,14 @@ fn main() {
                 None => Box::new(trie),
             };
             let ctx = ConversionContext::new(&*dict, Some(&conn)).with_history(hist.as_ref(), now);
-            let (report, lines) = rank_ops::replay(&ctx, Path::new(&log_file), from_line, verbose)
-                .unwrap_or_else(|e| die(e));
+            let (report, lines) =
+                rank_ops::replay(&ctx, Path::new(&log_file), from_line, all_ranks, verbose)
+                    .unwrap_or_else(|e| die(e));
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
-                rank_ops::diff_baseline(&before, &lines, from_line)
+                rank_ops::diff_baseline(&before, &lines, from_line, all_ranks)
+                    .unwrap_or_else(|e| die(e))
             });
             if let Some(path) = emit_baseline {
                 write_jsonl(&path, &lines).unwrap_or_else(|e| die(e));
@@ -1367,17 +1392,26 @@ fn main() {
                     serde_json::to_string_pretty(&out).expect("JSON serialization failed")
                 );
             } else {
-                print_replay_text(&report, diff.as_ref());
+                print_replay_text(&report, diff.as_ref(), all_ranks);
             }
         }
     }
 }
 
-fn print_replay_text(r: &rank_ops::ReplayReport, diff: Option<&rank_ops::BaselineDiff>) {
+fn print_replay_text(
+    r: &rank_ops::ReplayReport,
+    diff: Option<&rank_ops::BaselineDiff>,
+    all_ranks: bool,
+) {
     let row = |label: &str, n: usize| {
         println!("  {:<20} {:>5} ({:.1}%)", label, n, pct(n, r.selections));
     };
-    println!("=== Replay (rank>0 selections: {}) ===", r.selections);
+    let scope = if all_ranks {
+        "all selections"
+    } else {
+        "rank>0 selections"
+    };
+    println!("=== Replay ({scope}: {}) ===", r.selections);
     row(&format!("On page 1 (< {})", rank_ops::PAGE_SIZE), r.in_page);
     row("In list", r.in_list);
     row("Absent", r.absent);
@@ -1776,7 +1810,6 @@ fn print_tune_json(result: &tune::TuneResult) {
             "length_variance": w.length_variance,
             "te_kanji": w.te_kanji,
             "single_kanji": w.single_kanji,
-            "script": w.script,
         })
     };
 

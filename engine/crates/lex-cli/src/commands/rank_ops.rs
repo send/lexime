@@ -328,7 +328,8 @@ struct CommitLine {
     rank: usize,
 }
 
-/// The rank>0 lines of a commit log, with their 0-based line index.
+/// The selection lines of a commit log (rank>0 only, or every rank with
+/// `--all-ranks`), with their 0-based line index.
 struct Selections {
     lines: Vec<(usize, CommitLine)>,
     /// Lines that are not valid UTF-8 JSON of the expected shape — e.g. a
@@ -339,8 +340,9 @@ struct Selections {
 /// Lines before 0-based index `from_line` are read but not parsed; indices
 /// stay absolute. A window starting at the end of the log is empty (no line
 /// written since); one starting past it is refused — a mistyped window must
-/// not measure as "nothing to replay".
-fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> {
+/// not measure as "nothing to replay". `all_ranks` keeps the rank-0 lines
+/// too (the lines where the list already had the chosen surface first).
+fn read_selections(path: &Path, from_line: usize, all_ranks: bool) -> Result<Selections, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut out = Selections {
@@ -372,7 +374,7 @@ fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> 
             continue;
         }
         match serde_json::from_str::<CommitLine>(line) {
-            Ok(rec) if rec.rank > 0 => out.lines.push((i, rec)),
+            Ok(rec) if all_ranks || rec.rank > 0 => out.lines.push((i, rec)),
             Ok(_) => {}
             Err(_) => out.malformed += 1,
         }
@@ -387,6 +389,11 @@ pub struct BaselineLine {
     pub t: u64,
     /// 0-based rank in the production list; `None` = absent.
     pub rank: Option<usize>,
+    /// Written under `--all-ranks` only (the default file is unchanged): the
+    /// selection set a baseline was made over, so a comparison against a
+    /// current run over another set is refused, not counted as lost lines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_ranks: bool,
 }
 
 /// Upper bounds (inclusive) of the cost-gap bins; the last bin is open.
@@ -403,8 +410,12 @@ fn gap_bin(gap: i64) -> usize {
 /// publish more; keep it free of readings and surfaces.
 #[derive(Debug, Serialize)]
 pub struct ReplayReport {
-    /// rank>0 selections replayed.
+    /// rank>0 selections replayed (every selection under `--all-ranks`).
     pub selections: usize,
+    /// The run was `--all-ranks` (written only then, so the default report
+    /// is unchanged).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub all_ranks: bool,
     /// Present on the first page (rank < PAGE_SIZE).
     pub in_page: usize,
     /// Present anywhere in the production list.
@@ -677,10 +688,12 @@ impl Tally {
         malformed_lines: usize,
         from_line: usize,
         readings: usize,
+        all_ranks: bool,
     ) -> ReplayReport {
         let in_list: usize = self.rank_hist.iter().sum();
         ReplayReport {
             selections,
+            all_ranks,
             in_page: self.rank_hist.iter().take(PAGE_SIZE).sum(),
             in_list,
             absent: selections - in_list,
@@ -698,22 +711,24 @@ impl Tally {
     }
 }
 
-/// Replay every rank>0 selection in `log` from 0-based line `from_line`.
-/// Returns the counts and one baseline line per selection (for
-/// `--emit-baseline` / `--baseline`). A log with no rank>0 selection is a
-/// valid, all-zero measurement. `verbose` prints per-selection content to
+/// Replay every rank>0 selection in `log` from 0-based line `from_line`
+/// (`all_ranks`: every selection, rank 0 included). Returns the counts and
+/// one baseline line per selection (for `--emit-baseline` / `--baseline`).
+/// A log with no selection in the chosen set (rank>0, or any rank under
+/// `all_ranks`) is a valid, all-zero measurement. `verbose` prints per-selection content to
 /// stderr (local inspection only). Every line replays at the one `now`
 /// (not the line's `t`).
 pub fn replay(
     ctx: &ConversionContext<'_>,
     log: &Path,
     from_line: usize,
+    all_ranks: bool,
     verbose: bool,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let Selections {
         lines: selections,
         malformed,
-    } = read_selections(log, from_line)?;
+    } = read_selections(log, from_line, all_ranks)?;
 
     let mut tally = Tally::new();
     let mut lines = Vec::with_capacity(selections.len());
@@ -739,10 +754,17 @@ pub fn replay(
             i: *i,
             t: sel.t,
             rank,
+            all_ranks,
         });
     }
 
-    let report = tally.into_report(selections.len(), malformed, from_line, cache.len());
+    let report = tally.into_report(
+        selections.len(),
+        malformed,
+        from_line,
+        cache.len(),
+        all_ranks,
+    );
     Ok((report, lines))
 }
 
@@ -762,11 +784,24 @@ fn count_rank(hist: &mut Vec<usize>, rank: usize) {
 ///
 /// `from_line` is the replayed window's start: baseline lines before it are
 /// outside the comparison, not "only in baseline".
+///
+/// A baseline made over the other selection set (`all_ranks` differs from
+/// the current run's) is an error: its lines would all read as "only in
+/// baseline" / "only current".
 pub fn diff_baseline(
     before: &[BaselineLine],
     after: &[BaselineLine],
     from_line: usize,
-) -> BaselineDiff {
+    all_ranks: bool,
+) -> Result<BaselineDiff, String> {
+    if before.iter().any(|b| b.all_ranks != all_ranks) {
+        let mode = |all| if all { "--all-ranks" } else { "rank>0 only" };
+        return Err(format!(
+            "the baseline was made {} but this run is {}; emit both with the same --all-ranks",
+            mode(!all_ranks),
+            mode(all_ranks)
+        ));
+    }
     let before_map: HashMap<(usize, u64), Option<usize>> = before
         .iter()
         .filter(|b| b.i >= from_line)
@@ -792,7 +827,7 @@ pub fn diff_baseline(
         }
     }
     d.only_baseline = before_map.len() - matched;
-    d
+    Ok(d)
 }
 
 #[cfg(test)]
@@ -900,7 +935,12 @@ absent = ["x"]"#
     }
 
     fn line(i: usize, t: u64, rank: Option<usize>) -> BaselineLine {
-        BaselineLine { i, t, rank }
+        BaselineLine {
+            i,
+            t,
+            rank,
+            all_ranks: false,
+        }
     }
 
     #[test]
@@ -926,7 +966,7 @@ absent = ["x"]"#
             line(9, 99, Some(1)), // new line
         ];
         assert_eq!(
-            diff_baseline(&before, &after, 0),
+            diff_baseline(&before, &after, 0, false).unwrap(),
             BaselineDiff {
                 lost: 1,
                 demoted_off_page: 1,
@@ -941,9 +981,25 @@ absent = ["x"]"#
     }
 
     #[test]
+    fn baseline_of_another_selection_set_is_refused() {
+        let mut all = line(0, 10, Some(0));
+        all.all_ranks = true;
+        let cur = [line(0, 10, Some(0))];
+        assert!(diff_baseline(&[all], &cur, 0, false).is_err());
+        let mut cur_all = line(0, 10, Some(0));
+        cur_all.all_ranks = true;
+        assert!(diff_baseline(&[line(0, 10, Some(0))], &[cur_all], 0, true).is_err());
+        // The default file carries no mode field: bytes as before.
+        let json = serde_json::to_string(&line(0, 10, Some(1))).unwrap();
+        assert_eq!(json, r#"{"i":0,"t":10,"rank":1}"#);
+        let back: BaselineLine = serde_json::from_str(&json).unwrap();
+        assert!(!back.all_ranks);
+    }
+
+    #[test]
     fn baseline_join_needs_matching_timestamp() {
         // Same index, different time = the log was cleared and rewritten.
-        let d = diff_baseline(&[line(0, 10, Some(1))], &[line(0, 20, None)], 0);
+        let d = diff_baseline(&[line(0, 10, Some(1))], &[line(0, 20, None)], 0, false).unwrap();
         assert_eq!(d.lost, 0);
         assert_eq!(d.only_current, 1);
         assert_eq!(d.only_baseline, 1);
@@ -1039,7 +1095,7 @@ absent = ["x"]"#
         t.add(&long, "A9"); // off page, injected
         t.add(&long, "gone"); // absent
         t.add(&short, "b"); // a 2-entry list holds 2 slots
-        let r = t.into_report(6, 0, 0, 2);
+        let r = t.into_report(6, 0, 0, 2, false);
 
         assert_eq!(r.page1_slots, 5 * PAGE_SIZE + 2);
         let sum = |f: fn(&OwnerCounts) -> usize| r.by_owner.values().map(f).sum::<usize>();
@@ -1094,7 +1150,7 @@ absent = ["x"]"#
         let mut t = Tally::new();
         t.add(&v, "二十");
         t.add(&v, "荷重");
-        let r = t.into_report(2, 0, 0, 1);
+        let r = t.into_report(2, 0, 0, 1, false);
         assert_eq!(r.gap_below_top, 1);
         assert_eq!(r.gap_hist[0], 1, "the #1 itself is at gap 0");
         assert_eq!(r.gap_hist.iter().sum::<usize>(), 1);
@@ -1126,7 +1182,7 @@ absent = ["x"]"#
         for s in surfaces {
             t.add(&v, s);
         }
-        let r = t.into_report(3, 0, 0, 1);
+        let r = t.into_report(3, 0, 0, 1, false);
         assert_eq!(r.gap_hist, [1, 0, 0, 0, 1, 0, 1]);
         assert_eq!(r.admission_gap_hist, [0, 1, 0, 0, 0, 0, 0]);
     }
@@ -1138,7 +1194,7 @@ absent = ["x"]"#
             &view("a", &[("A", PathOrigin::PartialHiragana)], &[], &[]),
             "A",
         );
-        let json = serde_json::to_value(t.into_report(1, 0, 7, 1)).unwrap();
+        let json = serde_json::to_value(t.into_report(1, 0, 7, 1, false)).unwrap();
         assert_eq!(json["from_line"], 7);
         assert_eq!(
             json["by_owner"]["kanji_variant"]["selections"], 0,
@@ -1169,7 +1225,7 @@ absent = ["x"]"#
         content.extend_from_slice(b"{\"t\":3,\"reading\":\"\xe3\x81");
         fs::write(&path, &content).unwrap();
 
-        let sels = read_selections(&path, 0).unwrap();
+        let sels = read_selections(&path, 0, false).unwrap();
         assert_eq!(sels.malformed, 2);
         assert_eq!(sels.lines.len(), 1, "only rank>0 lines are replayed");
         assert_eq!((sels.lines[0].0, sels.lines[0].1.t), (1, 2));
@@ -1180,9 +1236,28 @@ absent = ["x"]"#
             "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n",
         )
         .unwrap();
-        let sels = read_selections(&path, 0).unwrap();
+        let sels = read_selections(&path, 0, false).unwrap();
         assert!(sels.lines.is_empty());
         assert_eq!(sels.malformed, 0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn all_ranks_keeps_the_rank_zero_lines() {
+        let dir = std::env::temp_dir().join(format!("lexcli-all-ranks-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("commit-log.jsonl");
+        let line = |t: u64, rank: usize| {
+            format!("{{\"t\":{t},\"reading\":\"い\",\"surface\":\"胃\",\"rank\":{rank}}}\n")
+        };
+        fs::write(&path, format!("{}{}{}", line(1, 0), line(2, 3), line(3, 0))).unwrap();
+
+        let idx = |all| -> Vec<usize> {
+            let sels = read_selections(&path, 0, all).unwrap();
+            sels.lines.iter().map(|(i, _)| *i).collect()
+        };
+        assert_eq!(idx(false), [1], "default: rank>0 only");
+        assert_eq!(idx(true), [0, 1, 2], "same window, rank 0 included");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1195,14 +1270,17 @@ absent = ["x"]"#
             |t: u64| format!("{{\"t\":{t},\"reading\":\"い\",\"surface\":\"胃\",\"rank\":1}}\n");
         fs::write(&path, format!("{}not json\n{}{}", sel(1), sel(3), sel(4))).unwrap();
 
-        let sels = read_selections(&path, 2).unwrap();
+        let sels = read_selections(&path, 2, false).unwrap();
         let got: Vec<(usize, u64)> = sels.lines.iter().map(|(i, l)| (*i, l.t)).collect();
         assert_eq!(got, [(2, 3), (3, 4)]);
         assert_eq!(sels.malformed, 0, "skipped lines are not read");
 
-        let sels = read_selections(&path, 4).unwrap();
+        let sels = read_selections(&path, 4, false).unwrap();
         assert!(sels.lines.is_empty(), "a window at EOF is empty");
-        assert!(read_selections(&path, 5).is_err(), "past EOF is refused");
+        assert!(
+            read_selections(&path, 5, false).is_err(),
+            "past EOF is refused"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1210,7 +1288,7 @@ absent = ["x"]"#
     fn baseline_diff_ignores_lines_before_the_window() {
         let before = [line(0, 10, Some(1)), line(5, 15, Some(2))];
         let after = [line(5, 15, Some(2))];
-        let d = diff_baseline(&before, &after, 5);
+        let d = diff_baseline(&before, &after, 5, false).unwrap();
         assert_eq!((d.unchanged, d.only_baseline, d.only_current), (1, 0, 0));
     }
 

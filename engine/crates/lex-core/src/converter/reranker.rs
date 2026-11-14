@@ -4,7 +4,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
-use super::features::{FeatureConfig, FeatureWeights};
+use super::features::{FeatureConfig, FeatureWeights, SegmentRerank};
 use super::viterbi::ScoredPath;
 
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
@@ -38,9 +38,28 @@ impl<'a> FeaturePricer<'a> {
         }
     }
 
-    /// Feature adjustment rerank adds to `path`'s Viterbi cost.
+    /// Feature adjustment rerank adds to `path`'s Viterbi cost: the path's
+    /// features priced at the weights. The one price formula (the weight
+    /// tuner prices candidates the same way).
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
         self.fcfg.extract(path).weighted_cost(&self.weights)
+    }
+
+    /// What [`Self::adjustment`] is made of, for display: each segment's
+    /// amounts, in path order, and the path-level length-variance term. Both
+    /// read the same per-segment features `extract` sums, and the weights
+    /// are linear, so the segments' totals plus the term equal the
+    /// adjustment (a test pins it).
+    pub fn parts(&self, path: &ScoredPath) -> (Vec<SegmentRerank>, i64) {
+        let segments = self
+            .fcfg
+            .segment_features(path)
+            .map(|f| self.weights.segment(&f))
+            .collect();
+        (
+            segments,
+            self.fcfg.length_variance_cost(path, &self.weights),
+        )
     }
 }
 
@@ -61,21 +80,23 @@ impl<'a> FeaturePricer<'a> {
 /// Rerank never drops a path (it takes a slice): the stages that select
 /// candidates are cost-gap admission and the cut to n.
 ///
-/// A lone path is returned unpriced. This keeps the behaviour from before
+/// A lone path is returned unpriced (the return value is whether rerank
+/// priced the paths). This keeps the behaviour from before
 /// #366: pricing it would change what the variant offers built from it are
 /// clamped against, and so their order.
 ///
 /// The caller passes the pricer the variant offers use, so a path and an
 /// offer with the same segments get the same features.
-pub(crate) fn rerank(paths: &mut [ScoredPath], pricer: &FeaturePricer<'_>) {
+pub(crate) fn rerank(paths: &mut [ScoredPath], pricer: &FeaturePricer<'_>) -> bool {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
-        return;
+        return false;
     }
     for p in paths.iter_mut() {
         p.viterbi_cost += pricer.adjustment(p);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
+    true
 }
 
 /// Breakdown of the history boost contributions for a single path.
@@ -445,8 +466,9 @@ mod tests {
     }
 
     /// Weight of the single-kanji penalty in these tests, the other weights
-    /// 0: the shipped weight has been 0, and at 0 every assertion on the
-    /// penalty passes whatever the predicate does.
+    /// 0 (the script term has no weight; the assertions read the penalty's
+    /// own part): the shipped weight has been 0, and at 0 every assertion on
+    /// the penalty passes whatever the predicate does.
     const SK: i64 = 1000;
 
     fn sk_pricer<'a>(
@@ -455,7 +477,6 @@ mod tests {
     ) -> FeaturePricer<'a> {
         let weights = FeatureWeights {
             length_variance: 0,
-            script: 0,
             te_kanji: 0,
             single_kanji: SK,
         };
@@ -467,7 +488,12 @@ mod tests {
         conn: &ConnectionMatrix,
         dict: Option<&dyn Dictionary>,
     ) -> i64 {
-        sk_pricer(conn, dict).adjustment(path)
+        sk_pricer(conn, dict)
+            .parts(path)
+            .0
+            .iter()
+            .map(|r| r.single_char_kanji_penalty)
+            .sum()
     }
 
     #[test]
@@ -543,9 +569,52 @@ mod tests {
             path(vec![seg("ね", "根", 1)], 100),
             path(vec![seg("ね", "ね", 1)], 100),
         ];
-        rerank(&mut paths, &pricer);
-        assert_eq!(paths[0].segments[0].surface, "ね");
-        assert_eq!(paths[1].viterbi_cost, 100 + SK);
+        let expected: Vec<i64> = paths.iter().map(|p| 100 + pricer.adjustment(p)).collect();
+        assert!(expected[0] != expected[1], "fixture: the prices differ");
+        assert!(rerank(&mut paths, &pricer));
+        let mut got: Vec<i64> = paths.iter().map(|p| p.viterbi_cost).collect();
+        got.sort_unstable();
+        let mut want = expected;
+        want.sort_unstable();
+        assert_eq!(got, want);
+        assert!(paths[0].viterbi_cost <= paths[1].viterbi_cost);
+    }
+
+    /// `adjustment` is the production price (`extract` then the weights);
+    /// explain shows it as per-segment parts plus the length-variance term.
+    /// The weights are linear, so the two agree: every term live here.
+    #[test]
+    fn adjustment_equals_the_parts_it_is_displayed_as() {
+        // 1 = content word, 2 = function word.
+        let conn = conn_with_roles_and_fw(vec![0u8, 0, 1], 2, 2);
+        let weights = FeatureWeights {
+            length_variance: 7,
+            te_kanji: 300,
+            single_kanji: 1000,
+        };
+        let pricer = FeaturePricer::with_weights(weights, Some(&conn), None);
+        let paths = [
+            path(
+                vec![
+                    seg("あいう", "あいう", 1),
+                    seg("で", "で", 2),
+                    seg("み", "見", 1),
+                    seg("かきくけこ", "書き句", 1),
+                ],
+                100,
+            ),
+            path(vec![seg("ね", "根", 1)], 100),
+            path(vec![seg("かくにん", "確認", 1), seg("ね", "値", 1)], 100),
+        ];
+        for p in &paths {
+            let (parts, lv) = pricer.parts(p);
+            let total: i64 = parts.iter().map(|r| r.total()).sum::<i64>() + lv;
+            assert_eq!(pricer.adjustment(p), total);
+        }
+        let (parts, lv) = pricer.parts(&paths[0]);
+        assert!(lv != 0, "fixture: the variance term is live");
+        assert!(parts.iter().any(|r| r.te_form_kanji_penalty != 0));
+        assert!(parts.iter().any(|r| r.single_char_kanji_penalty != 0));
     }
 
     #[test]
