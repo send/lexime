@@ -6,8 +6,8 @@ use crate::converter::{ConversionContext, HistoryAt, Lattice};
 use crate::settings::settings;
 
 use super::{
-    generate_punctuation_candidates, punctuation_alternatives, CandidateDiagnostics,
-    CandidateResponse, PathPrice, Prediction, PricedCandidates, TopSource,
+    generate_punctuation_candidates, punctuation_alternatives, untrained_symbol,
+    CandidateDiagnostics, CandidateResponse, PathPrice, Prediction, PricedCandidates, TopSource,
 };
 
 /// Generate candidates for normal (non-punctuation) input.
@@ -155,7 +155,7 @@ fn generate_normal(
     } else {
         max_results
     };
-    let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000);
+    let mut ranked = dict.predict_ranked(reading, fetch_limit, 1000, &untrained_symbol(history));
     if let Some(HistoryAt { history: h, now }) = history {
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
             let boost_a = h.unigram_boost(r_a, &e_a.surface, now);

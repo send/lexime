@@ -173,7 +173,7 @@ impl TrieDictionary {
     pub fn from_entries(entries: impl IntoIterator<Item = (String, Vec<DictEntry>)>) -> Self {
         let mut pairs: Vec<(String, Vec<DictEntry>)> = entries.into_iter().collect();
         for (_, candidates) in &mut pairs {
-            candidates.sort_by_key(|e| e.cost);
+            candidates.sort_by_key(DictEntry::lookup_order);
         }
         pairs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
@@ -273,34 +273,6 @@ impl Dictionary for TrieDictionary {
                 })
                 .collect()
         })
-    }
-
-    fn predict_ranked(
-        &self,
-        prefix: &str,
-        max_results: usize,
-        scan_limit: usize,
-    ) -> Vec<(String, DictEntry)> {
-        let mut flat: Vec<(String, DictEntry)> = Vec::new();
-        with_trie!(self, |t| {
-            for m in t.predictive_search(prefix.as_bytes()).take(scan_limit) {
-                let reading = String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                let entries = self.values.get_entries(m.value_id as usize);
-                flat.reserve(entries.len());
-                for e in entries {
-                    flat.push((reading.clone(), e));
-                }
-            }
-        });
-
-        flat.sort_by_key(|(_, e)| e.cost);
-
-        let mut seen = std::collections::HashSet::new();
-        flat.retain(|(_, e)| seen.insert(e.surface.clone()));
-
-        flat.truncate(max_results);
-        flat
     }
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {

@@ -205,8 +205,8 @@ fn flags(dict: &TrieDictionary) -> Vec<(String, i16, u16, u16, bool)> {
 fn test_symbol_flag_roundtrip_v5() {
     let dict = flagged_dict();
     let expected = vec![
-        ("Π".to_string(), 0, 9, 9, true),
         ("パイ".to_string(), 3000, 7, 8, false),
+        ("Π".to_string(), 0, 9, 9, true),
     ];
     assert_eq!(flags(&dict), expected);
 
@@ -278,7 +278,7 @@ fn test_embedded_trie_error_preserved() {
 #[test]
 fn test_predict_ranked_cost_order() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("かん", 100, 200);
+    let results = dict.predict_ranked("かん", 100, 200, &|_, _| false);
     // Should be sorted by cost ascending
     for w in results.windows(2) {
         assert!(
@@ -316,7 +316,7 @@ fn test_predict_ranked_dedup_surface() {
         ),
     ];
     let dict = TrieDictionary::from_entries(entries);
-    let results = dict.predict_ranked("かん", 100, 200);
+    let results = dict.predict_ranked("かん", 100, 200, &|_, _| false);
     // "感" should appear only once, with the lower cost (5000)
     let surfaces: Vec<&str> = results.iter().map(|(_, e)| e.surface.as_str()).collect();
     assert_eq!(
@@ -331,14 +331,14 @@ fn test_predict_ranked_dedup_surface() {
 #[test]
 fn test_predict_ranked_max_results() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("かん", 2, 200);
+    let results = dict.predict_ranked("かん", 2, 200, &|_, _| false);
     assert_eq!(results.len(), 2);
 }
 
 #[test]
 fn test_predict_ranked_no_match() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("そ", 100, 200);
+    let results = dict.predict_ranked("そ", 100, 200, &|_, _| false);
     assert!(results.is_empty());
 }
 

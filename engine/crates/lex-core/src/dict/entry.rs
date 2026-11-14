@@ -13,3 +13,13 @@ pub struct DictEntry {
     /// Mozc and extras entries are always `false`.
     pub symbol: bool,
 }
+
+impl DictEntry {
+    /// Order of the entries of one reading (an exact `lookup`): lattice words
+    /// by cost, then symbols by cost — a symbol's cost is its row index among
+    /// the same reading's symbol rows, comparable only with other symbols.
+    /// Sort stably by this key.
+    pub fn lookup_order(&self) -> (bool, i16) {
+        (self.symbol, self.cost)
+    }
+}

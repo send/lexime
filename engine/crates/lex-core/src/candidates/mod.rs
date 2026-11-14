@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use crate::converter::{
     build_lattice, ConversionContext, ConvertedSegment, HistoryAt, Lattice, PathOrigin,
 };
+use crate::dict::DictEntry;
 
 pub mod predictive;
 pub mod standard;
@@ -15,6 +16,8 @@ pub mod widths;
 
 #[cfg(test)]
 mod now_tests;
+#[cfg(test)]
+mod symbol_tests;
 #[cfg(test)]
 mod tests;
 
@@ -117,6 +120,17 @@ pub struct PathPrice {
     pub admission_gap: Option<i64>,
 }
 
+/// The prediction stage's exclusion (SPEC §候補生成): a symbol entry is
+/// predicted only once history has learned that (reading, surface) — with no
+/// history every symbol is excluded. Passed to `predict_ranked`, which drops
+/// the excluded entries before ranking.
+fn untrained_symbol(history: Option<HistoryAt<'_>>) -> impl Fn(&str, &DictEntry) -> bool + '_ {
+    move |reading, entry| {
+        entry.symbol
+            && history.is_none_or(|h| h.history.unigram_boost(reading, &entry.surface, h.now) == 0)
+    }
+}
+
 /// Look up punctuation alternatives for a reading.
 fn punctuation_alternatives(reading: &str) -> Option<&'static [&'static str]> {
     PUNCTUATION_ALTERNATIVES
@@ -137,7 +151,9 @@ fn generate_punctuation_candidates(
     // Learned predictions first
     if let Some(HistoryAt { history: h, now }) = ctx.history {
         let fetch_limit = max_results.max(200);
-        let mut ranked = ctx.dict.predict_ranked(reading, fetch_limit, 1000);
+        let mut ranked =
+            ctx.dict
+                .predict_ranked(reading, fetch_limit, 1000, &untrained_symbol(ctx.history));
         ranked.sort_by(|(r_a, e_a), (r_b, e_b)| {
             let boost_a = h.unigram_boost(r_a, &e_a.surface, now);
             let boost_b = h.unigram_boost(r_b, &e_b.surface, now);

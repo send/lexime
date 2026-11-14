@@ -800,13 +800,80 @@ mod tests {
     #[test]
     #[ignore]
     fn bundled_symbols_do_not_duplicate_pinned_sources() {
+        let Some(result) = build_bundled("dup") else {
+            return;
+        };
+        let entries = result.unwrap();
+        let symbols = entries.values().flatten().filter(|e| e.symbol).count();
+        assert_eq!(symbols, 155, "bundled symbol entries");
+    }
+
+    /// T-B6: the bundled symbols TSV over the pinned mozc-raw — 155 symbol
+    /// entries, the largest symbol cost is the most same-reading rows − 1
+    /// (cost = row index), and with no history the prediction stage lists no
+    /// symbol for any proper prefix of a symbol reading. Needs
+    /// `engine/data/mozc-raw`; run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn bundled_symbols_row_costs_and_no_untrained_prediction() {
+        let Some(result) = build_bundled("stage3") else {
+            return;
+        };
+        let entries = result.unwrap();
+        let rows: Vec<(&String, usize, i16)> = entries
+            .iter()
+            .filter_map(|(r, es)| {
+                let syms: Vec<&DictEntry> = es.iter().filter(|e| e.symbol).collect();
+                let max_cost = syms.iter().map(|e| e.cost).max()?;
+                Some((r, syms.len(), max_cost))
+            })
+            .collect();
+        assert_eq!(rows.iter().map(|&(_, n, _)| n).sum::<usize>(), 155);
+        let most_rows = rows.iter().map(|&(_, n, _)| n).max().unwrap();
+        let max_cost = rows.iter().map(|&(_, _, c)| c).max().unwrap();
+        assert_eq!(i64::from(max_cost), most_rows as i64 - 1);
+
+        let readings: Vec<String> = rows.iter().map(|&(r, _, _)| r.clone()).collect();
+        let dict = TrieDictionary::from_entries(entries);
+        let ctx = lex_core::converter::ConversionContext::new(&dict, None);
+        let mut prefixes = HashSet::new();
+        for reading in &readings {
+            let chars: Vec<char> = reading.chars().collect();
+            for n in 1..chars.len() {
+                prefixes.insert(chars[..n].iter().collect::<String>());
+            }
+        }
+        let mut leaked = Vec::new();
+        for prefix in &prefixes {
+            let priced = lex_core::candidates::production_candidates_priced(&ctx, prefix);
+            for p in priced.diagnostics.predictions {
+                if dict
+                    .lookup(&p.reading)
+                    .iter()
+                    .any(|e| e.symbol && e.surface == p.surface)
+                {
+                    leaked.push((prefix.clone(), p.reading, p.surface));
+                }
+            }
+        }
+        assert!(
+            prefixes.len() > 50,
+            "{} prefixes of symbol readings",
+            prefixes.len()
+        );
+        assert!(leaked.is_empty(), "untrained symbols predicted: {leaked:?}");
+    }
+
+    /// `build_entries` over the pinned mozc-raw and the bundled symbols and
+    /// extras; `None` (skipped) when mozc-raw is not fetched.
+    fn build_bundled(tag: &str) -> Option<Result<EntryMap, String>> {
         let mozc_raw = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mozc-raw");
         if !mozc_raw.join("id.def").exists() {
             eprintln!("skipping: mozc-raw not found at {mozc_raw:?}");
-            return;
+            return None;
         }
         let root = std::env::temp_dir().join(format!(
-            "lexime_test_bundled_symbols_{}",
+            "lexime_test_bundled_symbols_{tag}_{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -824,8 +891,6 @@ mod tests {
             &extra_sources,
         );
         fs::remove_dir_all(&root).ok();
-        let entries = result.unwrap();
-        let symbols = entries.values().flatten().filter(|e| e.symbol).count();
-        assert_eq!(symbols, 155, "bundled symbol entries");
+        Some(result)
     }
 }

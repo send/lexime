@@ -18,7 +18,8 @@ impl CompositeDictionary {
     }
 }
 
-/// Keep the cheapest entry per `key`, then order by cost. Stable: entries of
+/// Keep the cheapest entry per `key`, then order by
+/// [`DictEntry::lookup_order`] (words by cost, then symbols). Stable: entries of
 /// equal cost keep first-seen order (layer order, then each layer's own
 /// order), so the lattice — and every equal-cost tie decided by node order —
 /// is the same on every lookup.
@@ -42,7 +43,7 @@ fn dedup_cheapest<K: std::hash::Hash + Eq>(
             }
         }
     }
-    result.sort_by_key(|e| e.cost);
+    result.sort_by_key(DictEntry::lookup_order);
     result
 }
 
