@@ -248,12 +248,7 @@ fn test_reorder_candidates_no_boost_preserves_order() {
 /// cost), so a caller's partition of the list (words before symbols) survives.
 #[test]
 fn test_reorder_candidates_keeps_input_order_among_unlearned() {
-    let entry = |surface: &str, cost: i16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    };
+    use crate::converter::testutil::entry;
     let mut h = UserHistory::new();
     h.record(&[("きょう".into(), "教".into())]);
     let now = now_epoch();

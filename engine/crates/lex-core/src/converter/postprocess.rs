@@ -21,6 +21,9 @@ use super::ConversionContext;
 pub(crate) trait PostprocessObserver {
     /// Called after viterbi paths are collected, before resegment/rerank.
     fn after_viterbi(&mut self, _paths: &[ScoredPath]) {}
+    /// Called right after rerank, with whether it priced the paths (it
+    /// leaves a lone path alone).
+    fn reranked(&mut self, _priced: bool) {}
     /// Called after resegment + rerank + variant rewriters, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
     /// Called for each path cost-gap admission drops, with the gap's base
@@ -105,7 +108,8 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     paths.extend(reseg_paths);
 
     let pricer = reranker::FeaturePricer::new(conn, dict);
-    reranker::rerank(paths, &pricer);
+    let priced = reranker::rerank(paths, &pricer);
+    observer.reranked(priced);
 
     // Variants run BEFORE history_rerank, so history boosts a variant the
     // user picked like any other path (whole-path boosts ×5 can promote a
@@ -289,13 +293,8 @@ pub(super) fn group_spans(
     conn: &ConnectionMatrix,
 ) -> Vec<std::ops::Range<usize>> {
     let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut current: Option<usize> = None; // start of the open group
+    let mut open = false; // the last span is a group that can still grow
     let mut pending_prefix = false;
-    let close = |spans: &mut Vec<std::ops::Range<usize>>, current: &mut Option<usize>, end| {
-        if let Some(start) = current.take() {
-            spans.push(start..end);
-        }
-    };
 
     for (i, seg) in segments.iter().enumerate() {
         let is_fw = conn.is_function_word(seg.left_id);
@@ -303,22 +302,25 @@ pub(super) fn group_spans(
 
         if attach_to_prev {
             // Joins the open group; with none, stands alone.
-            if current.is_none() {
-                spans.push(i..i + 1);
+            match spans.last_mut().filter(|_| open) {
+                Some(last) => last.end = i + 1,
+                None => spans.push(i..i + 1),
             }
         } else if conn.is_prefix(seg.left_id) {
-            // Prefix: flush current group, start one that will absorb the next CW
-            close(&mut spans, &mut current, i);
-            current = Some(i);
+            // Prefix: close the open group, start one that will absorb the next CW
+            spans.push(i..i + 1);
+            open = true;
             pending_prefix = true;
         } else if pending_prefix {
             // ContentWord joins the pending prefix group
+            if let Some(last) = spans.last_mut() {
+                last.end = i + 1;
+            }
             pending_prefix = false;
         } else {
-            close(&mut spans, &mut current, i);
-            current = Some(i);
+            spans.push(i..i + 1);
+            open = true;
         }
     }
-    close(&mut spans, &mut current, segments.len());
     spans
 }

@@ -341,12 +341,7 @@ fn test_priced_candidates_are_the_production_list() {
 /// order the stage walked them (history-sorted when there is history).
 #[test]
 fn test_diagnostics_record_stage_3_before_deduplication() {
-    let e = |surface: &str, cost: i16| DictEntry {
-        surface: surface.into(),
-        cost,
-        left_id: 0,
-        right_id: 0,
-    };
+    use crate::converter::testutil::entry as e;
     let dict = TrieDictionary::from_entries(vec![
         ("きょう".into(), vec![e("今日", 3000), e("京", 5000)]),
         ("きょうと".into(), vec![e("京都", 4000)]),

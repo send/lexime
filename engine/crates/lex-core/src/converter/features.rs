@@ -30,24 +30,24 @@ pub struct PathFeatures {
 }
 
 impl PathFeatures {
-    /// The path-level length-variance term of [`Self::weighted_cost`].
-    pub fn variance_cost(&self, w: &FeatureWeights) -> i64 {
-        if self.length_variance_n >= 2 {
-            self.length_variance_raw * w.length_variance
-                / (self.length_variance_n * self.length_variance_n)
-        } else {
-            0
-        }
-    }
-
     /// Apply weights to produce a single cost adjustment.
     pub fn weighted_cost(&self, w: &FeatureWeights) -> i64 {
-        let variance = self.variance_cost(w);
+        let variance = variance_cost(self.length_variance_raw, self.length_variance_n, w);
         let script = w.script_cost(self.script_cost);
         let te_kanji = self.te_kanji_count * w.te_kanji;
         let single_kanji = self.single_kanji_count * w.single_kanji;
 
         variance + script + te_kanji + single_kanji
+    }
+}
+
+/// The path-level length-variance term for `(raw, n)` as in
+/// [`PathFeatures`]: `raw * weight / n²`, 0 below two content words.
+pub fn variance_cost(raw: i64, n: i64, w: &FeatureWeights) -> i64 {
+    if n >= 2 {
+        raw * w.length_variance / (n * n)
+    } else {
+        0
     }
 }
 
@@ -72,6 +72,21 @@ pub struct SegmentRerank {
     pub script_cost: i64,
     pub te_form_kanji_penalty: i64,
     pub single_char_kanji_penalty: i64,
+}
+
+impl SegmentRerank {
+    /// The segment's amounts summed.
+    pub fn total(&self) -> i64 {
+        self.script_cost + self.te_form_kanji_penalty + self.single_char_kanji_penalty
+    }
+}
+
+impl std::ops::AddAssign for SegmentRerank {
+    fn add_assign(&mut self, o: Self) {
+        self.script_cost += o.script_cost;
+        self.te_form_kanji_penalty += o.te_form_kanji_penalty;
+        self.single_char_kanji_penalty += o.single_char_kanji_penalty;
+    }
 }
 
 /// Weights for combining path features into a cost adjustment.
@@ -250,12 +265,7 @@ impl FeatureConfig<'_> {
     /// that belongs to no segment.
     pub fn length_variance_cost(&self, path: &ScoredPath, w: &FeatureWeights) -> i64 {
         let (raw, n) = self.length_variance(path);
-        PathFeatures {
-            length_variance_raw: raw,
-            length_variance_n: n,
-            ..PathFeatures::default()
-        }
-        .variance_cost(w)
+        variance_cost(raw, n, w)
     }
 
     /// Extract features from a path (the per-segment features summed, plus

@@ -300,8 +300,8 @@ struct ExplainObserver<'a> {
     pricer: FeaturePricer<'a>,
     /// Paths cost-gap admission dropped, and the anchor it measured from.
     dropped: Vec<DroppedPath>,
-    anchor: i64,
-    model_paths: Vec<ModelPath>,
+    /// Whether `rerank` priced the paths (a lone path it leaves alone).
+    reranked: bool,
     /// The last policy price the Override stage wrote onto each surface.
     policy: HashMap<String, PolicyPrice>,
     policy_skipped: Vec<String>,
@@ -326,8 +326,7 @@ impl<'a> ExplainObserver<'a> {
             dict,
             pricer: FeaturePricer::new(conn, Some(dict)),
             dropped: Vec::new(),
-            anchor: 0,
-            model_paths: Vec::new(),
+            reranked: false,
             policy: HashMap::new(),
             policy_skipped: Vec::new(),
         }
@@ -343,6 +342,10 @@ impl PostprocessObserver for ExplainObserver<'_> {
             .collect();
     }
 
+    fn reranked(&mut self, priced: bool) {
+        self.reranked = priced;
+    }
+
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
         self.pre_history.clear();
         self.after_rerank = paths
@@ -353,15 +356,6 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 origin: p.origin,
                 priced_by: p.priced_by,
                 is_identity: p.is_identity(),
-            })
-            .collect();
-        self.anchor = paths.first().map_or(0, |p| p.viterbi_cost);
-        self.model_paths = paths
-            .iter()
-            .filter(|p| p.origin.is_model())
-            .map(|p| ModelPath {
-                surface: p.surface_key(),
-                origin: p.origin,
             })
             .collect();
         for p in paths {
@@ -458,16 +452,7 @@ impl PathColumns {
     /// The rerank features' price of the ungrouped segments: the rerank
     /// columns summed plus the length-variance term.
     fn rerank_adjustment(&self) -> i64 {
-        self.length_variance_cost
-            + self
-                .rows
-                .iter()
-                .map(|r| {
-                    r.rerank.script_cost
-                        + r.rerank.te_form_kanji_penalty
-                        + r.rerank.single_char_kanji_penalty
-                })
-                .sum::<i64>()
+        self.length_variance_cost + self.rows.iter().map(|r| r.rerank.total()).sum::<i64>()
     }
 }
 
@@ -498,10 +483,8 @@ impl ExplainObserver<'_> {
                     r.segment_penalty += t.segment_penalty;
                     r.connection_cost += t.transition_in;
                 }
-                for f in &parts[span] {
-                    r.rerank.script_cost += f.script_cost;
-                    r.rerank.te_form_kanji_penalty += f.te_form_kanji_penalty;
-                    r.rerank.single_char_kanji_penalty += f.single_char_kanji_penalty;
+                for &f in &parts[span] {
+                    r.rerank += f;
                 }
                 r
             })
@@ -646,9 +629,20 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
     let mut dropped_by_cost_gap = std::mem::take(&mut observer.dropped);
     dropped_by_cost_gap.sort_by(|a, b| a.gap.cmp(&b.gap).then_with(|| a.surface.cmp(&b.surface)));
     let mut policy_price_inconsistent = Vec::new();
-    // `rerank` leaves a lone path unpriced (it has nothing to rank against):
-    // the model population it saw is the Viterbi and Resegment paths.
-    let rerank_ran = observer.model_paths.len() > 1;
+    // `rerank` leaves a lone path unpriced (it has nothing to rank against);
+    // whether it did is what it reported.
+    let rerank_ran = observer.reranked;
+    let after_rerank = std::mem::take(&mut observer.after_rerank);
+    // The rerank best before history: the anchor admission measures from.
+    let anchor = after_rerank.first().map_or(0, |p| p.viterbi_cost);
+    let model_paths: Vec<ModelPath> = after_rerank
+        .iter()
+        .filter(|p| p.origin.is_model())
+        .map(|p| ModelPath {
+            surface: p.surface.clone(),
+            origin: p.origin,
+        })
+        .collect();
 
     let paths: Vec<ExplainPath> = final_paths
         .iter()
@@ -749,14 +743,14 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         lattice_char_count: lattice.char_count,
         lattice_nodes,
         paths,
-        after_rerank: std::mem::take(&mut observer.after_rerank),
+        after_rerank,
         max_cost_gap: ctx.max_cost_gap,
         cost_gap_bound: admission_bound(ctx.max_cost_gap),
-        cost_gap_anchor: observer.anchor,
+        cost_gap_anchor: anchor,
         dropped_by_cost_gap,
         policy_price_inconsistent,
         policy_skipped: std::mem::take(&mut observer.policy_skipped),
-        model_paths: std::mem::take(&mut observer.model_paths),
+        model_paths,
     }
 }
 
@@ -1681,6 +1675,32 @@ mod tests {
             ),
             (None, None, None, None)
         );
+        assert_columns_add_up(&result);
+    }
+
+    /// With two or more paths rerank prices them, and explain says so from
+    /// rerank's own report: the rerank columns are numbers (0 included), not
+    /// null, and they add up. (The lone-path half is the test above.)
+    #[test]
+    fn rerank_columns_are_present_when_rerank_priced_the_paths() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![
+            ("あい".into(), vec![e("愛", 3000, 1)]),
+            ("あ".into(), vec![e("亜", 3000, 1)]),
+            ("い".into(), vec![e("胃", 3000, 1)]),
+        ]);
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, None),
+            "あい",
+            5,
+        );
+        assert!(result.model_paths.len() > 1, "fixture: one model path");
+        for p in &result.paths {
+            if p.priced_by.is_model() {
+                assert!(p.length_variance_cost.is_some(), "{}", p.surface());
+                assert!(p.segments.iter().all(|r| r.script_cost.is_some()));
+            }
+        }
         assert_columns_add_up(&result);
     }
 

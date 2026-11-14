@@ -38,15 +38,19 @@ impl<'a> FeaturePricer<'a> {
         }
     }
 
-    /// Feature adjustment rerank adds to `path`'s Viterbi cost.
+    /// Feature adjustment rerank adds to `path`'s Viterbi cost: the
+    /// segments' amounts ([`Self::parts`]) plus the length-variance term.
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
-        self.fcfg.extract(path).weighted_cost(&self.weights)
+        self.fcfg
+            .segment_features(path)
+            .map(|f| self.weights.segment(&f).total())
+            .sum::<i64>()
+            + self.fcfg.length_variance_cost(path, &self.weights)
     }
 
     /// What [`Self::adjustment`] is made of: each segment's amounts, in path
     /// order, and the path-level length-variance term. Their sum is the
-    /// adjustment (the script weight is fixed at 100, so splitting the
-    /// script sum by segment is exact).
+    /// adjustment, by construction.
     pub fn parts(&self, path: &ScoredPath) -> (Vec<SegmentRerank>, i64) {
         let segments = self
             .fcfg
@@ -77,21 +81,23 @@ impl<'a> FeaturePricer<'a> {
 /// Rerank never drops a path (it takes a slice): the stages that select
 /// candidates are cost-gap admission and the cut to n.
 ///
-/// A lone path is returned unpriced. This keeps the behaviour from before
+/// A lone path is returned unpriced (the return value is whether rerank
+/// priced the paths). This keeps the behaviour from before
 /// #366: pricing it would change what the variant offers built from it are
 /// clamped against, and so their order.
 ///
 /// The caller passes the pricer the variant offers use, so a path and an
 /// offer with the same segments get the same features.
-pub(crate) fn rerank(paths: &mut [ScoredPath], pricer: &FeaturePricer<'_>) {
+pub(crate) fn rerank(paths: &mut [ScoredPath], pricer: &FeaturePricer<'_>) -> bool {
     let _span = debug_span!("rerank", paths_in = paths.len()).entered();
     if paths.len() <= 1 {
-        return;
+        return false;
     }
     for p in paths.iter_mut() {
         p.viterbi_cost += pricer.adjustment(p);
     }
     paths.sort_by_key(|p| p.viterbi_cost);
+    true
 }
 
 /// Breakdown of the history boost contributions for a single path.

@@ -41,7 +41,7 @@ fn test_rerank_script_cost_without_conn() {
 
     // Without conn there are no transition features; "木の" (reading "きの" = 2 chars)
     // gets script_cost -3000 * 2/3 = -2000 (mixed kanji+kana bonus scaled).
-    rerank(&mut paths, &FeaturePricer::new(None, None));
+    assert!(rerank(&mut paths, &FeaturePricer::new(None, None)));
     assert_eq!(paths[0].segments[0].surface, "木の");
     assert_eq!(paths[0].viterbi_cost, 2000 - 2000);
 }
@@ -60,7 +60,7 @@ fn test_rerank_single_path_noop() {
         PathOrigin::Viterbi,
     )];
 
-    rerank(&mut paths, &FeaturePricer::new(None, None));
+    assert!(!rerank(&mut paths, &FeaturePricer::new(None, None)));
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].segments[0].surface, "亜");
     // A lone path is not priced (kept as before #366): pricing it would move
@@ -71,7 +71,7 @@ fn test_rerank_single_path_noop() {
 #[test]
 fn test_rerank_empty_noop() {
     let mut paths: Vec<ScoredPath> = Vec::new();
-    rerank(&mut paths, &FeaturePricer::new(None, None));
+    assert!(!rerank(&mut paths, &FeaturePricer::new(None, None)));
     assert!(paths.is_empty());
 }
 

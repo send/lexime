@@ -95,8 +95,9 @@ def window(log, start, rows):
     return lines, None, None, seen
 
 
-def count_selections(lines, start, end, min_rank):
-    return sum(selection(l, min_rank) is not None for l in lines[start : end + 1])
+def count_selections(lines, start, end):
+    """Every selection (rank 0 included) in lines start..end: what --all-ranks replays."""
+    return sum(selection(l, 0) is not None for l in lines[start : end + 1])
 
 
 def fresh(src_dir, names, work):
@@ -107,7 +108,8 @@ def fresh(src_dir, names, work):
     return d
 
 
-def replay(a, binary, dict_, conn, log, now, work, app, extra, name, verbose=False):
+def replay(a, arm, log, now, work, app, extra, name, verbose=False):
+    binary, dict_, conn = arm
     hist = fresh(a.frozen, ("user_history.lxud", "user_history.lxud.wal"), work)
     cmd = [binary, "--now", str(now), "replay-commit-log", dict_, conn, log,
            "--history", os.path.join(hist, "user_history.lxud"), "--app-dir", app, "--json"] + (["--all-ranks"] if a.all_ranks else []) + extra + (["--verbose"] if verbose else [])
@@ -166,17 +168,18 @@ def main():
         app = fresh(a.app_dir, ("user_dict.lxuw", "settings.toml"), work)
         baseline = os.path.join(a.out, "base.baseline")
         win = ["--from-line", str(a.start_line)]
-        bd = (a.base_dict, a.base_conn)
-        replay(a, a.base, *bd, log, now, work, app, ["--emit-baseline", baseline], "base-full")
-        base = replay(a, a.base, *bd, log, now, work, app, win, "base", a.verbose)
-        new = replay(a, a.new, a.new_dict, a.new_conn, log, now, work, app, win + ["--baseline", baseline], "new", a.verbose)
+        base_arm = (a.base, a.base_dict, a.base_conn)
+        new_arm = (a.new, a.new_dict, a.new_conn)
+        replay(a, base_arm, log, now, work, app, ["--emit-baseline", baseline], "base-full")
+        base = replay(a, base_arm, log, now, work, app, win, "base", a.verbose)
+        new = replay(a, new_arm, log, now, work, app, win + ["--baseline", baseline], "new", a.verbose)
     finally:
         shutil.rmtree(work)
 
     with open(os.path.join(a.out, "window.txt"), "w", encoding="utf-8") as f:
         f.write(f"lines {a.start_line}..{end} --now {now}\n")
     d = new["baseline"]
-    expect = count_selections(lines, a.start_line, end, 0) if a.all_ranks else a.rows
+    expect = count_selections(lines, a.start_line, end) if a.all_ranks else a.rows
     if not (base["selections"] == new["selections"] == expect and d["only_current"] == d["only_baseline"] == 0):
         sys.exit(f"replay-window: lextool replayed a different window: selections base {base['selections']} "
                  f"new {new['selections']} (expected {expect}), only_current {d['only_current']} "
