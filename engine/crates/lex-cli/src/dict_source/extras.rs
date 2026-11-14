@@ -47,9 +47,10 @@ const DOMAINS: &[(&str, &str)] = &[
 /// homophones unless we explicitly want them to.
 const DEFAULT_COST: i16 = 5000;
 
-/// POS tag assigned to every extras entry: 名詞,一般 works for content nouns
-/// and brand-name proper nouns alike. Per-domain POS tuning is deferred —
-/// cost adjustment is sufficient for the MVP.
+/// POS tag assigned to every extras entry: 名詞,一般. Right for content nouns;
+/// for proper nouns it is a known, deferred inaccuracy (CLAUDE.md 設計哲学
+/// lists the exception and its trigger: per-entry POS by tag name, resolved
+/// from id.def).
 ///
 /// The numeric id for this tag is resolved from the pinned id.def at compile
 /// time by [`ExtrasSource::resolve_pos_ids`] — ids are line numbers in

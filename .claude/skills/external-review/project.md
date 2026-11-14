@@ -30,7 +30,9 @@ citation; no "edge / diminishing-returns" bucket. lexime-specific bias:
 
 - Conversion-accuracy regressions are fixed at the *data/cost* root
   (dictionary entry, connection cost, feature weight), not by special-casing
-  in conversion code (axes.md Axis 1).
+  in conversion code (axes.md Axis 1). A cost fix must be a reasonable value
+  for the word, never compensation for a known dictionary error such as a
+  wrong POS (CLAUDE.md 設計哲学「辞書がソースオブトゥルース」).
 - When a reviewer-confirmed conversion miss is real, add a regression
   corpus case (`engine/testcorpus/accuracy-corpus.toml`, regression
   category) alongside the fix — CLAUDE.md § 運用ルール recommends it.
