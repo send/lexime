@@ -17,7 +17,7 @@ Default = run。skip は **軸ごとの expected-yield=0 を正直に言える�
 
 | Axis | Fires (→ run) when… (非網羅) |
 |---|---|
-| 1 辞書 SSoT | rewriter / postprocess / cost / dict_source / pos_map を触った |
+| 1 辞書 SSoT | rewriter / postprocess / cost / dict_source / pos_map / `engine/data/` (Mozc pin を含む) を触った |
 | 2 測定・コーパス | settings / コスト定数 / reranker / converter (viterbi) / dict_source / `engine/data/` / corpus TOML を触った |
 | 3 構造的正しさ | lex-session / lex_engine / persistence / AsyncWorker / lock・epoch 系を触った |
 | 4 UniFFI 境界 | `engine/src/` / `Sources/` を触った、または FFI API から到達する lex-session / lex-core の経路を触った |
