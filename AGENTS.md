@@ -19,6 +19,15 @@ what a generic reviewer misses:
   accuracy corpora (`mise run accuracy` / `mise run accuracy-history`) in the
   PR description (CLAUDE.md § 変換精度テスト). Flag cost/weight changes that
   lack that evidence.
+- **Known dictionary errors** (CLAUDE.md § 設計哲学「辞書がソースオブトゥルース」,
+  which also holds the scope and the known exceptions): flag a diff that
+  introduces, or keeps while touching it, dictionary data known to be wrong
+  (e.g. a wrong POS), whatever the motive — keeping rankings unchanged or
+  passing a threshold is not a reason. A cost that compensates for such an
+  error is part of it, even with before/after evidence.
+- **Hardcoded numeric POS ids** (`.claude/skills/lexime-review/axes.md`
+  Axis 1, #273): flag them — they are id.def line numbers and point at a
+  different POS after a pin bump; resolve by tag name from id.def instead.
 - **Corpus discipline**: an accuracy-corpus `skip` (or `width_issue`) without
   an issue link is a violation (理由なし skip 禁止); a new history-corpus case
   without a `baseline` (expected result with no history), or a history-corpus
