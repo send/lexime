@@ -55,7 +55,7 @@ pub trait DictSource {
     /// it uses for cost adjustments (`None` when compiling without one).
     ///
     /// Default: no-op — most sources carry explicit POS ids in their raw
-    /// files. Sources that assign a POS by tag (extras, symbols) override this to
+    /// files. Sources that assign a POS by tag (extras) override this to
     /// resolve the tag against id.def, so a pin bump that renumbers ids
     /// can't silently degrade their entries (#279).
     fn resolve_pos_ids(

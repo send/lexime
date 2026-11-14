@@ -421,13 +421,15 @@ pub fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &Mer
     eprintln!("  B: {b_readings} readings, {b_entries} entries");
 
     eprintln!("Merging...");
-    let mut merged: HashMap<String, Vec<DictEntry>> = HashMap::new();
+    let mut merged: EntryMap = dict_a.iter().collect();
+    let mut b_entries: EntryMap = dict_b.iter().collect();
+    // Symbols stay outside the cheapest-wins rule here too: set them aside
+    // from both inputs and add them back with the same duplicate check as
+    // `compile`, so the merged dictionary keeps the invariant compile builds.
+    let symbols_a = take_symbols(&mut merged);
+    let symbols_b = take_symbols(&mut b_entries);
 
-    for (reading, entries) in dict_a.iter() {
-        merged.entry(reading).or_default().extend(entries);
-    }
-
-    for (reading, entries) in dict_b.iter() {
+    for (reading, entries) in b_entries {
         let slot = merged.entry(reading).or_default();
         for entry in entries {
             if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
@@ -438,6 +440,13 @@ pub fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &Mer
                 slot.push(entry);
             }
         }
+    }
+
+    for symbols in [symbols_a, symbols_b] {
+        die!(
+            add_symbols(&mut merged, symbols),
+            "Error merging symbols: {}"
+        );
     }
 
     let pre_filter_readings = merged.len();
