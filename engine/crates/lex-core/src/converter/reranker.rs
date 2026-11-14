@@ -467,8 +467,9 @@ mod tests {
     }
 
     /// Weight of the single-kanji penalty in these tests, the other weights
-    /// 0: the shipped weight has been 0, and at 0 every assertion on the
-    /// penalty passes whatever the predicate does.
+    /// 0 (the script term has no weight; the assertions read the penalty's
+    /// own part): the shipped weight has been 0, and at 0 every assertion on
+    /// the penalty passes whatever the predicate does.
     const SK: i64 = 1000;
 
     fn sk_pricer<'a>(
@@ -477,7 +478,6 @@ mod tests {
     ) -> FeaturePricer<'a> {
         let weights = FeatureWeights {
             length_variance: 0,
-            script: 0,
             te_kanji: 0,
             single_kanji: SK,
         };
@@ -489,7 +489,12 @@ mod tests {
         conn: &ConnectionMatrix,
         dict: Option<&dyn Dictionary>,
     ) -> i64 {
-        sk_pricer(conn, dict).adjustment(path)
+        sk_pricer(conn, dict)
+            .parts(path)
+            .0
+            .iter()
+            .map(|r| r.single_char_kanji_penalty)
+            .sum()
     }
 
     #[test]
@@ -565,9 +570,15 @@ mod tests {
             path(vec![seg("ね", "根", 1)], 100),
             path(vec![seg("ね", "ね", 1)], 100),
         ];
-        rerank(&mut paths, &pricer);
-        assert_eq!(paths[0].segments[0].surface, "ね");
-        assert_eq!(paths[1].viterbi_cost, 100 + SK);
+        let expected: Vec<i64> = paths.iter().map(|p| 100 + pricer.adjustment(p)).collect();
+        assert!(expected[0] != expected[1], "fixture: the prices differ");
+        assert!(rerank(&mut paths, &pricer));
+        let mut got: Vec<i64> = paths.iter().map(|p| p.viterbi_cost).collect();
+        got.sort_unstable();
+        let mut want = expected;
+        want.sort_unstable();
+        assert_eq!(got, want);
+        assert!(paths[0].viterbi_cost <= paths[1].viterbi_cost);
     }
 
     #[test]

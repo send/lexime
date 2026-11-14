@@ -1367,7 +1367,8 @@ fn main() {
             let diff = baseline.map(|path| {
                 let before: Vec<rank_ops::BaselineLine> =
                     read_jsonl(&path).unwrap_or_else(|e| die(e));
-                rank_ops::diff_baseline(&before, &lines, from_line)
+                rank_ops::diff_baseline(&before, &lines, from_line, all_ranks)
+                    .unwrap_or_else(|e| die(e))
             });
             if let Some(path) = emit_baseline {
                 write_jsonl(&path, &lines).unwrap_or_else(|e| die(e));
@@ -1807,7 +1808,6 @@ fn print_tune_json(result: &tune::TuneResult) {
             "length_variance": w.length_variance,
             "te_kanji": w.te_kanji,
             "single_kanji": w.single_kanji,
-            "script": w.script,
         })
     };
 

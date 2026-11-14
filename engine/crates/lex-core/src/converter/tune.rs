@@ -36,9 +36,8 @@ pub struct TuneCase {
 
 /// Ranges for grid search.  Each `Vec<i64>` is the list of values to try.
 ///
-/// `script` is fixed in `FeatureWeights::from_settings()`
-/// (compile-time constants), so the default grid only varies the three
-/// settings-backed weights.
+/// The script feature has no weight, so the default grid only varies the
+/// three settings-backed weights.
 #[derive(Debug, Clone)]
 pub struct WeightGrid {
     pub length_variance: Vec<i64>,
@@ -165,7 +164,6 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
     };
 
     // Grid search — only track pass counts (cheap).
-    // script is fixed (compile-time constants in from_settings).
     let mut evals: Vec<TuneEval> = Vec::with_capacity(grid.total_combinations());
 
     for &lv in &grid.length_variance {
@@ -173,7 +171,6 @@ pub fn grid_search(cases: &[TuneCase], grid: &WeightGrid, top_n: usize) -> TuneR
             for &sk in &grid.single_kanji {
                 let w = FeatureWeights {
                     length_variance: lv,
-                    script: default_weights.script,
                     te_kanji: te,
                     single_kanji: sk,
                 };
@@ -250,7 +247,7 @@ fn top1_surface<'a>(candidates: &'a [TuneCandidate], weights: &FeatureWeights) -
         .unwrap_or("")
 }
 
-/// L1 distance over the tunable weight dimensions (excludes fixed script).
+/// L1 distance over the tunable weight dimensions.
 fn weight_distance(a: &FeatureWeights, b: &FeatureWeights) -> i64 {
     (a.length_variance - b.length_variance).abs()
         + (a.te_kanji - b.te_kanji).abs()

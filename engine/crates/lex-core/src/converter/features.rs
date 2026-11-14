@@ -33,11 +33,10 @@ impl PathFeatures {
     /// Apply weights to produce a single cost adjustment.
     pub fn weighted_cost(&self, w: &FeatureWeights) -> i64 {
         let variance = variance_cost(self.length_variance_raw, self.length_variance_n, w);
-        let script = w.script_cost(self.script_cost);
         let te_kanji = self.te_kanji_count * w.te_kanji;
         let single_kanji = self.single_kanji_count * w.single_kanji;
 
-        variance + script + te_kanji + single_kanji
+        variance + self.script_cost + te_kanji + single_kanji
     }
 }
 
@@ -90,22 +89,16 @@ impl std::ops::AddAssign for SegmentRerank {
 }
 
 /// Weights for combining path features into a cost adjustment.
-/// Each weight scales its corresponding feature.
+/// Each weight scales its corresponding feature (script cost is unscaled).
 #[derive(Debug, Clone)]
 pub struct FeatureWeights {
     /// Length variance weight (applied as variance_raw * weight / N²).
     pub length_variance: i64,
-    /// Script cost weight (applied as script_cost * weight / 100).
-    /// Default: 100 (= 100% of raw script cost, i.e. no change).
-    pub script: i64,
     /// Per-occurrence te-form kanji penalty.
     pub te_kanji: i64,
     /// Per-occurrence single-char kanji penalty.
     pub single_kanji: i64,
 }
-
-/// Script weight is fixed at 100 (= 100% of raw script cost, no scaling).
-const SCRIPT_WEIGHT: i64 = 100;
 
 impl Default for FeatureWeights {
     fn default() -> Self {
@@ -115,7 +108,6 @@ impl Default for FeatureWeights {
         };
         Self {
             length_variance: DEFAULT_LENGTH_VARIANCE_WEIGHT,
-            script: SCRIPT_WEIGHT,
             te_kanji: DEFAULT_TE_FORM_KANJI_PENALTY,
             single_kanji: DEFAULT_SINGLE_CHAR_KANJI_PENALTY,
         }
@@ -123,31 +115,23 @@ impl Default for FeatureWeights {
 }
 
 impl FeatureWeights {
-    /// The script term for a raw script cost (a segment's or a path's sum;
-    /// the weight is fixed at 100, so the division is exact and the sum of
-    /// the segments' terms is the term of the sum).
-    pub fn script_cost(&self, raw: i64) -> i64 {
-        raw * self.script / 100
-    }
-
     /// One segment's features, weighted.
     pub fn segment(&self, f: &SegmentFeatures) -> SegmentRerank {
         SegmentRerank {
-            script_cost: self.script_cost(f.script_cost),
+            script_cost: f.script_cost,
             te_form_kanji_penalty: if f.te_kanji { self.te_kanji } else { 0 },
             single_char_kanji_penalty: if f.single_kanji { self.single_kanji } else { 0 },
         }
     }
 
-    /// Build weights from settings + fixed constants.
+    /// Build weights from settings.
     ///
-    /// `script` is a compile-time constant (not in settings) because grid
-    /// search showed no benefit from varying it.
+    /// The script feature has no weight: its raw cost is the price (grid
+    /// search showed no benefit from scaling it).
     pub fn from_settings() -> Self {
         let s = crate::settings::settings();
         Self {
             length_variance: s.reranker.length_variance_weight,
-            script: SCRIPT_WEIGHT,
             te_kanji: s.reranker.te_form_kanji_penalty,
             single_kanji: s.reranker.single_char_kanji_penalty,
         }

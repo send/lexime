@@ -158,10 +158,10 @@ pub struct ExplainPath {
     /// segments (an offer or the kana rescue adopted over them).
     pub repriced: bool,
     /// The path's one-character-reading segments with kanji in the surface,
-    /// taken before `group_segments` merges them into a neighbour (the
-    /// `segments` above are grouped, which is why the single-kanji penalty
-    /// is shown here and not per segment). Empty without a connection
-    /// matrix.
+    /// taken before `group_segments` merges them into a neighbour: the
+    /// predicate's record (which segments the penalty looks at and which it
+    /// holds for). The penalty's value is the rows'
+    /// `single_char_kanji_penalty`. Empty without a connection matrix.
     pub single_kanji_segments: Vec<SingleKanjiSegment>,
     /// Position in `viterbi_nbest`'s output (after its surface dedup, before
     /// any stage reorders). Set only for a path Viterbi made and the model
@@ -437,10 +437,25 @@ struct RowColumns {
 /// A path's rows, made before grouping, and its length-variance term.
 struct PathColumns {
     rows: Vec<RowColumns>,
+    /// Each row's (reading, surface): what the grouped path's segments must
+    /// read for these columns to be theirs.
+    texts: Vec<(String, String)>,
     length_variance_cost: i64,
 }
 
 impl PathColumns {
+    /// These are the columns of `scored`'s rows: the same rows, reading and
+    /// surface for reading and surface. Columns are found by surface, so a
+    /// different segmentation of the same surface must not borrow them.
+    fn describes(&self, scored: &ScoredPath) -> bool {
+        self.texts.len() == scored.segments.len()
+            && self
+                .texts
+                .iter()
+                .zip(&scored.segments)
+                .all(|((r, s), seg)| *r == seg.reading && *s == seg.surface)
+    }
+
     /// `score_path` of the ungrouped segments: the model columns summed.
     fn model_cost(&self) -> i64 {
         self.rows
@@ -470,6 +485,16 @@ impl ExplainObserver<'_> {
         let (parts, length_variance_cost) = self.pricer.parts(p);
         let eos = eos_term(&p.segments, self.conn);
         let last = spans.len().saturating_sub(1);
+        let texts = spans
+            .iter()
+            .map(|span| {
+                let segs = &p.segments[span.clone()];
+                (
+                    segs.iter().map(|s| s.reading.as_str()).collect(),
+                    segs.iter().map(|s| s.surface.as_str()).collect(),
+                )
+            })
+            .collect();
         let rows = spans
             .into_iter()
             .enumerate()
@@ -491,6 +516,7 @@ impl ExplainObserver<'_> {
             .collect();
         PathColumns {
             rows,
+            texts,
             length_variance_cost,
         }
     }
@@ -515,6 +541,19 @@ fn single_kanji_segments(
         .collect()
 }
 
+/// Whether the rerank features are in the price of a path whose price
+/// `priced_by` set: rerank's (a model price, unless rerank left a lone path
+/// unpriced), or an offer's (KanjiVariant / PartialHiragana, priced by the
+/// same pricer, and adopted by a path they repriced). The kana rescue, Numeric
+/// and Katakana set prices without them, whatever segments the path has.
+fn features_in_price(priced_by: PathOrigin, rerank_ran: bool) -> bool {
+    match priced_by {
+        PathOrigin::Viterbi | PathOrigin::Resegment => rerank_ran,
+        PathOrigin::KanjiVariant | PathOrigin::PartialHiragana => true,
+        PathOrigin::HiraganaVariant | PathOrigin::Numeric | PathOrigin::Katakana => false,
+    }
+}
+
 /// Priced by the Override stage (Numeric / Katakana), which applies the
 /// history boost itself.
 fn is_override_priced(p: &ScoredPath) -> bool {
@@ -526,8 +565,8 @@ fn is_override_priced(p: &ScoredPath) -> bool {
 // ---------------------------------------------------------------------------
 
 /// The path's rows (grouped segments) with their cost columns. `columns` is
-/// what the observer made before grouping (`None`: the path has no model
-/// price); `rerank_priced` says whether the rerank features are in the
+/// what the observer made before grouping and `describes` this path (`None`:
+/// the path has no model price); `rerank_priced` says whether the rerank features are in the
 /// path's price, and the rerank columns are `None` when not.
 fn explain_segments(
     scored: &ScoredPath,
@@ -539,12 +578,8 @@ fn explain_segments(
         .iter()
         .enumerate()
         .map(|(i, seg)| {
-            let row = columns.map(|c| {
-                // The rows are the groups of the ungrouped path: the same
-                // count as the grouped segments.
-                debug_assert_eq!(c.rows.len(), scored.segments.len());
-                c.rows[i]
-            });
+            // `columns` describes these segments (checked by the caller).
+            let row = columns.map(|c| c.rows[i]);
             let rerank = row.map(|r| r.rerank).filter(|_| rerank_priced);
             ExplainSegment {
                 reading: seg.reading.clone(),
@@ -665,7 +700,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             // they have no snapshot: one under their surface belongs to a
             // lattice path they replaced or the cut to n dropped (#393).
             // Their boost is the Override stage's.
-            let columns = observer.columns.get(&key);
+            let columns = observer.columns.get(&key).filter(|c| c.describes(scored));
             let model = columns.map(|c| (c.model_cost(), c.rerank_adjustment()));
             let model_cost = model.map(|(m, _)| m);
             let pre = scored.pre_history_cost();
@@ -709,11 +744,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
                 (Some(_), Some((_, adj))) => adj,
                 _ => snapshot.cost - original,
             };
-            // The features are in the price of a path rerank priced, and of an
-            // offer or a path an offer repriced (priced by the same pricer);
-            // a lone path rerank left alone has none, though the columns
-            // exist.
-            let rerank_priced = model.is_some() && (price_clamp.is_some() || rerank_ran);
+            let rerank_priced = model.is_some() && features_in_price(scored.priced_by, rerank_ran);
             ExplainPath {
                 segments: explain_segments(scored, columns, rerank_priced),
                 length_variance_cost: columns
@@ -804,6 +835,9 @@ pub fn format_text(result: &ExplainResult) -> String {
     }
 
     out.push_str(&format!("\n=== Paths ({}) ===\n", result.paths.len()));
+    out.push_str(
+        "  (conn = transitions into the row and inside it; the last row adds the one to EOS; — = not in the price)\n",
+    );
     for (i, path) in result.paths.iter().enumerate() {
         let surface = path.surface();
         let mut priced = if path.priced_by == path.origin {
@@ -840,7 +874,6 @@ pub fn format_text(result: &ExplainResult) -> String {
             } else {
                 seg_label
             };
-            let conn_label = if j == 0 { "BOS->" } else { "conn=" };
             let col = |v: Option<i64>, width: usize| match v {
                 Some(v) => format!("{v:<width$}"),
                 None => format!("{:<width$}", "—"),
@@ -855,13 +888,12 @@ pub fn format_text(result: &ExplainResult) -> String {
                 }
             }
             out.push_str(&format!(
-                "    seg[{}]: {} word={} penalty={} script={} {}{}{}\n",
+                "    seg[{}]: {} word={} penalty={} script={} conn={}{}\n",
                 j,
                 padded,
                 col(seg.word_cost, 6),
                 col(seg.segment_penalty, 5),
                 col(seg.script_cost, 6),
-                conn_label,
                 col(seg.connection_cost, 0),
                 pen,
             ));
@@ -1773,6 +1805,143 @@ mod tests {
             owners.len() >= 3,
             "fixture: several price owners {owners:?}"
         );
+    }
+
+    /// The rerank columns are null wherever the final price was set without
+    /// the features — read from `priced_by`, not guessed from a price clamp:
+    /// a lattice path the kana rescue repriced (`compose_duplicate` keeps its
+    /// segments) has its model columns and a clamp, but its price has no
+    /// features. Numeric / Katakana write their candidate whole (no model
+    /// price at all).
+    #[test]
+    fn rerank_columns_follow_who_set_the_final_price() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "にじゅうさん".into(),
+            vec![e("に十三", 0, 1), e("二十三", 2000, 1)],
+        )]);
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, None),
+            "にじゅうさん",
+            20,
+        );
+        let rescued = path_by_surface(&result, "にじゅうさん");
+        assert_eq!(rescued.origin, PathOrigin::Viterbi);
+        assert_eq!(rescued.priced_by, PathOrigin::HiraganaVariant);
+        assert!(rescued.model_cost.is_some(), "lattice segments keep them");
+        assert!(rescued.price_clamp.is_some(), "the clamp is what misled");
+        assert_eq!(rescued.length_variance_cost, None);
+        assert!(rescued.segments.iter().all(|r| (
+            r.script_cost,
+            r.te_form_kanji_penalty,
+            r.single_char_kanji_penalty
+        ) == (None, None, None)));
+        assert!(rescued.segments.iter().all(|r| r.word_cost.is_some()));
+        assert_eq!(path_by_surface(&result, "23").model_cost, None);
+        assert_columns_add_up(&result);
+
+        // The kana rescue over a lone Viterbi path and over several, with an
+        // offer in the mix: whatever the rescue (or Numeric / Katakana)
+        // priced is null; an offer's price carries the features.
+        let e0 = |surface: &str, cost: i16| DictEntry {
+            surface: surface.into(),
+            cost,
+            left_id: 0,
+            right_id: 0,
+        };
+        let dict = TrieDictionary::from_entries(vec![
+            ("あった".into(), vec![e0("あった", 0), e0("会った", 50)]),
+            ("ほう".into(), vec![e0("方", 0), e0("ほう", 3000)]),
+            ("が".into(), vec![e0("が", 0), e0("蛾", 100)]),
+            ("あ".into(), vec![e0("亜", 100)]),
+        ]);
+        let mut seen = std::collections::HashSet::new();
+        for reading in ["あったほうが", "あ"] {
+            let result = explain(
+                &crate::converter::ConversionContext::new(&dict, None),
+                reading,
+                20,
+            );
+            for p in &result.paths {
+                seen.insert(format!("{:?}", p.priced_by));
+                let in_price = match p.priced_by {
+                    PathOrigin::KanjiVariant | PathOrigin::PartialHiragana => true,
+                    PathOrigin::Viterbi | PathOrigin::Resegment => result.model_paths.len() > 1,
+                    PathOrigin::HiraganaVariant | PathOrigin::Numeric | PathOrigin::Katakana => {
+                        false
+                    }
+                };
+                let carries = p.model_cost.is_some() && in_price;
+                assert_eq!(
+                    p.length_variance_cost.is_some(),
+                    carries,
+                    "{} ({:?} priced by {:?})",
+                    p.surface(),
+                    p.origin,
+                    p.priced_by
+                );
+                assert!(
+                    p.segments
+                        .iter()
+                        .all(|r| r.script_cost.is_some() == carries),
+                    "{}",
+                    p.surface()
+                );
+            }
+            assert_columns_add_up(&result);
+        }
+        assert!(seen.contains("HiraganaVariant"), "{seen:?}");
+    }
+
+    #[test]
+    fn features_in_price_covers_every_price_owner() {
+        use PathOrigin::*;
+        for (by, ran, want) in [
+            (Viterbi, true, true),
+            (Viterbi, false, false),
+            (Resegment, true, true),
+            (Resegment, false, false),
+            (KanjiVariant, false, true),
+            (PartialHiragana, false, true),
+            (HiraganaVariant, true, false),
+            (Numeric, true, false),
+            (Katakana, true, false),
+        ] {
+            assert_eq!(features_in_price(by, ran), want, "{by:?} ran={ran}");
+        }
+    }
+
+    /// Columns are found by surface; another segmentation of the same
+    /// surface (or a different row count) must not borrow them.
+    #[test]
+    fn columns_describe_only_the_segmentation_they_were_made_on() {
+        use crate::converter::viterbi::RichSegment;
+        let seg = |reading: &str, surface: &str| RichSegment {
+            reading: reading.into(),
+            surface: surface.into(),
+            left_id: 0,
+            right_id: 0,
+            word_cost: 0,
+        };
+        let columns = PathColumns {
+            rows: vec![RowColumns::default(); 2],
+            texts: vec![("あい".into(), "愛".into()), ("う".into(), "卯".into())],
+            length_variance_cost: 0,
+        };
+        let same = ScoredPath::new(
+            vec![seg("あい", "愛"), seg("う", "卯")],
+            0,
+            PathOrigin::Viterbi,
+        );
+        let other_cut = ScoredPath::new(
+            vec![seg("あ", "愛"), seg("いう", "卯")],
+            0,
+            PathOrigin::Viterbi,
+        );
+        let fewer = ScoredPath::new(vec![seg("あいう", "愛卯")], 0, PathOrigin::Viterbi);
+        assert!(columns.describes(&same));
+        assert!(!columns.describes(&other_cut));
+        assert!(!columns.describes(&fewer));
     }
 
     #[test]
