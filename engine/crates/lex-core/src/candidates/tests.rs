@@ -336,6 +336,53 @@ fn test_priced_candidates_are_the_production_list() {
     }
 }
 
+/// Stage 3's list is recorded as the stage used it: the surfaces an earlier
+/// stage already listed are still there (`seen` drops them later), in the
+/// order the stage walked them (history-sorted when there is history).
+#[test]
+fn test_diagnostics_record_stage_3_before_deduplication() {
+    let e = |surface: &str, cost: i16| DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: 0,
+        right_id: 0,
+    };
+    let dict = TrieDictionary::from_entries(vec![
+        ("きょう".into(), vec![e("今日", 3000), e("京", 5000)]),
+        ("きょうと".into(), vec![e("京都", 4000)]),
+    ]);
+    let now = now_epoch();
+    let run = |history: Option<&UserHistory>| {
+        let ctx = crate::converter::ConversionContext::new(&dict, None).with_history(history, now);
+        let priced = generate_candidates_priced(&ctx, "きょう", 20);
+        let preds: Vec<(String, String, i16)> = priced
+            .diagnostics
+            .predictions
+            .into_iter()
+            .map(|p| (p.reading, p.surface, p.cost))
+            .collect();
+        (priced.response.surfaces, preds)
+    };
+    let row = |r: &str, s: &str, c: i16| (r.to_string(), s.to_string(), c);
+
+    let (surfaces, preds) = run(None);
+    assert_eq!(
+        preds,
+        [
+            row("きょう", "今日", 3000),
+            row("きょうと", "京都", 4000),
+            row("きょう", "京", 5000),
+        ]
+    );
+    assert!(surfaces.contains(&"今日".to_string()), "{surfaces:?}");
+
+    let mut h = UserHistory::new();
+    h.record(&[("きょうと".into(), "京都".into())]);
+    let (_, preds) = run(Some(&h));
+    assert_eq!(preds[0], row("きょうと", "京都", 4000), "learned first");
+    assert_eq!(preds.len(), 3, "nothing is dropped by dedup");
+}
+
 /// Each price names the stage that set it: an offer that undercuts the
 /// real path's price owns its slot, the model owns the rest.
 #[test]

@@ -328,7 +328,8 @@ struct CommitLine {
     rank: usize,
 }
 
-/// The rank>0 lines of a commit log, with their 0-based line index.
+/// The selection lines of a commit log (rank>0 only, or every rank with
+/// `--all-ranks`), with their 0-based line index.
 struct Selections {
     lines: Vec<(usize, CommitLine)>,
     /// Lines that are not valid UTF-8 JSON of the expected shape — e.g. a
@@ -339,8 +340,9 @@ struct Selections {
 /// Lines before 0-based index `from_line` are read but not parsed; indices
 /// stay absolute. A window starting at the end of the log is empty (no line
 /// written since); one starting past it is refused — a mistyped window must
-/// not measure as "nothing to replay".
-fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> {
+/// not measure as "nothing to replay". `all_ranks` keeps the rank-0 lines
+/// too (the lines where the list already had the chosen surface first).
+fn read_selections(path: &Path, from_line: usize, all_ranks: bool) -> Result<Selections, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut out = Selections {
@@ -372,7 +374,7 @@ fn read_selections(path: &Path, from_line: usize) -> Result<Selections, String> 
             continue;
         }
         match serde_json::from_str::<CommitLine>(line) {
-            Ok(rec) if rec.rank > 0 => out.lines.push((i, rec)),
+            Ok(rec) if all_ranks || rec.rank > 0 => out.lines.push((i, rec)),
             Ok(_) => {}
             Err(_) => out.malformed += 1,
         }
@@ -403,7 +405,7 @@ fn gap_bin(gap: i64) -> usize {
 /// publish more; keep it free of readings and surfaces.
 #[derive(Debug, Serialize)]
 pub struct ReplayReport {
-    /// rank>0 selections replayed.
+    /// rank>0 selections replayed (every selection under `--all-ranks`).
     pub selections: usize,
     /// Present on the first page (rank < PAGE_SIZE).
     pub in_page: usize,
@@ -698,8 +700,8 @@ impl Tally {
     }
 }
 
-/// Replay every rank>0 selection in `log` from 0-based line `from_line`.
-/// Returns the counts and one baseline line per selection (for
+/// Replay every rank>0 selection in `log` from 0-based line `from_line`
+/// (`all_ranks`: every selection, rank 0 included). Returns the counts and one baseline line per selection (for
 /// `--emit-baseline` / `--baseline`). A log with no rank>0 selection is a
 /// valid, all-zero measurement. `verbose` prints per-selection content to
 /// stderr (local inspection only). Every line replays at the one `now`
@@ -708,12 +710,13 @@ pub fn replay(
     ctx: &ConversionContext<'_>,
     log: &Path,
     from_line: usize,
+    all_ranks: bool,
     verbose: bool,
 ) -> Result<(ReplayReport, Vec<BaselineLine>), String> {
     let Selections {
         lines: selections,
         malformed,
-    } = read_selections(log, from_line)?;
+    } = read_selections(log, from_line, all_ranks)?;
 
     let mut tally = Tally::new();
     let mut lines = Vec::with_capacity(selections.len());
@@ -1169,7 +1172,7 @@ absent = ["x"]"#
         content.extend_from_slice(b"{\"t\":3,\"reading\":\"\xe3\x81");
         fs::write(&path, &content).unwrap();
 
-        let sels = read_selections(&path, 0).unwrap();
+        let sels = read_selections(&path, 0, false).unwrap();
         assert_eq!(sels.malformed, 2);
         assert_eq!(sels.lines.len(), 1, "only rank>0 lines are replayed");
         assert_eq!((sels.lines[0].0, sels.lines[0].1.t), (1, 2));
@@ -1180,9 +1183,28 @@ absent = ["x"]"#
             "{\"t\":1,\"reading\":\"あ\",\"surface\":\"亜\",\"rank\":0}\n",
         )
         .unwrap();
-        let sels = read_selections(&path, 0).unwrap();
+        let sels = read_selections(&path, 0, false).unwrap();
         assert!(sels.lines.is_empty());
         assert_eq!(sels.malformed, 0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn all_ranks_keeps_the_rank_zero_lines() {
+        let dir = std::env::temp_dir().join(format!("lexcli-all-ranks-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("commit-log.jsonl");
+        let line = |t: u64, rank: usize| {
+            format!("{{\"t\":{t},\"reading\":\"い\",\"surface\":\"胃\",\"rank\":{rank}}}\n")
+        };
+        fs::write(&path, format!("{}{}{}", line(1, 0), line(2, 3), line(3, 0))).unwrap();
+
+        let idx = |all| -> Vec<usize> {
+            let sels = read_selections(&path, 0, all).unwrap();
+            sels.lines.iter().map(|(i, _)| *i).collect()
+        };
+        assert_eq!(idx(false), [1], "default: rank>0 only");
+        assert_eq!(idx(true), [0, 1, 2], "same window, rank 0 included");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1195,14 +1217,17 @@ absent = ["x"]"#
             |t: u64| format!("{{\"t\":{t},\"reading\":\"い\",\"surface\":\"胃\",\"rank\":1}}\n");
         fs::write(&path, format!("{}not json\n{}{}", sel(1), sel(3), sel(4))).unwrap();
 
-        let sels = read_selections(&path, 2).unwrap();
+        let sels = read_selections(&path, 2, false).unwrap();
         let got: Vec<(usize, u64)> = sels.lines.iter().map(|(i, l)| (*i, l.t)).collect();
         assert_eq!(got, [(2, 3), (3, 4)]);
         assert_eq!(sels.malformed, 0, "skipped lines are not read");
 
-        let sels = read_selections(&path, 4).unwrap();
+        let sels = read_selections(&path, 4, false).unwrap();
         assert!(sels.lines.is_empty(), "a window at EOF is empty");
-        assert!(read_selections(&path, 5).is_err(), "past EOF is refused");
+        assert!(
+            read_selections(&path, 5, false).is_err(),
+            "past EOF is refused"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -57,9 +57,23 @@ pub struct CandidateDiagnostics {
     /// Learned surfaces the history-injection stage added to the list (those
     /// no N-best path had already placed), in list order.
     pub injected: Vec<String>,
+    /// Stage 3's list as it used it: the dictionary's predictions (history
+    /// sorted and cut to `max_results` when there is history), in the order
+    /// the stage walks them, before `seen` removes the surfaces an earlier
+    /// stage listed. Empty for punctuation input.
+    pub predictions: Vec<Prediction>,
     /// Which stage put the list's #1 (`response.surfaces[0]`) there. `None`
     /// for an empty reading.
     pub top_source: Option<TopSource>,
+}
+
+/// One entry of stage 3's prediction list (see
+/// [`CandidateDiagnostics::predictions`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Prediction {
+    pub reading: String,
+    pub surface: String,
+    pub cost: i16,
 }
 
 /// Which stage of the Standard generator *placed* the list's #1 at index 0

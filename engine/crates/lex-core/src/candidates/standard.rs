@@ -7,7 +7,7 @@ use crate::settings::settings;
 
 use super::{
     generate_punctuation_candidates, punctuation_alternatives, CandidateDiagnostics,
-    CandidateResponse, PathPrice, PricedCandidates, TopSource,
+    CandidateResponse, PathPrice, Prediction, PricedCandidates, TopSource,
 };
 
 /// Generate candidates for normal (non-punctuation) input.
@@ -163,6 +163,16 @@ fn generate_normal(
             boost_b.cmp(&boost_a).then(e_a.cost.cmp(&e_b.cost))
         });
         ranked.truncate(max_results);
+    }
+    // What this stage used, in the order it used it, before `seen` drops
+    // what an earlier stage listed.
+    if let Some(d) = diag.as_deref_mut() {
+        d.predictions
+            .extend(ranked.iter().map(|(reading, entry)| Prediction {
+                reading: reading.clone(),
+                surface: entry.surface.clone(),
+                cost: entry.cost,
+            }));
     }
     for (_, entry) in &ranked {
         if !entry.surface.is_empty() && seen.insert(entry.surface.clone()) {
