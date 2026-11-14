@@ -119,12 +119,14 @@ mod tests {
                         cost: 3000,
                         left_id: 100,
                         right_id: 100,
+                        symbol: false,
                     },
                     DictEntry {
                         surface: "京".to_string(),
                         cost: 5000,
                         left_id: 101,
                         right_id: 101,
+                        symbol: false,
                     },
                 ],
             ),
@@ -135,6 +137,7 @@ mod tests {
                     cost: 2000,
                     left_id: 200,
                     right_id: 200,
+                    symbol: false,
                 }],
             ),
         ];
@@ -151,12 +154,14 @@ mod tests {
                         cost: 2000, // lower cost override
                         left_id: 100,
                         right_id: 100,
+                        symbol: false,
                     },
                     DictEntry {
                         surface: "教".to_string(),
                         cost: 4000, // new entry
                         left_id: 102,
                         right_id: 102,
+                        symbol: false,
                     },
                 ],
             ),
@@ -167,6 +172,7 @@ mod tests {
                     cost: 3500,
                     left_id: 103,
                     right_id: 103,
+                    symbol: false,
                 }],
             ),
         ];
@@ -251,12 +257,14 @@ mod tests {
                     cost: 3000,
                     left_id: 200, // 助詞
                     right_id: 200,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "で".to_string(),
                     cost: 3500,
                     left_id: 300, // 助動詞
                     right_id: 300,
+                    symbol: false,
                 },
             ],
         )]));
@@ -278,18 +286,21 @@ mod tests {
                 cost: 5000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             },
             DictEntry {
                 surface: "今日".to_string(),
                 cost: 2000,
                 left_id: 1,
                 right_id: 1,
+                symbol: false,
             },
             DictEntry {
                 surface: "今日".to_string(),
                 cost: 3000,
                 left_id: 2,
                 right_id: 2,
+                symbol: false,
             },
         ];
         let deduped = dedup_entries(entries);
@@ -304,6 +315,7 @@ mod tests {
             cost: 4000,
             left_id: 300,
             right_id: 300,
+            symbol: false,
         };
         let layer = |surfaces: &[&str]| -> Arc<dyn Dictionary> {
             Arc::new(TrieDictionary::from_entries(vec![(

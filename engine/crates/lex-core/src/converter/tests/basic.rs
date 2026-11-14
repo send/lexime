@@ -65,12 +65,14 @@ fn test_convert_with_connection_costs() {
                     cost: 5000,
                     left_id: 10,
                     right_id: 10,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "京".to_string(),
                     cost: 4900,
                     left_id: 20,
                     right_id: 20,
+                    symbol: false,
                 },
             ],
         ),
@@ -81,6 +83,7 @@ fn test_convert_with_connection_costs() {
                 cost: 2000,
                 left_id: 30,
                 right_id: 30,
+                symbol: false,
             }],
         ),
     ];
@@ -124,12 +127,14 @@ fn test_viterbi_tiebreak_deterministic() {
                 cost: 5000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             },
             DictEntry {
                 surface: "阿".to_string(),
                 cost: 5000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             },
         ],
     )];

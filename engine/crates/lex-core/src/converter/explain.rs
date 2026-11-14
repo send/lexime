@@ -1779,6 +1779,7 @@ mod tests {
             cost,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         };
         // 方 is cheap and ほう dear, so the rescue and a Partial offer both
         // price あったほうが; 会った|ほう is a real path a KanjiVariant can
@@ -1862,6 +1863,7 @@ mod tests {
             cost,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         };
         let dict = TrieDictionary::from_entries(vec![
             ("あった".into(), vec![e0("あった", 0), e0("会った", 50)]),

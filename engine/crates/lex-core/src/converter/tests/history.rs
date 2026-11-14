@@ -95,6 +95,7 @@ fn test_viterbi_best_preserved_despite_history_boost() {
                 cost: 3000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -105,36 +106,42 @@ fn test_viterbi_best_preserved_despite_history_boost() {
                     cost: 5000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "木".into(),
                     cost: 5500,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "黄".into(),
                     cost: 6000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "基".into(),
                     cost: 6500,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "樹".into(),
                     cost: 7000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "記".into(),
                     cost: 7500,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -145,6 +152,7 @@ fn test_viterbi_best_preserved_despite_history_boost() {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -154,6 +162,7 @@ fn test_viterbi_best_preserved_despite_history_boost() {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];
@@ -262,6 +271,7 @@ fn learned_number_compound_outprices_stale_learned_surface() {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     };
     let dict = TrieDictionary::from_entries(vec![(
         "にじゅう".into(),

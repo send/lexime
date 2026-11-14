@@ -17,12 +17,14 @@ pub fn test_dict() -> TrieDictionary {
                     cost: 3000,
                     left_id: 100,
                     right_id: 100,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "京".to_string(),
                     cost: 5000,
                     left_id: 101,
                     right_id: 101,
+                    symbol: false,
                 },
             ],
         ),
@@ -33,6 +35,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 200,
                 right_id: 200,
+                symbol: false,
             }],
         ),
         (
@@ -42,6 +45,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 3500,
                 left_id: 300,
                 right_id: 300,
+                symbol: false,
             }],
         ),
         (
@@ -51,6 +55,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 400,
                 right_id: 400,
+                symbol: false,
             }],
         ),
         (
@@ -60,6 +65,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 4500,
                 left_id: 500,
                 right_id: 500,
+                symbol: false,
             }],
         ),
         (
@@ -69,6 +75,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 6000,
                 left_id: 600,
                 right_id: 600,
+                symbol: false,
             }],
         ),
         (
@@ -78,6 +85,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 5000,
                 left_id: 700,
                 right_id: 700,
+                symbol: false,
             }],
         ),
         (
@@ -87,6 +95,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 2500,
                 left_id: 800,
                 right_id: 800,
+                symbol: false,
             }],
         ),
         (
@@ -96,6 +105,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 900,
                 right_id: 900,
+                symbol: false,
             }],
         ),
         (
@@ -105,6 +115,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 3000,
                 left_id: 1000,
                 right_id: 1000,
+                symbol: false,
             }],
         ),
         (
@@ -114,6 +125,7 @@ pub fn test_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 1100,
                 right_id: 1100,
+                symbol: false,
             }],
         ),
     ];
@@ -157,6 +169,7 @@ pub fn entry(surface: &str, cost: i16) -> DictEntry {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     }
 }
 

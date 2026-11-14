@@ -441,6 +441,7 @@ mod tests {
                                 cost: 5000,
                                 left_id: 1,
                                 right_id: 1,
+                                symbol: false,
                             }],
                         )
                     })

@@ -106,12 +106,14 @@ fn test_reorder_candidates() {
             cost: 3000,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         },
         DictEntry {
             surface: "京".into(),
             cost: 5000,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         },
     ];
     let reordered = h.reorder_candidates("きょう", &entries, now_epoch());
@@ -221,18 +223,21 @@ fn test_reorder_candidates_no_boost_preserves_order() {
             cost: 3000,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         },
         DictEntry {
             surface: "京".into(),
             cost: 5000,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         },
         DictEntry {
             surface: "教".into(),
             cost: 6000,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         },
     ];
     let reordered = h.reorder_candidates("きょう", &entries, now_epoch());

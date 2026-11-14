@@ -52,10 +52,10 @@ impl AsRef<[u8]> for OwnedMmap {
 unsafe impl StableBacking for OwnedMmap {}
 
 pub(super) const MAGIC: &[u8; 4] = b"LXDX";
-pub(super) const VERSION: u8 = 4;
+pub(super) const VERSION: u8 = 5;
 // magic(4) + version(1) + reserved(3) + trie_len(4) + pool_len(4) + entries_len(4) + reading_count(4) = 24
 pub(super) const HEADER_SIZE: usize = 24;
-const ENTRY_SIZE: usize = 12; // str_offset(4) + str_len(2) + cost(2) + left_id(2) + right_id(2)
+const ENTRY_SIZE: usize = 13; // str_offset(4) + str_len(2) + cost(2) + left_id(2) + right_id(2) + symbol(1)
 pub(super) const SLOT_SIZE: usize = 6; // entry_offset(4) + count(2)
 
 pub(super) enum TrieStore {
@@ -142,6 +142,7 @@ impl ValuesStore {
             let cost = i16::from_ne_bytes(data[off + 6..off + 8].try_into().unwrap());
             let left_id = u16::from_ne_bytes(data[off + 8..off + 10].try_into().unwrap());
             let right_id = u16::from_ne_bytes(data[off + 10..off + 12].try_into().unwrap());
+            let symbol = data[off + 12] != 0;
 
             let surface = if str_offset + str_len <= pool.len() {
                 String::from_utf8_lossy(&pool[str_offset..str_offset + str_len]).into_owned()
@@ -154,6 +155,7 @@ impl ValuesStore {
                 cost,
                 left_id,
                 right_id,
+                symbol,
             });
         }
 
@@ -204,6 +206,7 @@ impl TrieDictionary {
                 entries_data.extend_from_slice(&e.cost.to_ne_bytes());
                 entries_data.extend_from_slice(&e.left_id.to_ne_bytes());
                 entries_data.extend_from_slice(&e.right_id.to_ne_bytes());
+                entries_data.push(u8::from(e.symbol));
             }
 
             reading_index.extend_from_slice(&entry_offset.to_ne_bytes());

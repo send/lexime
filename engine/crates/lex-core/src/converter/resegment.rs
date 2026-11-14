@@ -158,6 +158,7 @@ mod tests {
                     cost: 3000,
                     left_id: 100,
                     right_id: 100,
+                    symbol: false,
                 }],
             ),
             (
@@ -167,6 +168,7 @@ mod tests {
                     cost: 4000,
                     left_id: 102,
                     right_id: 102,
+                    symbol: false,
                 }],
             ),
             (
@@ -176,6 +178,7 @@ mod tests {
                     cost: 2000,
                     left_id: 200,
                     right_id: 200,
+                    symbol: false,
                 }],
             ),
             (
@@ -185,6 +188,7 @@ mod tests {
                     cost: 3500,
                     left_id: 300,
                     right_id: 300,
+                    symbol: false,
                 }],
             ),
             (
@@ -194,6 +198,7 @@ mod tests {
                     cost: 4000,
                     left_id: 400,
                     right_id: 400,
+                    symbol: false,
                 }],
             ),
         ];
