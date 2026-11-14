@@ -8,9 +8,9 @@
 # All entries use the 名詞,一般 POS id, resolved from the pinned id.def at
 # compile time (DEFAULT_POS_TAG in extras.rs — #279 made this dynamic after
 # a pin bump renumbered the previously hardcoded id, see #273). For proper
-# nouns that POS is a known, deferred inaccuracy (CLAUDE.md 設計哲学 lists it
-# as an exception with its trigger); do not add non-noun words here — the
-# trigger for per-entry POS (a tag name per line, resolved from id.def).
+# nouns that POS is a known, deferred inaccuracy. CLAUDE.md 設計哲学 lists it
+# as an exception, with the trigger and the fix form; check it before adding
+# a word that is not a noun.
 
 # --- 数学 / CS ---
 べきとう	冪等
