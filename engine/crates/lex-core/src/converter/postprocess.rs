@@ -264,55 +264,61 @@ pub(super) fn group_segments(segments: &mut Vec<RichSegment>, conn: &ConnectionM
     if segments.len() <= 1 {
         return;
     }
+    let spans = group_spans(segments, conn);
+    let mut morphemes = std::mem::take(segments).into_iter();
+    *segments = spans
+        .into_iter()
+        .map(|span| {
+            // A group is its first morpheme with the rest's reading and
+            // surface appended and the last one's right id.
+            let mut group = morphemes.next().expect("spans cover the segments");
+            for seg in morphemes.by_ref().take(span.len() - 1) {
+                group.reading.push_str(&seg.reading);
+                group.surface.push_str(&seg.surface);
+                group.right_id = seg.right_id;
+            }
+            group
+        })
+        .collect();
+}
 
-    let mut grouped: Vec<RichSegment> = Vec::new();
-    let mut current: Option<RichSegment> = None;
+/// The groups [`group_segments`] forms, as ranges of `segments` (the one
+/// definition of the grouping; explain sums per-morpheme costs over them).
+pub(super) fn group_spans(
+    segments: &[RichSegment],
+    conn: &ConnectionMatrix,
+) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut current: Option<usize> = None; // start of the open group
     let mut pending_prefix = false;
+    let close = |spans: &mut Vec<std::ops::Range<usize>>, current: &mut Option<usize>, end| {
+        if let Some(start) = current.take() {
+            spans.push(start..end);
+        }
+    };
 
-    for seg in segments.drain(..) {
+    for (i, seg) in segments.iter().enumerate() {
         let is_fw = conn.is_function_word(seg.left_id);
         let attach_to_prev = is_fw || conn.is_suffix(seg.left_id); // FunctionWord, Suffix, or Counter
 
         if attach_to_prev {
-            // Merge into current group if one exists
-            if let Some(cur) = current.as_mut() {
-                cur.reading.push_str(&seg.reading);
-                cur.surface.push_str(&seg.surface);
-                cur.right_id = seg.right_id;
-            } else {
-                // No preceding group — standalone
-                grouped.push(seg);
+            // Joins the open group; with none, stands alone.
+            if current.is_none() {
+                spans.push(i..i + 1);
             }
         } else if conn.is_prefix(seg.left_id) {
-            // Prefix: flush current group, start new one that will absorb next CW
-            if let Some(cur) = current.take() {
-                grouped.push(cur);
-            }
-            current = Some(seg);
+            // Prefix: flush current group, start one that will absorb the next CW
+            close(&mut spans, &mut current, i);
+            current = Some(i);
             pending_prefix = true;
+        } else if pending_prefix {
+            // ContentWord joins the pending prefix group
+            pending_prefix = false;
         } else {
-            // ContentWord
-            if pending_prefix {
-                // Merge CW into the pending prefix group
-                if let Some(cur) = current.as_mut() {
-                    cur.reading.push_str(&seg.reading);
-                    cur.surface.push_str(&seg.surface);
-                    cur.right_id = seg.right_id;
-                }
-                pending_prefix = false;
-            } else {
-                // New group
-                if let Some(cur) = current.take() {
-                    grouped.push(cur);
-                }
-                current = Some(seg);
-            }
+            close(&mut spans, &mut current, i);
+            current = Some(i);
         }
     }
-
-    if let Some(cur) = current {
-        grouped.push(cur);
-    }
-
-    *segments = grouped;
+    close(&mut spans, &mut current, segments.len());
+    spans
 }

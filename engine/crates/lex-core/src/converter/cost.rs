@@ -76,27 +76,63 @@ impl<'a> DefaultCostFunction<'a> {
 /// penalty (halved for function words). The single definition Viterbi and
 /// [`score_path`] both use.
 pub(crate) fn node_cost(word_cost: i16, left_id: u16, conn: Option<&ConnectionMatrix>) -> i64 {
+    let (word, penalty) = node_terms(word_cost, left_id, conn);
+    word + penalty
+}
+
+/// The two terms of [`node_cost`]: the dictionary cost and the segment
+/// penalty (halved for function words).
+pub(crate) fn node_terms(
+    word_cost: i16,
+    left_id: u16,
+    conn: Option<&ConnectionMatrix>,
+) -> (i64, i64) {
     let seg_penalty = settings().cost.segment_penalty;
     let is_fw = conn.is_some_and(|c| c.is_function_word(left_id));
     let penalty = if is_fw { seg_penalty / 2 } else { seg_penalty };
-    word_cost as i64 + penalty
+    (word_cost as i64, penalty)
+}
+
+/// What one segment adds to [`score_path`]: its node's two terms and the
+/// transition into it (from BOS for the first segment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SegmentTerms {
+    pub word_cost: i64,
+    pub segment_penalty: i64,
+    pub transition_in: i64,
+}
+
+/// The per-segment terms of [`score_path`], in path order. With
+/// [`eos_term`] they are everything it sums.
+pub(crate) fn segment_terms<'a>(
+    segments: &'a [RichSegment],
+    conn: Option<&'a ConnectionMatrix>,
+) -> impl Iterator<Item = SegmentTerms> + 'a {
+    segments.iter().enumerate().map(move |(i, s)| {
+        let (word_cost, segment_penalty) = node_terms(s.word_cost, s.left_id, conn);
+        let prev_right = i.checked_sub(1).map_or(0, |j| segments[j].right_id);
+        SegmentTerms {
+            word_cost,
+            segment_penalty,
+            transition_in: conn_cost(conn, prev_right, s.left_id),
+        }
+    })
+}
+
+/// The transition from the last segment to EOS (0 for an empty path).
+pub(crate) fn eos_term(segments: &[RichSegment], conn: Option<&ConnectionMatrix>) -> i64 {
+    segments
+        .last()
+        .map_or(0, |last| conn_cost(conn, last.right_id, 0))
 }
 
 /// Price a segment sequence exactly as `DefaultCostFunction` prices the same
 /// path in Viterbi: node costs + BOS + transitions + EOS.
 pub(crate) fn score_path(segments: &[RichSegment], conn: Option<&ConnectionMatrix>) -> i64 {
-    let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
-        return 0;
-    };
-    let nodes: i64 = segments
-        .iter()
-        .map(|s| node_cost(s.word_cost, s.left_id, conn))
-        .sum();
-    let transitions: i64 = segments
-        .windows(2)
-        .map(|w| conn_cost(conn, w[0].right_id, w[1].left_id))
-        .sum();
-    nodes + conn_cost(conn, 0, first.left_id) + transitions + conn_cost(conn, last.right_id, 0)
+    segment_terms(segments, conn)
+        .map(|t| t.word_cost + t.segment_penalty + t.transition_in)
+        .sum::<i64>()
+        + eos_term(segments, conn)
 }
 
 impl CostFunction for DefaultCostFunction<'_> {

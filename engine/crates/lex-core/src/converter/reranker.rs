@@ -4,7 +4,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
-use super::features::{FeatureConfig, FeatureWeights};
+use super::features::{FeatureConfig, FeatureWeights, SegmentRerank};
 use super::viterbi::ScoredPath;
 
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
@@ -41,6 +41,22 @@ impl<'a> FeaturePricer<'a> {
     /// Feature adjustment rerank adds to `path`'s Viterbi cost.
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
         self.fcfg.extract(path).weighted_cost(&self.weights)
+    }
+
+    /// What [`Self::adjustment`] is made of: each segment's amounts, in path
+    /// order, and the path-level length-variance term. Their sum is the
+    /// adjustment (the script weight is fixed at 100, so splitting the
+    /// script sum by segment is exact).
+    pub fn parts(&self, path: &ScoredPath) -> (Vec<SegmentRerank>, i64) {
+        let segments = self
+            .fcfg
+            .segment_features(path)
+            .map(|f| self.weights.segment(&f))
+            .collect();
+        (
+            segments,
+            self.fcfg.length_variance_cost(path, &self.weights),
+        )
     }
 }
 
