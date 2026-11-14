@@ -242,6 +242,37 @@ fn test_reorder_candidates_no_boost_preserves_order() {
     assert_eq!(reordered[2].surface, "教");
 }
 
+/// Q34: with a history that has learned something else for the reading,
+/// the entries it has not learned (boost 0) keep the order they came in —
+/// the order is the input's, not the cost's (the input here is not sorted by
+/// cost), so a caller's partition of the list (words before symbols) survives.
+#[test]
+fn test_reorder_candidates_keeps_input_order_among_unlearned() {
+    let entry = |surface: &str, cost: i16| DictEntry {
+        surface: surface.into(),
+        cost,
+        left_id: 0,
+        right_id: 0,
+    };
+    let mut h = UserHistory::new();
+    h.record(&[("きょう".into(), "教".into())]);
+    let now = now_epoch();
+    let entries = [
+        entry("共", 9000),
+        entry("今日", 100),
+        entry("教", 6000),
+        entry("京", 5000),
+        entry("＊", 1),
+    ];
+    assert!(h.unigram_boost("きょう", "教", now) > 0);
+    let surfaces: Vec<_> = h
+        .reorder_candidates("きょう", &entries, now)
+        .into_iter()
+        .map(|e| e.surface)
+        .collect();
+    assert_eq!(surfaces, ["教", "共", "今日", "京", "＊"]);
+}
+
 #[test]
 fn test_learned_surfaces() {
     let mut h = UserHistory::new();
