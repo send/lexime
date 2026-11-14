@@ -246,6 +246,7 @@ mod tests {
                 cost: 5000,
                 left_id: POS_UNRESOLVED,
                 right_id: POS_UNRESOLVED,
+                symbol: false,
             }],
         )]);
 

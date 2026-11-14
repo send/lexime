@@ -175,6 +175,7 @@ pub(super) fn parse_dict_files(
                 cost: parsed.cost,
                 left_id: parsed.left_id,
                 right_id: parsed.right_id,
+                symbol: false,
             });
         }
     }

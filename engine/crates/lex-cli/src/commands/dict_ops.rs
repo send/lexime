@@ -48,18 +48,55 @@ pub fn compile(
     id_def: Option<&str>,
     extra_sources: &[(String, String)],
 ) {
-    let dict_source = dict_source::from_name(source_name).unwrap_or_else(|| {
-        eprintln!(
-            "Error: unknown source '{source_name}' (available: {})",
+    let entries = die!(
+        build_entries(source_name, input_dir, id_def, extra_sources),
+        "Error: {}"
+    );
+
+    let reading_count = entries.len();
+    let entry_count: usize = entries.values().map(|v| v.len()).sum();
+
+    eprintln!("Building trie from {reading_count} readings ({entry_count} entries)...");
+
+    let dict = TrieDictionary::from_entries(entries);
+    die!(
+        dict.save(Path::new(output_file)),
+        "Error writing dictionary: {}"
+    );
+
+    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "Wrote {output_file} ({:.1} MB)",
+        file_size as f64 / 1_048_576.0
+    );
+}
+
+type EntryMap = HashMap<String, Vec<DictEntry>>;
+
+/// Parse every source and assemble the entries `compile` writes.
+///
+/// Lattice sources (the primary source, then each extra source's
+/// non-symbol entries) merge with the cheapest-wins rule. Symbol entries
+/// (`DictEntry::symbol`, set by the symbols source) never go through that
+/// rule: they are added afterwards, and a symbol whose (reading, surface)
+/// is also a lattice-source entry is an error — so the result does not
+/// depend on the order of `--extra-source`.
+pub(crate) fn build_entries(
+    source_name: &str,
+    input_dir: &str,
+    id_def: Option<&str>,
+    extra_sources: &[(String, String)],
+) -> Result<EntryMap, String> {
+    let dict_source = dict_source::from_name(source_name).ok_or_else(|| {
+        format!(
+            "unknown source '{source_name}' (available: {})",
             dict_source::available_sources()
-        );
-        process::exit(1);
-    });
+        )
+    })?;
 
     let input_path = Path::new(input_dir);
     if !input_path.is_dir() {
-        eprintln!("Error: {input_dir} is not a directory");
-        process::exit(1);
+        return Err(format!("{input_dir} is not a directory"));
     }
 
     // id.def drives both morpheme-role cost offsets and tag-based POS
@@ -76,50 +113,46 @@ pub fn compile(
     });
 
     eprintln!("Source: {source_name}");
-    let mut entries = die!(
-        dict_source.parse_dir(input_path),
-        "Error parsing dictionary: {}"
-    );
-    die!(
-        dict_source.resolve_pos_ids(&mut entries, id_def_path.as_deref()),
-        "Error resolving POS ids: {}"
-    );
+    let mut entries = dict_source
+        .parse_dir(input_path)
+        .map_err(|e| format!("parsing dictionary: {e}"))?;
+    dict_source
+        .resolve_pos_ids(&mut entries, id_def_path.as_deref())
+        .map_err(|e| format!("resolving POS ids: {e}"))?;
+    let mut symbols = take_symbols(&mut entries);
 
     // Parse extra sources up front, but defer merging until after id.def
     // adjustments below — extras carry hand-tuned costs that must not be
     // rewritten by role-based offsets.
-    let mut extras: Vec<(String, HashMap<String, Vec<DictEntry>>)> = Vec::new();
+    let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
-        let extra_src = dict_source::from_name(extra_name).unwrap_or_else(|| {
-            eprintln!(
-                "Error: unknown extra source '{extra_name}' (available: {})",
+        let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {
+            format!(
+                "unknown extra source '{extra_name}' (available: {})",
                 dict_source::available_sources()
-            );
-            process::exit(1);
-        });
+            )
+        })?;
         let extra_path = Path::new(extra_dir);
         if !extra_path.is_dir() {
-            eprintln!("Error: extra input {extra_dir} is not a directory");
-            process::exit(1);
+            return Err(format!("extra input {extra_dir} is not a directory"));
         }
         eprintln!("Extra source: {extra_name}");
-        let mut parsed = die!(
-            extra_src.parse_dir(extra_path),
-            "Error parsing extra dictionary: {}"
-        );
-        die!(
-            extra_src.resolve_pos_ids(&mut parsed, id_def_path.as_deref()),
-            "Error resolving POS ids for '{extra_name}': {}"
-        );
+        let mut parsed = extra_src
+            .parse_dir(extra_path)
+            .map_err(|e| format!("parsing extra dictionary: {e}"))?;
+        extra_src
+            .resolve_pos_ids(&mut parsed, id_def_path.as_deref())
+            .map_err(|e| format!("resolving POS ids for '{extra_name}': {e}"))?;
+        for (reading, list) in take_symbols(&mut parsed) {
+            symbols.entry(reading).or_default().extend(list);
+        }
         extras.push((extra_name.clone(), parsed));
     }
 
     // Apply compile-time cost offsets based on morpheme roles.
     if let Some(id_def_path) = &id_def_path {
-        let roles = die!(
-            pos_map::morpheme_roles(id_def_path),
-            "Error loading morpheme roles: {}"
-        );
+        let roles = pos_map::morpheme_roles(id_def_path)
+            .map_err(|e| format!("loading morpheme roles: {e}"))?;
         let mut adjusted = 0usize;
         for entry_list in entries.values_mut() {
             for entry in entry_list.iter_mut() {
@@ -177,22 +210,56 @@ pub fn compile(
         );
     }
 
-    let reading_count = entries.len();
-    let entry_count: usize = entries.values().map(|v| v.len()).sum();
+    let added = add_symbols(&mut entries, symbols)?;
+    eprintln!("Added {added} symbol entries (outside the lattice)");
 
-    eprintln!("Building trie from {reading_count} readings ({entry_count} entries)...");
+    Ok(entries)
+}
 
-    let dict = TrieDictionary::from_entries(entries);
-    die!(
-        dict.save(Path::new(output_file)),
-        "Error writing dictionary: {}"
-    );
+/// Move the symbol entries out of `entries` (dropping readings left empty).
+fn take_symbols(entries: &mut EntryMap) -> EntryMap {
+    let mut symbols = EntryMap::new();
+    entries.retain(|reading, list| {
+        let (syms, words): (Vec<_>, Vec<_>) = list.drain(..).partition(|e| e.symbol);
+        if !syms.is_empty() {
+            symbols.insert(reading.clone(), syms);
+        }
+        *list = words;
+        !list.is_empty()
+    });
+    symbols
+}
 
-    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "Wrote {output_file} ({:.1} MB)",
-        file_size as f64 / 1_048_576.0
-    );
+/// Add symbol entries to the merged lattice-source entries. A symbol whose
+/// (reading, surface) is already present — in a lattice source or earlier in
+/// the symbols — is an error naming every such pair: a symbol never
+/// overrides or shadows a lattice word, and nothing is dropped silently.
+fn add_symbols(entries: &mut EntryMap, symbols: EntryMap) -> Result<usize, String> {
+    let mut duplicates: Vec<(String, String)> = Vec::new();
+    let mut added = 0usize;
+    for (reading, list) in symbols {
+        let slot = entries.entry(reading.clone()).or_default();
+        for entry in list {
+            if slot.iter().any(|e| e.surface == entry.surface) {
+                duplicates.push((reading.clone(), entry.surface));
+            } else {
+                slot.push(entry);
+                added += 1;
+            }
+        }
+    }
+    if duplicates.is_empty() {
+        return Ok(added);
+    }
+    duplicates.sort();
+    let pairs: Vec<String> = duplicates
+        .iter()
+        .map(|(r, s)| format!("({r}, {s})"))
+        .collect();
+    Err(format!(
+        "symbol (reading, surface) already in a lattice source or repeated in symbols — remove the symbols row: {}",
+        pairs.join(", ")
+    ))
 }
 
 pub fn compile_conn(input_txt: &str, output_file: &str, id_def: Option<&str>) {
@@ -533,5 +600,223 @@ pub fn prefix(dict_file: &str, query: &str) {
     for r in &results {
         println!("{} ({} entries):", r.reading, r.entries.len());
         print_entries(&r.entries);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dict_source::from_name;
+
+    const ID_DEF: &str = "0 BOS/EOS,*,*,*,*,*,*\n1 名詞,一般,*,*,*,*,*\n2 記号,一般,*,*,*,*,*\n";
+
+    /// Synthetic mozc / symbols / extras input dirs under a fresh temp dir.
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        /// `mozc` rows are `reading\tsurface\tcost` (POS id 1), `symbols`
+        /// rows `reading\tsurface\ttsv_cost` (POS id 2), `extras` rows are
+        /// the extras TSV format.
+        fn new(name: &str, mozc: &[&str], symbols: &[&str], extras: &[&str]) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("lexime_test_compile_{name}_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            for d in ["mozc", "symbols", "extras"] {
+                fs::create_dir_all(root.join(d)).unwrap();
+            }
+            let to_mozc = |row: &&str, id: u16| {
+                let f: Vec<&str> = row.split('\t').collect();
+                format!("{}\t{id}\t{id}\t{}\t{}\n", f[0], f[2], f[1])
+            };
+            let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 1)).collect();
+            let symbols_txt: String = symbols.iter().map(|r| to_mozc(r, 2)).collect();
+            let extras_txt: String = extras.iter().map(|r| format!("{r}\n")).collect();
+            fs::write(root.join("mozc/dictionary00.txt"), mozc_txt).unwrap();
+            fs::write(root.join("mozc/id.def"), ID_DEF).unwrap();
+            fs::write(root.join("symbols/symbols.tsv"), symbols_txt).unwrap();
+            fs::write(root.join("extras/it.tsv"), extras_txt).unwrap();
+            Self { root }
+        }
+
+        fn dir(&self, d: &str) -> String {
+            self.root.join(d).to_string_lossy().into_owned()
+        }
+
+        fn build(&self, symbols_first: bool) -> Result<EntryMap, String> {
+            let symbols = ("symbols".to_string(), self.dir("symbols"));
+            let extras = ("extras".to_string(), self.dir("extras"));
+            let order = if symbols_first {
+                [symbols, extras]
+            } else {
+                [extras, symbols]
+            };
+            build_entries("mozc", &self.dir("mozc"), None, &order)
+        }
+
+        fn dict(&self, symbols_first: bool) -> TrieDictionary {
+            TrieDictionary::from_entries(self.build(symbols_first).unwrap())
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn assert_duplicate_err(fx: &Fixture, pair: &str) {
+        for symbols_first in [true, false] {
+            let err = fx.build(symbols_first).unwrap_err();
+            assert!(
+                err.contains(pair),
+                "symbols_first={symbols_first}: error must name {pair}: {err}"
+            );
+        }
+    }
+
+    /// T11: a symbols row equal to a mozc or an extras (reading, surface) is
+    /// a build error naming the pair, not a silent cheapest-wins merge.
+    #[test]
+    fn symbol_duplicating_lattice_source_is_err() {
+        let fx = Fixture::new(
+            "dup_mozc",
+            &["ぱい\tπ\t4898", "ぱい\tパイ\t3000"],
+            &["ぱい\tπ\t10000", "ぱい\tΠ\t10000"],
+            &[],
+        );
+        assert_duplicate_err(&fx, "(ぱい, π)");
+
+        let fx = Fixture::new(
+            "dup_extras",
+            &["ほし\t星\t3000"],
+            &["ほし\t★\t5000"],
+            &["ほし\t★\t9000"],
+        );
+        assert_duplicate_err(&fx, "(ほし, ★)");
+    }
+
+    /// T13 (second half): the duplicate is an error whether the symbol's
+    /// compiled cost (its row index) is below or above the Mozc entry's.
+    #[test]
+    fn symbol_duplicate_err_regardless_of_cost() {
+        // symbol cost 0 < mozc 5000
+        let fx = Fixture::new("dup_lower", &["ぱい\tπ\t5000"], &["ぱい\tπ\t1"], &[]);
+        assert_duplicate_err(&fx, "(ぱい, π)");
+        // symbol cost 0 > mozc -500
+        let fx = Fixture::new("dup_higher", &["ぱい\tπ\t-500"], &["ぱい\tπ\t1"], &[]);
+        assert_duplicate_err(&fx, "(ぱい, π)");
+    }
+
+    /// T13: swapping `--extra-source` order yields the same dictionary bytes.
+    /// The symbol ★ (cost 0) ties the extras word 干し (cost 0) on ほし, so
+    /// merging symbols in CLI order would change the entry order.
+    #[test]
+    fn extra_source_order_does_not_change_dict() {
+        let fx = Fixture::new(
+            "order",
+            &["ほし\t星\t3000", "いち\t一\t2000"],
+            &["ほし\t★\t5000", "ほし\t☆\t5000", "まる\t○\t5000"],
+            &["ほし\t干し\t0", "いち\t壱\t1000"],
+        );
+        let a = fx.dict(true).to_bytes().unwrap();
+        let b = fx.dict(false).to_bytes().unwrap();
+        assert!(a == b, "dict bytes depend on --extra-source order");
+    }
+
+    /// T-B1: a symbol's cost is its row index among same-reading rows (not the
+    /// TSV cost column), and `lookup` returns them in row order.
+    #[test]
+    fn symbol_cost_is_row_order() {
+        let fx = Fixture::new(
+            "row_order",
+            &["しかく\t四角\t3000"],
+            &[
+                "ほし\t★\t9000",
+                "ほし\t☆\t5000",
+                "しかく\t□\t7000",
+                "ほし\t✪\t10",
+            ],
+            &[],
+        );
+        let dict = fx.dict(true);
+        let hoshi: Vec<(String, i16)> = dict
+            .lookup("ほし")
+            .into_iter()
+            .map(|e| (e.surface, e.cost))
+            .collect();
+        assert_eq!(
+            hoshi,
+            vec![
+                ("★".to_string(), 0),
+                ("☆".to_string(), 1),
+                ("✪".to_string(), 2)
+            ]
+        );
+    }
+
+    /// Only the symbols source's entries carry the flag, and it survives the
+    /// v5 file round-trip.
+    #[test]
+    fn only_symbols_rows_are_flagged() {
+        let fx = Fixture::new(
+            "flag",
+            &["ぱい\tパイ\t3000"],
+            &["ぱい\tΠ\t10000"],
+            &["ぱい\t牌\t6000"],
+        );
+        let bytes = fx.dict(true).to_bytes().unwrap();
+        let dict = TrieDictionary::from_bytes(&bytes).unwrap();
+        let mut flags: Vec<(String, bool)> = dict
+            .lookup("ぱい")
+            .into_iter()
+            .map(|e| (e.surface, e.symbol))
+            .collect();
+        flags.sort();
+        assert_eq!(
+            flags,
+            vec![
+                ("Π".to_string(), true),
+                ("パイ".to_string(), false),
+                ("牌".to_string(), false),
+            ]
+        );
+    }
+
+    /// T12: the bundled symbols TSV duplicates no (reading, surface) of the
+    /// pinned mozc-raw or the bundled extras — the same check `mise run dict`
+    /// (the accuracy job's build) enforces. Needs `engine/data/mozc-raw`
+    /// (`mise run fetch-dict-mozc`); run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn bundled_symbols_do_not_duplicate_pinned_sources() {
+        let mozc_raw = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mozc-raw");
+        if !mozc_raw.join("id.def").exists() {
+            eprintln!("skipping: mozc-raw not found at {mozc_raw:?}");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "lexime_test_bundled_symbols_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let mut extra_sources = Vec::new();
+        for name in ["symbols", "extras"] {
+            let dir = root.join(name);
+            from_name(name).unwrap().fetch(&dir).unwrap();
+            extra_sources.push((name.to_string(), dir.to_string_lossy().into_owned()));
+        }
+        let id_def = mozc_raw.join("id.def");
+        let result = build_entries(
+            "mozc",
+            &mozc_raw.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &extra_sources,
+        );
+        fs::remove_dir_all(&root).ok();
+        let entries = result.unwrap();
+        let symbols = entries.values().flatten().filter(|e| e.symbol).count();
+        assert_eq!(symbols, 155, "bundled symbol entries");
     }
 }

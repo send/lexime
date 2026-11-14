@@ -1910,6 +1910,7 @@ mod tests {
             cost,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         };
         let mut entries: Vec<DictEntry> = (0..12)
             .map(|i| e(format!("カナヤ{}", "ア".repeat(i)), (i as i16) * 10))

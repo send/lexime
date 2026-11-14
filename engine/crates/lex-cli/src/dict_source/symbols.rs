@@ -10,6 +10,8 @@ use lex_core::dict::DictEntry;
 /// Bundled TSV of Greek letters and common math symbols.
 ///
 /// Format matches Mozc TSV: `reading\tleft_id\tright_id\tcost\tsurface`.
+/// Symbol entries live outside the lattice (see [`DictEntry::symbol`]); the
+/// cost column is not used — see [`SymbolsSource::parse_dir`].
 const SYMBOLS_TSV: &str = include_str!("symbols.tsv");
 
 const SYMBOLS_FILE: &str = "symbols.tsv";
@@ -22,31 +24,53 @@ const SYMBOLS_FILE: &str = "symbols.tsv";
 pub struct SymbolsSource;
 
 impl DictSource for SymbolsSource {
+    /// Every entry is a symbol entry (`DictEntry::symbol`), and its cost is
+    /// its row index among the rows with the same reading, in file order
+    /// (0, 1, 2, …). The TSV cost column must still parse (the format is the
+    /// Mozc 5-column one) but its value is not used.
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        parse_dict_files(
+        let mut entries = parse_dict_files(
             dir,
             SYMBOLS_FILE,
             |name| name == SYMBOLS_FILE,
             '\t',
             |fields| {
                 if fields.len() < 5 {
-                    return None;
+                    return Ok(None);
                 }
                 let reading = fields[0];
-                let (left_id, right_id, cost) = parse_id_cost(fields)?;
+                let Some((left_id, right_id, _unused_cost)) = parse_id_cost(fields) else {
+                    return Ok(None);
+                };
                 let surface = fields[4];
-                if !is_hiragana(reading) {
-                    return None;
+                if surface.is_empty() {
+                    return Err(format!("empty surface for reading {reading:?}"));
                 }
-                Some(ParsedLine {
+                if !is_hiragana(reading) {
+                    return Ok(None);
+                }
+                Ok(Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
                     left_id,
                     right_id,
-                    cost,
-                })
+                    cost: 0,
+                }))
             },
-        )
+        )?;
+        // `parse_dict_files` pushes rows in file order, so the index within
+        // each reading's list is the row order.
+        for (reading, list) in &mut entries {
+            for (row, entry) in list.iter_mut().enumerate() {
+                entry.cost = i16::try_from(row).map_err(|_| {
+                    DictSourceError::Parse(format!(
+                        "{SYMBOLS_FILE}: too many rows for reading {reading:?}"
+                    ))
+                })?;
+                entry.symbol = true;
+            }
+        }
+        Ok(entries)
     }
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
@@ -101,5 +125,22 @@ mod tests {
         }
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_surface_is_err_with_line() {
+        let dir =
+            std::env::temp_dir().join(format!("lexime_test_symbols_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(SYMBOLS_FILE),
+            "# header\nほし\t2643\t2643\t5000\t★\nまる\t2643\t2643\t5000\t\n",
+        )
+        .unwrap();
+        let err = SymbolsSource.parse_dir(&dir).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("symbols.tsv:3"), "{err}");
+        assert!(err.contains("empty surface"), "{err}");
     }
 }

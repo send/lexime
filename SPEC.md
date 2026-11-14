@@ -100,9 +100,10 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 
 ### 辞書データ
 
-Mozc 辞書のみを使用。ファイル名は `lexime.dict` / `lexime.conn`。
+辞書は 3 ソースを `dictool compile` で 1 つの `lexime.dict` にまとめる。ファイル名は `lexime.dict` / `lexime.conn`。
 
-- **辞書**: Mozc TSV → `TrieDictionary`（bincode シリアライズ、マジック `LXDC`、約 49MB）
+- **ソース**: Mozc（system 辞書、pin 固定）・extras（lexime 同梱の curated 語彙）・symbols（lexime 同梱の記号）。lattice ソース（Mozc → extras）は同じ (reading, surface) で cost の小さい方を採ってマージする。symbols はこのマージに通さず後から足し、lattice ソースと同じ (reading, surface) を持つ行はビルドエラー（`--extra-source` の順序に依らない）
+- **辞書**: `TrieDictionary`（double-array trie + 文字列プール + エントリ表、マジック `LXDX`、版 5、約 49MB）。エントリごとに記号フラグ（symbols ソース由来か — ソースだけで判定し POS は見ない）を持つ。記号エントリの cost は同じ読みの TSV 行順の index（0, 1, 2, …）。版 5 以外のファイルは読まずエラー
 - **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）。V3 フォーマットでは POS ロールメタデータ（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）を埋め込み、文節グルーピングに使用
 - POS ID ペアの遷移コストを O(1) で参照
 
@@ -360,7 +361,8 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 
 - `Dictionary::common_prefix_search` で辞書の Trie を効率的に走査
 - 各位置から始まる全てのエントリをノードとして追加
-- **接続性保証**: 1 文字マッチがない位置にはコスト 10,000 の未知語フォールバックを追加
+- 記号エントリ（辞書の記号フラグが立つもの）はノードにしない
+- **接続性保証**: 1 文字マッチがない位置にはコスト 10,000 の未知語フォールバックを追加。記号エントリは 1 文字マッチに数えない（記号エントリが無いのと同じ連結性）
 
 ### Viterbi N-best 探索 + 後処理
 
