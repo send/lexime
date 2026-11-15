@@ -79,8 +79,9 @@ type EntryMap = HashMap<String, Vec<DictEntry>>;
 /// non-symbol entries) merge with the cheapest-wins rule. Symbol entries
 /// (`DictEntry::symbol`, set by the symbols source) never go through that
 /// rule: they are added afterwards, and a symbol whose (reading, surface)
-/// is also a lattice-source entry is an error — so the result does not
-/// depend on the order of `--extra-source`.
+/// is also a lattice-source entry is an error — so symbols versus lattice
+/// words do not depend on the order of `--extra-source`. Among the symbols
+/// of one reading, row order is arrival order (source order, then file order).
 pub(crate) fn build_entries(
     source_name: &str,
     input_dir: &str,
@@ -648,8 +649,9 @@ mod tests {
 
     impl Fixture {
         /// `mozc` rows are `reading\tsurface\tcost` (POS id 1), `symbols`
-        /// rows `reading\tsurface\ttsv_cost` (POS id 2), `extras` rows are
-        /// the extras TSV format.
+        /// rows `reading\tsurface\ttsv_cost` (the same POS id 1: the symbol
+        /// flag comes from the source, so nothing may tell the two apart by
+        /// POS), `extras` rows are the extras TSV format.
         fn new(name: &str, mozc: &[&str], symbols: &[&str], extras: &[&str]) -> Self {
             let root = std::env::temp_dir()
                 .join(format!("lexime_test_compile_{name}_{}", std::process::id()));
@@ -662,7 +664,7 @@ mod tests {
                 format!("{}\t{id}\t{id}\t{}\t{}\n", f[0], f[2], f[1])
             };
             let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 1)).collect();
-            let symbols_txt: String = symbols.iter().map(|r| to_mozc(r, 2)).collect();
+            let symbols_txt: String = symbols.iter().map(|r| to_mozc(r, 1)).collect();
             let extras_txt: String = extras.iter().map(|r| format!("{r}\n")).collect();
             fs::write(root.join("mozc/dictionary00.txt"), mozc_txt).unwrap();
             fs::write(root.join("mozc/id.def"), ID_DEF).unwrap();
@@ -707,7 +709,7 @@ mod tests {
         }
     }
 
-    /// T11: a symbols row equal to a mozc or an extras (reading, surface) is
+    /// a symbols row equal to a mozc or an extras (reading, surface) is
     /// a build error naming the pair, not a silent cheapest-wins merge.
     #[test]
     fn symbol_duplicating_lattice_source_is_err() {
@@ -728,7 +730,7 @@ mod tests {
         assert_duplicate_err(&fx, "(ほし, ★)");
     }
 
-    /// T13 (second half): the duplicate is an error whether the symbol's
+    /// the duplicate is an error whether the symbol's
     /// compiled cost (its row index) is below or above the Mozc entry's.
     #[test]
     fn symbol_duplicate_err_regardless_of_cost() {
@@ -740,7 +742,7 @@ mod tests {
         assert_duplicate_err(&fx, "(ぱい, π)");
     }
 
-    /// T13: swapping `--extra-source` order yields the same dictionary bytes.
+    /// swapping `--extra-source` order yields the same dictionary bytes.
     /// The symbol ★ (cost 0) ties the extras word 干し (cost 0) on ほし, so
     /// merging symbols in CLI order would change the entry order.
     #[test]
@@ -756,7 +758,7 @@ mod tests {
         assert!(a == b, "dict bytes depend on --extra-source order");
     }
 
-    /// T-B1: a symbol's cost is its row index among same-reading rows (not the
+    /// a symbol's cost is its row index among same-reading rows (not the
     /// TSV cost column), and `lookup` returns them in row order.
     #[test]
     fn symbol_cost_is_row_order() {
@@ -891,7 +893,7 @@ mod tests {
         );
     }
 
-    /// T12 + T-B6: the bundled symbols TSV over the pinned mozc-raw duplicates
+    /// the bundled symbols TSV over the pinned mozc-raw duplicates
     /// no (reading, surface) of it or of the bundled extras (the check `mise
     /// run dict`, the accuracy job's build, enforces) — 155 symbol entries, the largest symbol cost is the most same-reading rows − 1
     /// (cost = row index), and with no history the prediction stage lists no

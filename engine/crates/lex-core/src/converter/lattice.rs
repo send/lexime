@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(lattice.cost(0), 10000);
     }
 
-    /// I8′: lattice construction is the same as if symbol entries did not
+    /// lattice construction is the same as if symbol entries did not
     /// exist — no symbol nodes, and the fallback appears where only a symbol
     /// matches a single char.
     fn symbol_dict() -> crate::dict::TrieDictionary {

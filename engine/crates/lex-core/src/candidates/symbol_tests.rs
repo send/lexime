@@ -112,7 +112,7 @@ fn is_symbol(dict: &dyn Dictionary, reading: &str, surface: &str) -> bool {
         .any(|e| e.symbol && e.surface == surface)
 }
 
-/// T-B2: with no history, the prediction stage lists no symbol for any
+/// with no history, the prediction stage lists no symbol for any
 /// proper prefix of a symbol reading — neither in the stage's own record nor
 /// in the list (lookup cannot add one: no such prefix is a symbol reading).
 #[test]
@@ -143,7 +143,7 @@ fn untrained_symbols_are_not_predicted() {
     }
 }
 
-/// T-B2 (learned-punctuation caller): with history that has not learned the
+/// (Learned-punctuation caller) with history that has not learned the
 /// symbol, punctuation's learned predictions exclude it too.
 #[test]
 fn untrained_symbols_are_not_predicted_for_punctuation() {
@@ -156,7 +156,7 @@ fn untrained_symbols_are_not_predicted_for_punctuation() {
     assert!(!surfaces.contains(&"…".to_string()), "{surfaces:?}");
 }
 
-/// T-B3: once history has learned (reading, symbol), the symbol is predicted
+/// once history has learned (reading, symbol), the symbol is predicted
 /// for the reading's prefixes, first by boost order (main's behaviour).
 #[test]
 fn learned_symbol_is_predicted_first() {
@@ -201,7 +201,7 @@ fn lookup_order(dict: &dyn Dictionary, reading: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// T-B4: an exact lookup lists the words (cost order) and then the symbols
+/// an exact lookup lists the words (cost order) and then the symbols
 /// (row order) — a word at cost 9000 before a symbol at 0.
 #[test]
 fn lookup_lists_words_then_symbols() {
@@ -251,7 +251,7 @@ fn lookup_lists_words_then_symbols() {
     );
 }
 
-/// T-B5 (guard of existing behaviour): a user_dict word equal to a symbol
+/// (Guard of existing behaviour) a user_dict word equal to a symbol
 /// row wins (user cost −1 < row index 0) — one ※ in `lookup`, the user's;
 /// the lattice has its node; the list has it as a word (a path's surface).
 #[test]
@@ -287,7 +287,7 @@ fn user_dict_word_wins_over_equal_symbol() {
     );
 }
 
-/// T-B7's reference: the same window (`predict(prefix, 1000)`), the symbol
+/// Reference for the next test: the same window (`predict(prefix, 1000)`), the symbol
 /// entries dropped, then cost sort → surface dedup → truncate.
 fn reference_words(dict: &dyn Dictionary, prefix: &str, max: usize) -> Vec<(String, String, i16)> {
     let mut flat: Vec<(String, DictEntry)> = Vec::new();
@@ -344,7 +344,7 @@ fn t_b7_prefixes(dict: &TrieDictionary) -> Vec<String> {
     prefixes
 }
 
-/// T-B7: with no history, the words predicted for every prefix with symbol
+/// with no history, the words predicted for every prefix with symbol
 /// rows below it are the reference list byte for byte — the same window with
 /// the symbols dropped before ranking. Trie alone and under user_dict.
 #[test]
@@ -358,7 +358,7 @@ fn predicted_words_match_symbol_free_reference() {
     assert_words_match_reference(dict, &prefixes);
 }
 
-/// T-B7 on the compiled production dictionary (`mise run dict`; path from
+/// The same, on the compiled production dictionary (`mise run dict`; path from
 /// `LEXIME_DICT`, default `engine/data/lexime.dict`). Run with `--ignored`.
 #[test]
 #[ignore]
@@ -380,7 +380,7 @@ fn predicted_words_match_symbol_free_reference_real_dict() {
     assert_words_match_reference(dict, &prefixes);
 }
 
-/// T-B8: the symbol (`おめが`, Ω) is dropped before the surface dedup, so it
+/// the symbol (`おめが`, Ω) is dropped before the surface dedup, so it
 /// does not hide the word (`おーむ`, Ω) from `お`'s prediction.
 #[test]
 fn excluded_symbol_does_not_shadow_word_of_same_surface() {

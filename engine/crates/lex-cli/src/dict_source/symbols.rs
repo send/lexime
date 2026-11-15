@@ -119,7 +119,7 @@ mod tests {
 
         for entries in entries.values() {
             for entry in entries {
-                assert_eq!(entry.left_id, 2643, "symbols use 記号,一般 POS id 2643");
+                assert_eq!(entry.left_id, 2643, "every bundled symbols row carries the numeric POS id 2643 (記号,アルファベット; kept as is in this format)");
                 assert_eq!(entry.right_id, 2643);
             }
         }

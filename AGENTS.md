@@ -511,6 +511,15 @@ what a generic reviewer misses:
   その結合の対象にならないもの (° ′ ″) を含む — は symbols (読み全体の候補、位置規則
   で届く)。挙動のためにソースを選ばない。extras の他の行 (既存 47 行) は語 (名詞)
   で lattice に居る — 「extras = 単位だけ」ではない。
+- **同梱 symbols TSV の POS 2643 (settled)**: 同梱 symbols TSV は全行に数値の
+  POS 2643 (記号,アルファベット) を持つ。ギリシャ文字以外の行では誤りと分かって
+  いるが、タグ名による行ごとの POS は同じ series の次の変更で入れるので、この変更
+  では置き換えない。記号が lattice の外にある間、POS id は記号経路の 1 分節にだけ
+  載って運ばれ、読む段は履歴の段 (`history_rerank_at` の分節 unigram 除外
+  `is_function_word`) だけで、分節の結合 (`group_segments`) は 1 分節で早期 return
+  する。lattice 構築・Viterbi・配置・admission は読まない。再提起は再議論 —
+  上げない。見直す条件: 行ごとの POS の変更が入った時、またはこの変更の次に入らな
+  かった時。
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

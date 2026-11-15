@@ -2,7 +2,8 @@
 # Format: reading\tleft_id\tright_id\tcost\tsurface
 # Symbols live outside the lattice: compile flags every row as a symbol entry,
 # lattice construction builds no nodes from them, and a row whose
-# (reading, surface) is also in mozc or extras fails the build (remove the row).
+# (reading, surface) is also in mozc or extras fails the build (remove the row);
+# a duplicate inside symbols is a build error too.
 # The cost column is not used: a symbol's cost is its row index among the rows
 # with the same reading (0, 1, 2, … in file order).
 # Every row still carries the numeric POS id 2643 (記号,アルファベット), which is

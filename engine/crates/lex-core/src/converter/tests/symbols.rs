@@ -1,7 +1,7 @@
-//! Symbol placement (`place_symbols`, plan §4-7-3 P-s): a reading's symbol
+//! Symbol placement (`place_symbols`): a reading's symbol
 //! entries are inserted by Mozc's position rule over the population
 //! admission keeps by price, copying the price before them; admission
-//! exempts them; later stages only move an unlearned symbol down (I9″).
+//! exempts them; later stages only move an unlearned symbol down.
 
 use super::*;
 use crate::converter::postprocess::{
@@ -369,7 +369,7 @@ fn the_symbol_joins_the_list_at_its_position() {
 }
 
 /// (7) An unlearned symbol and a path after it whose segment history boosts
-/// (unigram): the path passes the symbol, which only moves down (I9″).
+/// (unigram): the path passes the symbol, which only moves down.
 #[test]
 fn a_boosted_path_passes_an_unlearned_symbol() {
     let dict = symbols_dict(&["※"]);

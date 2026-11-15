@@ -1212,6 +1212,10 @@ category = "regression"
 tags = ["symbol"]
 note = "語の無い読みでも記号は位置規則の #4 (Mozc どおり)。main は ∉ が #1"
 
+[cases.window]
+n = 9
+present = ["∉"]
+
 [[cases]]
 reading = "くうしゅうごう"
 expected = "空集合"
@@ -1239,6 +1243,10 @@ expected = "と言えども"
 category = "regression"
 tags = ["symbol", "guard"]
 note = "ガード: Mozc の 記号,一般 の語 (雖も) は lattice の語のまま (main と同じ top-1、と雖も は #2)"
+
+[cases.window]
+n = 2
+present = ["と雖も"]
 
 [[cases]]
 reading = "おもしろいわら"
