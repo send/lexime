@@ -312,6 +312,8 @@ composing 中、キーストロークごとに候補を生成し、以下の順�
 4. **予測候補** — `predict_ranked` による prefix search。記号エントリ（同梱 symbols 由来）は、履歴がその (読み, 記号) を学習済みの時だけ出る（未学習の記号は予測に出ない。除外は sort / dedup / truncate の前）
 5. **辞書 lookup** — 全読み候補。並びは語 (cost 順) → 記号 (行順)（学習履歴で並び替え）
 
+予測（4.）・辞書 lookup（5.、完全一致）と Predictive モードのバイグラム連結は rerank / コスト差 admission を通らない（Viterbi の形成規則・script 価格も掛からない。読み全体の Latin 単位 — 単独の `ppm` 等 — はこれらの段に載る）。
+
 重複は engine 内で排除する。句読点入力時は代替候補（`。`→`．`/`.` 等）を生成する。
 マークドテキストにはひらがな（入力中のかな + pending romaji）をリアルタイム表示し、Space / ↑↓ で候補に切り替えると選択サーフェスを表示する。
 
@@ -345,9 +347,9 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 ローマ字入力
   → ひらがな (lex-core/romaji)
   → 統一候補生成 (lex-core/candidates)
-    → ラティス構築 (common_prefix_search + 1文字フォールバック)
-    → Viterbi N-best 探索
-    → Reranker (特徴量)
+    → ラティス構築 (common_prefix_search + 1文字フォールバック。ノードごとに surface のフラグ pure_latin / typed_digit)
+    → Viterbi N-best 探索 (形成規則: Latin 単位は入力した数字の直後だけ)
+    → Reranker (特徴量。形成された Latin 単位の script 価格は katakana_penalty)
     → 表記ゆれ・かな救済 (ひらがな / 部分ひらがな / 漢字、学習前)
     → 記号の配置 (読み全体の記号エントリを Mozc の位置規則で挿入、直前の候補の価格を写す)
     → 学習ブースト (history rerank。#1 の選び方は §ブースト計算)
@@ -365,13 +367,15 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - 各位置から始まる全てのエントリをノードとして追加
 - 記号エントリ（辞書の記号フラグが立つもの）はノードにしない
 - **接続性保証**: 1 文字マッチがない位置にはコスト 10,000 の未知語フォールバックを追加。記号エントリは 1 文字マッチに数えない（記号エントリが無いのと同じ連結性）
+- **surface のフラグ**: ノードを積む時（`Lattice::extend` で足すノードを含む）に surface から 2 つのフラグを 1 回だけ計算して持つ（接続行列は見ない）。`pure_latin` = ASCII 英字を含み日本語の文字（ひらがな・カタカナ・漢字）を含まない（`s` `μs` `kB` `°C` `ft` `mol%`。`%` `℃` `km先` `kバイト` は偽）。`typed_digit`（入力数字ノード）= 読み = 表記 = ASCII 数字 1 字 — 入力に打った数字の 1 文字フォールバック（`3`）。辞書の読みはかななので、Mozc の `さん`→`3` は入力数字ではない。複数桁 `512` は 1 文字ずつのフォールバックなので、直前は最後の `2`
 
 ### Viterbi N-best 探索 + 後処理
 
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
+- **形成規則（Latin 単位）**: Latin 単位 = 左 POS が助数詞（接続行列の role）かつ `pure_latin` のノード（`s` `μs` `ft` `ppm`。日本語を含む混在表記 `km先` は対象外）。Latin 単位へは、前任が入力数字ノードのときだけ遷移する（BOS を含むそれ以外からは遷移が無い — コストではなく経路を作らない）。判定は hook `latin_unit::node_admissible`（ノードと前任の `typed_digit`、BOS は偽）1 つで、Viterbi の BOS 初期化・前方パス（1-best と N-best）と resegment の新しい 2 つの隣接（前セグメント → 左ノード、左ノード → 右ノード。resegment の前任はセグメントなので、その `typed_digit` を同じ関数で surface から計算する）が呼ぶ。接続行列は `CostFunction::conn()` から引く。接続行列が無いと何も Latin 単位にならず、規則は効かない（この節の Latin 単位の規則すべて — script 価格・NumericRewriter — も同じ）
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
-- **Reranker**: Viterbi で over-generate（母集団は `population(n, h)` = `max(3n, 床)` の 1 箇所で、床は履歴なし 10・履歴あり n = 1 で 30・n ≥ 2 で 50。1-best は n = 1 の N-best そのもの（経路 1 本）で 10 / 30、既定の候補列（n = 20）は 60。explain と道具の n = 1 も同じ母集団を使う）し、特徴量を足して再ランキング。rerank は経路を落とさない（価格を付けて並べるだけ）。postprocess で候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ（Predictive モードは、その後に句チェーンを足した列を `max_results` で切る）。かな読みそのままの経路（identity）も rerank では落ちない
+- **Reranker**: Viterbi で over-generate（母集団は `population(n, h)` = `max(3n, 床)` の 1 箇所で、床は履歴なし 10・履歴あり n = 1 で 30・n ≥ 2 で 50。1-best は n = 1 の N-best そのもの（経路 1 本）で 10 / 30、既定の候補列（n = 20）は 60。explain と道具の n = 1 も同じ母集団を使う）し、特徴量を足して再ランキング。特徴量のうち script 価格（セグメントごと、group 前の lattice ノード単位）は、Latin を含むセグメントが `latin_penalty`、全カタカナが `katakana_penalty`、漢字かな混じり・漢字のみが負のボーナス、それ以外 0。ただし入力数字の直後に形成された Latin 単位はカタカナと同じ `katakana_penalty` — 非 Latin の script 価格の最大値なので（validate は全値を非負に制限）、どの設定でも `3`+単位 は script で `3`+日本語名 より安くならない。直前が入力数字でない Latin 単位（形成規則の漏れ）は `latin_penalty` に倒し、`latin_unit_unformed` として数える（explain が `after_rerank` で記録。0 でなければ bug）。rerank は経路を落とさない（価格を付けて並べるだけ）。postprocess で候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ（Predictive モードは、その後に句チェーンを足した列を `max_results` で切る）。かな読みそのままの経路（identity）も rerank では落ちない
 - **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 4 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）、*写し*（記号 — 位置を保つために直前の候補の価格を写したもの。価格として判定しない、下記）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）。これは Model 段の提示・救済の規則で、数詞複合語は既存経路以下の価格なら複合語の経路（1 分節）をそのまま残す — boost と学習の記録が母集団に依らない（#393）
 - **表記ゆれ・かな救済**（`RewriteStage::Model`、履歴前に走る。index 0 は動かさない。n = 1 で学習が空のときは index 0 に届かないので省く — 出力は同じ）。段の全 rewriter が段に入ってきたリストから生成し、挿入はその後にまとめて行う（rewriter は互いの出力を見ない）
   - `HiraganaVariantRewriter` — best の漢字分節をすべてかなにした候補（かな救済 #263、best + 4000）
@@ -384,6 +388,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 - **n 本に絞る**: model 価格の経路を n 本数え、その間に並ぶ提示・かな救済・記号は枠を使わずに残る（提示が model 経路を押し出さない）。n 本目の model 経路より後ろの記号はここで落ち、候補列では辞書 lookup（5.）が足す（1-best（n = 1）では未学習の記号は常にこちら）。学習で履歴前の #1 が n 本から外れたら、n 本目の model 経路と入れ替えて 2 番目に戻す（n ≥ 2。間に並ぶ提示は残る。この後の Rewriters が #1 の前後に入ると 3 番目以降になる）
 - **Rewriters**（`RewriteStage::Override`、n 本に絞った後）
   - `NumericRewriter` — 数詞の漢数字・半角・全角候補、助数詞つき複合語。漢数字の複合語（`二十三`）は履歴前の #1 の価格（anchor）、助数詞つき複合語は anchor − 500（助数詞の辞書コスト差を加算）で値付けし、index 0 も取れる（#239）。非複合語の漢数字（1 文字）・半角・全角は anchor + 13000（全角は +1、助数詞つきは助数詞の辞書コスト差を加算）
+  - Latin 単位の助数詞（`ft` `ppm`。lattice のノードの `pure_latin` フラグと助数詞 role で判定、形成規則と同じ関数）は半角数字とだけ組む（`3ft`、半角の価格のまま）。漢数字の複合語・全角形（`三ft` `３ft`）は出さない。助数詞の辞書コスト差の基準（その末尾で最安の助数詞）は Latin 単位を除いて取る（同じ末尾に他の助数詞が無ければ Latin 単位の最安）ので、Latin 単位の有無で漢数字の複合語の価格は動かない。差は 0 で下を切る（半角形は anchor + 13000 を下回らない）
   - `KatakanaRewriter` — カタカナ候補（anchor + 18000）
   - 18000 / 13000 は「既定の admission 上限（anchor + `DEFAULT_CANDIDATE_MAX_COST_GAP`）+ 10000 / + 5000」の固定値: 既定設定では admission が価格で残した全経路より後ろに並び、その位置が母集団（どの経路が n 本に入ったか）に依らない。実行時の `max_cost_gap` には追従しない（無効化しても価格は有限のまま飽和しない。数字は T > 13000、カタカナは T > 18000 のときだけ admission が価格で残す経路の間に入り得る）。既定 T を変えるとコンパイル時の等式検査が落ち、値を決め直させる。anchor は rerank best なので、1-best と候補列で rerank best が割れない読みでは方針価格も両幅で同じ
   - fallback（カタカナ・非複合語の漢数字・半角・全角）は同じ表記の経路が既に在れば何もしない（学習済み・identity の経路の価格と `priced_by` を書き換えない）。数詞複合語は既存経路以下の価格（履歴前）なら、その経路を複合語の経路（1 分節、`origin` / `priced_by` とも Numeric、自分の分節で学習ブースト）に置き換える（#239、#393。同価格は複合語 — 挿入で同価格の前に置くのと同じ）。既存経路の方が安ければ何もしない
@@ -397,7 +402,8 @@ CostFunction
 ├── word_cost(node) → i64
 ├── transition_cost(prev, next) → i64
 ├── bos_cost(node) → i64
-└── eos_cost(node) → i64
+├── eos_cost(node) → i64
+└── conn() → Option<&ConnectionMatrix>（形成規則が POS role を引く接続行列。既定 None = 規則なし）
 ```
 
 | 実装 | 用途 |
@@ -553,7 +559,7 @@ Tombstone の WAL 耐久化が失敗した場合（`Io` / `SyncFailed`）は、�
 
 | セクション | パラメータ |
 |---|---|
-| `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty, pure_kanji_bonus, latin_penalty, unknown_word_cost |
+| `[cost]` | segment_penalty, mixed_script_bonus, katakana_penalty（全カタカナのセグメントと、入力した数字の直後に形成された Latin 単位の script 価格 — 外来表記 2 種を同じ値で動かす。上げると両方の価格が同じだけ上がる）, pure_kanji_bonus, latin_penalty（Latin を含むセグメントの penalty。入力した数字の直後に形成された Latin 単位を除く）, unknown_word_cost |
 | `[reranker]` | length_variance_weight, te_form_kanji_penalty, single_char_kanji_penalty |
 | `[history]` | boost_per_use, max_boost, half_life_hours, max_unigrams, max_bigrams |
 | `[candidates]` | nbest, max_results, max_cost_gap（履歴前 #1 からのコスト差の上限。4000 未満は 4000 として働く。`i64::MAX` で無効化。省略時は既定値。数字・カタカナの方針価格はこの値に依らない） |
