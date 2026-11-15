@@ -643,7 +643,7 @@ reading = "そうそう"
 expected = "早々"
 category = "extras"
 tags = ["history", "person", "cost-conflict"]
-note = "extras に 曹操 を追加したが、常用の 早々 が top-1 を維持 (cost 8000 で調整)"
+note = "extras に 曹操 を追加したが、常用の 早々 が top-1 を維持 (cost 4200: POS 人名,一般 の接続のもとで格子計測、範囲と選択は history.tsv の 曹操 の行コメント)"
 
 # --- culture: 出版社 / 音楽人 / 作品名 ---
 
@@ -685,7 +685,7 @@ reading = "あくゆう"
 expected = "悪友"
 category = "extras"
 tags = ["culture", "person", "cost-conflict"]
-note = "extras に 阿久悠 を追加したが、常用の 悪友 が top-1 を維持 (cost 8000 で調整)"
+note = "extras に 阿久悠 を追加したが、常用の 悪友 が top-1 を維持 (cost 5200: POS 人名,一般 の接続のもとで格子計測、範囲と選択は culture.tsv の 阿久悠 の行コメント)"
 
 # ═══════════════════════════════════════════════════════════════════
 # Compound nouns (segmentation + POS)

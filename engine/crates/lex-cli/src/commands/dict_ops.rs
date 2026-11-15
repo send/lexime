@@ -1039,11 +1039,17 @@ mod tests {
 
         assert_eq!(rows.len(), 47);
         let extras_cost = |reading: &str, tag: &str| {
-            EXTRAS_COST_OVERRIDES
-                .iter()
-                .find(|(r, _)| *r == reading)
-                .or_else(|| EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag))
-                .map_or(5000, |&(_, c)| c)
+            if let Some(&(_, c)) = EXTRAS_COST_OVERRIDES.iter().find(|(r, _)| *r == reading) {
+                return c;
+            }
+            if let Some(&(_, c)) = EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag) {
+                return c;
+            }
+            assert_eq!(
+                tag, "名詞,一般,*,*,*,*,*",
+                "tag {tag} is in neither table: add it to EXTRAS_PROPER_NOUN_COSTS (T9's table)"
+            );
+            5000
         };
         for row in &rows {
             let (reading, surface, tag) = (row[0], row[1], row[2]);

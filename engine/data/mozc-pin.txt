@@ -16,10 +16,19 @@
 #      after the bump, and paste the before/after results into the PR.
 #   3. Fix or skip (+ issue link) any newly failing corpus cases in the
 #      same PR, so main never lands with a red accuracy gate.
-#   4. Count the extras proper-noun rows' cost (the median, over the
-#      representative words, of each word's cheapest Mozc entry in the
-#      decided POS) again on the new pin; if a value changes, update the
-#      TSV in the same PR.
+#   4. Everything in extras that depends on the pin, again on the new pin,
+#      in the same PR:
+#        (a) the POS majority of each section (if a bucket changes, the
+#            POS in the TSV changes),
+#        (b) the cost median (the median, over the representative words, of
+#            each word's cheapest Mozc entry in the decided POS),
+#        (c) the n / min / max in each section comment,
+#        (d) the T9 table EXTRAS_PROPER_NOUN_COSTS in
+#            lex-cli/src/commands/dict_ops.rs,
+#        (e) the lattice measurement of the cost-override proper-noun rows
+#            (曹操, 阿久悠; range and selection rule are in the row comment).
+#      T9 only checks that the TSV and the table agree, so skipping this
+#      step does not fail CI.
 #
 # Read by scripts/mozc-pin.sh for both consumers: `mise run fetch-dict-mozc`
 # and the CI accuracy job's snapshot cache key.
