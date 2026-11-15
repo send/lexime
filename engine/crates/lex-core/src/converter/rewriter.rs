@@ -6,6 +6,7 @@ use crate::settings::DEFAULT_CANDIDATE_MAX_COST_GAP;
 use crate::unicode::{hiragana_to_katakana, is_hiragana, is_kanji, is_katakana};
 
 use super::cost::{conn_cost, node_cost, score_path};
+use super::latin_unit::is_latin_unit;
 use super::lattice::Lattice;
 use super::postprocess::PostprocessObserver;
 use super::reranker::FeaturePricer;
@@ -834,7 +835,8 @@ impl NumericRewriter<'_> {
     /// and pricier counter homophones get penalised by their cost difference.
     /// This mirrors what Viterbi would do if a `<kanji_number><counter>`
     /// segmentation were representable in the lattice (no `三千` dictionary
-    /// entry).
+    /// entry). A Latin unit (`ft`, `s`) is emitted half-width only and is not
+    /// the anchor (see the body).
     fn append_counter_candidates(
         &self,
         lattice: &Lattice,
@@ -863,6 +865,9 @@ impl NumericRewriter<'_> {
             start: usize,
             surface: &'a str,
             cost: i16,
+            /// A Latin unit (`latin_unit::is_latin_unit`): paired with
+            /// half-width digits only, and not the price anchor.
+            latin: bool,
         }
         let mut by_surface: std::collections::HashMap<&str, Cand<'_>> =
             std::collections::HashMap::new();
@@ -880,6 +885,7 @@ impl NumericRewriter<'_> {
                 continue;
             }
             let cost = lattice.cost(idx);
+            let latin = is_latin_unit(lattice.pure_latin(idx), lattice.left_id(idx), Some(conn));
             by_surface
                 .entry(surface)
                 .and_modify(|c| {
@@ -892,6 +898,7 @@ impl NumericRewriter<'_> {
                     start: counter_start,
                     surface,
                     cost,
+                    latin,
                 });
         }
         if by_surface.is_empty() {
@@ -903,7 +910,16 @@ impl NumericRewriter<'_> {
         let mut cands: Vec<Cand<'_>> = by_surface.into_values().collect();
         cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
 
-        let cheapest = cands.first().map(|c| c.cost).unwrap_or(0);
+        // The price anchor is the cheapest counter that is not a Latin unit,
+        // so adding a Latin unit never moves the kanji compounds' prices; with
+        // none at this tail, the cheapest Latin unit. An offset below 0 (a
+        // Latin unit cheaper than the anchor) is clamped to 0, keeping the
+        // half-width form at or above the CounterFallback base.
+        let cheapest = cands
+            .iter()
+            .find(|c| !c.latin)
+            .or(cands.first())
+            .map_or(0, |c| c.cost);
 
         for cand in &cands {
             let prefix = &reading[..byte_offsets[cand.start]];
@@ -912,11 +928,23 @@ impl NumericRewriter<'_> {
             };
             // Widen to i64 before subtraction: i16 - i16 can overflow if the
             // dictionary contains extreme positive/negative costs.
-            let cost_offset = cand.cost as i64 - cheapest as i64;
+            let cost_offset = (cand.cost as i64 - cheapest as i64).max(0);
             let counter = |mut digits: String| {
                 digits.push_str(cand.surface);
                 digits
             };
+
+            // A Latin unit pairs with half-width digits only (no 三ft, ３ft):
+            // the same rule as the formation rule's typed digit, for a number
+            // read in kana.
+            if cand.latin {
+                out.push(self.price(PolicyRule::CounterFallback, cost_offset).path(
+                    reading,
+                    counter(numeric::to_halfwidth(n)),
+                    PathOrigin::Numeric,
+                ));
+                continue;
+            }
 
             out.push(self.price(PolicyRule::CounterCompound, cost_offset).path(
                 reading,

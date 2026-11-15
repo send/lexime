@@ -1,7 +1,8 @@
 use crate::converter::lattice::Lattice;
 use crate::converter::postprocess::NoopObserver;
 use crate::converter::rewriter::{
-    run_policy_rewriters, NumericRewriter, PolicyRewriter, NUMERIC_POLICY_OFFSET,
+    run_policy_rewriters, NumericRewriter, PolicyPrice, PolicyRewriter, PolicyRule,
+    NUMERIC_POLICY_OFFSET,
 };
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
@@ -438,4 +439,89 @@ fn learned_index0_takes_its_compound_price() {
         run(vec![learned("荷重", 5000), learned("二十", 9000)])[0],
         "二十"
     );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// R-b: a Latin unit (pure-Latin counter) pairs with half-width digits only
+// and is not the price anchor
+// ───────────────────────────────────────────────────────────────────────
+
+/// The counter candidates for `さんびょう` from `counters` (surface, cost),
+/// all on the counter POS and ending at the tail.
+fn counter_candidates(counters: &[(&str, i16)]) -> Vec<(ScoredPath, PolicyPrice)> {
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let nodes: Vec<(usize, usize, &str, &str, i16, u16, u16)> = counters
+        .iter()
+        .map(|&(surface, cost)| (2, 5, "びょう", surface, cost, counter_id, counter_id))
+        .collect();
+    let lattice = Lattice::from_test_nodes("さんびょう", &nodes);
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+        anchor: 5000,
+    };
+    rw.policy_candidates("さんびょう")
+}
+
+fn price_of(cands: &[(ScoredPath, PolicyPrice)], surface: &str) -> Option<PolicyPrice> {
+    cands
+        .iter()
+        .find(|(p, _)| p.surface_key() == surface)
+        .map(|&(_, price)| price)
+}
+
+#[test]
+fn latin_unit_counter_is_half_width_only() {
+    let cands = counter_candidates(&[("秒", 3000), ("s", 3001)]);
+    assert!(price_of(&cands, "3s").is_some());
+    assert!(price_of(&cands, "三s").is_none());
+    assert!(price_of(&cands, "３s").is_none());
+    // A non-Latin counter keeps all three forms.
+    for s in ["三秒", "3秒", "３秒"] {
+        assert!(price_of(&cands, s).is_some(), "{s}");
+    }
+}
+
+#[test]
+fn mixed_and_letterless_counters_keep_all_three_forms() {
+    for unit in ["kバイト", "%"] {
+        let cands = counter_candidates(&[(unit, 3000)]);
+        for form in [format!("三{unit}"), format!("3{unit}"), format!("３{unit}")] {
+            assert!(price_of(&cands, &form).is_some(), "{form}");
+        }
+    }
+}
+
+/// M3: the kanji compound's price does not depend on whether a Latin unit
+/// shares the tail.
+#[test]
+fn a_latin_unit_does_not_move_the_kanji_compound_price() {
+    let without = counter_candidates(&[("秒", 3000)]);
+    for latin_cost in [2000, 3001, 9000] {
+        let with = counter_candidates(&[("秒", 3000), ("s", latin_cost)]);
+        assert_eq!(
+            price_of(&with, "三秒"),
+            price_of(&without, "三秒"),
+            "{latin_cost}"
+        );
+        assert_eq!(
+            price_of(&with, "3秒"),
+            price_of(&without, "3秒"),
+            "{latin_cost}"
+        );
+    }
+}
+
+/// N1: a Latin unit cheaper than the anchor gets offset 0, not a negative
+/// one; with no non-Latin counter at the tail, the cheapest Latin unit is the
+/// anchor.
+#[test]
+fn a_latin_unit_offset_is_never_negative() {
+    let cands = counter_candidates(&[("秒", 3000), ("s", 1000)]);
+    let p = price_of(&cands, "3s").unwrap();
+    assert_eq!((p.rule, p.cost_offset), (PolicyRule::CounterFallback, 0));
+    let cands = counter_candidates(&[("s", 1000), ("sec", 1500)]);
+    assert_eq!(price_of(&cands, "3s").unwrap().cost_offset, 0);
+    assert_eq!(price_of(&cands, "3sec").unwrap().cost_offset, 500);
 }
