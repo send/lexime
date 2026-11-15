@@ -26,8 +26,19 @@
 #        (d) the T9 table EXTRAS_PROPER_NOUN_COSTS in
 #            lex-cli/src/commands/dict_ops.rs,
 #        (e) the lattice measurement of the cost-override proper-noun rows
-#            (曹操, 阿久悠; range and selection rule are in the row comment).
-#      T9 only checks that the TSV and the table agree, so skipping this
+#            (曹操, 阿久悠; range and selection rule are in the row comment),
+#        (f) the cost column of every proper-noun row in the extras TSVs
+#            (they are the (b) values themselves),
+#        (g) the whole section comments: n, min, max, how many words Mozc
+#            has / votes for, and the list of words Mozc lacks,
+#        (h) EXTRAS_COST_OVERRIDES in lex-cli/src/commands/dict_ops.rs (the
+#            T9 values of the override rows, from (e)),
+#        (i) the 一保堂 merge note in extras/food.tsv (Mozc's raw cost, its
+#            effective value, and which row wins the merge),
+#        (j) the notes of the そうそう / あくゆう cases in
+#            engine/testcorpus/accuracy-corpus.toml (they quote the override
+#            costs from (e)).
+#      T9 only checks that the TSV and the tables agree, so skipping this
 #      step does not fail CI.
 #
 # Read by scripts/mozc-pin.sh for both consumers: `mise run fetch-dict-mozc`

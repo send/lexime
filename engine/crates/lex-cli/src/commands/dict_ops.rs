@@ -972,7 +972,7 @@ mod tests {
     }
 
     /// The bundled extras rows with a cost-override: a value chosen by
-    /// measurement, outside both the 5000 default of the common-noun rows
+    /// measurement, outside both the existing value (5000) of the common-noun rows
     /// and the proper-noun derivation. Written here, not read from the TSVs,
     /// so a changed cost in a TSV fails T9. (`あくゆう` / `そうそう`: chosen by
     /// a grid measurement under the 人名,一般 connection — the range and the

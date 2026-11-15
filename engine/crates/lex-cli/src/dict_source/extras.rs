@@ -34,7 +34,10 @@ use lex_core::dict::DictEntry;
 ///    entries to the appropriate domain TSV here. Decide the POS by the
 ///    majority rule documented on [`ALLOWED_POS_TAGS`], not by carrying it
 ///    over, and decide the cost anew (a promoted entry's old cost is not
-///    the extras value either) by the cost rule on [`ALLOWED_POS_TAGS`].
+///    the extras value either). A proper-noun row takes the cost rule on
+///    [`ALLOWED_POS_TAGS`]. A common-noun row picks a cost that is sound for
+///    the word, grounded in the same reading's Mozc entries or in a
+///    before/after measurement.
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -47,7 +50,9 @@ use lex_core::dict::DictEntry;
 ///    columns, rewrite the POS to the allowed tag the majority rule picks, and
 ///    write the section comment (kind, representative words, counts). The
 ///    mining cost is on Sudachi's scale, not the extras final value; decide
-///    the cost anew by the cost rule on [`ALLOWED_POS_TAGS`].
+///    the cost anew: a proper-noun row by the cost rule on
+///    [`ALLOWED_POS_TAGS`], a common-noun row grounded in the same reading's
+///    Mozc entries or in a before/after measurement.
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
@@ -139,38 +144,56 @@ const DOMAINS: &[(&str, &str)] = &[
 /// fractional part of an even-n median is floored; Mozc's raw value, before
 /// compile's person-name offset)**. Rows of one section (one kind) share one
 /// value. Reason: POS and cost are a pair: connection costs and the cost
-/// distribution of a POS go together, and 5000 was the default that went with
-/// 名詞,一般, not with a proper-noun subdivision. Per word, so a word with
-/// several entries in the POS (織田信長, 豊臣秀吉 in 人名,一般) counts once.
-/// The raw value is stored; the person-name offset (+2000) is compile's,
-/// applied to Mozc entries only, so curated 人名,一般 rows are about 2000
-/// cheaper than Mozc's effective full-name value. The values are the ones
-/// counted on the mozc-raw of pin 7c1e06d3; when the pin is bumped, derive
-/// them again. A Mozc entry's POS is read by its left id (the id.def line
-/// of that id): the vote counts and the cost medians were both counted by
-/// left id.
+/// distribution of a POS go together, and the 5000 the existing common-noun
+/// rows carry went with 名詞,一般, not with a proper-noun subdivision. Per
+/// word, so a word with several entries in the POS (織田信長, 豊臣秀吉 in
+/// 人名,一般) counts once. The raw value is stored; the person-name offset
+/// (+2000) is compile's, applied to Mozc entries only, so curated 人名,一般
+/// rows are about 2000 cheaper than Mozc's effective full-name value. The
+/// values are counted on the mozc-raw of the pin in `engine/data/mozc-pin.txt`
+/// (the sha lives only there); when the pin is bumped, derive them again
+/// (that file's bump step 4). A Mozc entry's POS is read by its left id (the
+/// id.def line of that id): the vote counts and the cost medians were both
+/// counted by left id.
 ///
-/// - Fallback: when none of the representative words has a Mozc entry in the
-///   decided POS (n = 0), the value is the median of the costs of all Mozc
-///   entries of that POS (left id) in the pin (same flooring). The six POS
-///   in use all have n >= 6, so this does not apply to any of them today.
-/// - Common-noun rows are outside the rule: they keep 5000 (the 名詞,一般
-///   default) until a rank problem shows by measurement, then are derived by
-///   the same rule.
+/// - When none of the representative words has a Mozc entry in the decided
+///   POS (n = 0), the value is not given by this rule: stop and ask the user.
+/// - Common-noun rows are outside the rule: an existing row keeps its
+///   current value (5000, or its cost-override), and a new row's cost is
+///   decided as in "Adding entries" (grounded in the same reading's Mozc
+///   entries or in a before/after measurement).
 /// - A proper-noun row with a cost-override comment is outside the rule too;
-///   its value is the measured range and choice written in that row's
-///   comment. Qualification: a proper-noun row leaves the rule's value only
-///   when it collides with a homophone (a cost-conflict case in the accuracy
-///   corpus) and the collision was measured on the lattice; the value is
-///   then not a median but follows from the measured range and the selection
-///   rule ((4) smallest -> (5) smallest -> largest cost). 曹操's rule value
-///   3402 is also inside its range [2500, 5200], but the selection rule
-///   gives 4200. (The common-noun rows 寛保 7000 / マシン 3500 keep their
-///   earlier records and are not covered by this.)
+///   its value is the one chosen by the measurement below, written in that
+///   row's comment (the values and ranges are there, not here, so they are
+///   not copied into this doc). A proper-noun row leaves the rule's value
+///   only when it collides with a homophone (a cost-conflict case in the
+///   accuracy corpus) and the collision was measured on the lattice. (The
+///   common-noun overrides 寛保 / マシン keep their earlier records and are
+///   not covered by this.)
+///   - Grid: cost 0 to 8000 in steps of 100 (outside the range found by
+///     bisection, every point inside it).
+///   - Population of a word w: w's reading alone, the reading + each of the
+///     7 particles (の が を は で と に), the 3 frames (「r のほん」「r がいった」
+///     「これは r とあう」), and the Mozc readings and accuracy-corpus
+///     readings that contain the reading.
+///   - Judgement K: over every reading of the population, top-1 is the same
+///     as before the PR. Judgement R: for w's reading alone, w is on the
+///     first page (index 0 to 8).
+///   - (4) = the number of candidates containing an extras word that were on
+///     the first page before the PR and fall off it; (5) = the same for
+///     candidates containing no extras word.
+///   - Choice: within the range where K and R both hold, (4) smallest, then
+///     (5) smallest, then the largest cost. An empty range, or K / R not
+///     holding at every point inside it, stops the work (no choosing by eye).
+///   - The full record (grid, dict sha256 per cost, choice) is frozen in
+///     lexime-snapshots `unit-20261115-094814/pr1-r2` (`override/`).
 /// - Section comment: the one-sentence rule, n (words, not entries), the
-///   median with the min / max, and that every row of the section has this
-///   value. When one kind spans files, the full text sits with the
-///   representative words and the others refer to it.
+///   median with the min / max, whether Mozc has / votes for each word, the
+///   words Mozc lacks, and that every row of the section has this value.
+///   When one kind spans files, the full text sits with the representative
+///   words and the others refer to it. A section that closes in one file
+///   (坂, 帝号, 国) also says "Mozc's raw value (before compile's person-name
+///   offset)" in its cost sentence, as the others do.
 const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,一般,*,*,*,*,*",
     "名詞,固有名詞,一般,*,*,*,*",
