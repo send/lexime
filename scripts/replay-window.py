@@ -140,6 +140,8 @@ def replay(a, arm, log, now, work, app, extra, name, verbose=False):
 
 
 def gap_symbol(r):
+    # Selections owned by a placed symbol (`Owner::Symbol`), whatever their rank
+    # or learning state — counted apart from the three gap buckets.
     # Absent from the report of a lextool older than the symbol move (the main
     # arms): n/a, not 0.
     return f"{r['gap_symbol']:5d}" if "gap_symbol" in r else "  n/a"
@@ -213,7 +215,7 @@ def main():
         print(f"  {name:5s} selections {r['selections']:5d}  page 1 {r['in_page']:5d}"
               f"  in list {r['in_list']:5d}  absent {r['absent']:5d}"
               f"  learned #1 {r['gap_below_top']:5d}"
-              f"  learned symbol #1 {gap_symbol(r)}")
+              f"  symbol selections {gap_symbol(r)}")
     print("  new against base: " + json.dumps(d))
 
 
