@@ -2,6 +2,8 @@ mod curated;
 #[cfg(test)]
 pub(crate) use curated::test_support;
 mod extras;
+#[cfg(test)]
+pub(crate) use extras::bundled_rows as bundled_extras_rows;
 mod mozc;
 pub mod pos_map;
 mod symbols;
@@ -254,10 +256,7 @@ mod tests {
     /// entry, and does not stop the rows after it.
     #[test]
     fn t9_declined_line_is_counted_as_skipped() {
-        let dir =
-            std::env::temp_dir().join(format!("lexime_test_parse_stats_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = test_support::scratch("parse_stats");
         fs::write(dir.join("d.txt"), "# comment\n\nあ\tA\nskip\tme\nい\tI\n").unwrap();
         let (entries, stats) = parse_dict_files_counted(
             &dir,

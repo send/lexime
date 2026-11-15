@@ -79,25 +79,23 @@ impl DictSource for SymbolsSource {
 
 #[cfg(test)]
 mod tests {
-    use super::curated::test_support::{pin_shaped_id_def, scratch, write_id_def};
+    use super::curated::test_support::{self as ts, data_rows, pin_shaped_id_def, write_id_def};
     use super::*;
 
     const IPPAN: &str = "記号,一般,*,*,*,*,*";
     const ALPHABET: &str = "記号,アルファベット,*,*,*,*,*";
 
     fn parse_bundled(name: &str) -> (std::path::PathBuf, HashMap<String, Vec<DictEntry>>) {
-        let dir = scratch(&format!("symbols_{name}"));
-        SymbolsSource.fetch(&dir).unwrap();
-        let entries = SymbolsSource.parse_dir(&dir).unwrap();
-        (dir, entries)
+        ts::parse_bundled(&SymbolsSource, &format!("symbols_{name}"))
     }
 
     fn parse_err(name: &str, body: &str) -> String {
-        let dir = scratch(&format!("symbols_{name}"));
-        fs::write(dir.join(SYMBOLS_FILE), body).unwrap();
-        let err = SymbolsSource.parse_dir(&dir).unwrap_err().to_string();
-        fs::remove_dir_all(&dir).ok();
-        err
+        ts::parse_err(
+            &SymbolsSource,
+            SYMBOLS_FILE,
+            &format!("symbols_{name}"),
+            body,
+        )
     }
 
     fn is_greek(surface: &str) -> bool {
@@ -113,8 +111,8 @@ mod tests {
         for line in SYMBOLS_TSV.lines() {
             if let Some(header) = line.strip_prefix("# --- ") {
                 section = header;
-            } else if !line.is_empty() && !line.starts_with('#') {
-                rows.push((section, line.split('\t').collect()));
+            } else if let Some(fields) = data_rows(line).next() {
+                rows.push((section, fields));
             }
         }
         rows

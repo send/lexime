@@ -51,15 +51,11 @@ pub(super) fn parse_curated_line(
     cost_column: CostColumn,
     allowed: &[&str],
 ) -> Result<ParsedLine, String> {
-    let expected = match cost_column {
-        CostColumn::Required => 4,
-        CostColumn::Forbidden => 3,
+    let (expected, shape) = match cost_column {
+        CostColumn::Required => (4, "reading, surface, pos, cost"),
+        CostColumn::Forbidden => (3, "reading, surface, pos — no cost column"),
     };
     if fields.len() != expected {
-        let shape = match cost_column {
-            CostColumn::Required => "reading, surface, pos, cost",
-            CostColumn::Forbidden => "reading, surface, pos — no cost column",
-        };
         return Err(format!(
             "expected {expected} tab-separated columns ({shape}), found {}",
             fields.len()
@@ -105,8 +101,8 @@ pub(super) fn parse_curated_line(
 
 /// Replace the sentinel ids written by [`parse_curated_line`] with the ids
 /// of `allowed`'s tags in `id_def`, printing the resolution. Fails without
-/// an id.def, when an allowed tag is missing from it, and when a sentinel
-/// survives resolution.
+/// an id.def, when an allowed tag is missing from it, and when a tag resolves
+/// into the sentinel range (so a sentinel cannot survive resolution).
 pub(super) fn resolve_pos_ids(
     entries: &mut HashMap<String, Vec<DictEntry>>,
     id_def: Option<&Path>,
@@ -123,19 +119,20 @@ pub(super) fn resolve_pos_ids(
     for tag in allowed {
         let id = pos_map::resolve_tag(&map, tag, source_label, id_def)?;
         eprintln!("  {source_label} POS id: {id} ({tag})");
+        // A resolved id inside the sentinel range would be replaced again
+        // (or mistaken for one) — the structural check is on the table, once.
+        if sentinel_index(id, allowed).is_some() {
+            return Err(DictSourceError::Parse(format!(
+                "{source_label} tag {tag:?} resolves to {id}, inside the unresolved POS id sentinel range"
+            )));
+        }
         resolved.push(id);
     }
-    for (reading, entry_list) in entries.iter_mut() {
+    for entry_list in entries.values_mut() {
         for entry in entry_list.iter_mut() {
             for id in [&mut entry.left_id, &mut entry.right_id] {
                 if let Some(index) = sentinel_index(*id, allowed) {
                     *id = resolved[index];
-                }
-                if sentinel_index(*id, allowed).is_some() {
-                    return Err(DictSourceError::Parse(format!(
-                        "{source_label} entry {reading:?} → {:?} still has an unresolved POS id ({}) after resolution",
-                        entry.surface, *id
-                    )));
                 }
             }
         }
@@ -145,8 +142,49 @@ pub(super) fn resolve_pos_ids(
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    use crate::dict_source::DictSource;
+    use lex_core::dict::DictEntry;
+
+    /// The id of `tag` in [`PIN_SHAPED_IDS`].
+    pub fn pin_id(tag: &str) -> u16 {
+        PIN_SHAPED_IDS
+            .iter()
+            .find(|(_, t)| *t == tag)
+            .map(|&(id, _)| id as u16)
+            .unwrap()
+    }
+
+    /// The data rows (comments and blank lines dropped) of a TSV, split on tabs.
+    pub fn data_rows(content: &str) -> impl Iterator<Item = Vec<&str>> {
+        content
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split('\t').collect())
+    }
+
+    /// `fetch` the source's bundled data into a scratch dir and parse it.
+    pub fn parse_bundled(
+        source: &dyn DictSource,
+        name: &str,
+    ) -> (PathBuf, HashMap<String, Vec<DictEntry>>) {
+        let dir = scratch(name);
+        source.fetch(&dir).unwrap();
+        let entries = source.parse_dir(&dir).unwrap();
+        (dir, entries)
+    }
+
+    /// Parse `body` as the source's file `file`; the error text.
+    pub fn parse_err(source: &dyn DictSource, file: &str, name: &str, body: &str) -> String {
+        let dir = scratch(name);
+        fs::write(dir.join(file), body).unwrap();
+        let err = source.parse_dir(&dir).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).ok();
+        err
+    }
 
     /// Fresh scratch dir per test (tests run in parallel).
     pub fn scratch(name: &str) -> PathBuf {

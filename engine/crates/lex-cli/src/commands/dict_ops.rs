@@ -989,9 +989,8 @@ mod tests {
     /// cheaper extras row.
     #[test]
     fn t9_extras_cost_is_final_and_mozc_keeps_its_offset() {
-        use crate::dict_source::test_support::{pin_shaped_id_def, PIN_SHAPED_IDS};
-        let root = std::env::temp_dir().join(format!("lexime_test_t9_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        use crate::dict_source::test_support::{pin_id, pin_shaped_id_def, scratch};
+        let root = scratch("t9_extras_cost");
         let mozc = root.join("mozc");
         fs::create_dir_all(&mozc).unwrap();
         let id_def = pin_shaped_id_def(&mozc);
@@ -1005,19 +1004,7 @@ mod tests {
         .unwrap();
         let extras_dir = root.join("extras");
         from_name("extras").unwrap().fetch(&extras_dir).unwrap();
-        let rows: Vec<Vec<String>> = fs::read_dir(&extras_dir)
-            .unwrap()
-            .filter_map(|e| {
-                let p = e.unwrap().path();
-                (p.extension()? == "tsv").then(|| fs::read_to_string(p).unwrap())
-            })
-            .flat_map(|c| {
-                c.lines()
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .map(|l| l.split('\t').map(String::from).collect())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let rows = crate::dict_source::bundled_extras_rows();
         let entries = build_entries(
             "mozc",
             &mozc.to_string_lossy(),
@@ -1030,24 +1017,17 @@ mod tests {
         .unwrap();
         fs::remove_dir_all(&root).ok();
 
-        let pin_id = |tag: &str| {
-            PIN_SHAPED_IDS
-                .iter()
-                .find(|(_, t)| *t == tag)
-                .map(|&(id, _)| id as u16)
-                .unwrap()
-        };
         assert_eq!(rows.len(), 47);
         for row in &rows {
-            let (reading, surface, tag) = (&row[0], &row[1], &row[2]);
+            let (reading, surface, tag) = (row[0], row[1], row[2]);
             let same: Vec<&DictEntry> = entries[reading]
                 .iter()
-                .filter(|e| e.surface == *surface)
+                .filter(|e| e.surface == surface)
                 .collect();
             assert_eq!(same.len(), 1, "{row:?}");
             let want_cost = EXTRAS_COST_OVERRIDES
                 .iter()
-                .find(|(r, _)| r == reading)
+                .find(|(r, _)| *r == reading)
                 .map_or(5000, |&(_, c)| c);
             let want_id = pin_id(tag);
             assert_eq!(

@@ -175,37 +175,31 @@ impl DictSource for ExtrasSource {
     }
 }
 
+/// The data rows of every bundled domain TSV.
+#[cfg(test)]
+pub(crate) fn bundled_rows() -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::curated::test_support::{pin_shaped_id_def, scratch, write_id_def, PIN_SHAPED_IDS};
+    use super::curated::test_support::{
+        self as ts, pin_id, pin_shaped_id_def, scratch, write_id_def,
+    };
     use super::*;
 
     const IPPAN: &str = "名詞,一般,*,*,*,*,*";
 
     fn parse_bundled(name: &str) -> (std::path::PathBuf, HashMap<String, Vec<DictEntry>>) {
-        let dir = scratch(&format!("extras_{name}"));
-        ExtrasSource.fetch(&dir).unwrap();
-        let entries = ExtrasSource.parse_dir(&dir).unwrap();
-        (dir, entries)
+        ts::parse_bundled(&ExtrasSource, &format!("extras_{name}"))
     }
 
     fn parse_err(name: &str, body: &str) -> String {
-        let dir = scratch(&format!("extras_{name}"));
         // A registered domain name, so the file-name filter accepts it.
-        fs::write(dir.join("it.tsv"), body).unwrap();
-        let err = ExtrasSource.parse_dir(&dir).unwrap_err().to_string();
-        fs::remove_dir_all(&dir).ok();
-        err
-    }
-
-    /// The data rows of every bundled domain TSV.
-    fn bundled_rows() -> Vec<Vec<&'static str>> {
-        DOMAINS
-            .iter()
-            .flat_map(|(_, content)| content.lines())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| l.split('\t').collect())
-            .collect()
+        ts::parse_err(&ExtrasSource, "it.tsv", &format!("extras_{name}"), body)
     }
 
     #[test]
@@ -268,13 +262,6 @@ mod tests {
         ExtrasSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        let pin_id = |tag: &str| {
-            PIN_SHAPED_IDS
-                .iter()
-                .find(|(_, t)| *t == tag)
-                .map(|&(id, _)| id as u16)
-                .unwrap()
-        };
         let rows = bundled_rows();
         for fields in &rows {
             let entry = entries[fields[0]]
