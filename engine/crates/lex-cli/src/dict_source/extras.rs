@@ -148,8 +148,9 @@ const DOMAINS: &[(&str, &str)] = &[
 /// rows carry went with 名詞,一般, not with a proper-noun subdivision. Per
 /// word, so a word with several entries in the POS (織田信長, 豊臣秀吉 in
 /// 人名,一般) counts once. The raw value is stored; the person-name offset
-/// (+2000) is compile's, applied to Mozc entries only, so curated 人名,一般
-/// rows are about 2000 cheaper than Mozc's effective full-name value. The
+/// (+2000) is compile's, applied to Mozc entries only (in whatever position
+/// Mozc is given), so curated 人名,一般 rows are about 2000 cheaper than
+/// Mozc's effective full-name value. The
 /// values are counted on the mozc-raw of the pin in `engine/data/mozc-pin.txt`
 /// (the sha lives only there); when the pin is bumped, derive them again
 /// (that file's bump step 4). A Mozc entry's POS is read by its left id (the

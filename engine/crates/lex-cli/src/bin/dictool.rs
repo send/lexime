@@ -55,8 +55,10 @@ enum Command {
         /// Mozc id.def for compile-time cost adjustments (person name, pronoun)
         #[arg(long)]
         id_def: Option<String>,
-        /// Additional source to merge in after id.def adjustments, formatted
-        /// as `SOURCE:DIR` (e.g. `symbols:data/symbols-raw`). May be repeated.
+        /// Additional source to merge in (cheapest-wins), formatted
+        /// as `SOURCE:DIR` (e.g. `symbols:data/symbols-raw`). Role cost offsets
+        /// apply to each source that declares them, before the merge. May be
+        /// repeated.
         #[arg(long = "extra-source", value_parser = parse_extra_source)]
         extra_source: Vec<(String, String)>,
     },

@@ -73,6 +73,40 @@ pub fn compile(
 
 type EntryMap = HashMap<String, Vec<DictEntry>>;
 
+/// Apply the compile-time cost offsets based on morpheme roles to one
+/// source's entries (before the merge). Called for every source that declares
+/// `applies_role_cost_offsets`, primary or extra alike.
+fn apply_role_cost_offsets(label: &str, entries: &mut EntryMap, roles: &[u8]) {
+    let mut adjusted = 0usize;
+    for entry_list in entries.values_mut() {
+        for entry in entry_list.iter_mut() {
+            let id = entry.left_id as usize;
+            if id >= roles.len() {
+                eprintln!(
+                    "Warning: left_id {} out of roles table range ({}), skipping entry '{}'",
+                    id,
+                    roles.len(),
+                    entry.surface
+                );
+                continue;
+            }
+            let offset = match roles[id] {
+                pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
+                pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
+                pos_map::ROLE_NON_INDEPENDENT
+                    if entry.surface.chars().any(lex_core::unicode::is_kanji) =>
+                {
+                    NON_INDEPENDENT_KANJI_COST_OFFSET
+                }
+                _ => continue,
+            };
+            entry.cost = entry.cost.saturating_add(offset);
+            adjusted += 1;
+        }
+    }
+    eprintln!("Adjusted {adjusted} entries of {label} (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
+}
+
 /// Parse every source and assemble the entries `compile` writes.
 ///
 /// Lattice sources (the primary source, then each extra source's
@@ -122,14 +156,24 @@ pub(crate) fn build_entries(
         .map_err(|e| format!("resolving POS ids: {e}"))?;
     let mut symbols = take_symbols(&mut entries);
 
-    // Parse extra sources up front, but defer merging until after the
-    // role-based cost offsets below. The curated sources (symbols, extras)
-    // carry final costs; the offsets (person name / pronoun /
-    // non-independent kanji) are part of the Mozc import, so they apply only
-    // when the primary source declares them (`applies_role_cost_offsets`;
-    // mozc in every mise task) — a curated source is outside them even as
-    // primary. Extra sources are merged after the offsets, so their costs
-    // are final too, including an extras row whose POS is a person name.
+    // Parse extra sources up front, but defer merging until every source has
+    // had its role-based cost offsets (person name / pronoun /
+    // non-independent kanji) applied. The offsets are part of the Mozc
+    // import: they apply per source, to the source that declares them
+    // (`applies_role_cost_offsets`; mozc), wherever it sits — primary or
+    // extra. A curated source (symbols, extras) carries final costs and is
+    // outside them, so the cheapest-wins merge compares final costs.
+    let roles = match id_def_path.as_ref() {
+        Some(path) => Some(
+            pos_map::morpheme_roles(path).map_err(|e| format!("loading morpheme roles: {e}"))?,
+        ),
+        None => None,
+    };
+    if dict_source.applies_role_cost_offsets() {
+        if let Some(roles) = &roles {
+            apply_role_cost_offsets(source_name, &mut entries, roles);
+        }
+    }
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {
@@ -152,45 +196,12 @@ pub(crate) fn build_entries(
         for (reading, list) in take_symbols(&mut parsed) {
             symbols.entry(reading).or_default().extend(list);
         }
-        extras.push((extra_name.clone(), parsed));
-    }
-
-    // Apply compile-time cost offsets based on morpheme roles.
-    if let Some(id_def_path) = id_def_path
-        .as_ref()
-        .filter(|_| dict_source.applies_role_cost_offsets())
-    {
-        let roles = pos_map::morpheme_roles(id_def_path)
-            .map_err(|e| format!("loading morpheme roles: {e}"))?;
-        let mut adjusted = 0usize;
-        for entry_list in entries.values_mut() {
-            for entry in entry_list.iter_mut() {
-                let id = entry.left_id as usize;
-                if id >= roles.len() {
-                    eprintln!(
-                        "Warning: left_id {} out of roles table range ({}), skipping entry '{}'",
-                        id,
-                        roles.len(),
-                        entry.surface
-                    );
-                    continue;
-                }
-                let role = roles[id];
-                let offset = match role {
-                    pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
-                    pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
-                    pos_map::ROLE_NON_INDEPENDENT
-                        if entry.surface.chars().any(lex_core::unicode::is_kanji) =>
-                    {
-                        NON_INDEPENDENT_KANJI_COST_OFFSET
-                    }
-                    _ => continue,
-                };
-                entry.cost = entry.cost.saturating_add(offset);
-                adjusted += 1;
+        if extra_src.applies_role_cost_offsets() {
+            if let Some(roles) = &roles {
+                apply_role_cost_offsets(extra_name, &mut parsed, roles);
             }
         }
-        eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
+        extras.push((extra_name.clone(), parsed));
     }
 
     for (extra_name, extra_entries) in extras {
@@ -1022,6 +1033,44 @@ mod tests {
         )
         .unwrap();
         fs::remove_dir_all(&root).ok();
+        let komuro = entries["こむろてつや"]
+            .iter()
+            .find(|e| e.surface == "小室哲哉")
+            .unwrap();
+        assert_eq!(komuro.cost, 3402);
+    }
+
+    /// The offsets follow the declaring source, not its position: with extras
+    /// primary and Mozc as an extra source, Mozc's 人名 row still gets +2000
+    /// and the extras 人名 row keeps its TSV cost.
+    #[test]
+    fn role_offsets_apply_to_mozc_given_as_an_extra_source() {
+        use crate::dict_source::test_support::{pin_id, pin_shaped_id_def, scratch};
+        let root = scratch("mozc_extra_offsets");
+        let mozc = root.join("mozc");
+        fs::create_dir_all(&mozc).unwrap();
+        let id_def = pin_shaped_id_def(&mozc);
+        fs::write(
+            mozc.join("dictionary00.txt"),
+            "たなか\t1921\t1921\t5000\t田中\n",
+        )
+        .unwrap();
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let entries = build_entries(
+            "extras",
+            &extras_dir.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[("mozc".to_string(), mozc.to_string_lossy().into_owned())],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+        let tanaka = entries["たなか"]
+            .iter()
+            .find(|e| e.surface == "田中")
+            .unwrap();
+        assert_eq!(tanaka.left_id, pin_id("名詞,固有名詞,人名,一般,*,*,*"));
+        assert_eq!(tanaka.cost, 5000 + PERSON_NAME_COST_OFFSET);
         let komuro = entries["こむろてつや"]
             .iter()
             .find(|e| e.surface == "小室哲哉")
