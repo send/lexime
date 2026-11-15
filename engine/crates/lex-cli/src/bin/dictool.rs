@@ -55,10 +55,12 @@ enum Command {
         /// Mozc id.def for compile-time cost adjustments (person name, pronoun)
         #[arg(long)]
         id_def: Option<String>,
-        /// Additional source to merge in (cheapest-wins), formatted
-        /// as `SOURCE:DIR` (e.g. `symbols:data/symbols-raw`). Role cost offsets
-        /// apply to each source that declares them, before the merge. May be
-        /// repeated.
+        /// Additional source, formatted as `SOURCE:DIR` (e.g.
+        /// `extras:data/extras-raw`). Lattice words merge cheapest-wins;
+        /// symbol rows stay outside the lattice and are added after the merge
+        /// (a symbol that duplicates a lattice word is an error). Role cost
+        /// offsets apply to each source that declares them, before the merge.
+        /// May be repeated.
         #[arg(long = "extra-source", value_parser = parse_extra_source)]
         extra_source: Vec<(String, String)>,
     },
