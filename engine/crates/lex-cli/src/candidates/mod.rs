@@ -21,9 +21,15 @@
 //! → engine/data/extras-candidates/sudachi-{common,place,other}.tsv
 //!
 //! grep -i "椒\|醤\|油" extras-candidates/sudachi-common.tsv | head -50
-//! → review, copy promising lines to extras/food.tsv
+//! → review, promote promising lines into extras/food.tsv (see below)
 //! → PR
 //! ```
+//!
+//! Promotion is not a copy: the rows here are `reading\tsurface\tcost\tpos` with
+//! Sudachi's POS, while extras take `reading\tsurface\tpos\tcost` with an id.def
+//! tag. Follow "Adding entries" in `crate::dict_source::extras` (reorder the
+//! columns, pick the POS by its rule, decide the cost anew, write the section
+//! comment).
 //!
 //! ## Domain split
 //!
@@ -31,8 +37,8 @@
 //! cleanly split into `food` / `it` / `medical` etc. The `mine` step does a
 //! coarse split:
 //!
-//! - `sudachi-place.tsv`: `名詞,固有名詞,地名,*` — directly usable for the
-//!   `geography` extras domain.
+//! - `sudachi-place.tsv`: `名詞,固有名詞,地名,*` — the likeliest source for the
+//!   `geography` extras domain (promoted by the steps above).
 //! - `sudachi-common.tsv`: `名詞,普通名詞,一般,*` — the bulk; user grep-filters.
 //! - `sudachi-other.tsv`: everything else (verbs, adjectives, particles, ...);
 //!   rarely useful for extras but kept for completeness.

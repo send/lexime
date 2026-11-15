@@ -684,7 +684,7 @@ macOS で動作する最小限の IME を構築。
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
-| `fetch-dict-symbols` | バンドル記号 TSV の生成（ギリシャ文字・数学記号） |
+| `fetch-dict-symbols` | バンドル記号 TSV の生成（ギリシャ文字・数学記号ほかの記号） |
 | `fetch-dict-extras` | curated ドメイン TSV の生成（IT / 食 / 地理 ほか） |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
 | `dict` | 辞書のコピー |

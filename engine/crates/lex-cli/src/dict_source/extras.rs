@@ -32,7 +32,10 @@ use lex_core::dict::DictEntry;
 /// 1. **From friction**: when conversion fails for you, register in user_dict
 ///    (`dictool user-dict add`), use it for a while, then promote stable
 ///    entries to the appropriate domain TSV here. Decide the POS by the
-///    majority rule above, not by carrying it over.
+///    majority rule documented on [`ALLOWED_POS_TAGS`], not by carrying it
+///    over, and decide the cost anew (a promoted entry's old cost is not
+///    the extras value either): pick one that is sound for the word, grounded
+///    in the same reading's Mozc entries or in a before/after measurement.
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -43,7 +46,10 @@ use lex_core::dict::DictEntry;
 ///    extras grammar (`reading\tsurface\tpos\tcost`, pos an id.def tag from
 ///    `ALLOWED_POS_TAGS`) and fails the build as is. On promotion, reorder the
 ///    columns, rewrite the POS to the allowed tag the majority rule picks, and
-///    write the section comment (kind, representative words, counts).
+///    write the section comment (kind, representative words, counts). The
+///    mining cost is on Sudachi's scale, not the extras final value; decide
+///    the cost anew, grounded in the same reading's Mozc entries or in a
+///    before/after measurement.
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
