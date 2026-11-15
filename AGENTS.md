@@ -516,8 +516,9 @@ what a generic reviewer misses:
   いるが、タグ名による行ごとの POS は同じ series の次の変更で入れるので、この変更
   では置き換えない。記号が lattice の外にある間、POS id は記号経路の 1 分節にだけ
   載って運ばれ、読む段は履歴の段 (`history_rerank_at` の分節 unigram 除外
-  `is_function_word`) だけで、分節の結合 (`group_segments`) は 1 分節で早期 return
-  する。lattice 構築・Viterbi・配置・admission は読まない。再提起は再議論 —
+  `is_function_word`) だけで、2643 は pin の接続行列の機能語の範囲 (29..=433、
+  `dictool info`) の外なので挙動に効かない。分節の結合 (`group_segments`) は 1 分節で
+  早期 return する。lattice 構築・Viterbi・配置・admission は読まない。再提起は再議論 —
   上げない。見直す条件: 行ごとの POS の変更が入った時、またはこの変更の次に入らな
   かった時。
 - Prioritize conversion correctness and boundary safety over naming/style
