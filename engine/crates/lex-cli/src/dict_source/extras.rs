@@ -34,8 +34,11 @@ use lex_core::dict::DictEntry;
 ///    entries to the appropriate domain TSV here. Decide the POS by the
 ///    majority rule documented on [`ALLOWED_POS_TAGS`], not by carrying it
 ///    over, and decide the cost anew (a promoted entry's old cost is not
-///    the extras value either): pick one that is sound for the word, grounded
-///    in the same reading's Mozc entries or in a before/after measurement.
+///    the extras value either). A proper-noun row takes the cost rule on
+///    [`ALLOWED_POS_TAGS`] (the median over same-kind words, not the same
+///    reading's Mozc entries); a common-noun row picks one that is sound for
+///    the word, grounded in the same reading's Mozc entries or in a
+///    before/after measurement.
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -48,8 +51,9 @@ use lex_core::dict::DictEntry;
 ///    columns, rewrite the POS to the allowed tag the majority rule picks, and
 ///    write the section comment (kind, representative words, counts). The
 ///    mining cost is on Sudachi's scale, not the extras final value; decide
-///    the cost anew, grounded in the same reading's Mozc entries or in a
-///    before/after measurement.
+///    the cost anew (proper-noun rows by the rule on [`ALLOWED_POS_TAGS`],
+///    common-noun rows grounded in the same reading's Mozc entries or in a
+///    before/after measurement).
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
@@ -132,6 +136,31 @@ const DOMAINS: &[(&str, &str)] = &[
 ///   entries, and the representative words (including those missing from
 ///   Mozc). When one kind spans files, the full list sits in one file and
 ///   the others refer to it. Mozc upstream values are not changed.
+///
+/// ## The cost of a proper-noun row
+///
+/// The cost comes from the same sample as the POS: **cost = the median, over
+/// the representative words that have a Mozc entry in the decided POS, of
+/// each word's cheapest such entry's cost (per word, not per entry; the
+/// fractional part of an even-n median is floored; Mozc's raw value, before
+/// compile's person-name offset)**. Rows of one section (one kind) share one
+/// value. Reason: POS and cost are a pair: connection costs and the cost
+/// distribution of a POS go together, and 5000 was the default that went with
+/// 名詞,一般, not with a proper-noun subdivision. Per word, so a word with
+/// several entries in the POS (織田信長, 豊臣秀吉 in 人名,一般) counts once.
+/// The raw value is stored; the person-name offset (+2000) is compile's,
+/// applied to Mozc entries only, so curated 人名,一般 rows are about 2000
+/// cheaper than Mozc's effective full-name value.
+///
+/// - Common-noun rows are outside the rule: they keep 5000 (the 名詞,一般
+///   default) until a rank problem shows by measurement, then are derived by
+///   the same rule.
+/// - A row with a cost-override comment is outside the rule too; its value
+///   is the measured range and choice written in that row's comment.
+/// - Section comment: the one-sentence rule, n (words, not entries), the
+///   median with the min / max, and that every row of the section has this
+///   value. When one kind spans files, the full text sits with the
+///   representative words and the others refer to it.
 const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,一般,*,*,*,*,*",
     "名詞,固有名詞,一般,*,*,*,*",

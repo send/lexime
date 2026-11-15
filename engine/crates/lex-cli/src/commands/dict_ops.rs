@@ -971,9 +971,11 @@ mod tests {
         assert!(leaked.is_empty(), "untrained symbols predicted: {leaked:?}");
     }
 
-    /// The bundled extras rows whose cost is not 5000 (the cost-overrides).
-    /// Written here, not read from the TSVs, so a changed cost in a TSV fails
-    /// T9.
+    /// The bundled extras rows with a cost-override: a value chosen by
+    /// measurement, outside both the 5000 default of the common-noun rows
+    /// and the proper-noun derivation. Written here, not read from the TSVs,
+    /// so a changed cost in a TSV fails T9. (`あくゆう` / `そうそう` are still
+    /// 8000: the value is decided later by measurement.)
     const EXTRAS_COST_OVERRIDES: &[(&str, i16)] = &[
         ("あくゆう", 8000),
         ("そうそう", 8000),
@@ -981,9 +983,22 @@ mod tests {
         ("ましん", 3500),
     ];
 
+    /// The cost of a proper-noun row by its tag: the median, over the
+    /// representative words, of each word's cheapest Mozc entry in that POS
+    /// (per word, floored, Mozc's raw value — see `ALLOWED_POS_TAGS`).
+    /// Written here, not read from the TSVs.
+    const EXTRAS_PROPER_NOUN_COSTS: &[(&str, i16)] = &[
+        ("名詞,固有名詞,人名,一般,*,*,*", 3402),
+        ("名詞,固有名詞,人名,名,*,*,*", 5889),
+        ("名詞,固有名詞,組織,*,*,*,*", 4273),
+        ("名詞,固有名詞,一般,*,*,*,*", 4403),
+        ("名詞,固有名詞,地域,一般,*,*,*", 5779),
+        ("名詞,固有名詞,地域,国,*,*,*", 3546),
+    ];
+
     /// T9: compiled through `build_entries` with a pin-shaped id.def, every
-    /// bundled extras row keeps its surface and its cost (5000, or the
-    /// override) and gets the id of its tag — the person-name rows included:
+    /// bundled extras row keeps its surface and its cost (5000 for a common
+    /// noun, the per-POS derived value for a proper noun, or the override) and gets the id of its tag — the person-name rows included:
     /// the role-based offsets (+2000 for 人名) belong to the Mozc import and
     /// are applied before the extras merge, never to a curated row. A Mozc
     /// 人名 row still gets the offset, and the two Mozc rows the bundled
@@ -1030,6 +1045,7 @@ mod tests {
             let want_cost = EXTRAS_COST_OVERRIDES
                 .iter()
                 .find(|(r, _)| *r == reading)
+                .or_else(|| EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag))
                 .map_or(5000, |&(_, c)| c);
             let want_id = pin_id(tag);
             assert_eq!(
@@ -1049,7 +1065,7 @@ mod tests {
         };
         assert_eq!(mozc_entry("たなか"), (1921, 5000 + PERSON_NAME_COST_OFFSET));
         assert_eq!(mozc_entry("かんじ"), (1851, 5100));
-        assert_eq!(mozc_entry("いっぽどう"), (1929, 5000));
+        assert_eq!(mozc_entry("いっぽどう"), (1929, 4273));
         assert_eq!(mozc_entry("ましん"), (1851, 3500));
     }
 

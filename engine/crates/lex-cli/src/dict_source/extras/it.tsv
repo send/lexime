@@ -17,6 +17,11 @@
 # split, is the POS decided by the word's meaning. Each section (a block of
 # rows of one kind) carries a comment with the kind, the representative words
 # and the counts. The full rule is the doc of ALLOWED_POS_TAGS in extras.rs.
+#
+# Cost rule: a proper-noun row's cost is the median, over the same
+# representative words, of each word's cheapest Mozc entry in the decided POS
+# (floored, Mozc's raw value), stated in the section comment; the full rule is
+# in the same ALLOWED_POS_TAGS doc.
 
 # 種類 = 概念・物の名 (CS / 業務 / 開発用語)。判定: 普通名詞 16/16 が過半
 # かつ単独最多 → 名詞,一般 (他の区分 固有名詞,一般 1/16)。
