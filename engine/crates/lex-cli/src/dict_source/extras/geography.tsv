@@ -1,8 +1,16 @@
 # Lexime curated extras: place names & geography vocabulary (regional
 # place readings, cartographic terms) not covered by Mozc UT.
 #
-# Format: reading[TAB]surface[TAB]cost(optional)
+# Format: reading[TAB]surface[TAB]pos[TAB]cost (pos: an id.def tag from
+# ALLOWED_POS_TAGS in extras.rs; cost: required, the final cost).
 # Comment lines start with '#'. See it.tsv for full format spec.
 
-# --- 京都の地名 ---
-きららざか	雲母坂	名詞,一般,*,*,*,*,*	5000
+# --- 場所 = 坂 (京都の地名) ---
+# 種類 = 場所 (坂の名)。判定: 地域,一般 6/6 が過半かつ単独最多 → 名詞,固有名詞,地域,一般
+# (他の区分: 固有名詞,一般 2/6・普通名詞 1/6)。
+# 代表語 13 / Mozc に在る 10 / 票を持つ 6。除いた別語のエントリ 7 件 (清水坂 (しみずざか)
+# の 組織、神楽坂・乃木坂 の 人名,姓、九段坂・三年坂・二年坂 の 名詞,数,漢数字、権之助坂 の
+# 人名,姓 — 九段坂・三年坂・二年坂・権之助坂 は別語のエントリだけ)。
+# 代表語: 道玄坂 清水坂 (しみずざか) 神楽坂 乃木坂 紀尾井坂 三宅坂 九段坂 三年坂 二年坂
+#   権之助坂 / Mozc に無い: 清水坂 (きよみずざか) 宮益坂 霊南坂
+きららざか	雲母坂	名詞,固有名詞,地域,一般,*,*,*	5000

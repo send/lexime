@@ -144,7 +144,7 @@ pub(super) fn resolve_pos_ids(
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use std::fs;
     use std::path::{Path, PathBuf};
 

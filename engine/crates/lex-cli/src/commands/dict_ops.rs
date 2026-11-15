@@ -122,9 +122,11 @@ pub(crate) fn build_entries(
         .map_err(|e| format!("resolving POS ids: {e}"))?;
     let mut symbols = take_symbols(&mut entries);
 
-    // Parse extra sources up front, but defer merging until after id.def
-    // adjustments below — extras carry hand-tuned costs that must not be
-    // rewritten by role-based offsets.
+    // Parse extra sources up front, but defer merging until after the
+    // role-based cost offsets below. The curated sources (symbols, extras)
+    // carry final costs; the offsets (person name / pronoun /
+    // non-independent kanji) belong to the Mozc import and are not applied
+    // to them — not even to an extras row whose POS is a person name.
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {
@@ -965,6 +967,108 @@ mod tests {
             prefixes.len()
         );
         assert!(leaked.is_empty(), "untrained symbols predicted: {leaked:?}");
+    }
+
+    /// The bundled extras rows whose cost is not 5000 (the cost-overrides).
+    /// Written here, not read from the TSVs, so a changed cost in a TSV fails
+    /// T9.
+    const EXTRAS_COST_OVERRIDES: &[(&str, i16)] = &[
+        ("あくゆう", 8000),
+        ("そうそう", 8000),
+        ("かんぽう", 7000),
+        ("ましん", 3500),
+    ];
+
+    /// T9: compiled through `build_entries` with a pin-shaped id.def, every
+    /// bundled extras row keeps its surface and its cost (5000, or the
+    /// override) and gets the id of its tag — the person-name rows included:
+    /// the role-based offsets (+2000 for 人名) belong to the Mozc import and
+    /// are applied before the extras merge, never to a curated row. A Mozc
+    /// 人名 row still gets the offset, and the two Mozc rows the bundled
+    /// extras share (一保堂, マシン — as in the pin) are replaced by the
+    /// cheaper extras row.
+    #[test]
+    fn t9_extras_cost_is_final_and_mozc_keeps_its_offset() {
+        use crate::dict_source::test_support::{pin_shaped_id_def, PIN_SHAPED_IDS};
+        let root = std::env::temp_dir().join(format!("lexime_test_t9_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mozc = root.join("mozc");
+        fs::create_dir_all(&mozc).unwrap();
+        let id_def = pin_shaped_id_def(&mozc);
+        fs::write(
+            mozc.join("dictionary00.txt"),
+            "たなか\t1921\t1921\t5000\t田中\n\
+             かんじ\t1851\t1851\t5100\t漢字\n\
+             いっぽどう\t1922\t1922\t6898\t一保堂\n\
+             ましん\t1851\t1851\t4241\tマシン\n",
+        )
+        .unwrap();
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let rows: Vec<Vec<String>> = fs::read_dir(&extras_dir)
+            .unwrap()
+            .filter_map(|e| {
+                let p = e.unwrap().path();
+                (p.extension()? == "tsv").then(|| fs::read_to_string(p).unwrap())
+            })
+            .flat_map(|c| {
+                c.lines()
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(|l| l.split('\t').map(String::from).collect())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let entries = build_entries(
+            "mozc",
+            &mozc.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[(
+                "extras".to_string(),
+                extras_dir.to_string_lossy().into_owned(),
+            )],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+
+        let pin_id = |tag: &str| {
+            PIN_SHAPED_IDS
+                .iter()
+                .find(|(_, t)| *t == tag)
+                .map(|&(id, _)| id as u16)
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 47);
+        for row in &rows {
+            let (reading, surface, tag) = (&row[0], &row[1], &row[2]);
+            let same: Vec<&DictEntry> = entries[reading]
+                .iter()
+                .filter(|e| e.surface == *surface)
+                .collect();
+            assert_eq!(same.len(), 1, "{row:?}");
+            let want_cost = EXTRAS_COST_OVERRIDES
+                .iter()
+                .find(|(r, _)| r == reading)
+                .map_or(5000, |&(_, c)| c);
+            let want_id = pin_id(tag);
+            assert_eq!(
+                (same[0].left_id, same[0].right_id, same[0].cost),
+                (want_id, want_id, want_cost),
+                "{row:?}"
+            );
+            assert!(!same[0].symbol);
+        }
+        let person = rows.iter().filter(|r| r[2].contains("人名")).count();
+        assert_eq!(person, 11);
+
+        let mozc_entry = |reading: &str| {
+            let list = &entries[reading];
+            assert_eq!(list.len(), 1, "{list:?}");
+            (list[0].left_id, list[0].cost)
+        };
+        assert_eq!(mozc_entry("たなか"), (1921, 5000 + PERSON_NAME_COST_OFFSET));
+        assert_eq!(mozc_entry("かんじ"), (1851, 5100));
+        assert_eq!(mozc_entry("いっぽどう"), (1929, 5000));
+        assert_eq!(mozc_entry("ましん"), (1851, 3500));
     }
 
     /// `build_entries` over the pinned mozc-raw and the bundled symbols and

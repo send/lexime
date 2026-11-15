@@ -55,6 +55,71 @@ const DOMAINS: &[(&str, &str)] = &[
 /// hardcoded one silently degrades entries when a pin bump renumbers them
 /// (#273: the old constant drifted onto 名詞,一般,あと and every entry paid a
 /// +3777 BOS-connection penalty; see #279).
+///
+/// ## Which tag a row takes (the full rule; CLAUDE.md 設計哲学 states it short)
+///
+/// **One rule, for proper vs. common noun and for the subdivision alike: a
+/// row takes the majority POS that Mozc (the pinned mozc-raw) gives to words
+/// of the same kind. Only when Mozc has no word of that kind, or the count is
+/// split, is the POS decided by the word's meaning.** The rule and the counts
+/// are data in the TSVs (section comments); no code branches on a word.
+///
+/// - **Kind** = what the word denotes (person / organization / place /
+///   country / era / work / rank / thing or concept). Kinds are not split by
+///   period, region or field (Japanese and Chinese persons are one kind;
+///   publishers and tea houses are one kind), except along a property that
+///   the id.def subdivisions themselves distinguish. id.def's 人名 splits 姓 /
+///   名 / 一般 (full name) by which part of a name the word is — not by period
+///   or region — so a **full name** (姓 + 名, 曹操 = 曹 + 操) and a **title**
+///   (an emperor's name such as 武帝 or 文帝: a single appellation with no
+///   surname, not a 姓 + 名 pair) are different kinds. Pooling titles with
+///   full names would count a kind that ignores the very property id.def
+///   distinguishes.
+/// - **Representative words** = words of the same kind looked up in Mozc
+///   (extras' own words are not counted). Every word looked up is listed in
+///   the section comment, including those Mozc does not have, so the choice
+///   can be reviewed.
+/// - **Counting**: for each representative word, take the set of POS of its
+///   Mozc entries with that (reading, surface) and map each to a bucket. A
+///   名詞,固有名詞 subdivision is one bucket as is (固有名詞,一般 / 人名,一般 /
+///   人名,名 / 人名,姓 / 組織 / 地域,一般 / 地域,国 …); the five content-noun
+///   classes (名詞,一般 / サ変接続 / 形容動詞語幹 / 副詞可能 / ナイ形容詞語幹)
+///   are one bucket, "common noun". Each word casts one vote per bucket it
+///   has (a word with several buckets votes in each, never twice in one).
+///   The cheapest entry does not decide. A common noun is written 名詞,一般
+///   (the finer classes are grammar — する / な — and a word that needs one
+///   adds that tag here in the same change).
+/// - **Entries counted as another word** (the excluded count is recorded;
+///   only what the POS alone decides, on both the proper and the common
+///   side): (i) a proper-noun bucket that contradicts what the kind denotes
+///   — 人名 / 組織 / 地域 on an era, work, rank or thing; 人名 / 組織 on a
+///   country or place; 組織 / 地域 on a person; 人名 / 地域 on an
+///   organization. (ii) a grammatical class that is no name of a thing: every
+///   noun subdivision other than the five common-noun classes and
+///   名詞,固有名詞 (名詞,数 / 接尾 (incl. 助数詞) / 接尾可能 / 代名詞 / 非自立 /
+///   特殊 / 接続詞的 / 動詞非自立的 / 引用文字列), and every non-noun.
+///   **Homographs inside one bucket are not excluded** (an era's 文化 =
+///   culture 名詞,サ変接続, 文明 = civilization 名詞,一般): the POS cannot
+///   tell them apart, and telling them apart word by word would turn the
+///   rule back into per-word judgement. They stay in the count, and the
+///   section comment states whether dropping them changes the result.
+/// - **Majority** (the canonical sentence; CLAUDE.md 設計哲学 states the
+///   same definition):
+///   「多数派 = 票を持つ代表語の数の過半の票を得て、かつ単独で最多の区分。最多が同数か、過半の票を得た区分が無ければ割れ」 —
+///   with n the number of representative words that cast a vote, the bucket
+///   with the most votes k, if 2k > n and no other bucket also has k. Since
+///   a word may vote in several buckets, two buckets can both exceed half;
+///   the strict top one wins.
+/// - **Split** (a tie at the top, or no bucket over half): decide by meaning
+///   — a common noun is 名詞,一般; a proper noun takes the id.def
+///   subdivision whose definition fits (a full name = 人名,一般, a country =
+///   地域,国, a work = 固有名詞,一般 as id.def has no subdivision for works).
+/// - **Section comment** (a section = a block of rows of one kind): the kind
+///   and the resulting POS, the votes (k/n and the main buckets), for a split
+///   the reason the meaning gives, the number of excluded other-word
+///   entries, and the representative words (including those missing from
+///   Mozc). When one kind spans files, the full list sits in one file and
+///   the others refer to it. Mozc upstream values are not changed.
 const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,一般,*,*,*,*,*",
     "名詞,固有名詞,一般,*,*,*,*",
@@ -112,7 +177,7 @@ impl DictSource for ExtrasSource {
 
 #[cfg(test)]
 mod tests {
-    use super::curated::test_support::{pin_shaped_id_def, scratch, write_id_def};
+    use super::curated::test_support::{pin_shaped_id_def, scratch, write_id_def, PIN_SHAPED_IDS};
     use super::*;
 
     const IPPAN: &str = "名詞,一般,*,*,*,*,*";
@@ -192,8 +257,10 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// T1: the bundled TSVs resolve by tag name against a pin-shaped id.def.
-    /// Every row is 名詞,一般 (1851) for now.
+    /// T1: the bundled TSVs resolve by tag name against a pin-shaped id.def:
+    /// each entry gets the pinned id of the tag its row writes (名詞,一般 =
+    /// 1851, the 固有名詞 subdivisions 1920〜1929), never 1851 for a proper
+    /// noun row.
     #[test]
     fn t1_bundled_resolves_by_tag_name() {
         let (dir, mut entries) = parse_bundled("t1");
@@ -201,9 +268,24 @@ mod tests {
         ExtrasSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        for entry in entries.values().flatten() {
-            assert_eq!((entry.left_id, entry.right_id), (1851, 1851), "{entry:?}");
+        let pin_id = |tag: &str| {
+            PIN_SHAPED_IDS
+                .iter()
+                .find(|(_, t)| *t == tag)
+                .map(|&(id, _)| id as u16)
+                .unwrap()
+        };
+        let rows = bundled_rows();
+        for fields in &rows {
+            let entry = entries[fields[0]]
+                .iter()
+                .find(|e| e.surface == fields[1])
+                .unwrap();
+            let want = pin_id(fields[2]);
+            assert_eq!((entry.left_id, entry.right_id), (want, want), "{fields:?}");
         }
+        let proper = rows.iter().filter(|f| f[2] != IPPAN).count();
+        assert_eq!(proper, 25);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -351,14 +433,68 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// T8: the tag written on each bundled row (every row 名詞,一般 for now).
+    /// The rows whose POS is not 名詞,一般, by (reading, tag) — the
+    /// section judgements of the TSV comments (the majority of Mozc's POS for
+    /// the same kind; split kinds by meaning).
+    const PROPER_NOUN_ROWS: &[(&str, &str)] = &[
+        // culture: 組織
+        ("しんちょうぶんこ", SOSHIKI),
+        ("ちゅうこうぶんこ", SOSHIKI),
+        ("ちゅうおうこうろんしんしゃ", SOSHIKI),
+        ("とうきょうだいがくしゅっぱんかい", SOSHIKI),
+        ("せいぶんどうしんこうしゃ", SOSHIKI),
+        ("こうぶんどう", SOSHIKI),
+        // culture: 書名
+        ("かどかわにほんちめいだいじてん", KOYU_IPPAN),
+        ("こくしだいじてん", KOYU_IPPAN),
+        // culture: 全名
+        ("こむろてつや", JINMEI_IPPAN),
+        ("あきもとやすし", JINMEI_IPPAN),
+        ("まつとうやゆみ", JINMEI_IPPAN),
+        ("あむろなみえ", JINMEI_IPPAN),
+        ("さわだけんじ", JINMEI_IPPAN),
+        ("つつみきょうへい", JINMEI_IPPAN),
+        ("まつもとたかし", JINMEI_IPPAN),
+        ("みずきなな", JINMEI_IPPAN),
+        ("あくゆう", JINMEI_IPPAN),
+        // food: 組織
+        ("いっぽどう", SOSHIKI),
+        // geography: 坂
+        ("きららざか", "名詞,固有名詞,地域,一般,*,*,*"),
+        // history: 書名 / 称号 / 国 / 全名
+        ("しょくにほんぎ", KOYU_IPPAN),
+        ("かんせいちょうしゅうしょかふ", KOYU_IPPAN),
+        ("せんしそうしょ", KOYU_IPPAN),
+        ("ぶてい", "名詞,固有名詞,人名,名,*,*,*"),
+        ("ほくぎ", "名詞,固有名詞,地域,国,*,*,*"),
+        ("そうそう", JINMEI_IPPAN),
+    ];
+    const SOSHIKI: &str = "名詞,固有名詞,組織,*,*,*,*";
+    const KOYU_IPPAN: &str = "名詞,固有名詞,一般,*,*,*,*";
+    const JINMEI_IPPAN: &str = "名詞,固有名詞,人名,一般,*,*,*";
+
+    /// T8: the tag written on each bundled row — the 25 rows of
+    /// [`PROPER_NOUN_ROWS`], 名詞,一般 on the other 22 — and the count per
+    /// tag.
     #[test]
     fn t8_bundled_tags() {
         let rows = bundled_rows();
         for fields in &rows {
-            assert_eq!(fields[2], IPPAN, "{fields:?}");
+            let want = PROPER_NOUN_ROWS
+                .iter()
+                .find(|(r, _)| *r == fields[0])
+                .map_or(IPPAN, |&(_, tag)| tag);
+            assert_eq!(fields[2], want, "{fields:?}");
         }
+        let count = |tag: &str| rows.iter().filter(|f| f[2] == tag).count();
+        let counts: Vec<usize> = ALLOWED_POS_TAGS.iter().map(|t| count(t)).collect();
+        // ALLOWED_POS_TAGS order: 名詞,一般 / 固有名詞,一般 / 人名,一般 /
+        // 人名,名 / 組織 / 地域,一般 / 地域,国.
+        assert_eq!(counts, [22, 5, 10, 1, 7, 1, 1]);
         assert_eq!(rows.len(), 47);
+        assert!(PROPER_NOUN_ROWS
+            .iter()
+            .all(|(r, _)| rows.iter().filter(|f| f[0] == *r).count() == 1));
     }
 
     /// T10: after resolution every id is a row of id.def — no sentinel left.

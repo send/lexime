@@ -15,6 +15,11 @@
 # a duplicate inside symbols is a build error too.
 # A symbol's cost is its row index among the rows with the same reading
 # (0, 1, 2, … in file order), so the row order is the candidate order.
+# curated ソースの入れ先: 助数詞として Viterbi で入力した数字と結合させる Latin
+# 単位は extras、それ以外の記号 — Mozc の symbol.tsv に在る字、数字の後ろで使う
+# 字でも Latin を含まずその結合の対象にならないもの (° ′ ″) を含む — は symbols
+# (読み全体の候補、位置規則で届く)。挙動のためにソースを選ばない。extras の他の行
+# (既存 47 行) は語 (名詞) で lattice に居る — 「extras = 単位だけ」ではない。
 
 # --- Greek letters (lowercase) ---
 あるふぁ	α	記号,アルファベット,*,*,*,*,*

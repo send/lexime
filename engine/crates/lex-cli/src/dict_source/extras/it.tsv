@@ -1,16 +1,25 @@
 # Lexime curated extras: IT / business vocabulary not covered by Mozc UT.
 #
-# Format: reading[TAB]surface[TAB]cost(optional)
+# Format: reading[TAB]surface[TAB]pos[TAB]cost (exactly 4 columns)
 #   - reading: hiragana
-#   - cost: i16. Default 5000 (mid). Lower = higher rank.
+#   - pos: a full 7-field id.def POS tag, one of ALLOWED_POS_TAGS in
+#     extras.rs. compile resolves the tag to its numeric id from the pinned
+#     id.def; a tag outside the set, a tag missing from id.def, or a missing
+#     id.def fails the build.
+#   - cost: required, a non-negative i16. Lower = higher rank. It is the
+#     entry's final cost: compile's POS-based cost offsets (person name etc.)
+#     belong to the Mozc import and are not applied to extras rows.
 # Comment lines start with '#'. Blank lines are ignored.
 #
-# All entries use the 名詞,一般 POS id, resolved from the pinned id.def at
-# compile time (DEFAULT_POS_TAG in extras.rs — #279 made this dynamic after
-# a pin bump renumbered the previously hardcoded id, see #273). For proper
-# nouns that POS is a known, deferred inaccuracy. CLAUDE.md 設計哲学 lists it
-# as an exception, with the trigger and the fix form; check it before adding
-# a word that is not a noun.
+# POS rule: an extras row takes the majority POS that Mozc (the pinned
+# mozc-raw) gives to words of the same kind — proper noun or common noun, and
+# the subdivision. Only when Mozc has no word of that kind, or the count is
+# split, is the POS decided by the word's meaning. Each section (a block of
+# rows of one kind) carries a comment with the kind, the representative words
+# and the counts. The full rule is the doc of ALLOWED_POS_TAGS in extras.rs.
+
+# 種類 = 概念の名 (数学・業務・開発用語)。Mozc の同じ種類の語は普通名詞
+# → 名詞,一般 (代表語は数えていない)。以下この file の全行。
 
 # --- 数学 / CS ---
 べきとう	冪等	名詞,一般,*,*,*,*,*	5000
