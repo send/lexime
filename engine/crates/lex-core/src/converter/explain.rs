@@ -20,6 +20,7 @@ use super::{ConversionContext, HistoryAt};
 // Re-export so downstream crates (e.g. lex-cli) can name the type behind
 // `ExplainPath::history_breakdown` — the definition lives in the crate-private
 // `reranker` module.
+pub use super::postprocess::SymbolCandidate;
 pub use super::reranker::HistoryBoostBreakdown;
 pub use super::rewriter::{PolicyPrice, PolicyRule};
 
@@ -34,10 +35,14 @@ pub struct ExplainResult {
     pub lattice_char_count: usize,
     pub lattice_nodes: Vec<ExplainNode>,
     pub paths: Vec<ExplainPath>,
-    /// The list at the end of the Model stage: after rerank and the variant
-    /// offers, before history, admission and the Override stage (what
-    /// `PostprocessObserver::after_rerank` sees), in list order.
+    /// The list at the end of the Model stage: after rerank, the variant
+    /// offers and the symbol placement, before history, admission and the
+    /// Override stage (what `PostprocessObserver::after_rerank` sees), in
+    /// list order.
     pub after_rerank: Vec<AfterRerankPath>,
+    /// The symbols the placement inserted for this reading, in row order,
+    /// with the position rule's record (what the placement reported).
+    pub symbol_candidates: Vec<SymbolCandidate>,
     /// The `[candidates] max_cost_gap` the pipeline ran with.
     pub max_cost_gap: i64,
     /// The bound admission applied above the anchor: `max_cost_gap`, never
@@ -150,7 +155,7 @@ pub struct ExplainPath {
     /// What Viterbi charges for these segments' ids and costs, before the
     /// rerank features (over the ungrouped nodes; a PartialHiragana fallback
     /// carries the kanji node's under its reading); `None` for a synthetic
-    /// single segment (kana rescue, Numeric, Katakana).
+    /// single segment (kana rescue, Numeric, Katakana, a symbol).
     pub model_cost: Option<i64>,
     /// For a path not priced by the model (an offer, the kana rescue, a
     /// policy price, or a path an offer or the kana rescue repriced): its price before
@@ -179,7 +184,7 @@ pub struct ExplainPath {
     pub policy_price: Option<PolicyPrice>,
     /// Cost-gap admission's verdict on the path: its pre-history gap to the
     /// anchor when admission kept it by that price; `None` for the head, an
-    /// exempt path (learned, the typed kana) or a policy price.
+    /// exempt path (learned, the typed kana, a symbol) or a policy price.
     pub admission_gap: Option<i64>,
 }
 
@@ -301,6 +306,8 @@ struct ExplainObserver<'a> {
     columns: HashMap<String, PathColumns>,
     /// The Model-stage list (see [`ExplainResult::after_rerank`]).
     after_rerank: Vec<AfterRerankPath>,
+    /// What the symbol placement reported.
+    symbol_candidates: Vec<SymbolCandidate>,
     /// Single-kanji segments of each final path, before `group_segments`.
     single_kanji: HashMap<String, Vec<SingleKanjiSegment>>,
     dict: &'a dyn Dictionary,
@@ -329,6 +336,7 @@ impl<'a> ExplainObserver<'a> {
             override_boosts: HashMap::new(),
             columns: HashMap::new(),
             after_rerank: Vec::new(),
+            symbol_candidates: Vec::new(),
             single_kanji: HashMap::new(),
             dict,
             pricer: FeaturePricer::new(conn, Some(dict)),
@@ -351,6 +359,10 @@ impl PostprocessObserver for ExplainObserver<'_> {
 
     fn reranked(&mut self, priced: bool) {
         self.reranked = priced;
+    }
+
+    fn symbols_placed(&mut self, placed: &[SymbolCandidate]) {
+        self.symbol_candidates = placed.to_vec();
     }
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
@@ -556,13 +568,17 @@ fn single_kanji_segments(
 /// Whether the rerank features are in the price of a path whose price
 /// `priced_by` set: rerank's (a model price, unless rerank left a lone path
 /// unpriced), or an offer's (KanjiVariant / PartialHiragana, priced by the
-/// same pricer, and adopted by a path they repriced). The kana rescue, Numeric
-/// and Katakana set prices without them, whatever segments the path has.
+/// same pricer, and adopted by a path they repriced). The kana rescue, Numeric,
+/// Katakana and a symbol's copied price are set without them, whatever
+/// segments the path has.
 fn features_in_price(priced_by: PathOrigin, rerank_ran: bool) -> bool {
     match priced_by {
         PathOrigin::Viterbi | PathOrigin::Resegment => rerank_ran,
         PathOrigin::KanjiVariant | PathOrigin::PartialHiragana => true,
-        PathOrigin::HiraganaVariant | PathOrigin::Numeric | PathOrigin::Katakana => false,
+        PathOrigin::HiraganaVariant
+        | PathOrigin::Numeric
+        | PathOrigin::Katakana
+        | PathOrigin::Symbol => false,
     }
 }
 
@@ -647,6 +663,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
             after_rerank: Vec::new(),
+            symbol_candidates: Vec::new(),
             max_cost_gap,
             cost_gap_bound: admission_bound(max_cost_gap),
             cost_gap_anchor: 0,
@@ -789,6 +806,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         lattice_nodes,
         paths,
         after_rerank,
+        symbol_candidates: std::mem::take(&mut observer.symbol_candidates),
         max_cost_gap: ctx.max_cost_gap,
         cost_gap_bound: admission_bound(ctx.max_cost_gap),
         cost_gap_anchor: anchor,
@@ -947,6 +965,7 @@ pub fn format_text(result: &ExplainResult) -> String {
     }
 
     format_dropped(result, &mut out);
+    format_symbols(result, &mut out);
     if !result.policy_price_inconsistent.is_empty() {
         out.push_str(&format!(
             "\n=== Policy price inconsistent (pipeline bug): {} ===\n",
@@ -954,6 +973,27 @@ pub fn format_text(result: &ExplainResult) -> String {
         ));
     }
     out
+}
+
+/// The symbols the placement inserted (positions in its population).
+fn format_symbols(result: &ExplainResult, out: &mut String) {
+    if let Some(first) = result.symbol_candidates.first() {
+        out.push_str(&format!(
+            "\n=== Symbols placed ({}; population={}, skipped={}, price={}{}) ===\n",
+            result.symbol_candidates.len(),
+            first.population,
+            first.skipped,
+            first.price,
+            if first.copied_from_identity {
+                ", copied from the kana"
+            } else {
+                ""
+            },
+        ));
+        for c in &result.symbol_candidates {
+            out.push_str(&format!("  {}  (p={})\n", c.surface, c.position));
+        }
+    }
 }
 
 /// The paths cost-gap admission dropped.
@@ -1883,9 +1923,10 @@ mod tests {
                 let in_price = match p.priced_by {
                     PathOrigin::KanjiVariant | PathOrigin::PartialHiragana => true,
                     PathOrigin::Viterbi | PathOrigin::Resegment => result.model_paths.len() > 1,
-                    PathOrigin::HiraganaVariant | PathOrigin::Numeric | PathOrigin::Katakana => {
-                        false
-                    }
+                    PathOrigin::HiraganaVariant
+                    | PathOrigin::Numeric
+                    | PathOrigin::Katakana
+                    | PathOrigin::Symbol => false,
                 };
                 let carries = p.model_cost.is_some() && in_price;
                 assert_eq!(
@@ -1922,6 +1963,7 @@ mod tests {
             (HiraganaVariant, true, false),
             (Numeric, true, false),
             (Katakana, true, false),
+            (Symbol, true, false),
         ] {
             assert_eq!(features_in_price(by, ran), want, "{by:?} ran={ran}");
         }

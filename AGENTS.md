@@ -498,6 +498,19 @@ what a generic reviewer misses:
   The corpus files use `deny_unknown_fields` on purpose (a misspelled corpus
   key must fail); that is not a precedent for settings.toml. Known gap: keys
   inside a `[snippets.variables.<name>]` entry are not reported.
+- **記号は lattice の外 (settled)**: 記号 (lexime 同梱 symbols ソース) は
+  lattice の外。読み全体の候補として、Mozc の SymbolRewriter と同じ位置規則
+  (既定位置 3、1 文字漢字・かなを飛ばす、履歴候補ぶんは履歴の段が担う) を
+  **admission が価格で残す候補の列** に当て、その直前の候補の価格を写して挿入
+  する。記号候補は admission を免除される (価格は位置を保つための写し)。記号の
+  cost 列は無く、辞書の cost フィールドは同読みの行順。未学習の記号は予測に出ない
+  (`predict_ranked` の中で除く)。Mozc の 記号,一般 の語は lattice の語で記号では
+  ない。記号の判定はソースで、POS ではない。curated ソースの入れ先: 助数詞として
+  Viterbi で入力した数字と結合させる Latin 単位は extras、それ以外
+  の記号 — Mozc の `symbol.tsv` に在る字、数字の後ろで使う字でも Latin を含まず
+  その結合の対象にならないもの (° ′ ″) を含む — は symbols (読み全体の候補、位置規則
+  で届く)。挙動のためにソースを選ばない。extras の他の行 (既存 47 行) は語 (名詞)
+  で lattice に居る — 「extras = 単位だけ」ではない。
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 

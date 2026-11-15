@@ -1,12 +1,14 @@
 use tracing::debug_span;
 
 use crate::dict::connection::ConnectionMatrix;
+use crate::dict::Dictionary;
+use crate::unicode::symbol_skip;
 
 use super::lattice::Lattice;
 use super::reranker;
 use super::resegment;
 use super::rewriter;
-use super::viterbi::{RichSegment, ScoredPath};
+use super::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use super::ConversionContext;
 
 // ---------------------------------------------------------------------------
@@ -24,7 +26,11 @@ pub(crate) trait PostprocessObserver {
     /// Called right after rerank, with whether it priced the paths (it
     /// leaves a lone path alone).
     fn reranked(&mut self, _priced: bool) {}
-    /// Called after resegment + rerank + variant rewriters, before history_rerank.
+    /// Called after the symbol placement with the symbols it inserted (none
+    /// when the reading has no unlisted symbol).
+    fn symbols_placed(&mut self, _placed: &[SymbolCandidate]) {}
+    /// Called after resegment + rerank + variant rewriters + symbol
+    /// placement, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
     /// Called for each path cost-gap admission drops, with the gap's base
     /// (the pre-history #1's cost).
@@ -66,8 +72,9 @@ pub(crate) struct PostprocessContext<'a> {
 // ---------------------------------------------------------------------------
 
 /// Shared post-processing pipeline: resegment → rerank → hiragana / partial
-/// / kanji-variant rewriters → history_rerank → cost-gap admission → n
-/// model-priced paths (offers ride along) → numeric/katakana → group.
+/// / kanji-variant rewriters → symbol placement → history_rerank → cost-gap
+/// admission → n model-priced paths (offers and symbols ride along) →
+/// numeric/katakana → group.
 pub(super) fn postprocess(
     paths: &mut Vec<ScoredPath>,
     lattice: &Lattice,
@@ -136,6 +143,12 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     };
     rewriter::run_rewriters(variants, paths, kana);
 
+    // Symbols of the whole reading, by position (always, at every n and
+    // with or without history): after the offers, whose kana and single
+    // kanji the position rule steps over, and before the anchor is taken.
+    let placed = place_symbols(paths, ctx.conv.dict, kana, ctx.max_cost_gap);
+    observer.symbols_placed(&placed);
+
     observer.after_rerank(paths);
 
     // The rerank best before history. Its cost is what number compounds are
@@ -202,16 +215,113 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     top
 }
 
+/// Where the symbol placement puts a reading's symbols when nothing is
+/// stepped over: Mozc's `symbol_rewriter_candidate_position` default. A
+/// position, not a price, so not a setting.
+pub(crate) const SYMBOL_INSERT_OFFSET: usize = 3;
+
+/// One symbol [`place_symbols`] inserted (explain's `symbol_candidates`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SymbolCandidate {
+    pub surface: String,
+    /// The position rule's `p` in the population (the paths admission keeps
+    /// by price): the reading's symbols take `p`, `p + 1`, … in row order.
+    pub position: usize,
+    /// Population paths the rule stepped over (`symbol_skip`) past the
+    /// default position.
+    pub skipped: usize,
+    /// Size of the population the position was counted in.
+    pub population: usize,
+    /// The price copied from the population's `p − 1`-th path.
+    pub price: i64,
+    /// That path is the typed kana (`is_identity`).
+    pub copied_from_identity: bool,
+}
+
+/// Insert the whole reading's symbol entries (`DictEntry::symbol`, row
+/// order) whose surface is not listed yet — Mozc's `SymbolRewriter`
+/// position rule over the population admission keeps by price (index 0 and
+/// [`admission_keeps`] at the anchor `paths[0]`'s cost): position
+/// `min(SYMBOL_INSERT_OFFSET, population)`, then past every population path
+/// [`symbol_skip`] names; the symbols go right after the population's
+/// `p − 1`-th path and copy its price, so the cost order (and with it the
+/// position, through history's stable sort) holds. Nothing for an empty list.
+/// The price is a copy, never judged: admission exempts symbol paths. Later
+/// stages only move an unlearned symbol down (history makes other paths
+/// cheaper; the Override stage inserts by price) or a learned one to #1.
+pub(super) fn place_symbols(
+    paths: &mut Vec<ScoredPath>,
+    dict: &dyn Dictionary,
+    reading: &str,
+    max_cost_gap: i64,
+) -> Vec<SymbolCandidate> {
+    let Some(anchor) = paths.first().map(|p| p.viterbi_cost) else {
+        return Vec::new();
+    };
+    let symbols: Vec<_> = dict
+        .lookup(reading)
+        .into_iter()
+        .filter(|e| e.symbol && !paths.iter().any(|p| p.surface_key_eq(&e.surface)))
+        .collect();
+    if symbols.is_empty() {
+        return Vec::new();
+    }
+    let limit = anchor.saturating_add(admission_bound(max_cost_gap));
+    let population: Vec<usize> = (0..paths.len())
+        .filter(|&i| i == 0 || admission_keeps(&paths[i], limit))
+        .collect();
+    let start = SYMBOL_INSERT_OFFSET.min(population.len());
+    let mut p = start;
+    while p < population.len() && symbol_skip(&paths[population[p]].surface_key()) {
+        p += 1;
+    }
+    let source = population[p - 1];
+    let price = paths[source].viterbi_cost;
+    let copied_from_identity = paths[source].is_identity();
+    let mut placed = Vec::with_capacity(symbols.len());
+    for (i, e) in symbols.into_iter().enumerate() {
+        let mut path = ScoredPath::single(
+            reading.to_string(),
+            e.surface.clone(),
+            price,
+            PathOrigin::Symbol,
+        );
+        path.segments[0].left_id = e.left_id;
+        path.segments[0].right_id = e.right_id;
+        paths.insert(source + 1 + i, path);
+        placed.push(SymbolCandidate {
+            surface: e.surface,
+            position: p,
+            skipped: p - start,
+            population: population.len(),
+            price,
+            copied_from_identity,
+        });
+    }
+    placed
+}
+
+/// Admission keeps `p` by price: the typed kana (`is_identity`, #263/#271)
+/// or a pre-history cost at most `limit` (the anchor plus
+/// [`admission_bound`]). The one definition admission and the symbol
+/// placement's population share.
+pub(crate) fn admission_keeps(p: &ScoredPath, limit: i64) -> bool {
+    p.is_identity() || p.pre_history_cost() <= limit
+}
+
 /// Drop the candidates priced too far above the pre-history #1 (`anchor`):
 /// every path after index 0 must cost at most `anchor + max(max_gap,
-/// RESCUE_OFFSET)` before history. Kept whatever their gap: index 0 (the
-/// top-1, learned or not), a surface the user has committed for this reading
-/// (`whole_path_boost > 0`), and the typed kana (`is_identity`, #263/#271).
+/// RESCUE_OFFSET)` before history ([`admission_keeps`], which also keeps the
+/// typed kana, `is_identity`, #263/#271). Kept whatever their gap besides:
+/// index 0 (the top-1, learned or not), a surface the user has committed for
+/// this reading (`whole_path_boost > 0`), and a symbol (`PathOrigin::Symbol`:
+/// its price is a copy that holds its position, not a price to judge).
 /// The floor keeps the kana rescue's band (best + 4000) however the rescue's
 /// surface is priced. An offer is judged by its own price, which is never
 /// below its source's, so a dropped source takes its offers with it.
-/// `on_drop` sees each dropped path (explain lists them); each path kept by
-/// its price records its gap ([`ScoredPath::admission_gap`]).
+/// `on_drop` sees each dropped path (explain lists them); each path other
+/// than the typed kana kept by its price records its gap
+/// ([`ScoredPath::admission_gap`]).
 pub(super) fn admit_by_cost_gap(
     paths: &mut Vec<ScoredPath>,
     anchor: i64,
@@ -221,16 +331,18 @@ pub(super) fn admit_by_cost_gap(
     let limit = anchor.saturating_add(admission_bound(max_gap));
     let mut first = true;
     paths.retain_mut(|p| {
-        let exempt = std::mem::take(&mut first) || p.is_learned() || p.is_identity();
+        let exempt = std::mem::take(&mut first) || p.is_learned() || p.origin == PathOrigin::Symbol;
         p.admission_gap = None;
         if exempt {
             return true;
         }
-        if p.pre_history_cost() > limit {
+        if !admission_keeps(p, limit) {
             on_drop(p);
             return false;
         }
-        p.admission_gap = Some(p.pre_history_cost().saturating_sub(anchor));
+        if !p.is_identity() {
+            p.admission_gap = Some(p.pre_history_cost().saturating_sub(anchor));
+        }
         true
     });
 }
