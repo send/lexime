@@ -125,10 +125,11 @@ pub(crate) fn build_entries(
     // Parse extra sources up front, but defer merging until after the
     // role-based cost offsets below. The curated sources (symbols, extras)
     // carry final costs; the offsets (person name / pronoun /
-    // non-independent kanji) apply to the primary source's entries
-    // (`--source`, mozc in every mise task) and never to the extra sources:
-    // extra sources (symbols, extras) are merged after the offsets, so their
-    // costs are final — including an extras row whose POS is a person name.
+    // non-independent kanji) are part of the Mozc import, so they apply only
+    // when the primary source declares them (`applies_role_cost_offsets`;
+    // mozc in every mise task) — a curated source is outside them even as
+    // primary. Extra sources are merged after the offsets, so their costs
+    // are final too, including an extras row whose POS is a person name.
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {
@@ -155,7 +156,10 @@ pub(crate) fn build_entries(
     }
 
     // Apply compile-time cost offsets based on morpheme roles.
-    if let Some(id_def_path) = &id_def_path {
+    if let Some(id_def_path) = id_def_path
+        .as_ref()
+        .filter(|_| dict_source.applies_role_cost_offsets())
+    {
         let roles = pos_map::morpheme_roles(id_def_path)
             .map_err(|e| format!("loading morpheme roles: {e}"))?;
         let mut adjusted = 0usize;
@@ -998,6 +1002,32 @@ mod tests {
         ("名詞,固有名詞,地域,一般,*,*,*", 5779),
         ("名詞,固有名詞,地域,国,*,*,*", 3546),
     ];
+
+    /// The role offsets belong to the source that declares them (Mozc), not to
+    /// whichever source is primary: `--source extras` leaves a 人名 row at its
+    /// TSV cost. (symbols is the same — `applies_role_cost_offsets` defaults
+    /// to false — and its cost is a row order, with no role to offset.)
+    #[test]
+    fn curated_source_as_primary_is_outside_the_role_offsets() {
+        use crate::dict_source::test_support::{pin_shaped_id_def, scratch};
+        let root = scratch("curated_primary_no_offsets");
+        let id_def = pin_shaped_id_def(&root);
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let entries = build_entries(
+            "extras",
+            &extras_dir.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+        let komuro = entries["こむろてつや"]
+            .iter()
+            .find(|e| e.surface == "小室哲哉")
+            .unwrap();
+        assert_eq!(komuro.cost, 3402);
+    }
 
     /// T9: compiled through `build_entries` with a pin-shaped id.def, every
     /// bundled extras row keeps its surface and its cost (5000 for a common

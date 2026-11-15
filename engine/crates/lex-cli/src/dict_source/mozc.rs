@@ -480,6 +480,10 @@ fn parse_remote_files(json: &str) -> Result<Vec<(String, String)>, DictSourceErr
 }
 
 impl DictSource for MozcSource {
+    fn applies_role_cost_offsets(&self) -> bool {
+        true
+    }
+
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
         parse_dict_files(
             dir,

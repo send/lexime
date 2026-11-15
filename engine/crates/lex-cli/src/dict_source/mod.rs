@@ -71,6 +71,15 @@ pub trait DictSource {
     ) -> Result<(), DictSourceError> {
         Ok(())
     }
+
+    /// Whether `compile` applies its morpheme-role cost offsets (person name /
+    /// pronoun / non-independent kanji) to this source's entries when it is
+    /// the primary source. Those offsets are part of the Mozc import; a
+    /// curated source's cost is final, so the default is `false` and only
+    /// Mozc declares `true`. Extra sources are never offset either way.
+    fn applies_role_cost_offsets(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
