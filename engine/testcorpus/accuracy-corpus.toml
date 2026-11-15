@@ -1180,3 +1180,76 @@ note = "あったほうが と同じ扱い: 方が が理想だが top-1 の ほ
 [cases.window]
 n = 9
 present = ["しておいた方が"]
+
+# 記号は lattice の外 (PR1s): 読み全体の記号は Mozc の位置規則 (既定 #4) に入り、
+# 未学習では #1 にならない。main で記号が #1 だった読みは語・分節が #1 になる
+# (期待値 = 語)。ガードは before (main) の top-1 と同じ値。
+[[cases]]
+reading = "にありー"
+expected = "ニアリー"
+category = "regression"
+tags = ["symbol"]
+note = "main は ≈ が #1。記号は lattice の外で位置規則の #4 以降"
+
+[[cases]]
+reading = "ぷらすまいなす"
+expected = "プラスマイナス"
+category = "regression"
+tags = ["symbol"]
+note = "main は ± が #1"
+
+[[cases]]
+reading = "りっぽうこん"
+expected = "立方根"
+category = "regression"
+tags = ["symbol"]
+note = "main は ∛ が #1"
+
+[[cases]]
+reading = "ぞくさない"
+expected = "属さない"
+category = "regression"
+tags = ["symbol"]
+note = "語の無い読みでも記号は位置規則の #4 (Mozc どおり)。main は ∉ が #1"
+
+[[cases]]
+reading = "こめじるし"
+expected = "小目標"
+category = "regression"
+tags = ["symbol"]
+note = "期待値は記号を除いた lattice の実際の #1 (語の無い読み)。※ は位置規則の #4。main は ※ が #1。確定すれば学習で ※ が #1 になる"
+
+[[cases]]
+reading = "くうしゅうごう"
+expected = "空集合"
+category = "regression"
+tags = ["symbol", "guard"]
+note = "ガード: 同じ読みの記号 ∅ があっても語が #1 (main と同じ)"
+
+[[cases]]
+reading = "しぐまけつごう"
+expected = "σ結合"
+category = "regression"
+tags = ["symbol", "guard"]
+note = "ガード: σ結合 は Mozc の単一エントリで、symbols を lattice から外しても残る"
+
+[[cases]]
+reading = "みなみくろまる"
+expected = "南黒丸"
+category = "regression"
+tags = ["symbol", "guard"]
+note = "ガード: 文中の記号 (●) は lattice に無いので 南● にならない (main と同じ top-1)"
+
+[[cases]]
+reading = "といえども"
+expected = "と言えども"
+category = "regression"
+tags = ["symbol", "guard"]
+note = "ガード: Mozc の 記号,一般 の語 (雖も) は lattice の語のまま (main と同じ top-1、と雖も は #2)"
+
+[[cases]]
+reading = "おもしろいわら"
+expected = "面白い笑"
+category = "regression"
+tags = ["symbol", "guard"]
+note = "ガード: Mozc の 記号,一般 の語 (笑) は文中でも lattice の語のまま"
