@@ -1,4 +1,9 @@
+mod curated;
+#[cfg(test)]
+pub(crate) use curated::test_support;
 mod extras;
+#[cfg(test)]
+pub(crate) use extras::bundled_rows as bundled_extras_rows;
 mod mozc;
 pub mod pos_map;
 mod symbols;
@@ -55,15 +60,25 @@ pub trait DictSource {
     /// it uses for cost adjustments (`None` when compiling without one).
     ///
     /// Default: no-op — most sources carry explicit POS ids in their raw
-    /// files. Sources that assign a POS by tag (extras) override this to
-    /// resolve the tag against id.def, so a pin bump that renumbers ids
-    /// can't silently degrade their entries (#279).
+    /// files. Sources that write a POS by tag name (the curated sources,
+    /// symbols and extras) override this to resolve the tag against id.def,
+    /// so a pin bump that renumbers ids can't silently degrade their entries
+    /// (#279).
     fn resolve_pos_ids(
         &self,
         _entries: &mut HashMap<String, Vec<DictEntry>>,
         _id_def: Option<&Path>,
     ) -> Result<(), DictSourceError> {
         Ok(())
+    }
+
+    /// Whether `compile` applies its morpheme-role cost offsets (person name /
+    /// pronoun / non-independent kanji) to this source's entries, whether it
+    /// is the primary source or an extra one. Those offsets are part of the
+    /// Mozc import; a curated source's cost is final, so the default is
+    /// `false` and only Mozc declares `true`.
+    fn applies_role_cost_offsets(&self) -> bool {
+        false
     }
 }
 
@@ -144,6 +159,29 @@ pub(super) fn parse_dict_files(
     delimiter: char,
     parse_line: impl Fn(&[&str]) -> Result<Option<ParsedLine>, String>,
 ) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
+    let (entries, stats) = parse_dict_files_counted(dir, label, predicate, delimiter, parse_line)?;
+    eprintln!(
+        "  (skipped {} of {} lines)",
+        stats.skipped, stats.total_lines
+    );
+    Ok(entries)
+}
+
+/// Line counts of one [`parse_dict_files`] run: every line read, and the
+/// skipped ones (blank, comment, or `Ok(None)` from the line parser).
+#[derive(Debug, PartialEq, Eq)]
+struct ParseStats {
+    total_lines: u64,
+    skipped: u64,
+}
+
+fn parse_dict_files_counted(
+    dir: &Path,
+    label: &str,
+    predicate: impl Fn(&str) -> bool,
+    delimiter: char,
+    parse_line: impl Fn(&[&str]) -> Result<Option<ParsedLine>, String>,
+) -> Result<(HashMap<String, Vec<DictEntry>>, ParseStats), DictSourceError> {
     let files = list_dict_files(dir, label, predicate)?;
     let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
     let mut total_lines = 0u64;
@@ -180,8 +218,13 @@ pub(super) fn parse_dict_files(
         }
     }
 
-    eprintln!("  (skipped {skipped} of {total_lines} lines)");
-    Ok(entries)
+    Ok((
+        entries,
+        ParseStats {
+            total_lines,
+            skipped,
+        },
+    ))
 }
 
 /// Create a `DictSource` by name. Returns `None` for unknown source names.
@@ -215,5 +258,44 @@ mod tests {
                 "{name}: unexpected error {err}"
             );
         }
+    }
+
+    /// T9: a line the parser declines (`Ok(None)` — the mozc skip) is
+    /// counted in the skip stats with blank and comment lines, adds no
+    /// entry, and does not stop the rows after it.
+    #[test]
+    fn t9_declined_line_is_counted_as_skipped() {
+        let dir = test_support::scratch("parse_stats");
+        fs::write(dir.join("d.txt"), "# comment\n\nあ\tA\nskip\tme\nい\tI\n").unwrap();
+        let (entries, stats) = parse_dict_files_counted(
+            &dir,
+            "test",
+            |_| true,
+            '\t',
+            |fields| {
+                if fields[0] == "skip" {
+                    return Ok(None);
+                }
+                Ok(Some(ParsedLine {
+                    reading: fields[0].to_string(),
+                    surface: fields[1].to_string(),
+                    left_id: 1,
+                    right_id: 1,
+                    cost: 0,
+                }))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stats,
+            ParseStats {
+                total_lines: 5,
+                skipped: 3
+            }
+        );
+        let mut readings: Vec<&String> = entries.keys().collect();
+        readings.sort();
+        assert_eq!(readings, ["あ", "い"]);
+        fs::remove_dir_all(&dir).ok();
     }
 }

@@ -49,7 +49,8 @@ pub fn parse_mozc_id_def(
 ///
 /// Fails when the tag is absent — a silent fallback here is exactly the drift
 /// #279 exists to prevent. `source_label` names the caller and `id_def_path`
-/// the file `map` came from, in the error. Today only extras calls it.
+/// the file `map` came from, in the error. The curated sources (symbols,
+/// extras) call it through `curated::resolve_pos_ids`.
 pub fn resolve_tag(
     map: &std::collections::HashMap<String, u16>,
     tag: &str,

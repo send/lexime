@@ -73,6 +73,40 @@ pub fn compile(
 
 type EntryMap = HashMap<String, Vec<DictEntry>>;
 
+/// Apply the compile-time cost offsets based on morpheme roles to one
+/// source's entries (before the merge). Called for every source that declares
+/// `applies_role_cost_offsets`, primary or extra alike.
+fn apply_role_cost_offsets(label: &str, entries: &mut EntryMap, roles: &[u8]) {
+    let mut adjusted = 0usize;
+    for entry_list in entries.values_mut() {
+        for entry in entry_list.iter_mut() {
+            let id = entry.left_id as usize;
+            if id >= roles.len() {
+                eprintln!(
+                    "Warning: left_id {} out of roles table range ({}), skipping entry '{}'",
+                    id,
+                    roles.len(),
+                    entry.surface
+                );
+                continue;
+            }
+            let offset = match roles[id] {
+                pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
+                pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
+                pos_map::ROLE_NON_INDEPENDENT
+                    if entry.surface.chars().any(lex_core::unicode::is_kanji) =>
+                {
+                    NON_INDEPENDENT_KANJI_COST_OFFSET
+                }
+                _ => continue,
+            };
+            entry.cost = entry.cost.saturating_add(offset);
+            adjusted += 1;
+        }
+    }
+    eprintln!("Adjusted {adjusted} entries of {label} (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
+}
+
 /// Parse every source and assemble the entries `compile` writes.
 ///
 /// Lattice sources (the primary source, then each extra source's
@@ -101,7 +135,7 @@ pub(crate) fn build_entries(
     }
 
     // id.def drives both morpheme-role cost offsets and tag-based POS
-    // resolution (extras). Auto-detect in input_dir if --id-def is not
+    // resolution (symbols, extras). Auto-detect in input_dir if --id-def is not
     // specified.
     let id_def_path = id_def.map(PathBuf::from).or_else(|| {
         let auto = input_path.join("id.def");
@@ -122,9 +156,24 @@ pub(crate) fn build_entries(
         .map_err(|e| format!("resolving POS ids: {e}"))?;
     let mut symbols = take_symbols(&mut entries);
 
-    // Parse extra sources up front, but defer merging until after id.def
-    // adjustments below — extras carry hand-tuned costs that must not be
-    // rewritten by role-based offsets.
+    // Parse extra sources up front, but defer merging until every source has
+    // had its role-based cost offsets (person name / pronoun /
+    // non-independent kanji) applied. The offsets are part of the Mozc
+    // import: they apply per source, to the source that declares them
+    // (`applies_role_cost_offsets`; mozc), wherever it sits — primary or
+    // extra. A curated source (symbols, extras) carries final costs and is
+    // outside them, so the cheapest-wins merge compares final costs.
+    let roles = match id_def_path.as_ref() {
+        Some(path) => Some(
+            pos_map::morpheme_roles(path).map_err(|e| format!("loading morpheme roles: {e}"))?,
+        ),
+        None => None,
+    };
+    if dict_source.applies_role_cost_offsets() {
+        if let Some(roles) = &roles {
+            apply_role_cost_offsets(source_name, &mut entries, roles);
+        }
+    }
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {
@@ -147,42 +196,12 @@ pub(crate) fn build_entries(
         for (reading, list) in take_symbols(&mut parsed) {
             symbols.entry(reading).or_default().extend(list);
         }
-        extras.push((extra_name.clone(), parsed));
-    }
-
-    // Apply compile-time cost offsets based on morpheme roles.
-    if let Some(id_def_path) = &id_def_path {
-        let roles = pos_map::morpheme_roles(id_def_path)
-            .map_err(|e| format!("loading morpheme roles: {e}"))?;
-        let mut adjusted = 0usize;
-        for entry_list in entries.values_mut() {
-            for entry in entry_list.iter_mut() {
-                let id = entry.left_id as usize;
-                if id >= roles.len() {
-                    eprintln!(
-                        "Warning: left_id {} out of roles table range ({}), skipping entry '{}'",
-                        id,
-                        roles.len(),
-                        entry.surface
-                    );
-                    continue;
-                }
-                let role = roles[id];
-                let offset = match role {
-                    pos_map::ROLE_PERSON_NAME => PERSON_NAME_COST_OFFSET,
-                    pos_map::ROLE_PRONOUN => PRONOUN_COST_OFFSET,
-                    pos_map::ROLE_NON_INDEPENDENT
-                        if entry.surface.chars().any(lex_core::unicode::is_kanji) =>
-                    {
-                        NON_INDEPENDENT_KANJI_COST_OFFSET
-                    }
-                    _ => continue,
-                };
-                entry.cost = entry.cost.saturating_add(offset);
-                adjusted += 1;
+        if extra_src.applies_role_cost_offsets() {
+            if let Some(roles) = &roles {
+                apply_role_cost_offsets(extra_name, &mut parsed, roles);
             }
         }
-        eprintln!("Adjusted {adjusted} entries (person_name: +{PERSON_NAME_COST_OFFSET}, pronoun: {PRONOUN_COST_OFFSET}, non_independent_kanji: +{NON_INDEPENDENT_KANJI_COST_OFFSET})");
+        extras.push((extra_name.clone(), parsed));
     }
 
     for (extra_name, extra_entries) in extras {
@@ -640,7 +659,19 @@ mod tests {
     use super::*;
     use crate::dict_source::from_name;
 
-    const ID_DEF: &str = "0 BOS/EOS,*,*,*,*,*,*\n1 名詞,一般,*,*,*,*,*\n2 記号,一般,*,*,*,*,*\n";
+    /// Every tag the curated sources allow must be in id.def (they resolve
+    /// their whole allowed set), so the fixture lists them all.
+    const ID_DEF: &str = "0 BOS/EOS,*,*,*,*,*,*
+1 名詞,一般,*,*,*,*,*
+2 記号,一般,*,*,*,*,*
+3 記号,アルファベット,*,*,*,*,*
+4 名詞,固有名詞,一般,*,*,*,*
+5 名詞,固有名詞,人名,一般,*,*,*
+6 名詞,固有名詞,人名,名,*,*,*
+7 名詞,固有名詞,組織,*,*,*,*
+8 名詞,固有名詞,地域,一般,*,*,*
+9 名詞,固有名詞,地域,国,*,*,*
+";
 
     /// Synthetic mozc / symbols / extras input dirs under a fresh temp dir.
     struct Fixture {
@@ -648,10 +679,11 @@ mod tests {
     }
 
     impl Fixture {
-        /// `mozc` rows are `reading\tsurface\tcost` (POS id 1), `symbols`
-        /// rows `reading\tsurface\ttsv_cost` (the same POS id 1: the symbol
-        /// flag comes from the source, so nothing may tell the two apart by
-        /// POS), `extras` rows are the extras TSV format.
+        /// `mozc` rows are `reading\tsurface\tcost` (POS id 2 = 記号,一般),
+        /// `symbols` rows `reading\tsurface` (written as 記号,一般 — the same
+        /// POS as the mozc rows: the symbol flag comes from the source, so
+        /// nothing may tell the two apart by POS), `extras` rows
+        /// `reading\tsurface\tcost` (written as 名詞,一般).
         fn new(name: &str, mozc: &[&str], symbols: &[&str], extras: &[&str]) -> Self {
             let root = std::env::temp_dir()
                 .join(format!("lexime_test_compile_{name}_{}", std::process::id()));
@@ -663,9 +695,18 @@ mod tests {
                 let f: Vec<&str> = row.split('\t').collect();
                 format!("{}\t{id}\t{id}\t{}\t{}\n", f[0], f[2], f[1])
             };
-            let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 1)).collect();
-            let symbols_txt: String = symbols.iter().map(|r| to_mozc(r, 1)).collect();
-            let extras_txt: String = extras.iter().map(|r| format!("{r}\n")).collect();
+            let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 2)).collect();
+            let symbols_txt: String = symbols
+                .iter()
+                .map(|r| format!("{r}\t記号,一般,*,*,*,*,*\n"))
+                .collect();
+            let extras_txt: String = extras
+                .iter()
+                .map(|r| {
+                    let (word, cost) = r.rsplit_once('\t').unwrap();
+                    format!("{word}\t名詞,一般,*,*,*,*,*\t{cost}\n")
+                })
+                .collect();
             fs::write(root.join("mozc/dictionary00.txt"), mozc_txt).unwrap();
             fs::write(root.join("mozc/id.def"), ID_DEF).unwrap();
             fs::write(root.join("symbols/symbols.tsv"), symbols_txt).unwrap();
@@ -716,7 +757,7 @@ mod tests {
         let fx = Fixture::new(
             "dup_mozc",
             &["ぱい\tπ\t4898", "ぱい\tパイ\t3000"],
-            &["ぱい\tπ\t10000", "ぱい\tΠ\t10000"],
+            &["ぱい\tπ", "ぱい\tΠ"],
             &[],
         );
         assert_duplicate_err(&fx, "(ぱい, π)");
@@ -724,7 +765,7 @@ mod tests {
         let fx = Fixture::new(
             "dup_extras",
             &["ほし\t星\t3000"],
-            &["ほし\t★\t5000"],
+            &["ほし\t★"],
             &["ほし\t★\t9000"],
         );
         assert_duplicate_err(&fx, "(ほし, ★)");
@@ -735,10 +776,10 @@ mod tests {
     #[test]
     fn symbol_duplicate_err_regardless_of_cost() {
         // symbol cost 0 < mozc 5000
-        let fx = Fixture::new("dup_lower", &["ぱい\tπ\t5000"], &["ぱい\tπ\t1"], &[]);
+        let fx = Fixture::new("dup_lower", &["ぱい\tπ\t5000"], &["ぱい\tπ"], &[]);
         assert_duplicate_err(&fx, "(ぱい, π)");
         // symbol cost 0 > mozc -500
-        let fx = Fixture::new("dup_higher", &["ぱい\tπ\t-500"], &["ぱい\tπ\t1"], &[]);
+        let fx = Fixture::new("dup_higher", &["ぱい\tπ\t-500"], &["ぱい\tπ"], &[]);
         assert_duplicate_err(&fx, "(ぱい, π)");
     }
 
@@ -750,7 +791,7 @@ mod tests {
         let fx = Fixture::new(
             "order",
             &["ほし\t星\t3000", "いち\t一\t2000"],
-            &["ほし\t★\t5000", "ほし\t☆\t5000", "まる\t○\t5000"],
+            &["ほし\t★", "ほし\t☆", "まる\t○"],
             &["ほし\t干し\t0", "いち\t壱\t1000"],
         );
         let a = fx.dict(true).to_bytes().unwrap();
@@ -758,19 +799,14 @@ mod tests {
         assert!(a == b, "dict bytes depend on --extra-source order");
     }
 
-    /// a symbol's cost is its row index among same-reading rows (not the
-    /// TSV cost column), and `lookup` returns them in row order.
+    /// a symbol's cost is its row index among same-reading rows, and
+    /// `lookup` returns them in row order.
     #[test]
     fn symbol_cost_is_row_order() {
         let fx = Fixture::new(
             "row_order",
             &["しかく\t四角\t3000"],
-            &[
-                "ほし\t★\t9000",
-                "ほし\t☆\t5000",
-                "しかく\t□\t7000",
-                "ほし\t✪\t10",
-            ],
+            &["ほし\t★", "ほし\t☆", "しかく\t□", "ほし\t✪"],
             &[],
         );
         let dict = fx.dict(true);
@@ -872,7 +908,7 @@ mod tests {
         let fx = Fixture::new(
             "flag",
             &["ぱい\tパイ\t3000"],
-            &["ぱい\tΠ\t10000"],
+            &["ぱい\tΠ"],
             &["ぱい\t牌\t6000"],
         );
         let bytes = fx.dict(true).to_bytes().unwrap();
@@ -948,6 +984,189 @@ mod tests {
             prefixes.len()
         );
         assert!(leaked.is_empty(), "untrained symbols predicted: {leaked:?}");
+    }
+
+    /// The bundled extras rows with a cost-override: a value chosen by
+    /// measurement, outside both the existing value (5000) of the common-noun rows
+    /// and the proper-noun derivation. Written here, not read from the TSVs,
+    /// so a changed cost in a TSV fails T9. (`あくゆう` / `そうそう`: chosen by
+    /// a grid measurement under the 人名,一般 connection — the range and the
+    /// choice rule are in the row comment.)
+    const EXTRAS_COST_OVERRIDES: &[(&str, i16)] = &[
+        ("あくゆう", 5200),
+        ("そうそう", 4200),
+        ("かんぽう", 7000),
+        ("ましん", 3500),
+    ];
+
+    /// The cost of a proper-noun row by its tag: the median, over the
+    /// representative words, of each word's cheapest Mozc entry in that POS
+    /// (per word, floored, Mozc's raw value — see `ALLOWED_POS_TAGS`).
+    /// Written here, not read from the TSVs. The key is the POS tag: one tag
+    /// is assumed to be one kind (節) of row. To add a different kind under
+    /// the same tag, key this table by (tag, 節) instead.
+    const EXTRAS_PROPER_NOUN_COSTS: &[(&str, i16)] = &[
+        ("名詞,固有名詞,人名,一般,*,*,*", 3402),
+        ("名詞,固有名詞,人名,名,*,*,*", 5889),
+        ("名詞,固有名詞,組織,*,*,*,*", 4273),
+        ("名詞,固有名詞,一般,*,*,*,*", 4403),
+        ("名詞,固有名詞,地域,一般,*,*,*", 5779),
+        ("名詞,固有名詞,地域,国,*,*,*", 3546),
+    ];
+
+    /// The role offsets belong to the source that declares them (Mozc), not to
+    /// whichever source is primary: `--source extras` leaves a 人名 row at its
+    /// TSV cost. (symbols is the same — `applies_role_cost_offsets` defaults
+    /// to false — and its cost is a row order, with no role to offset.)
+    #[test]
+    fn curated_source_as_primary_is_outside_the_role_offsets() {
+        use crate::dict_source::test_support::{pin_shaped_id_def, scratch};
+        let root = scratch("curated_primary_no_offsets");
+        let id_def = pin_shaped_id_def(&root);
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let entries = build_entries(
+            "extras",
+            &extras_dir.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+        let komuro = entries["こむろてつや"]
+            .iter()
+            .find(|e| e.surface == "小室哲哉")
+            .unwrap();
+        assert_eq!(komuro.cost, 3402);
+    }
+
+    /// The offsets follow the declaring source, not its position: with extras
+    /// primary and Mozc as an extra source, Mozc's 人名 row still gets +2000
+    /// and the extras 人名 row keeps its TSV cost.
+    #[test]
+    fn role_offsets_apply_to_mozc_given_as_an_extra_source() {
+        use crate::dict_source::test_support::{pin_id, pin_shaped_id_def, scratch};
+        let root = scratch("mozc_extra_offsets");
+        let mozc = root.join("mozc");
+        fs::create_dir_all(&mozc).unwrap();
+        let id_def = pin_shaped_id_def(&mozc);
+        fs::write(
+            mozc.join("dictionary00.txt"),
+            "たなか\t1921\t1921\t5000\t田中\n",
+        )
+        .unwrap();
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let entries = build_entries(
+            "extras",
+            &extras_dir.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[("mozc".to_string(), mozc.to_string_lossy().into_owned())],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+        let tanaka = entries["たなか"]
+            .iter()
+            .find(|e| e.surface == "田中")
+            .unwrap();
+        assert_eq!(tanaka.left_id, pin_id("名詞,固有名詞,人名,一般,*,*,*"));
+        assert_eq!(tanaka.cost, 5000 + PERSON_NAME_COST_OFFSET);
+        let komuro = entries["こむろてつや"]
+            .iter()
+            .find(|e| e.surface == "小室哲哉")
+            .unwrap();
+        assert_eq!(komuro.cost, 3402);
+    }
+
+    /// T9: compiled through `build_entries` with a pin-shaped id.def, every
+    /// bundled extras row keeps its surface and its cost (5000 for a common
+    /// noun, the per-POS derived value for a proper noun, or the override) and gets the id of its tag — the person-name rows included:
+    /// the role-based offsets (+2000 for 人名) belong to the Mozc import and
+    /// are applied before the extras merge, never to a curated row. A Mozc
+    /// 人名 row still gets the offset, and the two Mozc rows the bundled
+    /// extras share (一保堂, マシン — as in the pin) are replaced by the
+    /// cheaper extras row.
+    #[test]
+    fn t9_extras_cost_is_final_and_mozc_keeps_its_offset() {
+        use crate::dict_source::test_support::{pin_id, pin_shaped_id_def, scratch};
+        let root = scratch("t9_extras_cost");
+        let mozc = root.join("mozc");
+        fs::create_dir_all(&mozc).unwrap();
+        let id_def = pin_shaped_id_def(&mozc);
+        fs::write(
+            mozc.join("dictionary00.txt"),
+            "たなか\t1921\t1921\t5000\t田中\n\
+             かんじ\t1851\t1851\t5100\t漢字\n\
+             いっぽどう\t1922\t1922\t6898\t一保堂\n\
+             ましん\t1851\t1851\t4241\tマシン\n",
+        )
+        .unwrap();
+        let extras_dir = root.join("extras");
+        from_name("extras").unwrap().fetch(&extras_dir).unwrap();
+        let rows = crate::dict_source::bundled_extras_rows();
+        let entries = build_entries(
+            "mozc",
+            &mozc.to_string_lossy(),
+            Some(&id_def.to_string_lossy()),
+            &[(
+                "extras".to_string(),
+                extras_dir.to_string_lossy().into_owned(),
+            )],
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).ok();
+
+        assert_eq!(rows.len(), 47);
+        let extras_cost = |reading: &str, tag: &str| {
+            if let Some(&(_, c)) = EXTRAS_COST_OVERRIDES.iter().find(|(r, _)| *r == reading) {
+                return c;
+            }
+            if let Some(&(_, c)) = EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag) {
+                return c;
+            }
+            assert_eq!(
+                tag, "名詞,一般,*,*,*,*,*",
+                "tag {tag} is in neither table: add it to EXTRAS_PROPER_NOUN_COSTS (T9's table)"
+            );
+            5000
+        };
+        for row in &rows {
+            let (reading, surface, tag) = (row[0], row[1], row[2]);
+            let same: Vec<&DictEntry> = entries[reading]
+                .iter()
+                .filter(|e| e.surface == surface)
+                .collect();
+            assert_eq!(same.len(), 1, "{row:?}");
+            let want_cost = extras_cost(reading, tag);
+            let want_id = pin_id(tag);
+            assert_eq!(
+                (same[0].left_id, same[0].right_id, same[0].cost),
+                (want_id, want_id, want_cost),
+                "{row:?}"
+            );
+            assert!(!same[0].symbol);
+        }
+        let person = rows.iter().filter(|r| r[2].contains("人名")).count();
+        assert_eq!(person, 11);
+
+        let mozc_entry = |reading: &str| {
+            let list = &entries[reading];
+            assert_eq!(list.len(), 1, "{list:?}");
+            (list[0].left_id, list[0].cost)
+        };
+        assert_eq!(mozc_entry("たなか"), (1921, 5000 + PERSON_NAME_COST_OFFSET));
+        assert_eq!(mozc_entry("かんじ"), (1851, 5100));
+        assert_eq!(
+            mozc_entry("いっぽどう"),
+            (
+                1929,
+                extras_cost("いっぽどう", "名詞,固有名詞,組織,*,*,*,*")
+            )
+        );
+        assert_eq!(
+            mozc_entry("ましん"),
+            (1851, extras_cost("ましん", "名詞,一般,*,*,*,*,*"))
+        );
     }
 
     /// `build_entries` over the pinned mozc-raw and the bundled symbols and

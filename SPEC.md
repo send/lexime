@@ -103,6 +103,7 @@ Swift は純粋なイベント実行レイヤー。Rust から返る `LexEvent` 
 辞書は 3 ソースを `dictool compile` で 1 つの `lexime.dict` にまとめる。ファイル名は `lexime.dict` / `lexime.conn`。
 
 - **ソース**: Mozc（system 辞書、pin 固定）・extras（lexime 同梱の curated 語彙）・symbols（lexime 同梱の記号）。lattice ソース（Mozc → extras）は同じ (reading, surface) で cost の小さい方を採ってマージする。symbols はこのマージに通さず後から足し、lattice ソースと同じ (reading, surface) を持つ行はビルドエラー（`--extra-source` の順序に依らない）
+- **curated ソースの POS**: extras / symbols は行ごとに POS を id.def のタグ名（7 フィールド）で書き、ビルド時に pin の id.def から数値 id に解決する。タグはソースごとの許可タグの閉集合（extras: 名詞,一般 と 名詞,固有名詞 の 6 区分、symbols: 記号,一般 / 記号,アルファベット）に限り、集合外・id.def に無いタグ・id.def 無しはビルドエラー。extras の cost は必須の最終値で、compile の品詞による cost 補正（人名など、Mozc の取り込みの処理）は掛からない
 - **辞書**: `TrieDictionary`（double-array trie + 文字列プール + エントリ表、マジック `LXDX`、版 5、約 49MB）。エントリごとに記号フラグ（symbols ソース由来か — ソースだけで判定し POS は見ない）を持つ。記号エントリの cost は同じ読みの TSV 行順の index（0, 1, 2, …）。版 5 以外のファイルは読まずエラー
 - **接続行列**: バイナリ行列（マジック `LXCX`、i16 配列）。V3 フォーマットでは POS ロールメタデータ（`ContentWord` / `FunctionWord` / `Suffix` / `Prefix`）を埋め込み、文節グルーピングに使用
 - POS ID ペアの遷移コストを O(1) で参照
@@ -683,7 +684,7 @@ macOS で動作する最小限の IME を構築。
 | `install` | `~/Library/Input Methods` へコピー |
 | `reload` | Lexime プロセスを再起動 |
 | `fetch-dict-mozc` | Mozc 辞書データのダウンロード |
-| `fetch-dict-symbols` | バンドル記号 TSV の生成（ギリシャ文字・数学記号） |
+| `fetch-dict-symbols` | バンドル記号 TSV の生成（ギリシャ文字・数学記号ほかの記号） |
 | `fetch-dict-extras` | curated ドメイン TSV の生成（IT / 食 / 地理 ほか） |
 | `dict-mozc` | Mozc 辞書バイナリのコンパイル |
 | `dict` | 辞書のコピー |
