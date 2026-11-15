@@ -12,26 +12,15 @@ use crate::user_dict::UserDictionary;
 use crate::user_history::{now_epoch, UserHistory};
 
 use super::{generate_candidates, generate_candidates_priced, untrained_symbol};
-
-fn word(surface: &str, cost: i16) -> DictEntry {
-    DictEntry {
-        surface: surface.to_string(),
-        cost,
-        left_id: 1,
-        right_id: 1,
-        symbol: false,
-    }
-}
+use crate::converter::testutil::{entry_with_id, symbol_entry};
 
 /// A symbol row; `row` is its compiled cost (its index among the reading's
 /// symbol rows).
 fn symbol(surface: &str, row: i16) -> DictEntry {
     DictEntry {
-        surface: surface.to_string(),
-        cost: row,
         left_id: 2,
         right_id: 2,
-        symbol: true,
+        ..symbol_entry(surface, row)
     }
 }
 
@@ -64,16 +53,19 @@ fn production_shaped_entries() -> Vec<(String, Vec<DictEntry>)> {
                     format!("{head}語{n}")
                 };
                 let cost = 3000 + (n as i16) * 37 % 500;
-                entries.push((reading, vec![word(&surface, cost)]));
+                entries.push((reading, vec![entry_with_id(&surface, cost, 1)]));
             }
         }
     }
     entries.push((
         "しかく".into(),
-        vec![word("四角", 3200), word("資格", 3100)],
+        vec![
+            entry_with_id("四角", 3200, 1),
+            entry_with_id("資格", 3100, 1),
+        ],
     ));
-    entries.push(("おーむ".into(), vec![word("Ω", 2011)]));
-    entries.push(("。".into(), vec![word("。", 1000)]));
+    entries.push(("おーむ".into(), vec![entry_with_id("Ω", 2011, 1)]));
+    entries.push(("。".into(), vec![entry_with_id("。", 1000, 1)]));
     for (reading, surfaces) in SYMBOL_ROWS {
         let rows = surfaces
             .iter()
@@ -218,9 +210,9 @@ fn lookup_lists_words_then_symbols() {
             "ほし".to_string(),
             vec![
                 symbol("★", 0),
-                word("星", 9000),
+                entry_with_id("星", 9000, 1),
                 symbol("☆", 1),
-                word("干し", 5000),
+                entry_with_id("干し", 5000, 1),
                 symbol("✪", 2),
             ],
         )])
@@ -249,7 +241,7 @@ fn lookup_lists_words_then_symbols() {
         )])),
         Arc::new(TrieDictionary::from_entries(vec![(
             "ほし".to_string(),
-            vec![word("星", 9000), word("干し", 5000)],
+            vec![entry_with_id("星", 9000, 1), entry_with_id("干し", 5000, 1)],
         )])),
     ]);
     assert_eq!(

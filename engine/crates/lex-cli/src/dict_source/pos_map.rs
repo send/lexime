@@ -48,16 +48,18 @@ pub fn parse_mozc_id_def(
 /// Look up `tag` (a full 7-field POS tag) in a map from [`parse_mozc_id_def`].
 ///
 /// Fails when the tag is absent — a silent fallback here is exactly the drift
-/// #279 exists to prevent. Shared by every source that assigns POS by tag
-/// (extras, symbols); `source_label` names the caller in the error.
+/// #279 exists to prevent. `source_label` names the caller and `id_def_path`
+/// the file `map` came from, in the error. Today only extras calls it.
 pub fn resolve_tag(
     map: &std::collections::HashMap<String, u16>,
     tag: &str,
     source_label: &str,
+    id_def_path: &Path,
 ) -> Result<u16, DictSourceError> {
     map.get(tag).copied().ok_or_else(|| {
         DictSourceError::Parse(format!(
-            "'{tag}' not found in id.def — cannot assign the {source_label} POS id"
+            "'{tag}' not found in {} — cannot assign the {source_label} POS id",
+            id_def_path.display()
         ))
     })
 }

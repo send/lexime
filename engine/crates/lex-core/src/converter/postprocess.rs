@@ -26,9 +26,9 @@ pub(crate) trait PostprocessObserver {
     /// Called right after rerank, with whether it priced the paths (it
     /// leaves a lone path alone).
     fn reranked(&mut self, _priced: bool) {}
-    /// Called after the symbol placement with the symbols it inserted (none
-    /// when the reading has no unlisted symbol).
-    fn symbols_placed(&mut self, _placed: &[SymbolCandidate]) {}
+    /// Called after the symbol placement with its record (`None` when the
+    /// reading has no unlisted symbol).
+    fn symbols_placed(&mut self, _placed: Option<&SymbolPlacement>) {}
     /// Called after resegment + rerank + variant rewriters + symbol
     /// placement, before history_rerank.
     fn after_rerank(&mut self, _paths: &[ScoredPath]) {}
@@ -147,7 +147,7 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
     // with or without history): after the offers, whose kana and single
     // kanji the position rule steps over, and before the anchor is taken.
     let placed = place_symbols(paths, ctx.conv.dict, kana, ctx.max_cost_gap);
-    observer.symbols_placed(&placed);
+    observer.symbols_placed(placed.as_ref());
 
     observer.after_rerank(paths);
 
@@ -218,14 +218,17 @@ pub(crate) fn postprocess_observed<O: PostprocessObserver>(
 /// Where the symbol placement puts a reading's symbols when nothing is
 /// stepped over: Mozc's `symbol_rewriter_candidate_position` default. A
 /// position, not a price, so not a setting.
-pub(crate) const SYMBOL_INSERT_OFFSET: usize = 3;
+const SYMBOL_INSERT_OFFSET: usize = 3;
 
-/// One symbol [`place_symbols`] inserted (explain's `symbol_candidates`).
+/// What [`place_symbols`] did for a reading (explain's `symbol_placement`):
+/// one record for the whole reading, whose symbols share the position rule's
+/// outcome.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct SymbolCandidate {
-    pub surface: String,
+pub struct SymbolPlacement {
+    /// The inserted surfaces, in row order.
+    pub surfaces: Vec<String>,
     /// The position rule's `p` in the population (the paths admission keeps
-    /// by price): the reading's symbols take `p`, `p + 1`, … in row order.
+    /// by price): the first symbol takes `p`, the rest follow at `p + 1`, ….
     pub position: usize,
     /// Population paths the rule stepped over (`symbol_skip`) past the
     /// default position.
@@ -245,7 +248,7 @@ pub struct SymbolCandidate {
 /// `min(SYMBOL_INSERT_OFFSET, population)`, then past every population path
 /// [`symbol_skip`] names; the symbols go right after the population's
 /// `p − 1`-th path and copy its price, so the cost order (and with it the
-/// position, through history's stable sort) holds. Nothing for an empty list.
+/// position, through history's stable sort) holds. `None` for an empty list.
 /// The price is a copy, never judged: admission exempts symbol paths. Later
 /// stages only move an unlearned symbol down (history makes other paths
 /// cheaper; the Override stage inserts by price) or a learned one to #1.
@@ -254,19 +257,17 @@ pub(super) fn place_symbols(
     dict: &dyn Dictionary,
     reading: &str,
     max_cost_gap: i64,
-) -> Vec<SymbolCandidate> {
-    let Some(anchor) = paths.first().map(|p| p.viterbi_cost) else {
-        return Vec::new();
-    };
+) -> Option<SymbolPlacement> {
+    let anchor = paths.first()?.viterbi_cost;
     let symbols: Vec<_> = dict
         .lookup(reading)
         .into_iter()
         .filter(|e| e.symbol && !paths.iter().any(|p| p.surface_key_eq(&e.surface)))
         .collect();
     if symbols.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let limit = anchor.saturating_add(admission_bound(max_cost_gap));
+    let limit = admission_limit(anchor, max_cost_gap);
     let population: Vec<usize> = (0..paths.len())
         .filter(|&i| i == 0 || admission_keeps(&paths[i], limit))
         .collect();
@@ -278,7 +279,7 @@ pub(super) fn place_symbols(
     let source = population[p - 1];
     let price = paths[source].viterbi_cost;
     let copied_from_identity = paths[source].is_identity();
-    let mut placed = Vec::with_capacity(symbols.len());
+    let mut surfaces = Vec::with_capacity(symbols.len());
     for (i, e) in symbols.into_iter().enumerate() {
         let mut path = ScoredPath::single(
             reading.to_string(),
@@ -289,23 +290,23 @@ pub(super) fn place_symbols(
         path.segments[0].left_id = e.left_id;
         path.segments[0].right_id = e.right_id;
         paths.insert(source + 1 + i, path);
-        placed.push(SymbolCandidate {
-            surface: e.surface,
-            position: p,
-            skipped: p - start,
-            population: population.len(),
-            price,
-            copied_from_identity,
-        });
+        surfaces.push(e.surface);
     }
-    placed
+    Some(SymbolPlacement {
+        surfaces,
+        position: p,
+        skipped: p - start,
+        population: population.len(),
+        price,
+        copied_from_identity,
+    })
 }
 
 /// Admission keeps `p` by price: the typed kana (`is_identity`, #263/#271)
 /// or a pre-history cost at most `limit` (the anchor plus
 /// [`admission_bound`]). The one definition admission and the symbol
 /// placement's population share.
-pub(crate) fn admission_keeps(p: &ScoredPath, limit: i64) -> bool {
+fn admission_keeps(p: &ScoredPath, limit: i64) -> bool {
     p.is_identity() || p.pre_history_cost() <= limit
 }
 
@@ -328,7 +329,7 @@ pub(super) fn admit_by_cost_gap(
     max_gap: i64,
     mut on_drop: impl FnMut(&ScoredPath),
 ) {
-    let limit = anchor.saturating_add(admission_bound(max_gap));
+    let limit = admission_limit(anchor, max_gap);
     let mut first = true;
     paths.retain_mut(|p| {
         let exempt = std::mem::take(&mut first) || p.is_learned() || p.origin == PathOrigin::Symbol;
@@ -345,6 +346,13 @@ pub(super) fn admit_by_cost_gap(
         }
         true
     });
+}
+
+/// The highest pre-history cost admission keeps by price: the anchor plus
+/// [`admission_bound`]. Admission and the symbol placement's population both
+/// take it from here.
+fn admission_limit(anchor: i64, max_gap: i64) -> i64 {
+    anchor.saturating_add(admission_bound(max_gap))
 }
 
 /// How far above the anchor admission keeps a path by price: `max_gap`,

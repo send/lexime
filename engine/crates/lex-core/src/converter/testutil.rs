@@ -182,6 +182,16 @@ pub fn entry_with_id(surface: &str, cost: i16, id: u16) -> DictEntry {
     }
 }
 
+/// A symbol entry (`DictEntry::symbol`) with no POS ids; `row` is its
+/// compiled cost (its index among the reading's symbol rows). Struct-update
+/// the ids where a test needs them.
+pub fn symbol_entry(surface: &str, row: i16) -> DictEntry {
+    DictEntry {
+        symbol: true,
+        ..entry(surface, row)
+    }
+}
+
 /// 食べる against the fragments 田|辺留 (two nodes, two segment penalties):
 /// the fragments sit far above the best, more than the default cost-gap
 /// bound (the RC-2 田辺る shape).

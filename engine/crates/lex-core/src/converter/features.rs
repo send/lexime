@@ -180,7 +180,10 @@ pub fn is_single_char_kanji_penalised(
         let has_compound = |a: &RichSegment, b: &RichSegment| -> bool {
             let reading = format!("{}{}", a.reading, b.reading);
             let surface = format!("{}{}", a.surface, b.surface);
-            d.lookup(&reading).iter().any(|e| e.surface == surface)
+            // Symbols are outside the conversion model: no compound.
+            d.lookup(&reading)
+                .iter()
+                .any(|e| !e.symbol && e.surface == surface)
         };
         (idx > 0 && has_compound(&segments[idx - 1], seg))
             || (idx + 1 < segments.len() && has_compound(seg, &segments[idx + 1]))

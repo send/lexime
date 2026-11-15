@@ -155,7 +155,7 @@ impl DictSource for ExtrasSource {
 /// a silent fallback here is exactly the drift #279 exists to prevent.
 fn resolve_default_pos(id_def_path: &Path) -> Result<u16, DictSourceError> {
     let map = pos_map::parse_mozc_id_def(id_def_path)?;
-    pos_map::resolve_tag(&map, DEFAULT_POS_TAG, "extras")
+    pos_map::resolve_tag(&map, DEFAULT_POS_TAG, "extras", id_def_path)
 }
 
 #[cfg(test)]

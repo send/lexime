@@ -6,10 +6,10 @@
 use super::*;
 use crate::converter::postprocess::{
     admit_by_cost_gap, place_symbols, postprocess_observed, PostprocessContext,
-    PostprocessObserver, SymbolCandidate,
+    PostprocessObserver, SymbolPlacement,
 };
 use crate::converter::reranker::history_rerank_at;
-use crate::converter::testutil::{entry, entry_with_id, learned, T0};
+use crate::converter::testutil::{entry, entry_with_id, learned, symbol_entry, T0};
 use crate::converter::viterbi::{PathOrigin, RichSegment};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::{CompositeDictionary, DictEntry, Dictionary, TrieDictionary};
@@ -21,15 +21,13 @@ const R: &str = "よみ";
 /// The anchor's admission limit at the default T: anchor + 8000.
 const GAP: i64 = DEFAULT_CANDIDATE_MAX_COST_GAP;
 
-/// A symbol row; `row` is its compiled cost (its index among the reading's
-/// symbol rows).
+/// A symbol row (ids 2 / 3); `row` is its compiled cost (its index among the
+/// reading's symbol rows).
 fn symbol(surface: &str, row: i16) -> DictEntry {
     DictEntry {
-        surface: surface.into(),
-        cost: row,
         left_id: 2,
         right_id: 3,
-        symbol: true,
+        ..symbol_entry(surface, row)
     }
 }
 
@@ -55,7 +53,7 @@ fn identity(cost: i64) -> ScoredPath {
     path(R, cost)
 }
 
-fn place(paths: &mut Vec<ScoredPath>, dict: &dyn Dictionary) -> Vec<SymbolCandidate> {
+fn place(paths: &mut Vec<ScoredPath>, dict: &dyn Dictionary) -> Option<SymbolPlacement> {
     place_symbols(paths, dict, R, GAP)
 }
 
@@ -114,7 +112,7 @@ fn a_symbol_goes_to_index_3_at_the_price_before_it() {
         (2, 3),
         "the entry's ids"
     );
-    assert_eq!(placed[0].position, 3);
+    assert_eq!(placed.unwrap().position, 3);
     downstream(&mut paths, None);
     assert_eq!(index_of(&paths, "※"), Some(3));
 }
@@ -129,10 +127,10 @@ fn the_rule_steps_over_a_single_kanji_and_kana() {
     paths.push(path("よみ", 1400)); // the typed kana, all hiragana
     paths.push(path("ヨミ", 1500));
     paths.push(path("四方", 1600));
-    let placed = place(&mut paths, &dict);
+    let placed = place(&mut paths, &dict).unwrap();
     assert_eq!(index_of(&paths, "※"), Some(6));
     assert_eq!(paths[6].viterbi_cost, 1500);
-    assert_eq!((placed[0].position, placed[0].skipped), (6, 3));
+    assert_eq!((placed.position, placed.skipped), (6, 3));
     downstream(&mut paths, None);
     assert_eq!(index_of(&paths, "※"), Some(6));
 }
@@ -152,10 +150,11 @@ fn a_short_list_takes_the_symbol_last() {
 fn several_symbols_keep_row_order() {
     let dict = symbols_dict(&["→", "←", "↑"]);
     let mut paths = words(5);
-    let placed = place(&mut paths, &dict);
+    let placed = place(&mut paths, &dict).unwrap();
     assert_eq!(keys(&paths[3..6]), ["→", "←", "↑"]);
     assert!(paths[3..6].iter().all(|p| p.viterbi_cost == 1200));
-    assert!(placed.iter().all(|c| c.position == 3));
+    assert_eq!(placed.surfaces, ["→", "←", "↑"]);
+    assert_eq!(placed.position, 3);
     downstream(&mut paths, None);
     assert_eq!(keys(&paths[3..6]), ["→", "←", "↑"]);
 }
@@ -165,18 +164,18 @@ fn several_symbols_keep_row_order() {
 fn nothing_to_place_is_a_no_op() {
     let dict = symbols_dict(&["※"]);
     let mut empty = Vec::new();
-    assert!(place(&mut empty, &dict).is_empty());
+    assert!(place(&mut empty, &dict).is_none());
     assert!(empty.is_empty());
 
     let none = symbols_dict(&[]);
     let mut paths = words(4);
-    assert!(place(&mut paths, &none).is_empty());
+    assert!(place(&mut paths, &none).is_none());
     assert_eq!(paths.len(), 4);
 
     // A word entry of the reading is not a symbol.
     let word = TrieDictionary::from_entries([(R.to_string(), vec![entry("※", 0)])]);
     let mut paths = words(4);
-    assert!(place(&mut paths, &word).is_empty());
+    assert!(place(&mut paths, &word).is_none());
     assert_eq!(paths.len(), 4);
 }
 
@@ -187,7 +186,7 @@ fn a_listed_surface_is_not_added_again() {
     let mut paths = words(4);
     paths[1] = path("※", 1100);
     let placed = place(&mut paths, &dict);
-    assert_eq!(placed.len(), 1);
+    assert_eq!(placed.unwrap().surfaces, ["＊"]);
     assert_eq!(paths.iter().filter(|p| p.surface_key_eq("※")).count(), 1);
     assert_eq!(index_of(&paths, "＊"), Some(3));
 }
@@ -218,14 +217,14 @@ fn the_population_counts_only_what_admission_keeps() {
     assert_eq!(index_of(&paths, "※"), Some(4), "right after the kana");
     assert_eq!(
         placed,
-        [SymbolCandidate {
-            surface: "※".into(),
+        Some(SymbolPlacement {
+            surfaces: vec!["※".into()],
             position: 2,
             skipped: 0,
             population: 2,
             price: limit + 3000,
             copied_from_identity: true,
-        }]
+        })
     );
     downstream(&mut paths, None);
     assert_eq!(keys(&paths), ["一二", R, "※"]);
@@ -240,9 +239,9 @@ fn paths_beyond_the_limit_do_not_move_the_position() {
     let dict = symbols_dict(&["※"]);
     let mut paths = words(5);
     paths.extend((0..10).map(|i| path(&format!("外{i}"), 1000 + GAP + 1 + i)));
-    let placed = place(&mut paths, &dict);
+    let placed = place(&mut paths, &dict).unwrap();
     assert_eq!(
-        (placed[0].position, placed[0].population, placed[0].price),
+        (placed.position, placed.population, placed.price),
         (3, 5, 1200)
     );
     downstream(&mut paths, None);
@@ -269,10 +268,10 @@ fn hiragana_with_the_long_vowel_mark_is_stepped_over() {
 
 /// Records what the placement reported.
 #[derive(Default)]
-struct Placed(Vec<SymbolCandidate>);
+struct Placed(Option<SymbolPlacement>);
 impl PostprocessObserver for Placed {
-    fn symbols_placed(&mut self, placed: &[SymbolCandidate]) {
-        self.0 = placed.to_vec();
+    fn symbols_placed(&mut self, placed: Option<&SymbolPlacement>) {
+        self.0 = placed.cloned();
     }
 }
 
@@ -295,7 +294,7 @@ fn pipeline(
     history: Option<&UserHistory>,
     kana: &str,
     n: usize,
-) -> (Vec<ScoredPath>, Vec<SymbolCandidate>) {
+) -> (Vec<ScoredPath>, Option<SymbolPlacement>) {
     let lattice = build_lattice(dict, kana);
     let oversample = crate::converter::population(n, history.is_some());
     let mut raw = viterbi_nbest(&lattice, &DefaultCostFunction::new(conn), oversample);
@@ -317,7 +316,7 @@ fn pipeline(
 fn at_n_1_the_symbol_is_cut_and_the_one_best_is_the_word() {
     let dict = yomi_dict(&["※"]);
     let (out, placed) = pipeline(&dict, None, None, R, 1);
-    assert_eq!(placed.len(), 1, "placed at n = 1 too");
+    assert!(placed.is_some(), "placed at n = 1 too");
     assert_eq!(out[0].surface_key(), "読み");
     assert_eq!(index_of(&out, "※"), None, "{:?}", keys(&out));
 }
@@ -342,8 +341,9 @@ fn the_symbol_joins_the_list_at_its_position() {
     let without = yomi_dict(&[]);
     let (out, placed) = pipeline(&with, None, None, R, 20);
     let (base, _) = pipeline(&without, None, None, R, 20);
-    assert_eq!(index_of(&out, "※"), Some(placed[0].position));
-    assert_eq!(placed[0].position, 3);
+    let placed = placed.unwrap();
+    assert_eq!(index_of(&out, "※"), Some(placed.position));
+    assert_eq!(placed.position, 3);
     let mut rest = keys(&out);
     rest.retain(|s| s != "※");
     assert_eq!(rest, keys(&base));
@@ -398,7 +398,7 @@ fn a_user_dict_word_with_the_surface_keeps_the_symbol_out() {
         std::sync::Arc::new(user),
     ]);
     let (out, placed) = pipeline(&dict, None, None, R, 20);
-    assert!(placed.is_empty(), "{placed:?}");
+    assert!(placed.is_none(), "{placed:?}");
     let listed: Vec<_> = out.iter().filter(|p| p.surface_key_eq("※")).collect();
     assert_eq!(listed.len(), 1);
     assert_ne!(listed[0].origin, PathOrigin::Symbol);
@@ -417,7 +417,7 @@ fn a_reading_without_a_word_still_places_by_position() {
     let (out, placed) = pipeline(&dict, None, None, R, 20);
     let at = index_of(&out, "※").unwrap();
     assert!(at > 0, "{:?}", keys(&out));
-    assert_eq!(at, placed[0].position, "{:?}", keys(&out));
+    assert_eq!(at, placed.unwrap().position, "{:?}", keys(&out));
 }
 
 /// (15) The Override stage comes after the placement: a number compound
@@ -437,7 +437,7 @@ fn override_paths_only_move_the_symbol_down() {
         ("にえん".to_string(), vec![symbol("¥", 0)]),
     ]);
     let (out, placed) = pipeline(&dict, Some(&conn), None, "にえん", 20);
-    let p = placed[0].position;
+    let p = placed.unwrap().position;
     let sym = index_of(&out, "¥").unwrap();
     let compound = index_of(&out, "二円").expect("a number compound");
     assert!(compound < sym, "{:?}", keys(&out));
@@ -457,11 +457,10 @@ fn explain_records_the_placement() {
     let dict = yomi_dict(&["※"]);
     let conv = ConversionContext::new(&dict, None);
     let result = crate::converter::explain::explain(&conv, R, 20);
-    let [placed] = result.symbol_candidates.as_slice() else {
-        panic!("{:?}", result.symbol_candidates);
-    };
     let (_, pipeline_placed) = pipeline(&dict, None, None, R, 20);
-    assert_eq!(result.symbol_candidates, pipeline_placed);
+    assert_eq!(result.symbol_placement, pipeline_placed);
+    let placed = result.symbol_placement.as_ref().expect("placed");
+    assert_eq!(placed.surfaces, ["※"]);
     let p = placed.position;
     assert_eq!((p, placed.skipped), (3, 0));
     let listed = &result.after_rerank;
@@ -493,4 +492,30 @@ fn explain_records_the_placement() {
         .iter()
         .all(|s| s.word_cost.is_none() && s.script_cost.is_none() && s.connection_cost.is_none()));
     assert!(!result.model_paths.iter().any(|m| m.surface == "※"));
+}
+
+/// A symbol whose surface equals two adjacent segments' concatenation is no
+/// dictionary compound for the single-kanji penalty's exemption: symbols are
+/// outside the conversion model.
+#[test]
+fn a_symbol_is_not_a_compound_for_the_single_kanji_exemption() {
+    use crate::converter::features::is_single_char_kanji_penalised;
+    let seg = |reading: &str, surface: &str| RichSegment {
+        reading: reading.into(),
+        surface: surface.into(),
+        left_id: 1,
+        right_id: 1,
+        word_cost: 0,
+    };
+    let segments = [seg("あ", "亜"), seg("い", "意")];
+    let conn = ConnectionMatrix::new_owned(2, 0, 0, Vec::new(), vec![0i16; 4]);
+    let penalised = |dict: &TrieDictionary| {
+        is_single_char_kanji_penalised(&segments[0], 0, &segments, &conn, Some(dict))
+    };
+    let with = |e: DictEntry| TrieDictionary::from_entries([("あい".to_string(), vec![e])]);
+    assert!(
+        penalised(&with(symbol("亜意", 0))),
+        "a symbol exempts nothing"
+    );
+    assert!(!penalised(&with(entry("亜意", 0))), "a word still does");
 }

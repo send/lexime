@@ -20,7 +20,7 @@ use super::{ConversionContext, HistoryAt};
 // Re-export so downstream crates (e.g. lex-cli) can name the type behind
 // `ExplainPath::history_breakdown` — the definition lives in the crate-private
 // `reranker` module.
-pub use super::postprocess::SymbolCandidate;
+pub use super::postprocess::SymbolPlacement;
 pub use super::reranker::HistoryBoostBreakdown;
 pub use super::rewriter::{PolicyPrice, PolicyRule};
 
@@ -40,9 +40,10 @@ pub struct ExplainResult {
     /// Override stage (what `PostprocessObserver::after_rerank` sees), in
     /// list order.
     pub after_rerank: Vec<AfterRerankPath>,
-    /// The symbols the placement inserted for this reading, in row order,
-    /// with the position rule's record (what the placement reported).
-    pub symbol_candidates: Vec<SymbolCandidate>,
+    /// The symbols the placement inserted for this reading (row order) with
+    /// the position rule's record, as the placement reported it; `None` when
+    /// it inserted none.
+    pub symbol_placement: Option<SymbolPlacement>,
     /// The `[candidates] max_cost_gap` the pipeline ran with.
     pub max_cost_gap: i64,
     /// The bound admission applied above the anchor: `max_cost_gap`, never
@@ -307,7 +308,7 @@ struct ExplainObserver<'a> {
     /// The Model-stage list (see [`ExplainResult::after_rerank`]).
     after_rerank: Vec<AfterRerankPath>,
     /// What the symbol placement reported.
-    symbol_candidates: Vec<SymbolCandidate>,
+    symbol_placement: Option<SymbolPlacement>,
     /// Single-kanji segments of each final path, before `group_segments`.
     single_kanji: HashMap<String, Vec<SingleKanjiSegment>>,
     dict: &'a dyn Dictionary,
@@ -336,7 +337,7 @@ impl<'a> ExplainObserver<'a> {
             override_boosts: HashMap::new(),
             columns: HashMap::new(),
             after_rerank: Vec::new(),
-            symbol_candidates: Vec::new(),
+            symbol_placement: None,
             single_kanji: HashMap::new(),
             dict,
             pricer: FeaturePricer::new(conn, Some(dict)),
@@ -361,8 +362,8 @@ impl PostprocessObserver for ExplainObserver<'_> {
         self.reranked = priced;
     }
 
-    fn symbols_placed(&mut self, placed: &[SymbolCandidate]) {
-        self.symbol_candidates = placed.to_vec();
+    fn symbols_placed(&mut self, placed: Option<&SymbolPlacement>) {
+        self.symbol_placement = placed.cloned();
     }
 
     fn after_rerank(&mut self, paths: &[ScoredPath]) {
@@ -663,7 +664,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             lattice_nodes: Vec::new(),
             paths: Vec::new(),
             after_rerank: Vec::new(),
-            symbol_candidates: Vec::new(),
+            symbol_placement: None,
             max_cost_gap,
             cost_gap_bound: admission_bound(max_cost_gap),
             cost_gap_anchor: 0,
@@ -806,7 +807,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         lattice_nodes,
         paths,
         after_rerank,
-        symbol_candidates: std::mem::take(&mut observer.symbol_candidates),
+        symbol_placement: observer.symbol_placement.take(),
         max_cost_gap: ctx.max_cost_gap,
         cost_gap_bound: admission_bound(ctx.max_cost_gap),
         cost_gap_anchor: anchor,
@@ -977,22 +978,21 @@ pub fn format_text(result: &ExplainResult) -> String {
 
 /// The symbols the placement inserted (positions in its population).
 fn format_symbols(result: &ExplainResult, out: &mut String) {
-    if let Some(first) = result.symbol_candidates.first() {
+    if let Some(placed) = &result.symbol_placement {
         out.push_str(&format!(
-            "\n=== Symbols placed ({}; population={}, skipped={}, price={}{}) ===\n",
-            result.symbol_candidates.len(),
-            first.population,
-            first.skipped,
-            first.price,
-            if first.copied_from_identity {
+            "\n=== Symbols placed ({}; p={}, population={}, skipped={}, price={}{}) ===\n",
+            placed.surfaces.len(),
+            placed.position,
+            placed.population,
+            placed.skipped,
+            placed.price,
+            if placed.copied_from_identity {
                 ", copied from the kana"
             } else {
                 ""
             },
         ));
-        for c in &result.symbol_candidates {
-            out.push_str(&format!("  {}  (p={})\n", c.surface, c.position));
-        }
+        out.push_str(&format!("  {}\n", placed.surfaces.join("  ")));
     }
 }
 

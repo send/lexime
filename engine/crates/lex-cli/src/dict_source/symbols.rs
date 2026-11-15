@@ -11,7 +11,8 @@ use lex_core::dict::DictEntry;
 ///
 /// Format matches Mozc TSV: `reading\tleft_id\tright_id\tcost\tsurface`.
 /// Symbol entries live outside the lattice (see [`DictEntry::symbol`]); the
-/// cost column is not used — see [`SymbolsSource::parse_dir`].
+/// cost column is not used — see [`SymbolsSource::parse_dir`] (`add_symbols`
+/// assigns the row-order cost).
 const SYMBOLS_TSV: &str = include_str!("symbols.tsv");
 
 const SYMBOLS_FILE: &str = "symbols.tsv";
@@ -24,10 +25,11 @@ const SYMBOLS_FILE: &str = "symbols.tsv";
 pub struct SymbolsSource;
 
 impl DictSource for SymbolsSource {
-    /// Every entry is a symbol entry (`DictEntry::symbol`), and its cost is
-    /// its row index among the rows with the same reading, in file order
-    /// (0, 1, 2, …). The TSV cost column must still parse (the format is the
-    /// Mozc 5-column one) but its value is not used.
+    /// Every entry is a symbol entry (`DictEntry::symbol`), kept in file
+    /// order per reading. The cost is a placeholder (0): `add_symbols`
+    /// numbers the row order where symbols enter the final dictionary. The
+    /// TSV cost column must still parse (the format is the Mozc 5-column
+    /// one) but its value is not used.
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
         let mut entries = parse_dict_files(
             dir,
@@ -58,15 +60,8 @@ impl DictSource for SymbolsSource {
                 }))
             },
         )?;
-        // `parse_dict_files` pushes rows in file order, so the index within
-        // each reading's list is the row order.
-        for (reading, list) in &mut entries {
-            for (row, entry) in list.iter_mut().enumerate() {
-                entry.cost = i16::try_from(row).map_err(|_| {
-                    DictSourceError::Parse(format!(
-                        "{SYMBOLS_FILE}: too many rows for reading {reading:?}"
-                    ))
-                })?;
+        for list in entries.values_mut() {
+            for entry in list {
                 entry.symbol = true;
             }
         }

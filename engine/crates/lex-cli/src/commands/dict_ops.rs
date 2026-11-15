@@ -220,6 +220,9 @@ pub(crate) fn build_entries(
 fn take_symbols(entries: &mut EntryMap) -> EntryMap {
     let mut symbols = EntryMap::new();
     entries.retain(|reading, list| {
+        if !list.iter().any(|e| e.symbol) {
+            return !list.is_empty();
+        }
         let (syms, words): (Vec<_>, Vec<_>) = list.drain(..).partition(|e| e.symbol);
         if !syms.is_empty() {
             symbols.insert(reading.clone(), syms);
@@ -239,10 +242,17 @@ fn add_symbols(entries: &mut EntryMap, symbols: EntryMap) -> Result<usize, Strin
     let mut added = 0usize;
     for (reading, list) in symbols {
         let slot = entries.entry(reading.clone()).or_default();
-        for entry in list {
+        // The row-order cost: arrival order among the reading's symbols, so
+        // symbols from several sources (compile) or from both dictionaries
+        // (merge) number 0..n in the order they arrive.
+        let mut row = slot.iter().filter(|e| e.symbol).count();
+        for mut entry in list {
             if slot.iter().any(|e| e.surface == entry.surface) {
                 duplicates.push((reading.clone(), entry.surface));
             } else {
+                entry.cost = i16::try_from(row)
+                    .map_err(|_| format!("too many symbols for reading {reading:?}"))?;
+                row += 1;
                 slot.push(entry);
                 added += 1;
             }
@@ -765,6 +775,41 @@ mod tests {
         );
     }
 
+    /// Two symbol sources (compile) or both dictionaries' symbols (merge)
+    /// entering through `add_symbols` for the same reading number 0..n in
+    /// arrival order: A's rows, then B's.
+    #[test]
+    fn symbols_from_two_sources_number_in_arrival_order() {
+        let sym = |surface: &str| DictEntry {
+            surface: surface.to_string(),
+            cost: 0,
+            left_id: 2,
+            right_id: 2,
+            symbol: true,
+        };
+        let batch = |surfaces: &[&str]| -> EntryMap {
+            EntryMap::from([(
+                "ほし".to_string(),
+                surfaces.iter().map(|s| sym(s)).collect(),
+            )])
+        };
+        let mut entries = EntryMap::new();
+        assert_eq!(add_symbols(&mut entries, batch(&["★", "☆"])), Ok(2));
+        assert_eq!(add_symbols(&mut entries, batch(&["✪", "✫"])), Ok(2));
+        let dict = TrieDictionary::from_entries(entries);
+        let got: Vec<(String, i16)> = dict
+            .lookup("ほし")
+            .into_iter()
+            .map(|e| (e.surface, e.cost))
+            .collect();
+        let want: Vec<(String, i16)> = ["★", "☆", "✪", "✫"]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.to_string(), i as i16))
+            .collect();
+        assert_eq!(got, want);
+    }
+
     /// Only the symbols source's entries carry the flag, and it survives the
     /// v5 file round-trip.
     #[test]
@@ -793,30 +838,16 @@ mod tests {
         );
     }
 
-    /// T12: the bundled symbols TSV duplicates no (reading, surface) of the
-    /// pinned mozc-raw or the bundled extras — the same check `mise run dict`
-    /// (the accuracy job's build) enforces. Needs `engine/data/mozc-raw`
-    /// (`mise run fetch-dict-mozc`); run with `--ignored`.
-    #[test]
-    #[ignore]
-    fn bundled_symbols_do_not_duplicate_pinned_sources() {
-        let Some(result) = build_bundled("dup") else {
-            return;
-        };
-        let entries = result.unwrap();
-        let symbols = entries.values().flatten().filter(|e| e.symbol).count();
-        assert_eq!(symbols, 155, "bundled symbol entries");
-    }
-
-    /// T-B6: the bundled symbols TSV over the pinned mozc-raw — 155 symbol
-    /// entries, the largest symbol cost is the most same-reading rows − 1
+    /// T12 + T-B6: the bundled symbols TSV over the pinned mozc-raw duplicates
+    /// no (reading, surface) of it or of the bundled extras (the check `mise
+    /// run dict`, the accuracy job's build, enforces) — 155 symbol entries, the largest symbol cost is the most same-reading rows − 1
     /// (cost = row index), and with no history the prediction stage lists no
     /// symbol for any proper prefix of a symbol reading. Needs
     /// `engine/data/mozc-raw`; run with `--ignored`.
     #[test]
     #[ignore]
     fn bundled_symbols_row_costs_and_no_untrained_prediction() {
-        let Some(result) = build_bundled("stage3") else {
+        let Some(result) = build_bundled() else {
             return;
         };
         let entries = result.unwrap();
@@ -866,14 +897,14 @@ mod tests {
 
     /// `build_entries` over the pinned mozc-raw and the bundled symbols and
     /// extras; `None` (skipped) when mozc-raw is not fetched.
-    fn build_bundled(tag: &str) -> Option<Result<EntryMap, String>> {
+    fn build_bundled() -> Option<Result<EntryMap, String>> {
         let mozc_raw = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mozc-raw");
         if !mozc_raw.join("id.def").exists() {
             eprintln!("skipping: mozc-raw not found at {mozc_raw:?}");
             return None;
         }
         let root = std::env::temp_dir().join(format!(
-            "lexime_test_bundled_symbols_{tag}_{}",
+            "lexime_test_bundled_symbols_{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);

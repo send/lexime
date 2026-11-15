@@ -404,8 +404,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::testutil::test_dict;
-    use crate::dict::DictEntry;
+    use crate::converter::testutil::{symbol_entry, test_dict};
 
     #[test]
     fn test_build_lattice_basic() {
@@ -435,13 +434,6 @@ mod tests {
         assert_eq!(lattice.cost(0), 10000);
     }
 
-    fn symbol(surface: &str, cost: i16) -> DictEntry {
-        DictEntry {
-            symbol: true,
-            ..crate::converter::testutil::entry(surface, cost)
-        }
-    }
-
     /// I8′: lattice construction is the same as if symbol entries did not
     /// exist — no symbol nodes, and the fallback appears where only a symbol
     /// matches a single char.
@@ -450,9 +442,9 @@ mod tests {
         crate::dict::TrieDictionary::from_entries(vec![
             (
                 "ぱい".to_string(),
-                vec![entry("パイ", 3000), symbol("π", 0)],
+                vec![entry("パイ", 3000), symbol_entry("π", 0)],
             ),
-            ("ほ".to_string(), vec![symbol("♪", 0)]),
+            ("ほ".to_string(), vec![symbol_entry("♪", 0)]),
             ("し".to_string(), vec![entry("詩", 4000)]),
         ])
     }
