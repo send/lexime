@@ -974,11 +974,12 @@ mod tests {
     /// The bundled extras rows with a cost-override: a value chosen by
     /// measurement, outside both the 5000 default of the common-noun rows
     /// and the proper-noun derivation. Written here, not read from the TSVs,
-    /// so a changed cost in a TSV fails T9. (`あくゆう` / `そうそう` are still
-    /// 8000: the value is decided later by measurement.)
+    /// so a changed cost in a TSV fails T9. (`あくゆう` / `そうそう`: chosen by
+    /// a grid measurement under the 人名,一般 connection — the range and the
+    /// choice rule are in the row comment.)
     const EXTRAS_COST_OVERRIDES: &[(&str, i16)] = &[
-        ("あくゆう", 8000),
-        ("そうそう", 8000),
+        ("あくゆう", 5200),
+        ("そうそう", 4200),
         ("かんぽう", 7000),
         ("ましん", 3500),
     ];
