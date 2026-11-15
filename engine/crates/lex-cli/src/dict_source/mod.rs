@@ -1,3 +1,4 @@
+mod curated;
 mod extras;
 mod mozc;
 pub mod pos_map;
@@ -55,9 +56,10 @@ pub trait DictSource {
     /// it uses for cost adjustments (`None` when compiling without one).
     ///
     /// Default: no-op — most sources carry explicit POS ids in their raw
-    /// files. Sources that assign a POS by tag (extras) override this to
-    /// resolve the tag against id.def, so a pin bump that renumbers ids
-    /// can't silently degrade their entries (#279).
+    /// files. Sources that write a POS by tag name (the curated sources,
+    /// symbols and extras) override this to resolve the tag against id.def,
+    /// so a pin bump that renumbers ids can't silently degrade their entries
+    /// (#279).
     fn resolve_pos_ids(
         &self,
         _entries: &mut HashMap<String, Vec<DictEntry>>,

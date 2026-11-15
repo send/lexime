@@ -101,7 +101,7 @@ pub(crate) fn build_entries(
     }
 
     // id.def drives both morpheme-role cost offsets and tag-based POS
-    // resolution (extras). Auto-detect in input_dir if --id-def is not
+    // resolution (symbols, extras). Auto-detect in input_dir if --id-def is not
     // specified.
     let id_def_path = id_def.map(PathBuf::from).or_else(|| {
         let auto = input_path.join("id.def");
@@ -640,7 +640,19 @@ mod tests {
     use super::*;
     use crate::dict_source::from_name;
 
-    const ID_DEF: &str = "0 BOS/EOS,*,*,*,*,*,*\n1 名詞,一般,*,*,*,*,*\n2 記号,一般,*,*,*,*,*\n";
+    /// Every tag the curated sources allow must be in id.def (they resolve
+    /// their whole allowed set), so the fixture lists them all.
+    const ID_DEF: &str = "0 BOS/EOS,*,*,*,*,*,*
+1 名詞,一般,*,*,*,*,*
+2 記号,一般,*,*,*,*,*
+3 記号,アルファベット,*,*,*,*,*
+4 名詞,固有名詞,一般,*,*,*,*
+5 名詞,固有名詞,人名,一般,*,*,*
+6 名詞,固有名詞,人名,名,*,*,*
+7 名詞,固有名詞,組織,*,*,*,*
+8 名詞,固有名詞,地域,一般,*,*,*
+9 名詞,固有名詞,地域,国,*,*,*
+";
 
     /// Synthetic mozc / symbols / extras input dirs under a fresh temp dir.
     struct Fixture {
@@ -648,10 +660,11 @@ mod tests {
     }
 
     impl Fixture {
-        /// `mozc` rows are `reading\tsurface\tcost` (POS id 1), `symbols`
-        /// rows `reading\tsurface\ttsv_cost` (the same POS id 1: the symbol
-        /// flag comes from the source, so nothing may tell the two apart by
-        /// POS), `extras` rows are the extras TSV format.
+        /// `mozc` rows are `reading\tsurface\tcost` (POS id 2 = 記号,一般),
+        /// `symbols` rows `reading\tsurface` (written as 記号,一般 — the same
+        /// POS as the mozc rows: the symbol flag comes from the source, so
+        /// nothing may tell the two apart by POS), `extras` rows
+        /// `reading\tsurface\tcost` (written as 名詞,一般).
         fn new(name: &str, mozc: &[&str], symbols: &[&str], extras: &[&str]) -> Self {
             let root = std::env::temp_dir()
                 .join(format!("lexime_test_compile_{name}_{}", std::process::id()));
@@ -663,9 +676,18 @@ mod tests {
                 let f: Vec<&str> = row.split('\t').collect();
                 format!("{}\t{id}\t{id}\t{}\t{}\n", f[0], f[2], f[1])
             };
-            let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 1)).collect();
-            let symbols_txt: String = symbols.iter().map(|r| to_mozc(r, 1)).collect();
-            let extras_txt: String = extras.iter().map(|r| format!("{r}\n")).collect();
+            let mozc_txt: String = mozc.iter().map(|r| to_mozc(r, 2)).collect();
+            let symbols_txt: String = symbols
+                .iter()
+                .map(|r| format!("{r}\t記号,一般,*,*,*,*,*\n"))
+                .collect();
+            let extras_txt: String = extras
+                .iter()
+                .map(|r| {
+                    let (word, cost) = r.rsplit_once('\t').unwrap();
+                    format!("{word}\t名詞,一般,*,*,*,*,*\t{cost}\n")
+                })
+                .collect();
             fs::write(root.join("mozc/dictionary00.txt"), mozc_txt).unwrap();
             fs::write(root.join("mozc/id.def"), ID_DEF).unwrap();
             fs::write(root.join("symbols/symbols.tsv"), symbols_txt).unwrap();
@@ -716,7 +738,7 @@ mod tests {
         let fx = Fixture::new(
             "dup_mozc",
             &["ぱい\tπ\t4898", "ぱい\tパイ\t3000"],
-            &["ぱい\tπ\t10000", "ぱい\tΠ\t10000"],
+            &["ぱい\tπ", "ぱい\tΠ"],
             &[],
         );
         assert_duplicate_err(&fx, "(ぱい, π)");
@@ -724,7 +746,7 @@ mod tests {
         let fx = Fixture::new(
             "dup_extras",
             &["ほし\t星\t3000"],
-            &["ほし\t★\t5000"],
+            &["ほし\t★"],
             &["ほし\t★\t9000"],
         );
         assert_duplicate_err(&fx, "(ほし, ★)");
@@ -735,10 +757,10 @@ mod tests {
     #[test]
     fn symbol_duplicate_err_regardless_of_cost() {
         // symbol cost 0 < mozc 5000
-        let fx = Fixture::new("dup_lower", &["ぱい\tπ\t5000"], &["ぱい\tπ\t1"], &[]);
+        let fx = Fixture::new("dup_lower", &["ぱい\tπ\t5000"], &["ぱい\tπ"], &[]);
         assert_duplicate_err(&fx, "(ぱい, π)");
         // symbol cost 0 > mozc -500
-        let fx = Fixture::new("dup_higher", &["ぱい\tπ\t-500"], &["ぱい\tπ\t1"], &[]);
+        let fx = Fixture::new("dup_higher", &["ぱい\tπ\t-500"], &["ぱい\tπ"], &[]);
         assert_duplicate_err(&fx, "(ぱい, π)");
     }
 
@@ -750,7 +772,7 @@ mod tests {
         let fx = Fixture::new(
             "order",
             &["ほし\t星\t3000", "いち\t一\t2000"],
-            &["ほし\t★\t5000", "ほし\t☆\t5000", "まる\t○\t5000"],
+            &["ほし\t★", "ほし\t☆", "まる\t○"],
             &["ほし\t干し\t0", "いち\t壱\t1000"],
         );
         let a = fx.dict(true).to_bytes().unwrap();
@@ -758,19 +780,14 @@ mod tests {
         assert!(a == b, "dict bytes depend on --extra-source order");
     }
 
-    /// a symbol's cost is its row index among same-reading rows (not the
-    /// TSV cost column), and `lookup` returns them in row order.
+    /// a symbol's cost is its row index among same-reading rows, and
+    /// `lookup` returns them in row order.
     #[test]
     fn symbol_cost_is_row_order() {
         let fx = Fixture::new(
             "row_order",
             &["しかく\t四角\t3000"],
-            &[
-                "ほし\t★\t9000",
-                "ほし\t☆\t5000",
-                "しかく\t□\t7000",
-                "ほし\t✪\t10",
-            ],
+            &["ほし\t★", "ほし\t☆", "しかく\t□", "ほし\t✪"],
             &[],
         );
         let dict = fx.dict(true);
@@ -872,7 +889,7 @@ mod tests {
         let fx = Fixture::new(
             "flag",
             &["ぱい\tパイ\t3000"],
-            &["ぱい\tΠ\t10000"],
+            &["ぱい\tΠ"],
             &["ぱい\t牌\t6000"],
         );
         let bytes = fx.dict(true).to_bytes().unwrap();
