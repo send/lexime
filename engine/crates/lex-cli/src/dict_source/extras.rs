@@ -34,11 +34,7 @@ use lex_core::dict::DictEntry;
 ///    entries to the appropriate domain TSV here. Decide the POS by the
 ///    majority rule documented on [`ALLOWED_POS_TAGS`], not by carrying it
 ///    over, and decide the cost anew (a promoted entry's old cost is not
-///    the extras value either). A proper-noun row takes the cost rule on
-///    [`ALLOWED_POS_TAGS`] (the median over same-kind words, not the same
-///    reading's Mozc entries); a common-noun row picks one that is sound for
-///    the word, grounded in the same reading's Mozc entries or in a
-///    before/after measurement.
+///    the extras value either) by the cost rule on [`ALLOWED_POS_TAGS`].
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -51,9 +47,7 @@ use lex_core::dict::DictEntry;
 ///    columns, rewrite the POS to the allowed tag the majority rule picks, and
 ///    write the section comment (kind, representative words, counts). The
 ///    mining cost is on Sudachi's scale, not the extras final value; decide
-///    the cost anew (proper-noun rows by the rule on [`ALLOWED_POS_TAGS`],
-///    common-noun rows grounded in the same reading's Mozc entries or in a
-///    before/after measurement).
+///    the cost anew by the cost rule on [`ALLOWED_POS_TAGS`].
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
@@ -150,7 +144,9 @@ const DOMAINS: &[(&str, &str)] = &[
 /// several entries in the POS (織田信長, 豊臣秀吉 in 人名,一般) counts once.
 /// The raw value is stored; the person-name offset (+2000) is compile's,
 /// applied to Mozc entries only, so curated 人名,一般 rows are about 2000
-/// cheaper than Mozc's effective full-name value.
+/// cheaper than Mozc's effective full-name value. The values are the ones
+/// counted on the mozc-raw of pin 7c1e06d3; when the pin is bumped, derive
+/// them again.
 ///
 /// - Common-noun rows are outside the rule: they keep 5000 (the 名詞,一般
 ///   default) until a rank problem shows by measurement, then are derived by

@@ -987,7 +987,9 @@ mod tests {
     /// The cost of a proper-noun row by its tag: the median, over the
     /// representative words, of each word's cheapest Mozc entry in that POS
     /// (per word, floored, Mozc's raw value — see `ALLOWED_POS_TAGS`).
-    /// Written here, not read from the TSVs.
+    /// Written here, not read from the TSVs. The key is the POS tag: one tag
+    /// is assumed to be one kind (節) of row. To add a different kind under
+    /// the same tag, key this table by (tag, 節) instead.
     const EXTRAS_PROPER_NOUN_COSTS: &[(&str, i16)] = &[
         ("名詞,固有名詞,人名,一般,*,*,*", 3402),
         ("名詞,固有名詞,人名,名,*,*,*", 5889),
@@ -1036,6 +1038,13 @@ mod tests {
         fs::remove_dir_all(&root).ok();
 
         assert_eq!(rows.len(), 47);
+        let extras_cost = |reading: &str, tag: &str| {
+            EXTRAS_COST_OVERRIDES
+                .iter()
+                .find(|(r, _)| *r == reading)
+                .or_else(|| EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag))
+                .map_or(5000, |&(_, c)| c)
+        };
         for row in &rows {
             let (reading, surface, tag) = (row[0], row[1], row[2]);
             let same: Vec<&DictEntry> = entries[reading]
@@ -1043,11 +1052,7 @@ mod tests {
                 .filter(|e| e.surface == surface)
                 .collect();
             assert_eq!(same.len(), 1, "{row:?}");
-            let want_cost = EXTRAS_COST_OVERRIDES
-                .iter()
-                .find(|(r, _)| *r == reading)
-                .or_else(|| EXTRAS_PROPER_NOUN_COSTS.iter().find(|(g, _)| *g == tag))
-                .map_or(5000, |&(_, c)| c);
+            let want_cost = extras_cost(reading, tag);
             let want_id = pin_id(tag);
             assert_eq!(
                 (same[0].left_id, same[0].right_id, same[0].cost),
@@ -1066,8 +1071,17 @@ mod tests {
         };
         assert_eq!(mozc_entry("たなか"), (1921, 5000 + PERSON_NAME_COST_OFFSET));
         assert_eq!(mozc_entry("かんじ"), (1851, 5100));
-        assert_eq!(mozc_entry("いっぽどう"), (1929, 4273));
-        assert_eq!(mozc_entry("ましん"), (1851, 3500));
+        assert_eq!(
+            mozc_entry("いっぽどう"),
+            (
+                1929,
+                extras_cost("いっぽどう", "名詞,固有名詞,組織,*,*,*,*")
+            )
+        );
+        assert_eq!(
+            mozc_entry("ましん"),
+            (1851, extras_cost("ましん", "名詞,一般,*,*,*,*,*"))
+        );
     }
 
     /// `build_entries` over the pinned mozc-raw and the bundled symbols and
