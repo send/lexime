@@ -447,6 +447,11 @@ pub struct ReplayReport {
     pub gap_below_top: usize,
     /// Selections with no N-best path (lookup / prediction / injection only).
     pub gap_no_path: usize,
+    /// Selections of a symbol path (`Owner::Symbol`), counted apart from
+    /// the three gap counts above: a symbol's price is a copy that holds its
+    /// position, so its gap is not one (it would count a symbol after a
+    /// learned #1 as a re-correction in `gap_below_top`).
+    pub gap_symbol: usize,
     /// Log lines skipped as unreadable (see `Selections::malformed`).
     pub malformed_lines: usize,
     /// First log line replayed (0-based; `--from-line`).
@@ -478,6 +483,8 @@ pub enum Owner {
     Rescue,
     Numeric,
     Katakana,
+    /// A symbol of the whole reading, placed by position.
+    Symbol,
     /// A learned surface no N-best path placed.
     Injected,
     /// The reading itself, added by the kana stage.
@@ -493,13 +500,14 @@ impl Serialize for Owner {
 }
 
 impl Owner {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Model,
         Self::KanjiVariant,
         Self::PartialHiragana,
         Self::Rescue,
         Self::Numeric,
         Self::Katakana,
+        Self::Symbol,
         Self::Injected,
         Self::Kana,
         Self::Tail,
@@ -514,6 +522,7 @@ impl Owner {
             PathOrigin::HiraganaVariant => Self::Rescue,
             PathOrigin::Numeric => Self::Numeric,
             PathOrigin::Katakana => Self::Katakana,
+            PathOrigin::Symbol => Self::Symbol,
         }
     }
 
@@ -526,6 +535,7 @@ impl Owner {
             Self::Rescue => "rescue",
             Self::Numeric => "numeric",
             Self::Katakana => "katakana",
+            Self::Symbol => "symbol",
             Self::Injected => "injected",
             Self::Kana => "kana",
             Self::Tail => "tail",
@@ -637,6 +647,7 @@ struct Tally {
     admission_gap_hist: Vec<usize>,
     gap_below_top: usize,
     gap_no_path: usize,
+    gap_symbol: usize,
     by_owner: BTreeMap<Owner, OwnerCounts>,
 }
 
@@ -648,6 +659,7 @@ impl Tally {
             admission_gap_hist: vec![0; GAP_BIN_UPPER.len() + 1],
             gap_below_top: 0,
             gap_no_path: 0,
+            gap_symbol: 0,
             // Every owner has a row, so an owner with nothing reads as 0,
             // not as a missing key.
             by_owner: Owner::ALL.map(|o| (o, OwnerCounts::default())).into(),
@@ -668,7 +680,11 @@ impl Tally {
                 c.off_page += 1;
             }
         }
+        let symbol = landing
+            .rank
+            .is_some_and(|r| view.owners[r] == Owner::Symbol);
         match landing.gap {
+            _ if symbol => self.gap_symbol += 1,
             Some(g) if g < 0 => self.gap_below_top += 1,
             Some(g) => self.gap_hist[gap_bin(g)] += 1,
             None => self.gap_no_path += 1,
@@ -702,6 +718,7 @@ impl Tally {
             admission_gap_hist: self.admission_gap_hist,
             gap_below_top: self.gap_below_top,
             gap_no_path: self.gap_no_path,
+            gap_symbol: self.gap_symbol,
             malformed_lines,
             from_line,
             readings,
@@ -1051,6 +1068,7 @@ absent = ["x"]"#
                 ("かな2", PathOrigin::Numeric),
                 ("かなー", PathOrigin::HiraganaVariant),
                 ("可奈", PathOrigin::Viterbi),
+                ("〆", PathOrigin::Symbol),
             ],
             &["哉", "かな", "金"],
             // 可奈 is both learned and an N-best path: the path listed it.
@@ -1068,6 +1086,7 @@ absent = ["x"]"#
                 Numeric,
                 Rescue,
                 Model,
+                Symbol,
                 Injected,
                 Kana,
                 Tail
@@ -1154,6 +1173,42 @@ absent = ["x"]"#
         assert_eq!(r.gap_below_top, 1);
         assert_eq!(r.gap_hist[0], 1, "the #1 itself is at gap 0");
         assert_eq!(r.gap_hist.iter().sum::<usize>(), 1);
+    }
+
+    /// A symbol's selection is counted apart from the three gap counts: its
+    /// price is a copy, even below a learned #1 (not a re-correction).
+    #[test]
+    fn a_symbol_selection_is_counted_apart_from_the_gaps() {
+        let names = ["荷重", "二十", "〃"];
+        let v = ReadingView::new(
+            "にじゅう",
+            PricedCandidates {
+                response: resp(&names, &names),
+                diagnostics: CandidateDiagnostics {
+                    prices: [
+                        (11456, PathOrigin::Viterbi),
+                        (7334, PathOrigin::Viterbi),
+                        (7334, PathOrigin::Symbol),
+                    ]
+                    .into_iter()
+                    .map(|(cost, priced_by)| PathPrice {
+                        cost,
+                        priced_by,
+                        admission_gap: None,
+                    })
+                    .collect(),
+                    injected: Vec::new(),
+                    ..CandidateDiagnostics::default()
+                },
+            },
+        );
+        let mut t = Tally::new();
+        t.add(&v, "〃");
+        let r = t.into_report(1, 0, 0, 1, false);
+        assert_eq!(r.gap_symbol, 1);
+        assert_eq!(r.gap_below_top, 0);
+        assert_eq!((r.gap_hist.iter().sum::<usize>(), r.gap_no_path), (0, 0));
+        assert_eq!(r.by_owner[&Owner::Symbol].selections, 1);
     }
 
     /// Admission's bins hold what it kept by price, at the gap it measured

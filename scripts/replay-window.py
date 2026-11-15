@@ -139,6 +139,14 @@ def replay(a, arm, log, now, work, app, extra, name, verbose=False):
     return json.loads(r.stdout)
 
 
+def gap_symbol(r):
+    # Selections owned by a placed symbol (`Owner::Symbol`), whatever their rank
+    # or learning state — counted apart from the three gap buckets.
+    # Absent from the report of a lextool older than the symbol move (the main
+    # arms): n/a, not 0.
+    return f"{r['gap_symbol']:5d}" if "gap_symbol" in r else "  n/a"
+
+
 def main():
     p = argparse.ArgumentParser(description="Replay a withdrawal window under two binaries (see the header)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -206,7 +214,8 @@ def main():
     for name, r in (("base", base), ("new", new)):
         print(f"  {name:5s} selections {r['selections']:5d}  page 1 {r['in_page']:5d}"
               f"  in list {r['in_list']:5d}  absent {r['absent']:5d}"
-              f"  learned #1 {r['gap_below_top']:5d}")
+              f"  learned #1 {r['gap_below_top']:5d}"
+              f"  symbol selections {gap_symbol(r)}")
     print("  new against base: " + json.dumps(d))
 
 

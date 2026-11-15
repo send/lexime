@@ -1440,6 +1440,7 @@ fn print_replay_text(
     bins(&r.gap_hist);
     row("< 0 (learned #1)", r.gap_below_top);
     row("no N-best path", r.gap_no_path);
+    row("symbol (copied price)", r.gap_symbol);
     println!();
     println!("=== Cost gap, selections admission judged by price ===");
     bins(&r.admission_gap_hist);
@@ -1910,6 +1911,7 @@ mod tests {
             cost,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         };
         let mut entries: Vec<DictEntry> = (0..12)
             .map(|i| e(format!("カナヤ{}", "ア".repeat(i)), (i as i16) * 10))

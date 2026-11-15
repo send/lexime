@@ -20,12 +20,14 @@ fn make_dict() -> TrieDictionary {
                     cost: 3000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "京".to_string(),
                     cost: 5000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -36,6 +38,7 @@ fn make_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -45,6 +48,7 @@ fn make_dict() -> TrieDictionary {
                 cost: 1000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];
@@ -192,6 +196,7 @@ fn test_prediction_multi_word_chain() {
                 cost: 3000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -201,6 +206,7 @@ fn test_prediction_multi_word_chain() {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -210,6 +216,7 @@ fn test_prediction_multi_word_chain() {
                 cost: 3500,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -219,6 +226,7 @@ fn test_prediction_multi_word_chain() {
                 cost: 4000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];
@@ -387,6 +395,7 @@ fn test_diagnostics_record_who_priced_each_path() {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     };
     // As converter/tests/offers.rs: 方 is priced far above ほう, so the
     // KanjiVariant offer (≤ source + 2000) undercuts the real あった|方|が.

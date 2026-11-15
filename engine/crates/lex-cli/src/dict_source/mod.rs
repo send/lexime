@@ -134,13 +134,15 @@ pub(super) struct ParsedLine {
 /// empty/comment skipping, and stats logging.
 ///
 /// `parse_line` receives the split fields for each non-empty, non-comment line.
-/// Return `Some(ParsedLine)` to add the entry, `None` to skip.
+/// Return `Ok(Some(ParsedLine))` to add the entry, `Ok(None)` to skip the line
+/// (counted in the skip stats), or `Err(msg)` to abort the whole parse with a
+/// [`DictSourceError::Parse`] naming the file and 1-based line number.
 pub(super) fn parse_dict_files(
     dir: &Path,
     label: &str,
     predicate: impl Fn(&str) -> bool,
     delimiter: char,
-    parse_line: impl Fn(&[&str]) -> Option<ParsedLine>,
+    parse_line: impl Fn(&[&str]) -> Result<Option<ParsedLine>, String>,
 ) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
     let files = list_dict_files(dir, label, predicate)?;
     let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
@@ -152,7 +154,7 @@ pub(super) fn parse_dict_files(
         eprintln!("Reading {}...", path.display());
         let content = fs::read_to_string(&path).map_err(DictSourceError::Io)?;
 
-        for line in content.lines() {
+        for (idx, line) in content.lines().enumerate() {
             total_lines += 1;
             if line.is_empty() || line.starts_with('#') {
                 skipped += 1;
@@ -160,7 +162,10 @@ pub(super) fn parse_dict_files(
             }
 
             let fields: Vec<&str> = line.split(delimiter).collect();
-            let Some(parsed) = parse_line(&fields) else {
+            let parsed = parse_line(&fields).map_err(|msg| {
+                DictSourceError::Parse(format!("{}:{}: {msg}", path.display(), idx + 1))
+            })?;
+            let Some(parsed) = parsed else {
                 skipped += 1;
                 continue;
             };
@@ -170,6 +175,7 @@ pub(super) fn parse_dict_files(
                 cost: parsed.cost,
                 left_id: parsed.left_id,
                 right_id: parsed.right_id,
+                symbol: false,
             });
         }
     }

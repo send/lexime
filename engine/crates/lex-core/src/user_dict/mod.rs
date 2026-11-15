@@ -44,6 +44,7 @@ fn make_entry(surface: &str) -> DictEntry {
         cost: USER_COST,
         left_id: USER_POS_ID,
         right_id: USER_POS_ID,
+        symbol: false,
     }
 }
 

@@ -52,10 +52,10 @@ impl AsRef<[u8]> for OwnedMmap {
 unsafe impl StableBacking for OwnedMmap {}
 
 pub(super) const MAGIC: &[u8; 4] = b"LXDX";
-pub(super) const VERSION: u8 = 4;
+pub(super) const VERSION: u8 = 5;
 // magic(4) + version(1) + reserved(3) + trie_len(4) + pool_len(4) + entries_len(4) + reading_count(4) = 24
 pub(super) const HEADER_SIZE: usize = 24;
-const ENTRY_SIZE: usize = 12; // str_offset(4) + str_len(2) + cost(2) + left_id(2) + right_id(2)
+const ENTRY_SIZE: usize = 13; // str_offset(4) + str_len(2) + cost(2) + left_id(2) + right_id(2) + symbol(1)
 pub(super) const SLOT_SIZE: usize = 6; // entry_offset(4) + count(2)
 
 pub(super) enum TrieStore {
@@ -142,6 +142,7 @@ impl ValuesStore {
             let cost = i16::from_ne_bytes(data[off + 6..off + 8].try_into().unwrap());
             let left_id = u16::from_ne_bytes(data[off + 8..off + 10].try_into().unwrap());
             let right_id = u16::from_ne_bytes(data[off + 10..off + 12].try_into().unwrap());
+            let symbol = data[off + 12] != 0;
 
             let surface = if str_offset + str_len <= pool.len() {
                 String::from_utf8_lossy(&pool[str_offset..str_offset + str_len]).into_owned()
@@ -154,6 +155,7 @@ impl ValuesStore {
                 cost,
                 left_id,
                 right_id,
+                symbol,
             });
         }
 
@@ -171,7 +173,7 @@ impl TrieDictionary {
     pub fn from_entries(entries: impl IntoIterator<Item = (String, Vec<DictEntry>)>) -> Self {
         let mut pairs: Vec<(String, Vec<DictEntry>)> = entries.into_iter().collect();
         for (_, candidates) in &mut pairs {
-            candidates.sort_by_key(|e| e.cost);
+            candidates.sort_by_key(DictEntry::lookup_order);
         }
         pairs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
@@ -204,6 +206,7 @@ impl TrieDictionary {
                 entries_data.extend_from_slice(&e.cost.to_ne_bytes());
                 entries_data.extend_from_slice(&e.left_id.to_ne_bytes());
                 entries_data.extend_from_slice(&e.right_id.to_ne_bytes());
+                entries_data.push(u8::from(e.symbol));
             }
 
             reading_index.extend_from_slice(&entry_offset.to_ne_bytes());
@@ -270,34 +273,6 @@ impl Dictionary for TrieDictionary {
                 })
                 .collect()
         })
-    }
-
-    fn predict_ranked(
-        &self,
-        prefix: &str,
-        max_results: usize,
-        scan_limit: usize,
-    ) -> Vec<(String, DictEntry)> {
-        let mut flat: Vec<(String, DictEntry)> = Vec::new();
-        with_trie!(self, |t| {
-            for m in t.predictive_search(prefix.as_bytes()).take(scan_limit) {
-                let reading = String::from_utf8(m.key)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                let entries = self.values.get_entries(m.value_id as usize);
-                flat.reserve(entries.len());
-                for e in entries {
-                    flat.push((reading.clone(), e));
-                }
-            }
-        });
-
-        flat.sort_by_key(|(_, e)| e.cost);
-
-        let mut seen = std::collections::HashSet::new();
-        flat.retain(|(_, e)| seen.insert(e.surface.clone()));
-
-        flat.truncate(max_results);
-        flat
     }
 
     fn common_prefix_search(&self, query: &str) -> Vec<SearchResult> {

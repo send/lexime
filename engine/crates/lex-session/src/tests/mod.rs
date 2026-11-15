@@ -109,12 +109,14 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                     cost: 3000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "京".to_string(),
                     cost: 5000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -125,6 +127,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -135,12 +138,14 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                     cost: 3500,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "いい".to_string(),
                     cost: 4000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -151,6 +156,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 4000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -160,6 +166,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 6000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -169,6 +176,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 4500,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -178,6 +186,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 5000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -187,6 +196,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 3000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -196,6 +206,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 2500,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -205,6 +216,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 2000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -214,6 +226,7 @@ pub(super) fn make_test_dict() -> Arc<dyn Dictionary> {
                 cost: 1000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];

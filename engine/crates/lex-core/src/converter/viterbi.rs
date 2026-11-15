@@ -28,8 +28,10 @@ pub(crate) struct RichSegment {
 /// `ScoredPath::priced_by` who set the price. A price is the model's
 /// (Viterbi + rerank), an offer's (a kana↔kanji variant of a listed path,
 /// capped at its source + 2000 so the model's orthography preference can be
-/// overridden), or a policy's (the kana rescue #263, Numeric #239,
-/// Katakana — surfaces the lattice cannot represent).
+/// overridden), a policy's (the kana rescue #263, Numeric #239,
+/// Katakana — surfaces the lattice cannot represent), or a copy (Symbol: a
+/// symbol of the whole reading, placed by position and holding a neighbour's
+/// price to keep that position — not a model path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathOrigin {
@@ -40,6 +42,7 @@ pub enum PathOrigin {
     PartialHiragana,
     Numeric,
     Katakana,
+    Symbol,
 }
 
 impl PathOrigin {
@@ -77,9 +80,9 @@ pub(crate) struct ScoredPath {
     pub whole_path_boost: i64,
     /// Cost-gap admission's verdict: the path's pre-history cost above the
     /// anchor, for a path admission kept by that price. `None` for the head
-    /// and the exempt paths (learned, the typed kana), which it keeps
-    /// whatever their price, and for a price set after admission (a policy
-    /// candidate). Diagnostics only (replay bins it).
+    /// and the exempt paths (learned, the typed kana, a symbol), which it
+    /// keeps whatever their price, and for a price set after admission (a
+    /// policy candidate). Diagnostics only (replay bins it).
     pub admission_gap: Option<i64>,
     /// Who produced `segments`.
     pub origin: PathOrigin,

@@ -90,14 +90,16 @@ pub trait Dictionary: Send + Sync {
 
     /// Prediction candidates ranked by cost, deduplicated by surface.
     ///
-    /// Scans up to `scan_limit` readings from predictive search, flattens all
-    /// entries, deduplicates by surface (keeping the lowest cost), and returns
-    /// the top `max_results` entries as `(reading, DictEntry)` pairs.
+    /// Scans up to `scan_limit` readings from predictive search (the window
+    /// counts readings, whatever their entries), flattens all entries and
+    /// hands them to [`rank_predictions`] — the one place the ranking lives.
+    /// `exclude` drops entries before ranking (e.g. untrained symbols).
     fn predict_ranked(
         &self,
         prefix: &str,
         max_results: usize,
         scan_limit: usize,
+        exclude: &dyn Fn(&str, &DictEntry) -> bool,
     ) -> Vec<(String, DictEntry)> {
         let mut flat: Vec<(String, DictEntry)> = Vec::new();
         for sr in self.predict(prefix, scan_limit) {
@@ -106,13 +108,28 @@ pub trait Dictionary: Send + Sync {
                 flat.push((sr.reading.clone(), e));
             }
         }
-
-        flat.sort_by_key(|(_, e)| e.cost);
-
-        let mut seen = std::collections::HashSet::new();
-        flat.retain(|(_, e)| seen.insert(e.surface.clone()));
-
-        flat.truncate(max_results);
-        flat
+        rank_predictions(flat, max_results, exclude)
     }
+}
+
+/// Rank flattened `(reading, entry)` predictions: drop what `exclude` says,
+/// then order by cost, keep the cheapest entry per surface and take the top
+/// `max_results`.
+///
+/// `exclude` runs before the dedup and the truncation so an excluded entry
+/// neither holds a `max_results` slot nor shadows a kept entry of the same
+/// surface (e.g. symbol (`おめが`, Ω) must not hide the word (`おーむ`, Ω)).
+fn rank_predictions(
+    mut flat: Vec<(String, DictEntry)>,
+    max_results: usize,
+    exclude: &dyn Fn(&str, &DictEntry) -> bool,
+) -> Vec<(String, DictEntry)> {
+    flat.retain(|(reading, e)| !exclude(reading, e));
+    flat.sort_by_key(|(_, e)| e.cost);
+
+    let mut seen = std::collections::HashSet::new();
+    flat.retain(|(_, e)| seen.insert(e.surface.clone()));
+
+    flat.truncate(max_results);
+    flat
 }

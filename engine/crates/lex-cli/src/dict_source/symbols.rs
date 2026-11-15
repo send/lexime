@@ -10,6 +10,9 @@ use lex_core::dict::DictEntry;
 /// Bundled TSV of Greek letters and common math symbols.
 ///
 /// Format matches Mozc TSV: `reading\tleft_id\tright_id\tcost\tsurface`.
+/// Symbol entries live outside the lattice (see [`DictEntry::symbol`]); the
+/// cost column is not used — see [`SymbolsSource::parse_dir`] (`add_symbols`
+/// assigns the row-order cost).
 const SYMBOLS_TSV: &str = include_str!("symbols.tsv");
 
 const SYMBOLS_FILE: &str = "symbols.tsv";
@@ -22,31 +25,52 @@ const SYMBOLS_FILE: &str = "symbols.tsv";
 pub struct SymbolsSource;
 
 impl DictSource for SymbolsSource {
+    /// Every entry is a symbol entry (`DictEntry::symbol`), kept in file
+    /// order per reading. The cost is a placeholder (0): `add_symbols`
+    /// numbers the row order where symbols enter the final dictionary. The
+    /// TSV cost column must still parse (the format is the Mozc 5-column
+    /// one) but its value is not used.
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        parse_dict_files(
+        let mut entries = parse_dict_files(
             dir,
             SYMBOLS_FILE,
             |name| name == SYMBOLS_FILE,
             '\t',
             |fields| {
                 if fields.len() < 5 {
-                    return None;
+                    return Err(format!(
+                        "expected 5 tab-separated fields, found {}",
+                        fields.len()
+                    ));
                 }
                 let reading = fields[0];
-                let (left_id, right_id, cost) = parse_id_cost(fields)?;
+                let Some((left_id, right_id, _unused_cost)) = parse_id_cost(fields) else {
+                    return Err(format!(
+                        "unparsable id/cost columns for reading {reading:?}"
+                    ));
+                };
                 let surface = fields[4];
-                if !is_hiragana(reading) {
-                    return None;
+                if surface.is_empty() {
+                    return Err(format!("empty surface for reading {reading:?}"));
                 }
-                Some(ParsedLine {
+                if !is_hiragana(reading) {
+                    return Err(format!("reading {reading:?} is not hiragana"));
+                }
+                Ok(Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
                     left_id,
                     right_id,
-                    cost,
-                })
+                    cost: 0,
+                }))
             },
-        )
+        )?;
+        for list in entries.values_mut() {
+            for entry in list {
+                entry.symbol = true;
+            }
+        }
+        Ok(entries)
     }
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
@@ -95,11 +119,73 @@ mod tests {
 
         for entries in entries.values() {
             for entry in entries {
-                assert_eq!(entry.left_id, 2643, "symbols use 記号,一般 POS id 2643");
+                assert_eq!(entry.left_id, 2643, "every bundled symbols row carries the numeric POS id 2643 (記号,アルファベット; kept as is in this format)");
                 assert_eq!(entry.right_id, 2643);
             }
         }
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_surface_is_err_with_line() {
+        let dir =
+            std::env::temp_dir().join(format!("lexime_test_symbols_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(SYMBOLS_FILE),
+            "# header\nほし\t2643\t2643\t5000\t★\nまる\t2643\t2643\t5000\t\n",
+        )
+        .unwrap();
+        let err = SymbolsSource.parse_dir(&dir).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("symbols.tsv:3"), "{err}");
+        assert!(err.contains("empty surface"), "{err}");
+    }
+
+    fn parse_err(name: &str, body: &str) -> String {
+        let dir =
+            std::env::temp_dir().join(format!("lexime_test_symbols_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(SYMBOLS_FILE), body).unwrap();
+        let err = SymbolsSource.parse_dir(&dir).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).ok();
+        err
+    }
+
+    #[test]
+    fn short_row_is_err_with_line() {
+        let err = parse_err(
+            "short",
+            "# h
+
+ほし\t2643\t2643\t5000\t★\nまる\t2643\t2643\n",
+        );
+        assert!(err.contains("symbols.tsv:4"), "{err}");
+        assert!(err.contains("5 tab-separated fields"), "{err}");
+    }
+
+    #[test]
+    fn non_hiragana_reading_is_err_with_line() {
+        let err = parse_err(
+            "kana",
+            "ほし\t2643\t2643\t5000\t★\nstar\t2643\t2643\t5000\t☆\n",
+        );
+        assert!(err.contains("symbols.tsv:2"), "{err}");
+        assert!(err.contains("not hiragana"), "{err}");
+    }
+
+    #[test]
+    fn unparsable_id_or_cost_is_err_with_line() {
+        for (name, row) in [
+            ("lid", "まる\tx\t2643\t5000\t○\n"),
+            ("cost", "まる\t2643\t2643\tx\t○\n"),
+        ] {
+            let err = parse_err(name, &format!("ほし\t2643\t2643\t5000\t★\n{row}"));
+            assert!(err.contains("symbols.tsv:2"), "{err}");
+            assert!(err.contains("unparsable id/cost"), "{err}");
+        }
     }
 }

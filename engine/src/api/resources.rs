@@ -78,6 +78,9 @@ impl LexDictionary {
         Ok(Arc::new(Self { inner }))
     }
 
+    /// Exact lookup of `reading`. Entries from the bundled symbols source are
+    /// included; their `cost` is the row order within the reading (0, 1, ...),
+    /// not comparable with the cost of a word entry.
     fn lookup(&self, reading: String) -> Vec<super::LexDictEntry> {
         self.inner
             .lookup(&reading)

@@ -10,12 +10,14 @@ fn sample_dict() -> TrieDictionary {
                     cost: 5000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "管".to_string(),
                     cost: 5200,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -27,18 +29,21 @@ fn sample_dict() -> TrieDictionary {
                     cost: 5100,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "感じ".to_string(),
                     cost: 5150,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "幹事".to_string(),
                     cost: 5300,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -50,12 +55,14 @@ fn sample_dict() -> TrieDictionary {
                     cost: 5000,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "勘定".to_string(),
                     cost: 5400,
                     left_id: 0,
                     right_id: 0,
+                    symbol: false,
                 },
             ],
         ),
@@ -66,6 +73,7 @@ fn sample_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];
@@ -162,6 +170,78 @@ fn test_unsupported_version() {
     assert!(matches!(result, Err(DictError::UnsupportedVersion(0x99))));
 }
 
+fn flagged_dict() -> TrieDictionary {
+    TrieDictionary::from_entries(vec![(
+        "ぱい".to_string(),
+        vec![
+            DictEntry {
+                surface: "パイ".to_string(),
+                cost: 3000,
+                left_id: 7,
+                right_id: 8,
+                symbol: false,
+            },
+            DictEntry {
+                surface: "Π".to_string(),
+                cost: 0,
+                left_id: 9,
+                right_id: 9,
+                symbol: true,
+            },
+        ],
+    )])
+}
+
+fn flags(dict: &TrieDictionary) -> Vec<(String, i16, u16, u16, bool)> {
+    dict.lookup("ぱい")
+        .into_iter()
+        .map(|e| (e.surface, e.cost, e.left_id, e.right_id, e.symbol))
+        .collect()
+}
+
+/// v5 stores the symbol flag per entry; both the owned and the mmap reader
+/// return it with the other fields intact.
+#[test]
+fn test_symbol_flag_roundtrip_v5() {
+    let dict = flagged_dict();
+    let expected = vec![
+        ("パイ".to_string(), 3000, 7, 8, false),
+        ("Π".to_string(), 0, 9, 9, true),
+    ];
+    assert_eq!(flags(&dict), expected);
+
+    let bytes = dict.to_bytes().unwrap();
+    assert_eq!(bytes[4], 5, "lexime.dict version");
+    assert_eq!(
+        flags(&TrieDictionary::from_bytes(&bytes).unwrap()),
+        expected
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v5.dict");
+    dict.save(&path).unwrap();
+    assert_eq!(flags(&TrieDictionary::open(&path).unwrap()), expected);
+}
+
+/// A v4 file (12-byte entries, no flag) is refused, not misread (fail closed).
+#[test]
+fn test_v4_dict_rejected() {
+    let mut bytes = flagged_dict().to_bytes().unwrap();
+    bytes[4] = 4;
+    assert!(matches!(
+        TrieDictionary::from_bytes(&bytes),
+        Err(DictError::UnsupportedVersion(4))
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v4.dict");
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(matches!(
+        TrieDictionary::open(&path),
+        Err(DictError::UnsupportedVersion(4))
+    ));
+}
+
 #[test]
 fn test_embedded_trie_error_preserved() {
     // Failures from the embedded `lexime_trie` loader must bubble up
@@ -176,7 +256,7 @@ fn test_embedded_trie_error_preserved() {
 
     let mut bytes = Vec::with_capacity(48);
     bytes.extend_from_slice(b"LXDX");
-    bytes.push(4); // LXDX VERSION
+    bytes.push(5); // LXDX VERSION
     bytes.extend_from_slice(&[0, 0, 0]); // reserved
     bytes.extend_from_slice(&24u32.to_ne_bytes()); // trie_len
     bytes.extend_from_slice(&0u32.to_ne_bytes()); // pool_len
@@ -198,7 +278,7 @@ fn test_embedded_trie_error_preserved() {
 #[test]
 fn test_predict_ranked_cost_order() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("かん", 100, 200);
+    let results = dict.predict_ranked("かん", 100, 200, &|_, _| false);
     // Should be sorted by cost ascending
     for w in results.windows(2) {
         assert!(
@@ -221,6 +301,7 @@ fn test_predict_ranked_dedup_surface() {
                 cost: 5200,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
         (
@@ -230,11 +311,12 @@ fn test_predict_ranked_dedup_surface() {
                 cost: 5000,
                 left_id: 0,
                 right_id: 0,
+                symbol: false,
             }],
         ),
     ];
     let dict = TrieDictionary::from_entries(entries);
-    let results = dict.predict_ranked("かん", 100, 200);
+    let results = dict.predict_ranked("かん", 100, 200, &|_, _| false);
     // "感" should appear only once, with the lower cost (5000)
     let surfaces: Vec<&str> = results.iter().map(|(_, e)| e.surface.as_str()).collect();
     assert_eq!(
@@ -249,14 +331,14 @@ fn test_predict_ranked_dedup_surface() {
 #[test]
 fn test_predict_ranked_max_results() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("かん", 2, 200);
+    let results = dict.predict_ranked("かん", 2, 200, &|_, _| false);
     assert_eq!(results.len(), 2);
 }
 
 #[test]
 fn test_predict_ranked_no_match() {
     let dict = sample_dict();
-    let results = dict.predict_ranked("そ", 100, 200);
+    let results = dict.predict_ranked("そ", 100, 200, &|_, _| false);
     assert!(results.is_empty());
 }
 

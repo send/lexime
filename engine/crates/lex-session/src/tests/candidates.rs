@@ -446,6 +446,7 @@ fn auto_commit_and_stability_follow_learned_top() {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     };
     let dict: Arc<dyn Dictionary> = Arc::new(TrieDictionary::from_entries(vec![
         ("きょう".into(), vec![e("今日", 3000)]),
@@ -516,6 +517,7 @@ fn a_number_compound_head_is_one_segment_for_records_and_stability() {
         cost,
         left_id: id,
         right_id: id,
+        symbol: false,
     };
     let dict: Arc<dyn Dictionary> = Arc::new(TrieDictionary::from_entries(vec![
         ("に".into(), vec![e("二", 0, 1)]),

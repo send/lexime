@@ -15,12 +15,14 @@ fn bench_dict() -> TrieDictionary {
                     cost: 3000,
                     left_id: 100,
                     right_id: 100,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "京".into(),
                     cost: 5000,
                     left_id: 101,
                     right_id: 101,
+                    symbol: false,
                 },
             ],
         ),
@@ -31,6 +33,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 200,
                 right_id: 200,
+                symbol: false,
             }],
         ),
         (
@@ -41,12 +44,14 @@ fn bench_dict() -> TrieDictionary {
                     cost: 3500,
                     left_id: 300,
                     right_id: 300,
+                    symbol: false,
                 },
                 DictEntry {
                     surface: "いい".into(),
                     cost: 4000,
                     left_id: 301,
                     right_id: 301,
+                    symbol: false,
                 },
             ],
         ),
@@ -57,6 +62,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 400,
                 right_id: 400,
+                symbol: false,
             }],
         ),
         (
@@ -66,6 +72,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2500,
                 left_id: 800,
                 right_id: 800,
+                symbol: false,
             }],
         ),
         (
@@ -75,6 +82,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 900,
                 right_id: 900,
+                symbol: false,
             }],
         ),
         (
@@ -84,6 +92,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3000,
                 left_id: 1000,
                 right_id: 1000,
+                symbol: false,
             }],
         ),
         (
@@ -93,6 +102,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2500,
                 left_id: 810,
                 right_id: 810,
+                symbol: false,
             }],
         ),
         (
@@ -102,6 +112,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 820,
                 right_id: 820,
+                symbol: false,
             }],
         ),
         (
@@ -111,6 +122,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3500,
                 left_id: 830,
                 right_id: 830,
+                symbol: false,
             }],
         ),
         (
@@ -120,6 +132,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3200,
                 left_id: 831,
                 right_id: 831,
+                symbol: false,
             }],
         ),
         (
@@ -129,6 +142,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2500,
                 left_id: 840,
                 right_id: 840,
+                symbol: false,
             }],
         ),
         (
@@ -138,6 +152,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 6000,
                 left_id: 600,
                 right_id: 600,
+                symbol: false,
             }],
         ),
         (
@@ -147,6 +162,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4500,
                 left_id: 500,
                 right_id: 500,
+                symbol: false,
             }],
         ),
         (
@@ -156,6 +172,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 5000,
                 left_id: 700,
                 right_id: 700,
+                symbol: false,
             }],
         ),
         (
@@ -165,6 +182,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 1100,
                 right_id: 1100,
+                symbol: false,
             }],
         ),
         (
@@ -174,6 +192,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 1200,
                 right_id: 1200,
+                symbol: false,
             }],
         ),
         (
@@ -183,6 +202,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 210,
                 right_id: 210,
+                symbol: false,
             }],
         ),
         (
@@ -192,6 +212,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3500,
                 left_id: 850,
                 right_id: 850,
+                symbol: false,
             }],
         ),
         (
@@ -201,6 +222,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 220,
                 right_id: 220,
+                symbol: false,
             }],
         ),
         (
@@ -210,6 +232,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2000,
                 left_id: 230,
                 right_id: 230,
+                symbol: false,
             }],
         ),
         (
@@ -219,6 +242,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4500,
                 left_id: 860,
                 right_id: 860,
+                symbol: false,
             }],
         ),
         (
@@ -228,6 +252,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 5000,
                 left_id: 870,
                 right_id: 870,
+                symbol: false,
             }],
         ),
         (
@@ -237,6 +262,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3800,
                 left_id: 861,
                 right_id: 861,
+                symbol: false,
             }],
         ),
         (
@@ -246,6 +272,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 2500,
                 left_id: 880,
                 right_id: 880,
+                symbol: false,
             }],
         ),
         (
@@ -255,6 +282,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 4000,
                 left_id: 890,
                 right_id: 890,
+                symbol: false,
             }],
         ),
         (
@@ -264,6 +292,7 @@ fn bench_dict() -> TrieDictionary {
                 cost: 3500,
                 left_id: 891,
                 right_id: 891,
+                symbol: false,
             }],
         ),
     ];

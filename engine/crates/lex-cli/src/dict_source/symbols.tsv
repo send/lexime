@@ -1,14 +1,13 @@
 # Lexime bundled symbol dictionary.
 # Format: reading\tleft_id\tright_id\tcost\tsurface
-# POS 2643 = 記号,一般 (Mozc id.def) — same POS used for π, which places
-# symbols as candidates after common kanji/katakana conversions.
-#
-# Cost tiers:
-#   10000  Greek letters — defer to existing katakana loanwords (シグマ, アルファ…)
-#           because the reranker penalizes katakana surfaces, and we don't want
-#           the Greek glyph to outrank them for everyday input.
-#    5000  Math operators, number sets, arrows, geometry — no strong katakana
-#           competitors, so mid-cost lets the symbol sit close to the kanji.
+# Symbols live outside the lattice: compile flags every row as a symbol entry,
+# lattice construction builds no nodes from them, and a row whose
+# (reading, surface) is also in mozc or extras fails the build (remove the row);
+# a duplicate inside symbols is a build error too.
+# The cost column is not used: a symbol's cost is its row index among the rows
+# with the same reading (0, 1, 2, … in file order).
+# Every row still carries the numeric POS id 2643 (記号,アルファベット), which is
+# known to be wrong for the non-Greek rows; a per-row POS by tag name replaces it.
 
 # --- Greek letters (lowercase) ---
 あるふぁ	2643	2643	10000	α
@@ -27,7 +26,6 @@
 くしー	2643	2643	10000	ξ
 ぐざい	2643	2643	10000	ξ
 おみくろん	2643	2643	10000	ο
-ぱい	2643	2643	10000	π
 ろー	2643	2643	10000	ρ
 しぐま	2643	2643	10000	σ
 たう	2643	2643	10000	τ
@@ -148,10 +146,6 @@
 あれふ	2643	2643	5000	ℵ
 
 # --- General-purpose symbols (non-emoji, BMP text characters) ---
-#
-# Cost tiers follow the same convention as above:
-#   10000  Readings with common katakana conversions (はーと→ハート, etc.)
-#    5000  No strong katakana competitors.
 
 # --- Stars ---
 ほし	2643	2643	5000	★

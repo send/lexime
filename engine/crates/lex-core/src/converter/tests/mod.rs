@@ -10,3 +10,4 @@ mod nbest;
 mod offers;
 mod reranker;
 mod rewriter;
+mod symbols;

@@ -47,6 +47,21 @@ pub fn is_hiragana_reading(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| is_hiragana(c) || c == 'ー')
 }
 
+/// A candidate surface the symbol placement steps over (Mozc's
+/// `SymbolRewriter` position rule, `symbol_rewriter.cc` `InsertCandidates`):
+/// one kanji, all hiragana (ー allowed, as Mozc's `IsScriptType(HIRAGANA)`
+/// allows it), or all katakana. Decided by the surface's script alone.
+///
+/// Differences from Mozc's `GetScriptType`, kept as they are because the
+/// predicates above also price rerank's script feature: 々 is not a kanji
+/// here, ゠ (U+30A0) is katakana here, and half-width katakana, the Ainu
+/// extension and CJK compatibility ideographs count only in Mozc.
+pub fn symbol_skip(s: &str) -> bool {
+    let mut chars = s.chars();
+    let one_kanji = matches!((chars.next(), chars.next()), (Some(c), None) if is_kanji(c));
+    one_kanji || is_hiragana_reading(s) || (!s.is_empty() && s.chars().all(is_katakana))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +96,26 @@ mod tests {
         assert!(!is_kanji('あ'));
         assert!(is_latin('a'));
         assert!(!is_latin('あ'));
+    }
+
+    #[test]
+    fn symbol_skip_steps_over_one_kanji_and_kana_runs() {
+        for (s, want) in [
+            ("空", true),
+            ("漢字", false),
+            // Not a kanji here (Mozc counts it): recorded difference.
+            ("々", false),
+            ("らーめん", true),
+            ("ラーメン", true),
+            // ・ is katakana-block, not hiragana: a mixed run is not skipped
+            // (Mozc's IsScriptType(HIRAGANA) does not allow it either).
+            ("ら・め", false),
+            // ゠ is in lexime's katakana block, not Mozc's: recorded difference.
+            ("ア゠イ", true),
+            ("χ", false),
+            ("", false),
+        ] {
+            assert_eq!(symbol_skip(s), want, "{s}");
+        }
     }
 }

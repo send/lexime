@@ -16,6 +16,7 @@ fn attahouga() -> TrieDictionary {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     };
     TrieDictionary::from_entries(vec![
         ("あった".into(), vec![e("あった", 0), e("会った", 50)]),
@@ -154,6 +155,7 @@ fn attahouga_met() -> TrieDictionary {
         cost,
         left_id: 0,
         right_id: 0,
+        symbol: false,
     };
     TrieDictionary::from_entries(vec![
         (

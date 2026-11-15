@@ -323,6 +323,13 @@ fn add_nodes_for_range(
         let matches = dict.common_prefix_search(suffix);
 
         for result in &matches {
+            // Symbol entries live outside the lattice: no nodes, and they do
+            // not count as a single-char match, so the lattice has exactly
+            // the connectivity it would have without them (fallbacks
+            // included).
+            if result.entries.iter().all(|e| e.symbol) {
+                continue;
+            }
             let reading_char_count = result.reading.chars().count();
             let end = start + reading_char_count;
 
@@ -338,7 +345,7 @@ fn add_nodes_for_range(
 
             lattice.max_reading_chars = lattice.max_reading_chars.max(reading_char_count);
             let reading = lattice.pool(&result.reading);
-            for entry in &result.entries {
+            for entry in result.entries.iter().filter(|e| !e.symbol) {
                 let surface = if entry.surface == result.reading {
                     reading
                 } else {
@@ -397,7 +404,7 @@ pub fn build_lattice(dict: &dyn Dictionary, kana: &str) -> Lattice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::testutil::test_dict;
+    use crate::converter::testutil::{symbol_entry, test_dict};
 
     #[test]
     fn test_build_lattice_basic() {
@@ -425,6 +432,59 @@ mod tests {
         assert_eq!(lattice.reading(0), "ぬ");
         assert_eq!(lattice.surface(0), "ぬ");
         assert_eq!(lattice.cost(0), 10000);
+    }
+
+    /// lattice construction is the same as if symbol entries did not
+    /// exist — no symbol nodes, and the fallback appears where only a symbol
+    /// matches a single char.
+    fn symbol_dict() -> crate::dict::TrieDictionary {
+        use crate::converter::testutil::entry;
+        crate::dict::TrieDictionary::from_entries(vec![
+            (
+                "ぱい".to_string(),
+                vec![entry("パイ", 3000), symbol_entry("π", 0)],
+            ),
+            ("ほ".to_string(), vec![symbol_entry("♪", 0)]),
+            ("し".to_string(), vec![entry("詩", 4000)]),
+        ])
+    }
+
+    fn nodes_at(lattice: &Lattice, start: usize, end: usize) -> Vec<&str> {
+        lattice.nodes_by_start[start]
+            .iter()
+            .filter(|&&i| lattice.end(i) == end)
+            .map(|&i| lattice.surface(i))
+            .collect()
+    }
+
+    #[test]
+    fn symbol_entries_are_not_lattice_nodes() {
+        let dict = symbol_dict();
+        let lattice = build_lattice(&dict, "ぱい");
+        assert_eq!(nodes_at(&lattice, 0, 2), vec!["パイ"]);
+        assert!((0..lattice.node_count()).all(|i| lattice.surface(i) != "π"));
+    }
+
+    #[test]
+    fn symbol_only_single_char_gets_fallback() {
+        let dict = symbol_dict();
+        let lattice = build_lattice(&dict, "ほ");
+        assert_eq!(nodes_at(&lattice, 0, 1), vec!["ほ"]);
+        let best = crate::converter::convert(&dict, None, "ほ");
+        assert!(!best.is_empty(), "1-best must not be empty");
+        assert_eq!(best[0].surface, "ほ");
+    }
+
+    #[test]
+    fn symbol_entries_ignored_by_extend() {
+        let dict = symbol_dict();
+        let mut lattice = build_lattice(&dict, "し");
+        lattice.extend(&dict, "しほ");
+        assert_eq!(nodes_at(&lattice, 1, 2), vec!["ほ"]);
+        let mut lattice = build_lattice(&dict, "ぱ");
+        lattice.extend(&dict, "ぱい");
+        assert_eq!(nodes_at(&lattice, 0, 2), vec!["パイ"]);
+        assert!((0..lattice.node_count()).all(|i| lattice.surface(i) != "π"));
     }
 
     #[test]

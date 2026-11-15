@@ -46,6 +46,7 @@ impl Fixture {
             cost,
             left_id: 0,
             right_id: 0,
+            symbol: false,
         };
         TrieDictionary::from_entries(vec![
             ("きょう".to_string(), vec![e("今日", 3000), e("京", 5000)]),

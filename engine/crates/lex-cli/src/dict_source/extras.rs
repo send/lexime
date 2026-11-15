@@ -81,15 +81,15 @@ impl DictSource for ExtrasSource {
             '\t',
             |fields| {
                 if fields.len() < 2 {
-                    return None;
+                    return Ok(None);
                 }
                 let reading = fields[0].trim();
                 let surface = fields[1].trim();
                 if reading.is_empty() || surface.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 if !is_hiragana(reading) {
-                    return None;
+                    return Ok(None);
                 }
                 // Cost is optional — empty / missing falls back to DEFAULT_COST,
                 // but a present-but-malformed value (typo, out-of-i16-range)
@@ -98,15 +98,18 @@ impl DictSource for ExtrasSource {
                 // strictness for the other sources.
                 let cost = match fields.get(2).map(|s| s.trim()) {
                     None | Some("") => DEFAULT_COST,
-                    Some(s) => s.parse::<i16>().ok()?,
+                    Some(s) => match s.parse::<i16>() {
+                        Ok(c) => c,
+                        Err(_) => return Ok(None),
+                    },
                 };
-                Some(ParsedLine {
+                Ok(Some(ParsedLine {
                     reading: reading.to_string(),
                     surface: surface.to_string(),
                     left_id: POS_UNRESOLVED,
                     right_id: POS_UNRESOLVED,
                     cost,
-                })
+                }))
             },
         )
     }
@@ -152,12 +155,7 @@ impl DictSource for ExtrasSource {
 /// a silent fallback here is exactly the drift #279 exists to prevent.
 fn resolve_default_pos(id_def_path: &Path) -> Result<u16, DictSourceError> {
     let map = pos_map::parse_mozc_id_def(id_def_path)?;
-    map.get(DEFAULT_POS_TAG).copied().ok_or_else(|| {
-        DictSourceError::Parse(format!(
-            "'{DEFAULT_POS_TAG}' not found in {} — cannot assign the extras POS id",
-            id_def_path.display()
-        ))
-    })
+    pos_map::resolve_tag(&map, DEFAULT_POS_TAG, "extras", id_def_path)
 }
 
 #[cfg(test)]
@@ -248,6 +246,7 @@ mod tests {
                 cost: 5000,
                 left_id: POS_UNRESOLVED,
                 right_id: POS_UNRESOLVED,
+                symbol: false,
             }],
         )]);
 
