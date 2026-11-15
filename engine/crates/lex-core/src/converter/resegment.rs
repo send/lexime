@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use crate::dict::connection::ConnectionMatrix;
 
 use super::cost::score_path;
+use super::latin_unit::{node_admissible, segment_typed_digit};
 use super::lattice::Lattice;
 use super::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
@@ -51,6 +52,10 @@ pub(super) fn resegment(
         if seg_end - seg_start < 2 {
             continue; // single-char segment, no internal split possible
         }
+        // The predecessor of the left node: the previous segment, or BOS.
+        let prev_typed_digit = seg_idx
+            .checked_sub(1)
+            .is_some_and(|j| segment_typed_digit(&best.segments[j]));
 
         // Try every internal split point
         for mid in (seg_start + 1)..seg_end {
@@ -90,6 +95,16 @@ pub(super) fn resegment(
                         .map(|c| c.is_function_word(lattice.left_id(right_idx)))
                         .unwrap_or(false);
                     if !left_is_fw && !right_is_fw {
+                        continue;
+                    }
+                    // The two adjacencies the split creates must satisfy the
+                    // formation rule Viterbi applies: previous segment → left
+                    // and left → right. Right → next needs no check: a Latin
+                    // unit next was preceded by a typed digit, which is one
+                    // char and never split.
+                    if !node_admissible(lattice, left_idx, prev_typed_digit, conn)
+                        || !node_admissible(lattice, right_idx, lattice.typed_digit(left_idx), conn)
+                    {
                         continue;
                     }
 

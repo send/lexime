@@ -53,6 +53,9 @@ pub struct ExplainResult {
     pub cost_gap_anchor: i64,
     /// Paths cost-gap admission dropped, by gap then surface.
     pub dropped_by_cost_gap: Vec<DroppedPath>,
+    /// The `after_rerank` paths' `latin_unit_unformed`, summed: Latin units
+    /// a path maker formed outside the formation rule. 0 when consistent.
+    pub latin_unit_unformed: i64,
     /// Surfaces whose policy record disagrees with the final path: priced by
     /// Numeric / Katakana with no record or with a record of another price,
     /// or recorded while something else priced the path. A pipeline bug;
@@ -85,6 +88,11 @@ pub struct AfterRerankPath {
     pub origin: PathOrigin,
     pub priced_by: PathOrigin,
     pub is_identity: bool,
+    /// Latin units on the path that rerank priced as plain Latin because
+    /// they do not follow a typed digit, as features counted them
+    /// (`PathFeatures::latin_unit_unformed`; 0 unless a path maker skipped
+    /// the formation rule).
+    pub latin_unit_unformed: i64,
 }
 
 /// A path cost-gap admission dropped.
@@ -376,6 +384,7 @@ impl PostprocessObserver for ExplainObserver<'_> {
                 origin: p.origin,
                 priced_by: p.priced_by,
                 is_identity: p.is_identity(),
+                latin_unit_unformed: self.pricer.features(p).latin_unit_unformed,
             })
             .collect();
         for p in paths {
@@ -669,6 +678,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
             cost_gap_bound: admission_bound(max_cost_gap),
             cost_gap_anchor: 0,
             dropped_by_cost_gap: Vec::new(),
+            latin_unit_unformed: 0,
             policy_price_inconsistent: Vec::new(),
             policy_skipped: Vec::new(),
             model_paths: Vec::new(),
@@ -800,6 +810,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         })
         .collect();
 
+    let latin_unit_unformed = after_rerank.iter().map(|p| p.latin_unit_unformed).sum();
     ExplainResult {
         reading: kana.to_string(),
         n,
@@ -812,6 +823,7 @@ pub fn explain(conv: &ConversionContext<'_>, kana: &str, n: usize) -> ExplainRes
         cost_gap_bound: admission_bound(ctx.max_cost_gap),
         cost_gap_anchor: anchor,
         dropped_by_cost_gap,
+        latin_unit_unformed,
         policy_price_inconsistent,
         policy_skipped: std::mem::take(&mut observer.policy_skipped),
         model_paths,
@@ -996,8 +1008,15 @@ fn format_symbols(result: &ExplainResult, out: &mut String) {
     }
 }
 
-/// The paths cost-gap admission dropped.
+/// The paths cost-gap admission dropped, and any Latin unit formed outside
+/// the formation rule.
 fn format_dropped(result: &ExplainResult, out: &mut String) {
+    if result.latin_unit_unformed != 0 {
+        out.push_str(&format!(
+            "\n=== Latin units outside the formation rule: {} (priced as Latin) ===\n",
+            result.latin_unit_unformed
+        ));
+    }
     if !result.dropped_by_cost_gap.is_empty() {
         out.push_str(&format!(
             "\n=== Dropped by cost gap ({}; bound={} above anchor={}, max_cost_gap={}) ===\n",
@@ -1021,6 +1040,7 @@ fn format_dropped(result: &ExplainResult, out: &mut String) {
 mod tests {
     use super::*;
     use crate::converter::testutil::{joined, test_dict};
+    use crate::converter::viterbi::RichSegment;
     use crate::dict::connection::ConnectionMatrix;
     use crate::dict::{DictEntry, TrieDictionary};
     use crate::user_history::{now_epoch, UserHistory};
@@ -1639,6 +1659,76 @@ mod tests {
                 assert_columns_add_up(&result);
             }
         }
+    }
+
+    /// A formed Latin unit (`3`+`s`, grouped into one row `3s`): the row's
+    /// script column is the ungrouped segments' sum as features priced them
+    /// — `3` (0) + `s` at `katakana_penalty` — not `3s` priced again as one
+    /// Latin surface (`latin_penalty`).
+    #[test]
+    fn a_formed_latin_unit_row_shows_the_features_script_price() {
+        let e = crate::converter::testutil::entry_with_id;
+        let dict = TrieDictionary::from_entries(vec![(
+            "びょう".into(),
+            vec![e("s", 100, 10), e("秒", 3000, 10)],
+        )]);
+        let mut roles = vec![0u8; 11];
+        roles[10] = 7;
+        let conn = crate::converter::testutil::zero_conn_with_roles(11, roles);
+        let result = explain(
+            &crate::converter::ConversionContext::new(&dict, Some(&conn)),
+            "3びょう",
+            8,
+        );
+        assert_columns_add_up(&result);
+        let p = path_by_surface(&result, "3s");
+        assert_eq!(p.segments.len(), 1, "3 and s are one row");
+        assert_eq!(
+            p.segments[0].script_cost,
+            Some(settings().cost.katakana_penalty)
+        );
+        assert_eq!(result.latin_unit_unformed, 0);
+        assert!(result
+            .after_rerank
+            .iter()
+            .all(|p| p.latin_unit_unformed == 0));
+    }
+
+    /// `latin_unit_unformed` is what features counted on the Model-stage
+    /// list: a hand-built 三|s (a path the formation rule does not make)
+    /// counts 1, recorded at `after_rerank`.
+    #[test]
+    fn after_rerank_records_the_unformed_latin_units_features_count() {
+        let mut roles = vec![0u8; 11];
+        roles[10] = 7;
+        let conn = crate::converter::testutil::zero_conn_with_roles(11, roles);
+        let dict = test_dict();
+        let ctx = crate::converter::ConversionContext::new(&dict, Some(&conn));
+        let mut observer = ExplainObserver::new(&ctx);
+        let seg = |reading: &str, surface: &str, id: u16| RichSegment {
+            reading: reading.into(),
+            surface: surface.into(),
+            left_id: id,
+            right_id: id,
+            word_cost: 0,
+        };
+        let unformed = ScoredPath::new(
+            vec![seg("さん", "三", 1), seg("びょう", "s", 10)],
+            0,
+            PathOrigin::Viterbi,
+        );
+        let formed = ScoredPath::new(
+            vec![seg("3", "3", 0), seg("びょう", "s", 10)],
+            0,
+            PathOrigin::Viterbi,
+        );
+        observer.after_rerank(&[unformed, formed]);
+        let counts: Vec<i64> = observer
+            .after_rerank
+            .iter()
+            .map(|p| p.latin_unit_unformed)
+            .collect();
+        assert_eq!(counts, [1, 0]);
     }
 
     /// めがいたい (#378): 目|が|痛い grouped into 目が|痛い. The script column

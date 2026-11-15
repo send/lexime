@@ -4,7 +4,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::user_history::UserHistory;
 
-use super::features::{FeatureConfig, FeatureWeights, SegmentRerank};
+use super::features::{FeatureConfig, FeatureWeights, PathFeatures, SegmentRerank};
 use super::viterbi::ScoredPath;
 
 /// The feature part of rerank's price: what rerank adds to a path's Viterbi
@@ -42,7 +42,13 @@ impl<'a> FeaturePricer<'a> {
     /// features priced at the weights. The one price formula (the weight
     /// tuner prices candidates the same way).
     pub fn adjustment(&self, path: &ScoredPath) -> i64 {
-        self.fcfg.extract(path).weighted_cost(&self.weights)
+        self.features(path).weighted_cost(&self.weights)
+    }
+
+    /// The features [`Self::adjustment`] prices, for the counts a display
+    /// records (`latin_unit_unformed`).
+    pub fn features(&self, path: &ScoredPath) -> PathFeatures {
+        self.fcfg.extract(path)
     }
 
     /// What [`Self::adjustment`] is made of, for display: each segment's

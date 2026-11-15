@@ -14,6 +14,7 @@
 pub(crate) mod cost;
 pub mod explain;
 pub(crate) mod features;
+mod latin_unit;
 mod lattice;
 mod postprocess;
 pub(crate) mod reranker;

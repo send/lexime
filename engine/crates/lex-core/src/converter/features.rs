@@ -7,7 +7,7 @@ use crate::dict::connection::ConnectionMatrix;
 use crate::dict::Dictionary;
 use crate::unicode::is_kanji;
 
-use super::cost::script_cost;
+use super::cost::segment_script;
 use super::viterbi::{RichSegment, ScoredPath};
 
 /// Raw features extracted from a single conversion path.
@@ -27,6 +27,11 @@ pub struct PathFeatures {
     pub te_kanji_count: i64,
     /// Number of single-char kanji content-word penalties triggered.
     pub single_kanji_count: i64,
+    /// Number of Latin units priced as plain Latin because they do not
+    /// follow a typed digit (`cost::segment_script`'s fail-safe). Not a
+    /// price term: a count that is 0 unless a path maker skipped the
+    /// formation rule.
+    pub latin_unit_unformed: i64,
 }
 
 impl PathFeatures {
@@ -62,6 +67,9 @@ pub struct SegmentFeatures {
     pub te_kanji: bool,
     /// The segment triggers the single-char kanji penalty.
     pub single_kanji: bool,
+    /// The segment is a Latin unit priced by the fail-safe (see
+    /// [`PathFeatures::latin_unit_unformed`]).
+    pub latin_unit_unformed: bool,
 }
 
 /// A segment's features with the weights applied: the amounts rerank adds
@@ -205,17 +213,20 @@ impl FeatureConfig<'_> {
         path: &'s ScoredPath,
     ) -> impl Iterator<Item = SegmentFeatures> + 's {
         path.segments.iter().enumerate().map(move |(i, seg)| {
+            let prev = i.checked_sub(1).map(|j| &path.segments[j]);
             let (te_kanji, single_kanji) = match self.conn {
                 Some(c) => (
-                    is_te_form_kanji_penalised(seg, i.checked_sub(1).map(|j| &path.segments[j]), c),
+                    is_te_form_kanji_penalised(seg, prev, c),
                     is_single_char_kanji_penalised(seg, i, &path.segments, c, self.dict),
                 ),
                 None => (false, false),
             };
+            let script = segment_script(seg, prev, self.conn);
             SegmentFeatures {
-                script_cost: script_cost(&seg.surface, seg.reading.chars().count()),
+                script_cost: script.cost,
                 te_kanji,
                 single_kanji,
+                latin_unit_unformed: script.latin_unit_unformed,
             }
         })
     }
@@ -268,6 +279,7 @@ impl FeatureConfig<'_> {
             f.script_cost += s.script_cost;
             f.te_kanji_count += i64::from(s.te_kanji);
             f.single_kanji_count += i64::from(s.single_kanji);
+            f.latin_unit_unformed += i64::from(s.latin_unit_unformed);
         }
         f
     }
