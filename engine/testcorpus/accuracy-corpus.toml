@@ -1254,3 +1254,17 @@ expected = "面白い笑"
 category = "regression"
 tags = ["symbol", "guard"]
 note = "ガード: Mozc の 記号,一般 の語 (笑) は文中でも lattice の語のまま"
+
+[[cases]]
+reading = "3ふぃーと"
+expected = "3フィート"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2a): 入力した数字の直後に Latin 単位 ft が形成されても、日本語名の 3フィート が #1 のまま (3ft は #2、script の価格はカタカナと同じ)。top-1 は PR2a の前と同じ"
+
+[[cases]]
+reading = "さんふぃーと"
+expected = "三フィート"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2a): かな数詞 + Latin 単位は半角形 (3ft、CounterFallback) だけで、三ft・３ft は出ない。top-1 は PR2a の前と同じ"
