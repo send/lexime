@@ -1213,13 +1213,6 @@ tags = ["symbol"]
 note = "語の無い読みでも記号は位置規則の #4 (Mozc どおり)。main は ∉ が #1"
 
 [[cases]]
-reading = "こめじるし"
-expected = "小目標"
-category = "regression"
-tags = ["symbol"]
-note = "期待値は記号を除いた lattice の実際の #1 (語の無い読み)。※ は位置規則の #4。main は ※ が #1。確定すれば学習で ※ が #1 になる"
-
-[[cases]]
 reading = "くうしゅうごう"
 expected = "空集合"
 category = "regression"

@@ -242,7 +242,7 @@ pub struct SymbolPlacement {
 }
 
 /// Insert the whole reading's symbol entries (`DictEntry::symbol`, row
-/// order) whose surface is not listed yet — Mozc's `SymbolRewriter`
+/// order) whose surface the population does not list yet — Mozc's `SymbolRewriter`
 /// position rule over the population admission keeps by price (index 0 and
 /// [`admission_keeps`] at the anchor `paths[0]`'s cost): position
 /// `min(SYMBOL_INSERT_OFFSET, population)`, then past every population path
@@ -259,18 +259,25 @@ pub(super) fn place_symbols(
     max_cost_gap: i64,
 ) -> Option<SymbolPlacement> {
     let anchor = paths.first()?.viterbi_cost;
-    let symbols: Vec<_> = dict
-        .lookup(reading)
-        .into_iter()
-        .filter(|e| e.symbol && !paths.iter().any(|p| p.surface_key_eq(&e.surface)))
-        .collect();
-    if symbols.is_empty() {
-        return None;
-    }
     let limit = admission_limit(anchor, max_cost_gap);
     let population: Vec<usize> = (0..paths.len())
         .filter(|&i| i == 0 || admission_keeps(&paths[i], limit))
         .collect();
+    // "Already listed" is judged on the population: a path admission drops
+    // right after shows nothing, so its surface does not suppress the symbol.
+    let symbols: Vec<_> = dict
+        .lookup(reading)
+        .into_iter()
+        .filter(|e| {
+            e.symbol
+                && !population
+                    .iter()
+                    .any(|&i| paths[i].surface_key_eq(&e.surface))
+        })
+        .collect();
+    if symbols.is_empty() {
+        return None;
+    }
     let start = SYMBOL_INSERT_OFFSET.min(population.len());
     let mut p = start;
     while p < population.len() && symbol_skip(&paths[population[p]].surface_key()) {

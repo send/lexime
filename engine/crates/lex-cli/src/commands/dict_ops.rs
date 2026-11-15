@@ -224,9 +224,7 @@ fn take_symbols(entries: &mut EntryMap) -> EntryMap {
             return !list.is_empty();
         }
         let (syms, words): (Vec<_>, Vec<_>) = list.drain(..).partition(|e| e.symbol);
-        if !syms.is_empty() {
-            symbols.insert(reading.clone(), syms);
-        }
+        symbols.insert(reading.clone(), syms);
         *list = words;
         !list.is_empty()
     });
@@ -408,6 +406,42 @@ fn info_conn(conn_file: &str) {
     );
 }
 
+/// Merge B into A (cheapest wins per (reading, surface)). Symbols stay
+/// outside that rule: set aside from both inputs and added back through
+/// `add_symbols`, so the result keeps the invariant `compile` builds. A
+/// symbol of B whose (reading, surface) is also among A's symbols comes from
+/// identical source rows (both were compiled with the same symbols), not a
+/// conflict: it is dropped before `add_symbols`. A symbol that collides with
+/// a lattice word stays an error.
+fn merge_entries(merged: &mut EntryMap, mut b_entries: EntryMap) -> Result<(), String> {
+    let symbols_a = take_symbols(merged);
+    let mut symbols_b = take_symbols(&mut b_entries);
+    for (reading, list) in symbols_b.iter_mut() {
+        if let Some(a_list) = symbols_a.get(reading) {
+            list.retain(|e| !a_list.iter().any(|a| a.surface == e.surface));
+        }
+    }
+    symbols_b.retain(|_, list| !list.is_empty());
+
+    for (reading, entries) in b_entries {
+        let slot = merged.entry(reading).or_default();
+        for entry in entries {
+            if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
+                if entry.cost < existing.cost {
+                    *existing = entry;
+                }
+            } else {
+                slot.push(entry);
+            }
+        }
+    }
+
+    for symbols in [symbols_a, symbols_b] {
+        add_symbols(merged, symbols)?;
+    }
+    Ok(())
+}
+
 pub struct MergeOptions {
     pub max_cost: Option<i16>,
     pub max_reading_len: Option<usize>,
@@ -432,32 +466,10 @@ pub fn merge(dict_a_file: &str, dict_b_file: &str, output_file: &str, opts: &Mer
 
     eprintln!("Merging...");
     let mut merged: EntryMap = dict_a.iter().collect();
-    let mut b_entries: EntryMap = dict_b.iter().collect();
-    // Symbols stay outside the cheapest-wins rule here too: set them aside
-    // from both inputs and add them back with the same duplicate check as
-    // `compile`, so the merged dictionary keeps the invariant compile builds.
-    let symbols_a = take_symbols(&mut merged);
-    let symbols_b = take_symbols(&mut b_entries);
-
-    for (reading, entries) in b_entries {
-        let slot = merged.entry(reading).or_default();
-        for entry in entries {
-            if let Some(existing) = slot.iter_mut().find(|e| e.surface == entry.surface) {
-                if entry.cost < existing.cost {
-                    *existing = entry;
-                }
-            } else {
-                slot.push(entry);
-            }
-        }
-    }
-
-    for symbols in [symbols_a, symbols_b] {
-        die!(
-            add_symbols(&mut merged, symbols),
-            "Error merging symbols: {}"
-        );
-    }
+    die!(
+        merge_entries(&mut merged, dict_b.iter().collect()),
+        "Error merging symbols: {}"
+    );
 
     let pre_filter_readings = merged.len();
     let pre_filter_entries: usize = merged.values().map(|v| v.len()).sum();
@@ -808,6 +820,47 @@ mod tests {
             .map(|(i, s)| (s.to_string(), i as i16))
             .collect();
         assert_eq!(got, want);
+    }
+
+    /// Merging two dictionaries compiled with the same symbols keeps each
+    /// symbol once; a symbol colliding with a lattice word is still an Err.
+    #[test]
+    fn merge_entries_dedups_shared_symbols_and_rejects_word_collisions() {
+        let mk = |surface: &str, symbol: bool| DictEntry {
+            surface: surface.to_string(),
+            cost: 0,
+            left_id: 2,
+            right_id: 2,
+            symbol,
+        };
+        let dict = |rows: &[(&str, bool)]| -> EntryMap {
+            EntryMap::from([(
+                "ほし".to_string(),
+                rows.iter().map(|(s, f)| mk(s, *f)).collect(),
+            )])
+        };
+        let surfaces = |m: &EntryMap| -> Vec<(String, i16)> {
+            m["ほし"]
+                .iter()
+                .map(|e| (e.surface.clone(), e.cost))
+                .collect()
+        };
+        // Merge of a dictionary with itself.
+        let mut a = dict(&[("星", false), ("★", true), ("☆", true)]);
+        let copy = a.clone();
+        merge_entries(&mut a, copy).unwrap();
+        assert_eq!(
+            surfaces(&a),
+            [("星".into(), 0), ("★".into(), 0), ("☆".into(), 1)]
+        );
+        // Shared symbol once, B's own symbol follows in arrival order.
+        let mut a = dict(&[("★", true)]);
+        merge_entries(&mut a, dict(&[("★", true), ("✪", true)])).unwrap();
+        assert_eq!(surfaces(&a), [("★".into(), 0), ("✪".into(), 1)]);
+        // A symbol of B equal to a lattice word of A is still an Err.
+        let mut a = dict(&[("★", false)]);
+        let err = merge_entries(&mut a, dict(&[("★", true)])).unwrap_err();
+        assert!(err.contains("(ほし, ★)"), "{err}");
     }
 
     /// Only the symbols source's entries carry the flag, and it survives the

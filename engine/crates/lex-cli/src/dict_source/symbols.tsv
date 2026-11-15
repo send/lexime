@@ -5,6 +5,8 @@
 # (reading, surface) is also in mozc or extras fails the build (remove the row).
 # The cost column is not used: a symbol's cost is its row index among the rows
 # with the same reading (0, 1, 2, … in file order).
+# Every row still carries the numeric POS id 2643 (記号,アルファベット), which is
+# known to be wrong for the non-Greek rows; a per-row POS by tag name replaces it.
 
 # --- Greek letters (lowercase) ---
 あるふぁ	2643	2643	10000	α

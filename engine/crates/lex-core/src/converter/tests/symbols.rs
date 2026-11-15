@@ -191,6 +191,25 @@ fn a_listed_surface_is_not_added_again() {
     assert_eq!(index_of(&paths, "＊"), Some(3));
 }
 
+/// A path admission drops right after does not list its surface: the symbol
+/// is judged against the population, placed at its position, and the
+/// duplicate-surface path goes by admission as before.
+#[test]
+fn a_surface_listed_only_by_a_dropped_path_does_not_suppress_the_symbol() {
+    let dict = symbols_dict(&["※※"]);
+    let mut paths = words(4);
+    let mut far = path("※", 1000 + GAP + 1000);
+    far.segments.push(far.segments[0].clone());
+    assert!(far.surface_key_eq("※※") && far.segments.len() == 2);
+    paths.push(far);
+    let placed = place(&mut paths, &dict).expect("placed: the only listing is a dropped path");
+    assert_eq!((placed.position, placed.population), (3, 4));
+    downstream(&mut paths, None);
+    assert_eq!(paths.iter().filter(|p| p.surface_key_eq("※※")).count(), 1);
+    assert_eq!(index_of(&paths, "※※"), Some(3));
+    assert_eq!(paths.len(), 5);
+}
+
 // ---------------------------------------------------------------------------
 // The population (paths admission keeps by price) and the exemption
 // ---------------------------------------------------------------------------

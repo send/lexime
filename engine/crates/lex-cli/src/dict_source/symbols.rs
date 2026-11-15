@@ -38,18 +38,23 @@ impl DictSource for SymbolsSource {
             '\t',
             |fields| {
                 if fields.len() < 5 {
-                    return Ok(None);
+                    return Err(format!(
+                        "expected 5 tab-separated fields, found {}",
+                        fields.len()
+                    ));
                 }
                 let reading = fields[0];
                 let Some((left_id, right_id, _unused_cost)) = parse_id_cost(fields) else {
-                    return Ok(None);
+                    return Err(format!(
+                        "unparsable id/cost columns for reading {reading:?}"
+                    ));
                 };
                 let surface = fields[4];
                 if surface.is_empty() {
                     return Err(format!("empty surface for reading {reading:?}"));
                 }
                 if !is_hiragana(reading) {
-                    return Ok(None);
+                    return Err(format!("reading {reading:?} is not hiragana"));
                 }
                 Ok(Some(ParsedLine {
                     reading: reading.to_string(),
@@ -137,5 +142,50 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
         assert!(err.contains("symbols.tsv:3"), "{err}");
         assert!(err.contains("empty surface"), "{err}");
+    }
+
+    fn parse_err(name: &str, body: &str) -> String {
+        let dir =
+            std::env::temp_dir().join(format!("lexime_test_symbols_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(SYMBOLS_FILE), body).unwrap();
+        let err = SymbolsSource.parse_dir(&dir).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).ok();
+        err
+    }
+
+    #[test]
+    fn short_row_is_err_with_line() {
+        let err = parse_err(
+            "short",
+            "# h
+
+ほし\t2643\t2643\t5000\t★\nまる\t2643\t2643\n",
+        );
+        assert!(err.contains("symbols.tsv:4"), "{err}");
+        assert!(err.contains("5 tab-separated fields"), "{err}");
+    }
+
+    #[test]
+    fn non_hiragana_reading_is_err_with_line() {
+        let err = parse_err(
+            "kana",
+            "ほし\t2643\t2643\t5000\t★\nstar\t2643\t2643\t5000\t☆\n",
+        );
+        assert!(err.contains("symbols.tsv:2"), "{err}");
+        assert!(err.contains("not hiragana"), "{err}");
+    }
+
+    #[test]
+    fn unparsable_id_or_cost_is_err_with_line() {
+        for (name, row) in [
+            ("lid", "まる\tx\t2643\t5000\t○\n"),
+            ("cost", "まる\t2643\t2643\tx\t○\n"),
+        ] {
+            let err = parse_err(name, &format!("ほし\t2643\t2643\t5000\t★\n{row}"));
+            assert!(err.contains("symbols.tsv:2"), "{err}");
+            assert!(err.contains("unparsable id/cost"), "{err}");
+        }
     }
 }
