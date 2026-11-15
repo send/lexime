@@ -125,8 +125,10 @@ pub(crate) fn build_entries(
     // Parse extra sources up front, but defer merging until after the
     // role-based cost offsets below. The curated sources (symbols, extras)
     // carry final costs; the offsets (person name / pronoun /
-    // non-independent kanji) belong to the Mozc import and are not applied
-    // to them — not even to an extras row whose POS is a person name.
+    // non-independent kanji) apply to the primary source's entries
+    // (`--source`, mozc in every mise task) and never to the extra sources:
+    // extra sources (symbols, extras) are merged after the offsets, so their
+    // costs are final — including an extras row whose POS is a person name.
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
         let extra_src = dict_source::from_name(extra_name).ok_or_else(|| {

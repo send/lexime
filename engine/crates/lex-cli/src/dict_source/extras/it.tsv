@@ -18,8 +18,13 @@
 # rows of one kind) carries a comment with the kind, the representative words
 # and the counts. The full rule is the doc of ALLOWED_POS_TAGS in extras.rs.
 
-# 種類 = 概念の名 (数学・業務・開発用語)。Mozc の同じ種類の語は普通名詞
-# → 名詞,一般 (代表語は数えていない)。以下この file の全行。
+# 種類 = 概念・物の名 (CS / 業務 / 開発用語)。判定: 普通名詞 16/16 が過半
+# かつ単独最多 → 名詞,一般 (他の区分 固有名詞,一般 1/16)。
+# 代表語 16 / Mozc に在る 16 / 票を持つ 16。除いた別語のエントリ 1 件
+# (デプロイ の 組織)。
+# 代表語: 可換 冗長 再帰 排他 同期 非同期 朝礼 定例 稟議 仕掛品 ネスト
+# コミット マージ デプロイ サーバー コンピュータ
+# 以下この file の全行。
 
 # --- 数学 / CS ---
 べきとう	冪等	名詞,一般,*,*,*,*,*	5000

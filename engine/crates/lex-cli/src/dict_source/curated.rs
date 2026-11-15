@@ -31,6 +31,13 @@ pub(super) enum CostColumn {
 /// `POS_UNRESOLVED_BASE - i` until [`resolve_pos_ids`] replaces it.
 /// Deliberately out of id.def's range (~2700 ids), so an unresolved entry
 /// that somehow reached a compiled dict would fail loudly in conversion.
+///
+/// Precondition: a sentinel carries only the index into its own source's
+/// allowed-tag array; which source it came from is not recoverable from the
+/// id. So each source's map must be resolved by that source's own
+/// `resolve_pos_ids` before it is mixed with another's (`build_entries`
+/// does). If a change ever mixes unresolved maps, give each source its own
+/// sentinel range first (recorded as the trigger).
 const POS_UNRESOLVED_BASE: u16 = u16::MAX;
 
 /// Sentinel id for `allowed[index]`.

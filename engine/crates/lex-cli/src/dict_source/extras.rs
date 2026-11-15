@@ -31,13 +31,19 @@ use lex_core::dict::DictEntry;
 ///
 /// 1. **From friction**: when conversion fails for you, register in user_dict
 ///    (`dictool user-dict add`), use it for a while, then promote stable
-///    entries to the appropriate domain TSV here.
+///    entries to the appropriate domain TSV here. Decide the POS by the
+///    majority rule above, not by carrying it over.
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
 ///    `engine/data/extras-candidates/`. Scan those by hand and copy useful
 ///    rows into `extras/<domain>.tsv`. Mining output never auto-merges into
-///    the build dict — promotion is always explicit.
+///    the build dict — promotion is always explicit. Its rows are
+///    `reading\tsurface\tcost\tpos` with Sudachi's POS, which does not fit the
+///    extras grammar (`reading\tsurface\tpos\tcost`, pos an id.def tag from
+///    `ALLOWED_POS_TAGS`) and fails the build as is. On promotion, reorder the
+///    columns, rewrite the POS to the allowed tag the majority rule picks, and
+///    write the section comment (kind, representative words, counts).
 const DOMAINS: &[(&str, &str)] = &[
     ("it.tsv", include_str!("extras/it.tsv")),
     ("food.tsv", include_str!("extras/food.tsv")),
@@ -395,9 +401,14 @@ mod tests {
                 "empty surface",
             ),
             (
-                "padded_surface",
+                "padded_reading",
                 " あさかい\t朝会\t名詞,一般,*,*,*,*,*\t3000",
                 "not hiragana",
+            ),
+            (
+                "padded_surface",
+                "あさかい\t朝会 \t名詞,一般,*,*,*,*,*\t5000",
+                "leading or trailing whitespace",
             ),
         ];
         for (name, row, want) in cases {
