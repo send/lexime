@@ -27,7 +27,7 @@ use super::viterbi::RichSegment;
 /// The surface has an ASCII letter (the `latin_penalty` trigger) and no
 /// Japanese character (hiragana, katakana, kanji): `s`, `μs`, `°C`, `mol%`,
 /// not `%` (no letter) nor `km先` / `kバイト` (mixed). Empty is false.
-pub(crate) fn pure_latin(surface: &str) -> bool {
+pub fn pure_latin(surface: &str) -> bool {
     let mut has_latin = false;
     for c in surface.chars() {
         if is_hiragana(c) || is_katakana(c) || is_kanji(c) {
@@ -67,7 +67,7 @@ pub(crate) fn latin_unit_admissible(prev_typed_digit: bool, cur_latin_unit: bool
 /// [`is_latin_unit`] of a segment that is not a lattice node index (a path's
 /// segment): the flag from its surface by the function the lattice uses.
 pub(crate) fn segment_is_latin_unit(seg: &RichSegment, conn: Option<&ConnectionMatrix>) -> bool {
-    conn.is_some_and(|c| c.is_counter(seg.left_id)) && pure_latin(&seg.surface)
+    is_latin_unit(pure_latin(&seg.surface), seg.left_id, conn)
 }
 
 /// [`typed_digit`] of a path's segment.

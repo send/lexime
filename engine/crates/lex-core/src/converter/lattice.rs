@@ -387,6 +387,12 @@ fn add_nodes_for_range(
                     entry.right_id,
                 );
             }
+            // A 1-char dictionary reading is itself a way through this
+            // position, so the unknown fallback below is skipped. That is
+            // sound only because no such node is a Latin unit (a counter with a
+            // pure-Latin surface), which the Viterbi / resegment formation rule
+            // can enter only after a typed digit: `dictool compile` rejects such
+            // a row (`check_latin_unit_connectivity`).
             if reading_char_count == 1 {
                 has_single_char_match = true;
             }

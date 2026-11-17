@@ -373,7 +373,7 @@ Viterbi N-best をベースに、学習バイグラムを連鎖させた予測�
 
 - 累積コストに i64 を使用（i16 オーバーフロー回避）
 - 前方パス: ノードごとに top-K コスト/バックポインタを保持
-- **形成規則（Latin 単位）**: Latin 単位 = 左 POS が助数詞（接続行列の role）かつ `pure_latin` のノード（`s` `μs` `ft` `ppm`。日本語を含む混在表記 `km先` は対象外）。Latin 単位へは、前任が入力数字ノードのときだけ遷移する（BOS を含むそれ以外からは遷移が無い — コストではなく経路を作らない）。判定は hook `latin_unit::node_admissible`（ノードと前任の `typed_digit`、BOS は偽）1 つで、Viterbi の BOS 初期化・前方パス（1-best と N-best）と resegment の新しい 2 つの隣接（前セグメント → 左ノード、左ノード → 右ノード。resegment の前任はセグメントなので、その `typed_digit` を同じ関数で surface から計算する）が呼ぶ。接続行列は `CostFunction::conn()` から引く。接続行列が無いと何も Latin 単位にならず、規則は効かない（この節の Latin 単位の規則すべて — script 価格・NumericRewriter — も同じ）
+- **形成規則（Latin 単位）**: Latin 単位 = 左 POS が助数詞（接続行列の role）かつ `pure_latin` のノード（`s` `μs` `ft` `ppm`。日本語を含む混在表記 `km先` は対象外）。Latin 単位へは、前任が入力数字ノードのときだけ遷移する（BOS を含むそれ以外からは遷移が無い — コストではなく経路を作らない）。判定は正準の述語 `latin_unit::latin_unit_admissible(prev_typed_digit, is_latin_unit)`（前任の `typed_digit`、BOS は偽）1 つで、`is_latin_unit`（接続行列 None の扱いの 1 箇所）の結果を受け、`viterbi_nbest`（BOS 初期化と前方パス。1-best は n = 1 の N-best）と resegment の新しい 2 つの隣接（前セグメント → 左ノード、左ノード → 右ノード。resegment の前任はセグメントなので、その `typed_digit` を同じ関数で surface から計算する）が呼ぶ。接続行列は `CostFunction::conn()` から引く（必須。行列を持たない cost function は None を返し、規則は効かない）。接続行列が無いと何も Latin 単位にならず、規則は効かない（この節の Latin 単位の規則すべて — script 価格・NumericRewriter — も同じ）。ビルド時の不変条件: 助数詞 POS・純 Latin 表記・読み 1 字の lattice 行は `dictool compile` が拒む（1 字読みのノードがあると未知語フォールバックが省かれるが、Latin 単位は入力数字の直後しか入れず、経路が途切れ得るため。記号行は lattice の外なので対象外）
 - N-best: 同一サーフェスの重複排除後、上位 N パスを出力
 - **Reranker**: Viterbi で over-generate（母集団は `population(n, h)` = `max(3n, 床)` の 1 箇所で、床は履歴なし 10・履歴あり n = 1 で 30・n ≥ 2 で 50。1-best は n = 1 の N-best そのもの（経路 1 本）で 10 / 30、既定の候補列（n = 20）は 60。explain と道具の n = 1 も同じ母集団を使う）し、特徴量を足して再ランキング。特徴量のうち script 価格（セグメントごと、group 前の lattice ノード単位）は、Latin を含むセグメントが `latin_penalty`、全カタカナが `katakana_penalty`、漢字かな混じり・漢字のみが負のボーナス、それ以外 0。ただし入力数字の直後に形成された Latin 単位はカタカナと同じ `katakana_penalty` — 非 Latin の script 価格の最大値なので（validate は全値を非負に制限）、どの設定でも `3`+単位 は script で `3`+日本語名 より安くならない。直前が入力数字でない Latin 単位（形成規則の漏れ）は `latin_penalty` に倒し、`latin_unit_unformed` として数える（explain が `after_rerank` で記録。0 でなければ bug）。rerank は経路を落とさない（価格を付けて並べるだけ）。postprocess で候補を選別する段は admission と n 本の切り（`model_budget_end`）だけ（Predictive モードは、その後に句チェーンを足した列を `max_results` で切る）。かな読みそのままの経路（identity）も rerank では落ちない
 - **価格の出どころ**: 各経路は `origin`（分節を作った段）と `priced_by`（価格を付けた段）を持つ。価格は 4 種類: *model*（Viterbi / resegment + rerank 特徴量）、*提示*（表記ゆれ。下記）、*方針*（かな救済・数字・カタカナ — lattice で表せない surface）、*写し*（記号 — 位置を保つために直前の候補の価格を写したもの。価格として判定しない、下記）。同じ surface が複数の段から来たら安い方の価格を採り（`priced_by` はその持ち主。ただしかな救済の surface は、方針・提示のどちらが値付けしても `HiraganaVariant` のまま — #263 の免除の目印。model 価格は model のまま）、分節は lattice 側（無ければ細かい方）を残す。学習は per-segment 分節で記録されるため（#271）。これは Model 段の提示・救済の規則で、数詞複合語は既存経路以下の価格なら複合語の経路（1 分節）をそのまま残す — boost と学習の記録が母集団に依らない（#393）
@@ -403,7 +403,7 @@ CostFunction
 ├── transition_cost(prev, next) → i64
 ├── bos_cost(node) → i64
 ├── eos_cost(node) → i64
-└── conn() → Option<&ConnectionMatrix>（形成規則が POS role を引く接続行列。既定 None = 規則なし）
+└── conn() → Option<&ConnectionMatrix>（形成規則が POS role を引く接続行列。必須で、行列を持たない実装は None を返す = 規則なし）
 ```
 
 | 実装 | 用途 |

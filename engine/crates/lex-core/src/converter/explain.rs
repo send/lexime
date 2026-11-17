@@ -88,10 +88,10 @@ pub struct AfterRerankPath {
     pub origin: PathOrigin,
     pub priced_by: PathOrigin,
     pub is_identity: bool,
-    /// Latin units on the path that rerank priced as plain Latin because
-    /// they do not follow a typed digit, as features counted them
-    /// (`PathFeatures::latin_unit_unformed`; 0 unless a path maker skipped
-    /// the formation rule).
+    /// Latin units on the path that do not follow a typed digit, as features
+    /// counted them (`PathFeatures::latin_unit_unformed`; 0 unless a path
+    /// maker skipped the formation rule). Rerank, when it prices the path
+    /// (it does not with <= 1 path), prices them as plain Latin.
     pub latin_unit_unformed: i64,
 }
 
@@ -1013,7 +1013,7 @@ fn format_symbols(result: &ExplainResult, out: &mut String) {
 fn format_dropped(result: &ExplainResult, out: &mut String) {
     if result.latin_unit_unformed != 0 {
         out.push_str(&format!(
-            "\n=== Latin units outside the formation rule: {} (priced as Latin) ===\n",
+            "\n=== Latin units not after a typed digit (formation rule skipped by a path maker): {} ===\n",
             result.latin_unit_unformed
         ));
     }

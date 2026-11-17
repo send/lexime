@@ -905,21 +905,26 @@ impl NumericRewriter<'_> {
             return;
         }
 
-        // HashMap iteration is nondeterministic; sort by (cost, surface) so
-        // tied counter candidates emit in a stable, reproducible order.
+        // HashMap iteration is nondeterministic; sort by (latin, cost,
+        // surface) so tied counter candidates emit in a stable, reproducible
+        // order, and on an equal price (the Latin offset clamped to 0) the
+        // Japanese-name counter's form precedes the Latin unit's.
         let mut cands: Vec<Cand<'_>> = by_surface.into_values().collect();
-        cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
+        cands.sort_by(|a, b| {
+            a.latin
+                .cmp(&b.latin)
+                .then_with(|| a.cost.cmp(&b.cost))
+                .then_with(|| a.surface.cmp(b.surface))
+        });
 
         // The price anchor is the cheapest counter that is not a Latin unit,
         // so adding a Latin unit never moves the kanji compounds' prices; with
         // none at this tail, the cheapest Latin unit. An offset below 0 (a
         // Latin unit cheaper than the anchor) is clamped to 0, keeping the
         // half-width form at or above the CounterFallback base.
-        let cheapest = cands
-            .iter()
-            .find(|c| !c.latin)
-            .or(cands.first())
-            .map_or(0, |c| c.cost);
+        // (The sort puts every non-Latin counter before the Latin units, so the
+        // first candidate is that anchor.)
+        let cheapest = cands.first().map_or(0, |c| c.cost);
 
         for cand in &cands {
             let prefix = &reading[..byte_offsets[cand.start]];

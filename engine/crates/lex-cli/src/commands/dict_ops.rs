@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use crate::dict_source::{self, pos_map};
+use lex_core::converter::pure_latin;
 use lex_core::dict::connection::ConnectionMatrix;
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
@@ -233,7 +234,40 @@ pub(crate) fn build_entries(
     let added = add_symbols(&mut entries, symbols)?;
     eprintln!("Added {added} symbol entries (outside the lattice)");
 
+    // Without id.def there are no roles to read (as for the role offsets).
+    if let Some(roles) = &roles {
+        check_latin_unit_connectivity(&entries, roles)?;
+    }
+
     Ok(entries)
+}
+
+/// Build-time invariant behind the lattice's unknown-fallback skip: no lattice
+/// entry is a 1-char-reading Latin unit (counter role x pure-Latin surface).
+/// A position whose only 1-char node is a Latin unit would be enterable only
+/// after a typed digit (the formation rule) yet would suppress the fallback
+/// node, so the lattice could have no path. Symbol rows are off the lattice.
+fn check_latin_unit_connectivity(entries: &EntryMap, roles: &[u8]) -> Result<(), String> {
+    let mut bad: Vec<String> = Vec::new();
+    for (reading, list) in entries {
+        if reading.chars().count() != 1 {
+            continue;
+        }
+        for e in list {
+            let counter = roles.get(usize::from(e.left_id)) == Some(&pos_map::ROLE_COUNTER);
+            if !e.symbol && counter && pure_latin(&e.surface) {
+                bad.push(format!("({reading}, {})", e.surface));
+            }
+        }
+    }
+    if bad.is_empty() {
+        return Ok(());
+    }
+    bad.sort();
+    Err(format!(
+        "a 1-char-reading Latin unit (counter POS, pure-Latin surface) would suppress the lattice's unknown fallback yet is enterable only after a typed digit — use a longer reading or remove the row: {}",
+        bad.join(", ")
+    ))
 }
 
 /// Move the symbol entries out of `entries` (dropping readings left empty).
@@ -658,6 +692,33 @@ pub fn prefix(dict_file: &str, query: &str) {
 mod tests {
     use super::*;
     use crate::dict_source::from_name;
+
+    /// A 1-char-reading Latin unit (counter role x pure-Latin surface) fails
+    /// the build and names the row; a 2-char-reading Latin counter, a 1-char
+    /// non-Latin counter, a 1-char Latin non-counter and a symbol row pass.
+    #[test]
+    fn one_char_latin_unit_is_a_build_error() {
+        let roles = [0u8, 0, pos_map::ROLE_COUNTER];
+        let row = |surface: &str, left_id: u16, symbol: bool| DictEntry {
+            surface: surface.to_string(),
+            cost: 0,
+            left_id,
+            right_id: left_id,
+            symbol,
+        };
+        let one = |reading: &str, e: DictEntry| EntryMap::from([(reading.to_string(), vec![e])]);
+        let err =
+            check_latin_unit_connectivity(&one("び", row("s", 2, false)), &roles).unwrap_err();
+        assert!(err.contains("(び, s)"), "{err}");
+        for ok in [
+            one("びょ", row("s", 2, false)),
+            one("び", row("秒", 2, false)),
+            one("び", row("s", 1, false)),
+            one("び", row("s", 2, true)),
+        ] {
+            assert_eq!(check_latin_unit_connectivity(&ok, &roles), Ok(()));
+        }
+    }
 
     /// Every tag the curated sources allow must be in id.def (they resolve
     /// their whole allowed set), so the fixture lists them all.

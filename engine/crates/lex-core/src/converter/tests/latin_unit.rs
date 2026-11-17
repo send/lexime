@@ -1,6 +1,6 @@
 //! The Latin-unit formation rule (R-v): a counter written in Latin letters
 //! only is entered only from a typed ASCII digit — in Viterbi's BOS
-//! initialisation and forward pass (1-best and N-best), on a lattice built or
+//! initialisation and forward pass (`viterbi_nbest`; the 1-best is n = 1), on a lattice built or
 //! extended, and in resegment's two new adjacencies.
 
 use crate::converter::cost::DefaultCostFunction;

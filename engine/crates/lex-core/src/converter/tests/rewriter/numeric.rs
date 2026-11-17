@@ -514,3 +514,18 @@ fn a_latin_unit_offset_is_never_negative() {
     assert_eq!(price_of(&cands, "3s").unwrap().cost_offset, 0);
     assert_eq!(price_of(&cands, "3sec").unwrap().cost_offset, 500);
 }
+
+/// On an equal price (the Latin unit cheaper than the anchor, offset clamped
+/// to 0) the Japanese-name counter's form is emitted before the Latin unit's.
+#[test]
+fn equal_priced_japanese_counter_precedes_the_latin_unit() {
+    let cands = counter_candidates(&[("秒", 3000), ("s", 1000)]);
+    let pos = |surface: &str| cands.iter().position(|(p, _)| p.surface_key() == surface);
+    assert!(pos("3秒").unwrap() < pos("3s").unwrap());
+    let (jp, latin) = (
+        price_of(&cands, "3秒").unwrap(),
+        price_of(&cands, "3s").unwrap(),
+    );
+    assert_eq!((jp.rule, jp.cost_offset), (PolicyRule::CounterFallback, 0));
+    assert_eq!(jp, latin);
+}
