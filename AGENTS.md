@@ -514,7 +514,7 @@ what a generic reviewer misses:
 - **Latin 単位は入力した数字の直後だけ (settled)**: 助数詞 POS で表記が純 Latin
   の語 (`s` `μs` `ft` `ppm`) は、前任が入力した ASCII 数字のノード (読み = 表記
   = 数字 1 字) のときだけ Viterbi / resegment が経路を作る (hook
-  `latin_unit::latin_unit_admissible(prev_typed_digit, is_latin_unit)`、適用は `viterbi_nbest` の BOS 初期化・前方パスと resegment の 2 隣接のみ。BOS は前任に入れない)。ビルド時の不変条件として、助数詞 POS・純 Latin 表記・読み 1 字の lattice 行は `dictool compile` が拒む (未知語フォールバックが省かれ経路が途切れ得るため)。次の 4 点は決定済み。
+  `latin_unit::latin_unit_admissible(prev_typed_digit, is_latin_unit)`、経路を作る側での適用は `viterbi_nbest` の BOS 初期化・前方パスと resegment の 2 隣接のみ (ほかに R-a' の script 価格が同じ述語を呼ぶ)。BOS は前任に入れない)。ビルド時の不変条件として、助数詞 POS・純 Latin 表記・読み 1 字の lattice 行は id.def を渡した `dictool compile` が拒む (id.def が無ければ警告して飛ばす。未知語フォールバックが省かれ経路が途切れ得るため)。次の 4 点は決定済み。
   (a) 形成された Latin 単位の script 価格はカタカナと同じ `katakana_penalty`
   (非 Latin の script 価格の最大値なので、日本語名より script で安くならない)。
   単位の辞書 cost は日本語名 + 1 で、免除 (0) や δ の grid にしない — 順位の

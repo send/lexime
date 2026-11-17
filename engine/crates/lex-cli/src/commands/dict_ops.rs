@@ -168,7 +168,12 @@ pub(crate) fn build_entries(
         Some(path) => Some(
             pos_map::morpheme_roles(path).map_err(|e| format!("loading morpheme roles: {e}"))?,
         ),
-        None => None,
+        None => {
+            eprintln!(
+                "warning: no id.def — role cost offsets and the Latin-unit connectivity check are skipped"
+            );
+            None
+        }
     };
     if dict_source.applies_role_cost_offsets() {
         if let Some(roles) = &roles {
