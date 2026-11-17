@@ -1672,9 +1672,7 @@ mod tests {
             "びょう".into(),
             vec![e("s", 100, 10), e("秒", 3000, 10)],
         )]);
-        let mut roles = vec![0u8; 11];
-        roles[10] = 7;
-        let conn = crate::converter::testutil::zero_conn_with_roles(11, roles);
+        let conn = crate::converter::testutil::counter_test_conn(11, 10);
         let result = explain(
             &crate::converter::ConversionContext::new(&dict, Some(&conn)),
             "3びょう",
@@ -1699,9 +1697,7 @@ mod tests {
     /// counts 1, recorded at `after_rerank`.
     #[test]
     fn after_rerank_records_the_unformed_latin_units_features_count() {
-        let mut roles = vec![0u8; 11];
-        roles[10] = 7;
-        let conn = crate::converter::testutil::zero_conn_with_roles(11, roles);
+        let conn = crate::converter::testutil::counter_test_conn(11, 10);
         let dict = test_dict();
         let ctx = crate::converter::ConversionContext::new(&dict, Some(&conn));
         let mut observer = ExplainObserver::new(&ctx);

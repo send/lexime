@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use crate::dict::connection::ConnectionMatrix;
 
 use super::cost::score_path;
-use super::latin_unit::{node_admissible, segment_typed_digit};
+use super::latin_unit::{is_latin_unit, latin_unit_admissible, segment_typed_digit};
 use super::lattice::Lattice;
 use super::viterbi::{PathOrigin, RichSegment, ScoredPath};
 
@@ -102,8 +102,18 @@ pub(super) fn resegment(
                     // and left → right. Right → next needs no check: a Latin
                     // unit next was preceded by a typed digit, which is one
                     // char and never split.
-                    if !node_admissible(lattice, left_idx, prev_typed_digit, conn)
-                        || !node_admissible(lattice, right_idx, lattice.typed_digit(left_idx), conn)
+                    let left_unit = is_latin_unit(
+                        lattice.pure_latin(left_idx),
+                        lattice.left_id(left_idx),
+                        conn,
+                    );
+                    let right_unit = is_latin_unit(
+                        lattice.pure_latin(right_idx),
+                        lattice.left_id(right_idx),
+                        conn,
+                    );
+                    if !latin_unit_admissible(prev_typed_digit, left_unit)
+                        || !latin_unit_admissible(lattice.typed_digit(left_idx), right_unit)
                     {
                         continue;
                     }

@@ -13,7 +13,7 @@
 //!   Latin unit only after a typed digit).
 //!
 //! Viterbi (BOS initialisation and the forward pass) and resegment's two new
-//! adjacencies form paths through [`node_admissible`]: a Latin unit is never
+//! adjacencies form paths through [`latin_unit_admissible`]: a Latin unit is never
 //! reached from anything but a typed digit (no transition, not a price).
 //! Rerank prices a formed Latin unit as katakana and an unformed one as
 //! Latin (`cost::segment_script`); NumericRewriter pairs a Latin unit with
@@ -22,7 +22,6 @@
 use crate::dict::connection::ConnectionMatrix;
 use crate::unicode::{is_hiragana, is_kanji, is_katakana, is_latin};
 
-use super::lattice::Lattice;
 use super::viterbi::RichSegment;
 
 /// The surface has an ASCII letter (the `latin_penalty` trigger) and no
@@ -65,26 +64,10 @@ pub(crate) fn latin_unit_admissible(prev_typed_digit: bool, cur_latin_unit: bool
     !cur_latin_unit || prev_typed_digit
 }
 
-/// The formation rule for lattice node `idx`: whether a path may enter it
-/// from a predecessor whose typed-digit flag is `prev_typed_digit` (`false`
-/// for BOS). The one hook Viterbi's BOS initialisation and forward pass and
-/// resegment's two adjacencies call.
-pub(crate) fn node_admissible(
-    lattice: &Lattice,
-    idx: usize,
-    prev_typed_digit: bool,
-    conn: Option<&ConnectionMatrix>,
-) -> bool {
-    latin_unit_admissible(
-        prev_typed_digit,
-        is_latin_unit(lattice.pure_latin(idx), lattice.left_id(idx), conn),
-    )
-}
-
 /// [`is_latin_unit`] of a segment that is not a lattice node index (a path's
 /// segment): the flag from its surface by the function the lattice uses.
 pub(crate) fn segment_is_latin_unit(seg: &RichSegment, conn: Option<&ConnectionMatrix>) -> bool {
-    is_latin_unit(pure_latin(&seg.surface), seg.left_id, conn)
+    conn.is_some_and(|c| c.is_counter(seg.left_id)) && pure_latin(&seg.surface)
 }
 
 /// [`typed_digit`] of a path's segment.

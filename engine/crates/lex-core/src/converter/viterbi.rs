@@ -1,7 +1,7 @@
 use tracing::{debug, debug_span};
 
 use super::cost::CostFunction;
-use super::latin_unit::node_admissible;
+use super::latin_unit::{is_latin_unit, latin_unit_admissible};
 use super::lattice::Lattice;
 
 /// A segment in the conversion result.
@@ -215,7 +215,8 @@ pub(crate) fn viterbi_nbest<C: CostFunction>(
     // Initialize nodes starting at position 0 (BOS transition). BOS is not
     // a typed digit, so a Latin unit is not formed here.
     for &idx in &lattice.nodes_by_start[0] {
-        if !node_admissible(lattice, idx, false, conn) {
+        let unit = is_latin_unit(lattice.pure_latin(idx), lattice.left_id(idx), conn);
+        if !latin_unit_admissible(false, unit) {
             continue;
         }
         let cost = cost_fn.word_cost(lattice, idx) + cost_fn.bos_cost(lattice.left_id(idx));
@@ -232,17 +233,15 @@ pub(crate) fn viterbi_nbest<C: CostFunction>(
         for &next_idx in &lattice.nodes_by_start[pos] {
             let word = cost_fn.word_cost(lattice, next_idx);
             let next_left_id = lattice.left_id(next_idx);
-            // A node not admissible after every predecessor (a Latin unit)
-            // takes only the predecessors the formation rule admits; every
-            // other node skips the per-transition check.
-            let gated = !node_admissible(lattice, next_idx, false, conn);
+            // A Latin unit takes only the predecessors the formation rule
+            // admits; every other node skips the per-transition check.
+            let unit = is_latin_unit(lattice.pure_latin(next_idx), next_left_id, conn);
 
             for &prev_idx in &lattice.nodes_by_end[pos] {
                 if top_k[prev_idx].is_empty() {
                     continue;
                 }
-                if gated && !node_admissible(lattice, next_idx, lattice.typed_digit(prev_idx), conn)
-                {
+                if unit && !latin_unit_admissible(lattice.typed_digit(prev_idx), unit) {
                     continue;
                 }
                 let prev_right_id = lattice.right_id(prev_idx);

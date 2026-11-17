@@ -82,6 +82,7 @@ pub(crate) fn segment_script_in(
             latin_unit_unformed: false,
         };
     }
+    // `seg` is a Latin unit here, so it is admissible only after a typed digit.
     if latin_unit_admissible(prev.is_some_and(segment_typed_digit), true) {
         SegmentScript {
             cost: c.katakana_penalty,
@@ -108,11 +109,10 @@ pub(crate) trait CostFunction: Send + Sync {
     fn bos_cost(&self, left_id: u16) -> i64;
     fn eos_cost(&self, right_id: u16) -> i64;
     /// The connection matrix the path-formation rule reads POS roles from
-    /// (`latin_unit::node_admissible`). `None` (no matrix) leaves the rule
-    /// off.
-    fn conn(&self) -> Option<&ConnectionMatrix> {
-        None
-    }
+    /// (`latin_unit::latin_unit_admissible`). `None` (no matrix) leaves the
+    /// rule off. Required, not defaulted: an implementation that omitted it
+    /// would silently disable Latin-unit formation.
+    fn conn(&self) -> Option<&ConnectionMatrix>;
 }
 
 /// Look up connection cost between two IDs, returning 0 if no matrix is provided.
@@ -219,7 +219,7 @@ impl CostFunction for DefaultCostFunction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::testutil::zero_conn_with_roles;
+    use crate::converter::testutil::counter_test_conn;
     use crate::settings::{default_toml, parse_settings_toml};
 
     const COUNTER: u16 = 10;
@@ -250,9 +250,7 @@ mod tests {
     }
 
     fn conn() -> ConnectionMatrix {
-        let mut roles = vec![0u8; 30];
-        roles[COUNTER as usize] = 7;
-        zero_conn_with_roles(30, roles)
+        counter_test_conn(30, COUNTER)
     }
 
     /// Settings validate accepts with the script terms at their edges.

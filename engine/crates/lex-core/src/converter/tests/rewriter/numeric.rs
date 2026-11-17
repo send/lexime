@@ -4,6 +4,7 @@ use crate::converter::rewriter::{
     run_policy_rewriters, NumericRewriter, PolicyPrice, PolicyRewriter, PolicyRule,
     NUMERIC_POLICY_OFFSET,
 };
+use crate::converter::testutil::counter_test_conn;
 use crate::converter::viterbi::{PathOrigin, RichSegment, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 
@@ -13,18 +14,6 @@ fn generated(rw: &dyn PolicyRewriter, reading: &str) -> Vec<ScoredPath> {
         .into_iter()
         .map(|(p, _)| p)
         .collect()
-}
-
-/// Build a tiny ConnectionMatrix where POS id `counter_id` is tagged as
-/// counter (role 7). Other ids default to ContentWord (role 0).
-fn counter_test_conn(num_ids: u16, counter_id: u16) -> ConnectionMatrix {
-    let n = num_ids as usize;
-    let header = format!("{n} {n}\n");
-    let costs: String = (0..(n * n)).map(|_| "0\n".to_string()).collect();
-    let text = format!("{header}{costs}");
-    let mut roles = vec![0u8; n];
-    roles[counter_id as usize] = 7; // ROLE_COUNTER
-    ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
 }
 
 // ───────────────────────────────────────────────────────────────────────

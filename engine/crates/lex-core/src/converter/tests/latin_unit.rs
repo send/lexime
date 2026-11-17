@@ -10,7 +10,7 @@ use crate::converter::latin_unit::{
 };
 use crate::converter::lattice::{build_lattice, Lattice};
 use crate::converter::resegment::resegment;
-use crate::converter::testutil::{entry, entry_with_id};
+use crate::converter::testutil::{entry, entry_with_id, zero_conn_with_fw_roles};
 use crate::converter::viterbi::{viterbi_nbest, ScoredPath};
 use crate::dict::connection::ConnectionMatrix;
 use crate::dict::TrieDictionary;
@@ -25,12 +25,10 @@ const SYMBOL: u16 = 50; // n (記号)
 const PARTICLE: u16 = 55; // function word
 
 fn conn() -> ConnectionMatrix {
-    let n: usize = 60;
-    let text = format!("{n} {n}\n{}", "0\n".repeat(n * n));
-    let mut roles = vec![0u8; n];
+    let mut roles = vec![0u8; 60];
     roles[COUNTER as usize] = 7;
     roles[PARTICLE as usize] = 1;
-    ConnectionMatrix::from_text_with_roles(&text, PARTICLE, PARTICLE, roles).unwrap()
+    zero_conn_with_fw_roles(60, PARTICLE, PARTICLE, roles)
 }
 
 /// Latin units are the cheapest reading of their kana, so a path takes one
@@ -91,7 +89,12 @@ fn dict() -> TrieDictionary {
 /// 1-best on `lattice`.
 fn paths(lattice: &Lattice, conn: Option<&ConnectionMatrix>, n: usize) -> Vec<Vec<String>> {
     let cost_fn = DefaultCostFunction::new(conn);
-    viterbi_nbest(lattice, &cost_fn, n)
+    surfaces(&viterbi_nbest(lattice, &cost_fn, n))
+}
+
+/// Each path's segment surfaces.
+fn surfaces(paths: &[ScoredPath]) -> Vec<Vec<String>> {
+    paths
         .iter()
         .map(|p| p.segments.iter().map(|s| s.surface.clone()).collect())
         .collect()
@@ -265,10 +268,7 @@ fn reseg(reading: &str, c: &ConnectionMatrix) -> Vec<Vec<String>> {
     let lattice = build_lattice(&dict(), reading);
     let cost_fn = DefaultCostFunction::new(Some(c));
     let best: Vec<ScoredPath> = viterbi_nbest(&lattice, &cost_fn, 1);
-    resegment(&best, &lattice, Some(c))
-        .iter()
-        .map(|p| p.segments.iter().map(|s| s.surface.clone()).collect())
-        .collect()
+    surfaces(&resegment(&best, &lattice, Some(c)))
 }
 
 #[test]
