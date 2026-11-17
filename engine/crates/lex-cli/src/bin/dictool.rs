@@ -52,7 +52,9 @@ enum Command {
         input_dir: String,
         /// Output file
         output_file: String,
-        /// Mozc id.def for compile-time cost adjustments (person name, pronoun)
+        /// Mozc id.def (role cost offsets, curated POS tags, Latin-unit check).
+        /// compile fails without it: pass it or place id.def in the input dir
+        /// (auto-detected)
         #[arg(long)]
         id_def: Option<String>,
         /// Additional source, formatted as `SOURCE:DIR` (e.g.

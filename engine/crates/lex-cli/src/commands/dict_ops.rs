@@ -138,22 +138,29 @@ pub(crate) fn build_entries(
     // id.def drives both morpheme-role cost offsets and tag-based POS
     // resolution (symbols, extras). Auto-detect in input_dir if --id-def is not
     // specified.
-    let id_def_path = id_def.map(PathBuf::from).or_else(|| {
-        let auto = input_path.join("id.def");
-        if auto.is_file() {
-            eprintln!("Auto-detected id.def at {}", auto.display());
-            Some(auto)
-        } else {
-            None
-        }
-    });
+    let id_def_path = id_def
+        .map(PathBuf::from)
+        .or_else(|| {
+            let auto = input_path.join("id.def");
+            if auto.is_file() {
+                eprintln!("Auto-detected id.def at {}", auto.display());
+                Some(auto)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            format!(
+                "compile requires id.def (role cost offsets, curated POS tag resolution, the Latin-unit connectivity check) — pass --id-def <path> or place id.def in {input_dir}"
+            )
+        })?;
 
     eprintln!("Source: {source_name}");
     let mut entries = dict_source
         .parse_dir(input_path)
         .map_err(|e| format!("parsing dictionary: {e}"))?;
     dict_source
-        .resolve_pos_ids(&mut entries, id_def_path.as_deref())
+        .resolve_pos_ids(&mut entries, Some(&id_def_path))
         .map_err(|e| format!("resolving POS ids: {e}"))?;
     let mut symbols = take_symbols(&mut entries);
 
@@ -164,21 +171,10 @@ pub(crate) fn build_entries(
     // (`applies_role_cost_offsets`; mozc), wherever it sits — primary or
     // extra. A curated source (symbols, extras) carries final costs and is
     // outside them, so the cheapest-wins merge compares final costs.
-    let roles = match id_def_path.as_ref() {
-        Some(path) => Some(
-            pos_map::morpheme_roles(path).map_err(|e| format!("loading morpheme roles: {e}"))?,
-        ),
-        None => {
-            eprintln!(
-                "warning: no id.def — role cost offsets and the Latin-unit connectivity check are skipped"
-            );
-            None
-        }
-    };
+    let roles = pos_map::morpheme_roles(&id_def_path)
+        .map_err(|e| format!("loading morpheme roles: {e}"))?;
     if dict_source.applies_role_cost_offsets() {
-        if let Some(roles) = &roles {
-            apply_role_cost_offsets(source_name, &mut entries, roles);
-        }
+        apply_role_cost_offsets(source_name, &mut entries, &roles);
     }
     let mut extras: Vec<(String, EntryMap)> = Vec::new();
     for (extra_name, extra_dir) in extra_sources {
@@ -197,15 +193,13 @@ pub(crate) fn build_entries(
             .parse_dir(extra_path)
             .map_err(|e| format!("parsing extra dictionary: {e}"))?;
         extra_src
-            .resolve_pos_ids(&mut parsed, id_def_path.as_deref())
+            .resolve_pos_ids(&mut parsed, Some(&id_def_path))
             .map_err(|e| format!("resolving POS ids for '{extra_name}': {e}"))?;
         for (reading, list) in take_symbols(&mut parsed) {
             symbols.entry(reading).or_default().extend(list);
         }
         if extra_src.applies_role_cost_offsets() {
-            if let Some(roles) = &roles {
-                apply_role_cost_offsets(extra_name, &mut parsed, roles);
-            }
+            apply_role_cost_offsets(extra_name, &mut parsed, &roles);
         }
         extras.push((extra_name.clone(), parsed));
     }
@@ -239,10 +233,7 @@ pub(crate) fn build_entries(
     let added = add_symbols(&mut entries, symbols)?;
     eprintln!("Added {added} symbol entries (outside the lattice)");
 
-    // Without id.def there are no roles to read (as for the role offsets).
-    if let Some(roles) = &roles {
-        check_latin_unit_connectivity(&entries, roles)?;
-    }
+    check_latin_unit_connectivity(&entries, &roles)?;
 
     Ok(entries)
 }
@@ -1104,6 +1095,28 @@ mod tests {
             .find(|e| e.surface == "小室哲哉")
             .unwrap();
         assert_eq!(komuro.cost, 3402);
+    }
+
+    /// C5: compile never skips the id.def-driven steps — no id.def given and
+    /// none in input_dir is an error, not a warning.
+    #[test]
+    fn build_entries_without_id_def_fails() {
+        use crate::dict_source::test_support::scratch;
+        let root = scratch("no_id_def");
+        let mozc = root.join("mozc");
+        fs::create_dir_all(&mozc).unwrap();
+        fs::write(
+            mozc.join("dictionary00.txt"),
+            "たなか\t1921\t1921\t5000\t田中\n",
+        )
+        .unwrap();
+        let result = build_entries("mozc", &mozc.to_string_lossy(), None, &[]);
+        fs::remove_dir_all(&root).ok();
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("requires id.def") && err.contains("--id-def"),
+            "{err}"
+        );
     }
 
     /// The offsets follow the declaring source, not its position: with extras
