@@ -1,0 +1,219 @@
+# Lexime unit-symbol reading sets (plan unit-symbols-plan.md 8-1, PR2b).
+#
+# Sections are added over time: this file now holds [S-std] and [ref]; the
+# machine-generated sets (S-dig, S-kana, S-mid, ...) are appended before
+# Phase 0, and the file's sha256 is frozen at that point (plan 5 step 0).
+# Nothing here is personal data.
+#
+# Grammar: UTF-8, one record per line, fields separated by a single TAB.
+# Blank lines and lines starting with '#' are ignored. A line "[name]"
+# starts a section; a record before the first section header is an error.
+# A section name this reader does not know is an error (a new section needs
+# its reader), so is an unknown record kind.
+#
+# [S-std]  the standard (reading, surface) pairs, one per line:
+#     unit<TAB>reading<TAB>surface      a unit (名詞,接尾,助数詞), in rank order
+#                                       within a reading (bit before b)
+#     prefix<TAB>reading<TAB>surface    an SI prefix alone (記号,アルファベット)
+#
+# [ref]  where each unit reading's price comes from (T14, `dictool
+#        check-units`). The Japanese name of a unit is its c_ref entry:
+#     name<TAB>reading<TAB>ref surface<TAB>unit surfaces (comma, rank order)
+#         c_ref = the cheapest dictionary entry of (reading, ref surface),
+#         POS not considered; each unit's C = c_ref + its 1-based rank.
+#     alias<TAB>reading<TAB>surface<TAB>main reading
+#         a variant reading: its C equals the main reading's unit of the same
+#         surface (the same surface is not priced differently by reading).
+#     family<TAB>id<TAB>base reading<TAB>compound readings (space-separated)
+#         a unit-less base and the prefixed compounds the dictionary has for
+#         it, all with a `name` line. A compound's difference is
+#         c_ref(compound) - c_ref(base).
+#     derived<TAB>reading<TAB>c_ref<TAB>unit surfaces<TAB>base reading<TAB>family ids
+#         a reading the dictionary has no Japanese name for: c_ref = c_ref(base
+#         reading) + the median, floored (div by 2, toward -inf), of the
+#         differences over all the listed families (more than one family only
+#         for the bps readings, whose own system has no compound). The check
+#         recomputes it from the dictionary and compares with the c_ref
+#         written here and with the unit's C.
+#
+# The derived readings and their inputs (counted on the pin in
+# engine/data/mozc-pin.txt; derive again when the pin moves):
+#   ぴこびょう  base びょう (秒), family びょう (ナノ秒 / マイクロ秒 / ミリ秒), median 4516
+#   きろあんぺあ base あんぺあ (アンペア), family あんぺあ, median 2132
+#   てらわっと  base わっと (ワット), family わっと, median 1167
+#   てらふろっぷす base ふろっぷす (フロップス), family ふろっぷす (ペタフロップス), median 17
+#   きろびっと  base びっと (ビット), family びっと (メガ..ペタビット), median 3446.5 floored 3446
+#   ぺびばいと  base ばいと (バイト), family iec (キビ..テビバイト), median 4671.5 floored 4671
+#   bps 系 4 読み base びーぴーえす (ビーピーエス), all 12 families together
+#              (36 differences, the ワット時 one included), median 1936
+
+[S-std]
+unit	びょう	s
+unit	ぴこびょう	ps
+unit	なのびょう	ns
+unit	まいくろびょう	μs
+unit	みりびょう	ms
+unit	めーとる	m
+unit	なのめーとる	nm
+unit	まいくろめーとる	μm
+unit	みりめーとる	mm
+unit	せんちめーとる	cm
+unit	きろめーとる	km
+unit	ぐらむ	g
+unit	まいくろぐらむ	μg
+unit	みりぐらむ	mg
+unit	きろぐらむ	kg
+unit	りっとる	L
+unit	まいくろりっとる	μL
+unit	みりりっとる	mL
+unit	きろりっとる	kL
+unit	へるつ	Hz
+unit	きろへるつ	kHz
+unit	めがへるつ	MHz
+unit	ぎがへるつ	GHz
+unit	てらへるつ	THz
+unit	ばいと	B
+unit	きろばいと	kB
+unit	めがばいと	MB
+unit	ぎがばいと	GB
+unit	てらばいと	TB
+unit	ぺたばいと	PB
+unit	きびばいと	KiB
+unit	めびばいと	MiB
+unit	ぎびばいと	GiB
+unit	てびばいと	TiB
+unit	ぺびばいと	PiB
+unit	びっと	bit
+unit	びっと	b
+unit	きろびっと	kbit
+unit	きろびっと	kb
+unit	めがびっと	Mbit
+unit	めがびっと	Mb
+unit	ぎがびっと	Gbit
+unit	ぎがびっと	Gb
+unit	てらびっと	Tbit
+unit	てらびっと	Tb
+unit	ぺたびっと	Pbit
+unit	ぺたびっと	Pb
+unit	びーぴーえす	bps
+unit	きろびーぴーえす	kbps
+unit	めがびーぴーえす	Mbps
+unit	ぎがびーぴーえす	Gbps
+unit	てらびーぴーえす	Tbps
+unit	あんぺあ	A
+unit	まいくろあんぺあ	μA
+unit	みりあんぺあ	mA
+unit	きろあんぺあ	kA
+unit	ぼると	V
+unit	みりぼると	mV
+unit	きろぼると	kV
+unit	わっと	W
+unit	きろわっと	kW
+unit	めがわっと	MW
+unit	ぎがわっと	GW
+unit	てらわっと	TW
+unit	わっとじ	Wh
+unit	きろわっとじ	kWh
+unit	ふろっぷす	FLOPS
+unit	てらふろっぷす	TFLOPS
+unit	ぺたふろっぷす	PFLOPS
+unit	でしべる	dB
+unit	せっし	°C
+unit	けるびん	K
+unit	かし	°F
+unit	どしー	°C
+unit	どえふ	°F
+prefix	ぴこ	p
+prefix	なの	n
+prefix	まいくろ	μ
+prefix	みり	m
+prefix	せんち	c
+prefix	きろ	k
+prefix	めが	M
+prefix	ぎが	G
+prefix	てら	T
+prefix	ぺた	P
+
+[ref]
+name	びょう	秒	s
+name	なのびょう	ナノ秒	ns
+name	まいくろびょう	マイクロ秒	μs
+name	みりびょう	ミリ秒	ms
+name	めーとる	メートル	m
+name	なのめーとる	ナノメートル	nm
+name	まいくろめーとる	マイクロメートル	μm
+name	みりめーとる	ミリメートル	mm
+name	せんちめーとる	センチメートル	cm
+name	きろめーとる	キロメートル	km
+name	ぐらむ	グラム	g
+name	まいくろぐらむ	マイクログラム	μg
+name	みりぐらむ	ミリグラム	mg
+name	きろぐらむ	キログラム	kg
+name	りっとる	リットル	L
+name	まいくろりっとる	マイクロリットル	μL
+name	みりりっとる	ミリリットル	mL
+name	きろりっとる	キロリットル	kL
+name	へるつ	ヘルツ	Hz
+name	きろへるつ	キロヘルツ	kHz
+name	めがへるつ	メガヘルツ	MHz
+name	ぎがへるつ	ギガヘルツ	GHz
+name	てらへるつ	テラヘルツ	THz
+name	ばいと	バイト	B
+name	きろばいと	キロバイト	kB
+name	めがばいと	メガバイト	MB
+name	ぎがばいと	ギガバイト	GB
+name	てらばいと	テラバイト	TB
+name	ぺたばいと	ペタバイト	PB
+name	きびばいと	キビバイト	KiB
+name	めびばいと	メビバイト	MiB
+name	ぎびばいと	ギビバイト	GiB
+name	てびばいと	テビバイト	TiB
+name	びっと	ビット	bit,b
+name	めがびっと	メガビット	Mbit,Mb
+name	ぎがびっと	ギガビット	Gbit,Gb
+name	てらびっと	テラビット	Tbit,Tb
+name	ぺたびっと	ペタビット	Pbit,Pb
+name	びーぴーえす	ビーピーエス	bps
+name	あんぺあ	アンペア	A
+name	まいくろあんぺあ	マイクロアンペア	μA
+name	みりあんぺあ	ミリアンペア	mA
+name	ぼると	ボルト	V
+name	みりぼると	ミリボルト	mV
+name	きろぼると	キロボルト	kV
+name	わっと	ワット	W
+name	きろわっと	キロワット	kW
+name	めがわっと	メガワット	MW
+name	ぎがわっと	ギガワット	GW
+name	わっとじ	ワット時	Wh
+name	きろわっとじ	キロワット時	kWh
+name	ふろっぷす	フロップス	FLOPS
+name	ぺたふろっぷす	ペタフロップス	PFLOPS
+name	でしべる	デシベル	dB
+name	せっし	摂氏	°C
+name	けるびん	ケルビン	K
+name	かし	華氏	°F
+alias	どしー	°C	せっし
+alias	どえふ	°F	かし
+family	びょう	びょう	なのびょう まいくろびょう みりびょう
+family	めーとる	めーとる	なのめーとる まいくろめーとる みりめーとる せんちめーとる きろめーとる
+family	ぐらむ	ぐらむ	まいくろぐらむ みりぐらむ きろぐらむ
+family	りっとる	りっとる	まいくろりっとる みりりっとる きろりっとる
+family	へるつ	へるつ	きろへるつ めがへるつ ぎがへるつ てらへるつ
+family	ばいと	ばいと	きろばいと めがばいと ぎがばいと てらばいと ぺたばいと
+family	びっと	びっと	めがびっと ぎがびっと てらびっと ぺたびっと
+family	あんぺあ	あんぺあ	まいくろあんぺあ みりあんぺあ
+family	ぼると	ぼると	みりぼると きろぼると
+family	わっと	わっと	きろわっと めがわっと ぎがわっと
+family	わっとじ	わっとじ	きろわっとじ
+family	ふろっぷす	ふろっぷす	ぺたふろっぷす
+family	iec	ばいと	きびばいと めびばいと ぎびばいと てびばいと
+derived	ぴこびょう	7069	ps	びょう	びょう
+derived	ぺびばいと	8763	PiB	ばいと	iec
+derived	きろびっと	7411	kbit,kb	びっと	びっと
+derived	きろびーぴーえす	10651	kbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	めがびーぴーえす	10651	Mbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	ぎがびーぴーえす	10651	Gbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	てらびーぴーえす	10651	Tbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	きろあんぺあ	7313	kA	あんぺあ	あんぺあ
+derived	てらわっと	5876	TW	わっと	わっと
+derived	てらふろっぷす	8174	TFLOPS	ふろっぷす	ふろっぷす

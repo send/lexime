@@ -3,4 +3,5 @@ pub mod config_ops;
 pub mod convert_ops;
 pub mod dict_ops;
 pub mod rank_ops;
+pub mod units_check;
 pub mod user_dict_ops;
