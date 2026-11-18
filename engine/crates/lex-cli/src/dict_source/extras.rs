@@ -59,10 +59,12 @@ const DOMAINS: &[(&str, &str)] = &[
     ("geography.tsv", include_str!("extras/geography.tsv")),
     ("history.tsv", include_str!("extras/history.tsv")),
     ("culture.tsv", include_str!("extras/culture.tsv")),
+    ("units.tsv", include_str!("extras/units.tsv")),
 ];
 
-/// Closed set of POS tags an extras row may use: 名詞,一般 and the six
-/// 名詞,固有名詞 subdivisions extras has words for. A tag outside the set is
+/// Closed set of POS tags an extras row may use: 名詞,一般, the six
+/// 名詞,固有名詞 subdivisions extras has words for, and 名詞,接尾,助数詞 (the
+/// `units` domain only). A tag outside the set is
 /// a parse error, so a typo cannot silently match another id.def tag; a new
 /// subdivision is added here in the same change as the row that needs it.
 /// The numeric ids are resolved from the pinned id.def at compile time by
@@ -136,6 +138,17 @@ const DOMAINS: &[(&str, &str)] = &[
 ///   Mozc). When one kind spans files, the full list sits in one file and
 ///   the others refer to it. Mozc upstream values are not changed.
 ///
+/// ## The units domain (名詞,接尾,助数詞)
+///
+/// `extras/units.tsv` holds SI units written in Latin letters (`s`, `μs`,
+/// `kB`, `Hz`, `°C`), every row 名詞,接尾,助数詞 — the POS Mozc gives unit
+/// words. It is outside the majority rule above: a unit is a counter by what
+/// it is, not by a vote, and the tag is added here (PR2b) because that is the
+/// POS the Latin-unit rules key on (a counter × a pure-Latin surface stands
+/// only after a typed digit). Its cost is not a proper-noun median nor 5000:
+/// `C = c_ref + rank`, c_ref being the cost of the unit's Japanese-name entry
+/// in Mozc, derived and stated in the TSV's header and above each reading.
+///
 /// ## The cost of a proper-noun row
 ///
 /// The cost comes from the same sample as the POS: **cost = the median, over
@@ -203,6 +216,7 @@ const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,固有名詞,組織,*,*,*,*",
     "名詞,固有名詞,地域,一般,*,*,*",
     "名詞,固有名詞,地域,国,*,*,*",
+    "名詞,接尾,助数詞,*,*,*,*",
 ];
 
 pub struct ExtrasSource;
@@ -259,6 +273,27 @@ pub(crate) fn bundled_rows() -> Vec<Vec<&'static str>> {
         .collect()
 }
 
+/// The data rows of the bundled `units.tsv` only.
+#[cfg(test)]
+pub(crate) fn units_rows() -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .filter(|(name, _)| *name == "units.tsv")
+        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
+/// The data rows of every bundled domain TSV except `units.tsv` (the word
+/// domains, whose tags follow the majority rule).
+#[cfg(test)]
+pub(crate) fn word_rows() -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .filter(|(name, _)| *name != "units.tsv")
+        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::curated::test_support::{
@@ -267,6 +302,7 @@ mod tests {
     use super::*;
 
     const IPPAN: &str = "名詞,一般,*,*,*,*,*";
+    const JOSUUSHI: &str = "名詞,接尾,助数詞,*,*,*,*";
 
     fn parse_bundled(name: &str) -> (std::path::PathBuf, HashMap<String, Vec<DictEntry>>) {
         ts::parse_bundled(&ExtrasSource, &format!("extras_{name}"))
@@ -346,7 +382,10 @@ mod tests {
             let want = pin_id(fields[2]);
             assert_eq!((entry.left_id, entry.right_id), (want, want), "{fields:?}");
         }
-        let proper = rows.iter().filter(|f| f[2] != IPPAN).count();
+        let proper = rows
+            .iter()
+            .filter(|f| f[2] != IPPAN && f[2] != JOSUUSHI)
+            .count();
         assert_eq!(proper, 25);
         fs::remove_dir_all(&dir).ok();
     }
@@ -496,7 +535,8 @@ mod tests {
         let (dir, entries) = parse_bundled("t7");
         let parsed = entries.values().map(Vec::len).sum::<usize>();
         assert_eq!(parsed, bundled_rows().len());
-        assert_eq!(parsed, 47);
+        // 47 word rows + 75 unit rows (T16 pins the unit count).
+        assert_eq!(parsed, 47 + 75);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -545,7 +585,7 @@ mod tests {
     /// tag.
     #[test]
     fn t8_bundled_tags() {
-        let rows = bundled_rows();
+        let rows = word_rows();
         for fields in &rows {
             let want = PROPER_NOUN_ROWS
                 .iter()
@@ -557,11 +597,72 @@ mod tests {
         let counts: Vec<usize> = ALLOWED_POS_TAGS.iter().map(|t| count(t)).collect();
         // ALLOWED_POS_TAGS order: 名詞,一般 / 固有名詞,一般 / 人名,一般 /
         // 人名,名 / 組織 / 地域,一般 / 地域,国.
-        assert_eq!(counts, [22, 5, 10, 1, 7, 1, 1]);
+        assert_eq!(counts, [22, 5, 10, 1, 7, 1, 1, 0]);
         assert_eq!(rows.len(), 47);
         assert!(PROPER_NOUN_ROWS
             .iter()
             .all(|(r, _)| rows.iter().filter(|f| f[0] == *r).count() == 1));
+    }
+
+    /// T8 (units): every row of `units.tsv` is 名詞,接尾,助数詞 — and no word
+    /// domain uses that tag.
+    #[test]
+    fn t8_units_are_all_counters() {
+        let units = units_rows();
+        assert!(units.iter().all(|f| f[2] == JOSUUSHI), "{units:?}");
+        assert!(word_rows().iter().all(|f| f[2] != JOSUUSHI));
+    }
+
+    /// T15: μ is U+03BC (never U+00B5 MICRO SIGN), ° is U+00B0 (never U+00BA
+    /// or U+02DA), and no surface has a full-width alphanumeric.
+    #[test]
+    fn t15_unit_characters() {
+        let units = units_rows();
+        let mut mu = 0;
+        let mut degree = 0;
+        for f in &units {
+            let surface = f[1];
+            assert!(!surface.contains('\u{00B5}'), "{f:?}");
+            assert!(
+                !surface.contains('\u{00BA}') && !surface.contains('\u{02DA}'),
+                "{f:?}"
+            );
+            assert!(
+                !surface
+                    .chars()
+                    .any(|c| ('\u{FF10}'..='\u{FF5A}').contains(&c)),
+                "{f:?}"
+            );
+            mu += surface.matches('\u{03BC}').count();
+            degree += surface.matches('\u{00B0}').count();
+        }
+        // Every row that has a μ or ° has the intended code point: the
+        // micro readings (まいくろ…) carry μ, the temperature units °.
+        let micro = units
+            .iter()
+            .filter(|f| f[0].starts_with("まいくろ"))
+            .count();
+        assert_eq!(mu, micro);
+        assert_eq!(micro, 5);
+        assert_eq!(degree, 4); // °C ×2 (せっし, どしー), °F ×2 (かし, どえふ)
+    }
+
+    /// T16: the number of unit rows (75 = 73 units + the 2 variant readings
+    /// どしー / どえふ) — a silently dropped row fails here.
+    #[test]
+    fn t16_unit_row_count() {
+        assert_eq!(units_rows().len(), 75);
+    }
+
+    /// T17: every unit surface meets the Latin-unit surface condition (ASCII
+    /// letter, no Japanese character), by the very predicate the converter
+    /// uses (`pure_latin`) — a surface outside it would not get the Latin-unit
+    /// rules.
+    #[test]
+    fn t17_unit_surfaces_are_pure_latin() {
+        for f in units_rows() {
+            assert!(lex_core::converter::pure_latin(f[1]), "{f:?}");
+        }
     }
 
     /// T10: after resolution every id is a row of id.def — no sentinel left.

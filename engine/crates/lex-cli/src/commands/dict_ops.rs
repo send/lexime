@@ -728,6 +728,7 @@ mod tests {
 7 名詞,固有名詞,組織,*,*,*,*
 8 名詞,固有名詞,地域,一般,*,*,*
 9 名詞,固有名詞,地域,国,*,*,*
+10 名詞,接尾,助数詞,*,*,*,*
 ";
 
     /// Synthetic mozc / symbols / extras input dirs under a fresh temp dir.
@@ -1195,7 +1196,8 @@ mod tests {
         .unwrap();
         fs::remove_dir_all(&root).ok();
 
-        assert_eq!(rows.len(), 47);
+        // 47 word rows + 75 unit rows (units carry their cost in the row).
+        assert_eq!(rows.len(), 47 + 75);
         let extras_cost = |reading: &str, tag: &str| {
             if let Some(&(_, c)) = EXTRAS_COST_OVERRIDES.iter().find(|(r, _)| *r == reading) {
                 return c;
@@ -1216,7 +1218,11 @@ mod tests {
                 .filter(|e| e.surface == surface)
                 .collect();
             assert_eq!(same.len(), 1, "{row:?}");
-            let want_cost = extras_cost(reading, tag);
+            let want_cost = if tag == "名詞,接尾,助数詞,*,*,*,*" {
+                row[3].parse().unwrap()
+            } else {
+                extras_cost(reading, tag)
+            };
             let want_id = pin_id(tag);
             assert_eq!(
                 (same[0].left_id, same[0].right_id, same[0].cost),

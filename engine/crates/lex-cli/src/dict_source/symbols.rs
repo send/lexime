@@ -98,10 +98,16 @@ mod tests {
         )
     }
 
-    fn is_greek(surface: &str) -> bool {
-        surface
-            .chars()
-            .all(|c| ('\u{0370}'..='\u{03FF}').contains(&c))
+    /// The section header of the SI prefix rows.
+    const SI_PREFIXES: &str = "SI prefixes";
+
+    /// The tag a bundled row writes, by (reading, surface).
+    fn row_tag(reading: &str, surface: &str) -> &'static str {
+        bundled_rows()
+            .into_iter()
+            .find(|(_, f)| f[0] == reading && f[1] == surface)
+            .map(|(_, f)| f[2])
+            .unwrap()
     }
 
     /// The data rows of the bundled TSV with the section header above each.
@@ -152,8 +158,9 @@ mod tests {
     }
 
     /// T1: the bundled TSV resolves by tag name against a pin-shaped id.def —
-    /// Greek rows to 記号,アルファベット (2643), every other row to 記号,一般
-    /// (2644). Fails if either id goes back to being written as a number.
+    /// Greek and SI prefix rows to 記号,アルファベット (2643), every other row
+    /// to 記号,一般 (2644). Fails if either id goes back to being written as
+    /// a number.
     #[test]
     fn t1_bundled_resolves_by_tag_name() {
         let (dir, mut entries) = parse_bundled("t1");
@@ -161,18 +168,20 @@ mod tests {
         SymbolsSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        let (mut greek, mut other) = (0, 0);
-        for entry in entries.values().flatten() {
-            let want = if is_greek(&entry.surface) {
-                greek += 1;
-                2643
-            } else {
-                other += 1;
-                2644
-            };
-            assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
+        let (mut alphabet, mut other) = (0, 0);
+        for (reading, list) in &entries {
+            for entry in list {
+                let want = if row_tag(reading, &entry.surface) == ALPHABET {
+                    alphabet += 1;
+                    2643
+                } else {
+                    other += 1;
+                    2644
+                };
+                assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
+            }
         }
-        assert_eq!((greek, other), (37, 118));
+        assert_eq!((alphabet, other), (37 + 10, 118));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -184,9 +193,15 @@ mod tests {
         SymbolsSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        for entry in entries.values().flatten() {
-            let want = if is_greek(&entry.surface) { 8 } else { 7 };
-            assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
+        for (reading, list) in &entries {
+            for entry in list {
+                let want = if row_tag(reading, &entry.surface) == ALPHABET {
+                    8
+                } else {
+                    7
+                };
+                assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
+            }
         }
         fs::remove_dir_all(&dir).ok();
     }
@@ -281,18 +296,29 @@ mod tests {
         let (dir, entries) = parse_bundled("t7");
         let parsed = entries.values().map(Vec::len).sum::<usize>();
         assert_eq!(parsed, bundled_rows().len());
-        assert_eq!(parsed, 155);
+        assert_eq!(parsed, 155 + 10);
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// T8: the tag of each row by section — the two Greek sections are
-    /// 記号,アルファベット (37 rows), every other section 記号,一般 (118).
+    /// T8: the tag of each row by section — the two Greek sections
+    /// (37 rows, every surface a Greek-block character) and the SI prefix
+    /// section (10 rows) are 記号,アルファベット, every other section
+    /// 記号,一般 (118).
     #[test]
     fn t8_bundled_tags_by_section() {
-        let (mut greek, mut other) = (0, 0);
+        let (mut greek, mut prefix, mut other) = (0, 0, 0);
         for (section, fields) in bundled_rows() {
             let want = if section.starts_with("Greek letters") {
                 greek += 1;
+                assert!(
+                    fields[1]
+                        .chars()
+                        .all(|c| ('\u{0370}'..='\u{03FF}').contains(&c)),
+                    "{fields:?}"
+                );
+                ALPHABET
+            } else if section.starts_with(SI_PREFIXES) {
+                prefix += 1;
                 ALPHABET
             } else {
                 other += 1;
@@ -300,7 +326,52 @@ mod tests {
             };
             assert_eq!(fields[2], want, "{section}: {fields:?}");
         }
-        assert_eq!((greek, other), (37, 118));
+        assert_eq!((greek, prefix, other), (37, 10, 118));
+    }
+
+    /// T15 (symbols side): the micro prefix is U+03BC (never U+00B5), and no
+    /// prefix surface has a full-width alphanumeric.
+    #[test]
+    fn t15_prefix_characters() {
+        for (section, f) in bundled_rows() {
+            if !section.starts_with(SI_PREFIXES) {
+                continue;
+            }
+            assert!(!f[1].contains('\u{00B5}'), "{f:?}");
+            assert!(
+                !f[1].chars().any(|c| ('\u{FF10}'..='\u{FF5A}').contains(&c)),
+                "{f:?}"
+            );
+            if f[0] == "まいくろ" {
+                assert_eq!(f[1], "\u{03BC}");
+            }
+        }
+    }
+
+    /// T16 (symbols side): the SI prefix section has 10 rows, in the order of
+    /// the plan's list (a silently dropped or reordered row fails here).
+    #[test]
+    fn t16_prefix_rows() {
+        let prefixes: Vec<(&str, &str)> = bundled_rows()
+            .into_iter()
+            .filter(|(section, _)| section.starts_with(SI_PREFIXES))
+            .map(|(_, f)| (f[0], f[1]))
+            .collect();
+        assert_eq!(
+            prefixes,
+            [
+                ("ぴこ", "p"),
+                ("なの", "n"),
+                ("まいくろ", "\u{03BC}"),
+                ("みり", "m"),
+                ("せんち", "c"),
+                ("きろ", "k"),
+                ("めが", "M"),
+                ("ぎが", "G"),
+                ("てら", "T"),
+                ("ぺた", "P"),
+            ]
+        );
     }
 
     /// T10: after resolution every id is a row of id.def — no sentinel left.
