@@ -529,3 +529,42 @@ fn equal_priced_japanese_counter_precedes_the_latin_unit() {
     assert_eq!((jp.rule, jp.cost_offset), (PolicyRule::CounterFallback, 0));
     assert_eq!(jp, latin);
 }
+
+/// The final list, not only the emission, puts the Japanese-name counter's
+/// form before the Latin unit's on an equal price: the Override stage keeps
+/// emission order among its own candidates.
+#[test]
+fn equal_priced_japanese_counter_precedes_the_latin_unit_in_the_final_list() {
+    let counter_id: u16 = 7;
+    let conn = counter_test_conn(8, counter_id);
+    let nodes = [
+        (2, 5, "びょう", "秒", 3000, counter_id, counter_id),
+        (2, 5, "びょう", "s", 1000, counter_id, counter_id),
+    ];
+    let lattice = Lattice::from_test_nodes("さんびょう", &nodes);
+    let rw = NumericRewriter {
+        lattice: Some(&lattice),
+        connection: Some(&conn),
+        anchor: 5000,
+    };
+    let mut paths = vec![ScoredPath::new(
+        vec![RichSegment {
+            reading: "さんびょう".into(),
+            surface: "さん秒".into(),
+            left_id: 0,
+            right_id: 0,
+            word_cost: 0,
+        }],
+        100,
+        PathOrigin::Viterbi,
+    )];
+    run_policy_rewriters(&[&rw], &mut paths, "さんびょう", None, &mut NoopObserver);
+    let pos = |s: &str| paths.iter().position(|p| p.surface_key() == s);
+    let (jp, latin) = (pos("3秒").unwrap(), pos("3s").unwrap());
+    assert_eq!(paths[jp].viterbi_cost, paths[latin].viterbi_cost);
+    assert!(
+        jp < latin,
+        "{:?}",
+        paths.iter().map(|p| p.surface_key()).collect::<Vec<_>>()
+    );
+}

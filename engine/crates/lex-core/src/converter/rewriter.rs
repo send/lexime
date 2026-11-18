@@ -175,11 +175,13 @@ impl RewriteStage {
         }
     }
 
-    /// Whether a candidate goes before entries of equal cost. A Model-stage
-    /// candidate is an alternative, so it follows the path it ties (an
-    /// offer at its source's price stays below the source); an Override
-    /// candidate is policy, so it leads (a number compound at the anchor's
-    /// price takes index 0 when no learned path holds it, #239).
+    /// Whether a candidate goes before the stage's input entries of equal
+    /// cost. A Model-stage candidate is an alternative, so it follows the
+    /// path it ties (an offer at its source's price stays below the source);
+    /// an Override candidate is policy, so it leads (a number compound at
+    /// the anchor's price takes index 0 when no learned path holds it,
+    /// #239). Among the stage's own candidates of equal cost the emission
+    /// order holds either way ([`insert_by_cost`]).
     fn precedes_ties(self) -> bool {
         match self {
             Self::Model => false,
@@ -250,7 +252,9 @@ enum Candidates<'a> {
 /// source, and the rewriters' order does not change what they generate.
 /// A candidate is boosted only where it is written: duplicates are resolved
 /// on prices before history, and a fallback that finds its surface listed
-/// is dropped without a history lookup.
+/// is dropped without a history lookup. Candidates of equal cost keep their
+/// emission order in the list: a policy candidate leads the stage's input
+/// entries it ties, not the candidates this stage has already written.
 fn insert_candidates<O: PostprocessObserver>(
     candidates: Candidates<'_>,
     paths: &mut Vec<ScoredPath>,
@@ -286,6 +290,9 @@ fn insert_candidates<O: PostprocessObserver>(
         .collect();
     // Decided on the stage's input.
     let mut head = stage.holds_head(paths).then(|| paths.remove(0));
+    // The surfaces this stage has written, so a tie with one of them is
+    // resolved by emission order, not by `precedes_ties`.
+    let mut written: Vec<String> = Vec::new();
     for (candidate, policy) in candidates {
         let key = candidate.surface_key();
         // What the stage did with a policy price: wrote it, or skipped it.
@@ -309,7 +316,8 @@ fn insert_candidates<O: PostprocessObserver>(
         };
         let Some((slot, existing)) = listed else {
             report(true);
-            insert_by_cost(paths, boosted(candidate), stage);
+            insert_by_cost(paths, boosted(candidate), stage, &written);
+            written.push(key);
             continue;
         };
         let resolved = match DuplicatePolicy::of(policy) {
@@ -331,7 +339,8 @@ fn insert_candidates<O: PostprocessObserver>(
             Slot::Head => head = Some(boosted(resolved)),
             Slot::At(i) => {
                 paths.remove(i);
-                insert_by_cost(paths, boosted(resolved), stage);
+                insert_by_cost(paths, boosted(resolved), stage, &written);
+                written.push(key);
             }
         }
     }
@@ -363,15 +372,26 @@ enum Slot {
 }
 
 /// Insert before the first entry that costs more, or at least as much when
-/// the stage precedes ties. A linear scan, so the position is defined even
+/// the stage precedes ties and the entry is not one the stage has already
+/// written (`written`, by surface): among a stage's own candidates the
+/// emission order holds, so an equal-priced candidate goes after the ones
+/// written before it. A linear scan, so the position is defined even
 /// where the list is not sorted (the Viterbi best is re-inserted at index 1
 /// after history reranking).
-fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
+fn insert_by_cost(
+    paths: &mut Vec<ScoredPath>,
+    path: ScoredPath,
+    stage: RewriteStage,
+    written: &[String],
+) {
     let precedes = stage.precedes_ties();
     let pos = paths
         .iter()
         .position(|p| {
-            p.viterbi_cost > path.viterbi_cost || (precedes && p.viterbi_cost == path.viterbi_cost)
+            p.viterbi_cost > path.viterbi_cost
+                || (precedes
+                    && p.viterbi_cost == path.viterbi_cost
+                    && !written.iter().any(|k| p.surface_key_eq(k)))
         })
         .unwrap_or(paths.len());
     paths.insert(pos, path);
@@ -908,7 +928,9 @@ impl NumericRewriter<'_> {
         // HashMap iteration is nondeterministic; sort by (latin, cost,
         // surface) so tied counter candidates emit in a stable, reproducible
         // order, and on an equal price (the Latin offset clamped to 0) the
-        // Japanese-name counter's form precedes the Latin unit's.
+        // Japanese-name counter's form precedes the Latin unit's. The emit
+        // order is the final list's order: the stage keeps a tie among its
+        // own candidates in emission order ([`insert_by_cost`]).
         let mut cands: Vec<Cand<'_>> = by_surface.into_values().collect();
         cands.sort_by(|a, b| {
             a.latin
