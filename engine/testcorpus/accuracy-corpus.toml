@@ -1289,10 +1289,12 @@ note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。
 
 [[cases]]
 reading = "20ど"
-expected = "20ど"
+expected = "20度"
 category = "regression"
 tags = ["unit-symbol", "guard"]
-note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から 20ど (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
 
 [[cases]]
 reading = "ばいとにいく"
@@ -1338,10 +1340,12 @@ note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。
 
 [[cases]]
 reading = "めがねをかける"
-expected = "眼鏡を書ける"
+expected = "眼鏡を掛ける"
 category = "regression"
 tags = ["unit-symbol", "guard"]
-note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ。top-1 の 眼鏡を書ける は PR2b の前からの誤変換で、変化の検出のために現状を固定する (正解の宣言ではない)"
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から 眼鏡を書ける (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
 
 [[cases]]
 reading = "きろにつく"
@@ -1366,24 +1370,30 @@ note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。
 
 [[cases]]
 reading = "わっとなく"
-expected = "ワット無く"
+expected = "わっと泣く"
 category = "regression"
 tags = ["unit-symbol", "guard"]
-note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から ワット無く (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
 
 [[cases]]
 reading = "ぼるとをしめる"
-expected = "ボルトを占める"
+expected = "ボルトを締める"
 category = "regression"
 tags = ["unit-symbol", "guard"]
-note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から ボルトを占める (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
 
 [[cases]]
 reading = "にばいと"
-expected = "にバイト"
+expected = "2倍と"
 category = "regression"
 tags = ["unit-symbol", "guard"]
-note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から にバイト (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
 
 [[cases]]
 reading = "3びょういん"
