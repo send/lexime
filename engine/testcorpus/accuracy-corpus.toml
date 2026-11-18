@@ -1268,3 +1268,126 @@ expected = "三フィート"
 category = "regression"
 tags = ["unit-symbol", "guard"]
 note = "ガード (PR2a): かな数詞 + Latin 単位は半角形 (3ft、CounterFallback) だけで、三ft・３ft は出ない。top-1 は PR2a の前と同じ"
+
+# --- SI unit symbols (PR2b guards). expected = the top-1 of the PR2a build
+# (the before of PR2b), measured with the same corpus runner and --now
+# 1794703694; both widths agree. History cases come with Phase 0. ---
+
+[[cases]]
+reading = "3みりびょう"
+expected = "3ミリ秒"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "100めがばいと"
+expected = "100メガバイト"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "20ど"
+expected = "20ど"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "ばいとにいく"
+expected = "バイトに行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "そうなの"
+expected = "そうなの"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "だいじょうぶなの"
+expected = "大丈夫なの"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "かしをかう"
+expected = "歌詞を買う"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "かしこい"
+expected = "賢い"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "てらにいく"
+expected = "寺に行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "めがねをかける"
+expected = "眼鏡を書ける"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ。top-1 の 眼鏡を書ける は PR2b の前からの誤変換で、変化の検出のために現状を固定する (正解の宣言ではない)"
+
+[[cases]]
+reading = "きろにつく"
+expected = "帰路につく"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "びょういんにいく"
+expected = "病院に行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "せんちめんたる"
+expected = "センチメンタル"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "わっとなく"
+expected = "ワット無く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "ぼるとをしめる"
+expected = "ボルトを占める"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "にばいと"
+expected = "にバイト"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "3びょういん"
+expected = "3病院"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
