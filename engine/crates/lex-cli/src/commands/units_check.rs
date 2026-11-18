@@ -41,7 +41,26 @@ pub struct Readings {
     /// `family` lines: id -> (base reading, compound readings).
     pub families: BTreeMap<String, (String, Vec<String>)>,
     pub derived: Vec<Derived>,
+    /// The generated reading sets (`SET_SECTIONS`): section -> (reading, tag)
+    /// in file order. S-snap's `file` line is kept as (path, sha256).
+    pub sets: BTreeMap<String, Vec<Pair>>,
 }
+
+/// The sections of the machine-generated reading sets (plan 8-1). T14 does
+/// not price them; it reads them so that a malformed set fails here, and
+/// keeps them in `Readings::sets`. Every record is `r<TAB>reading<TAB>tag`;
+/// S-snap's is `file<TAB>path<TAB>sha256`.
+const SET_SECTIONS: &[&str] = &[
+    "S-dig",
+    "S-kana",
+    "S-mid",
+    "S-pre",
+    "S-col",
+    "S-dig-col",
+    "S-mozc",
+    "S-ni",
+    "S-snap",
+];
 
 #[derive(Debug, PartialEq)]
 pub struct Derived {
@@ -66,16 +85,24 @@ fn fields<'a>(line: &'a str, kind: &str, n: usize, lineno: usize) -> Result<Vec<
 pub fn parse_readings(content: &str) -> Result<Readings, String> {
     let mut r = Readings::default();
     let mut section: Option<&str> = None;
+    let mut set_section: Option<&str> = None;
     for (i, line) in content.lines().enumerate() {
         let lineno = i + 1;
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            set_section = None;
             match name {
                 "S-std" => section = Some("S-std"),
                 "ref" => section = Some("ref"),
-                _ => return Err(format!("line {lineno}: unknown section [{name}]")),
+                _ => match SET_SECTIONS.iter().find(|s| **s == name) {
+                    Some(s) => {
+                        section = Some(s);
+                        set_section = Some(s);
+                    }
+                    None => return Err(format!("line {lineno}: unknown section [{name}]")),
+                },
             }
             continue;
         }
@@ -124,6 +151,17 @@ pub fn parse_readings(content: &str) -> Result<Readings, String> {
                     base: f[4].into(),
                     families: f[5].split(',').map(String::from).collect(),
                 });
+            }
+            (Some(s), k) if set_section == Some(s) => {
+                let want = if s == "S-snap" { "file" } else { "r" };
+                if k != want {
+                    return Err(format!("line {lineno}: unknown record '{k}' in [{s}]"));
+                }
+                let f = fields(line, k, 3, lineno)?;
+                r.sets
+                    .entry(s.into())
+                    .or_default()
+                    .push((f[1].into(), f[2].into()));
             }
             (Some(s), k) => {
                 return Err(format!("line {lineno}: unknown record '{k}' in [{s}]"));
@@ -721,6 +759,13 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         assert!(parse_readings("[S-std]\nunit\tあ\n").is_err());
         assert!(parse_readings("[S-std]\nbogus\tあ\tb\n").is_err());
         assert!(parse_readings("[S-std]\n").is_err());
+        // A generated set takes only its own record kind, 3 fields.
+        let head = "[S-std]\nunit\tあ\tb\nprefix\tあ\tb\n[ref]\nname\tあ\tb\tb\n";
+        assert!(parse_readings(&format!("{head}[S-dig]\nr\t3あ\tu\n")).is_ok());
+        assert!(parse_readings(&format!("{head}[S-dig]\nr\t3あ\n")).is_err());
+        assert!(parse_readings(&format!("{head}[S-dig]\nunit\t3あ\tu\n")).is_err());
+        assert!(parse_readings(&format!("{head}[S-snap]\nr\ta\tb\n")).is_err());
+        assert!(parse_readings(&format!("{head}[S-snap]\nfile\ta\tb\n")).is_ok());
     }
 
     /// The committed reading set parses and has the plan's counts (69
@@ -734,5 +779,11 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         assert_eq!(r.derived.len(), 10);
         assert_eq!(r.aliases.len(), 2);
         assert_eq!(r.names.len(), 57);
+        // The generated sets (plan 8-1; S-ctx is not made, see the PR notes).
+        for sec in SET_SECTIONS {
+            assert!(r.sets.get(*sec).is_some_and(|v| !v.is_empty()), "{sec}");
+        }
+        assert_eq!(r.sets["S-mid"].len(), 20);
+        assert_eq!(r.sets["S-snap"].len(), 1);
     }
 }
