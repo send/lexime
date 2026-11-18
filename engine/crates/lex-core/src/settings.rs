@@ -143,8 +143,13 @@ impl Settings {
 pub struct CostSettings {
     pub segment_penalty: i64,
     pub mixed_script_bonus: i64,
+    /// Script price of an all-katakana segment, and of a Latin unit formed
+    /// right after a typed digit (`cost::segment_script`) — one price for
+    /// both foreign scripts, so changing it moves both.
     pub katakana_penalty: i64,
     pub pure_kanji_bonus: i64,
+    /// Penalty for a segment containing Latin letters, except a Latin unit
+    /// formed right after a typed digit (priced as `katakana_penalty`).
     pub latin_penalty: i64,
     pub unknown_word_cost: i16,
 }

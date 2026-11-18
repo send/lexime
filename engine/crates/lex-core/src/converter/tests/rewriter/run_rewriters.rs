@@ -825,3 +825,21 @@ fn a_learned_head_of_the_compounds_surface_becomes_the_compound() {
         )
     );
 }
+
+/// The Override stage's candidates of equal cost keep their emission order,
+/// and each leads the stage's input entries it ties (policy beats model).
+#[test]
+fn override_stage_keeps_emission_order_among_ties_and_leads_input_ties() {
+    let mut paths = vec![
+        path("頭", 100, PathOrigin::Viterbi),
+        path("既", 2000, PathOrigin::Viterbi),
+        path("後", 3000, PathOrigin::Viterbi),
+    ];
+    let rw = Fixed(vec![
+        path("甲", 2000, PathOrigin::KanjiVariant),
+        path("乙", 2000, PathOrigin::KanjiVariant),
+        path("丙", 2000, PathOrigin::KanjiVariant),
+    ]);
+    run_policy_rewriters(&[&rw], &mut paths, "よみ", None, &mut NoopObserver);
+    assert_eq!(surfaces(&paths), ["頭", "甲", "乙", "丙", "既", "後"]);
+}

@@ -6,6 +6,7 @@ use crate::settings::DEFAULT_CANDIDATE_MAX_COST_GAP;
 use crate::unicode::{hiragana_to_katakana, is_hiragana, is_kanji, is_katakana};
 
 use super::cost::{conn_cost, node_cost, score_path};
+use super::latin_unit::is_latin_unit;
 use super::lattice::Lattice;
 use super::postprocess::PostprocessObserver;
 use super::reranker::FeaturePricer;
@@ -174,11 +175,13 @@ impl RewriteStage {
         }
     }
 
-    /// Whether a candidate goes before entries of equal cost. A Model-stage
-    /// candidate is an alternative, so it follows the path it ties (an
-    /// offer at its source's price stays below the source); an Override
-    /// candidate is policy, so it leads (a number compound at the anchor's
-    /// price takes index 0 when no learned path holds it, #239).
+    /// Whether a candidate goes before the stage's input entries of equal
+    /// cost. A Model-stage candidate is an alternative, so it follows the
+    /// path it ties (an offer at its source's price stays below the source);
+    /// an Override candidate is policy, so it leads (a number compound at
+    /// the anchor's price takes index 0 when no learned path holds it,
+    /// #239). Among the stage's own candidates of equal cost the emission
+    /// order holds either way ([`insert_by_cost`]).
     fn precedes_ties(self) -> bool {
         match self {
             Self::Model => false,
@@ -249,7 +252,9 @@ enum Candidates<'a> {
 /// source, and the rewriters' order does not change what they generate.
 /// A candidate is boosted only where it is written: duplicates are resolved
 /// on prices before history, and a fallback that finds its surface listed
-/// is dropped without a history lookup.
+/// is dropped without a history lookup. Candidates of equal cost keep their
+/// emission order in the list: a policy candidate leads the stage's input
+/// entries it ties, not the candidates this stage has already written.
 fn insert_candidates<O: PostprocessObserver>(
     candidates: Candidates<'_>,
     paths: &mut Vec<ScoredPath>,
@@ -285,6 +290,9 @@ fn insert_candidates<O: PostprocessObserver>(
         .collect();
     // Decided on the stage's input.
     let mut head = stage.holds_head(paths).then(|| paths.remove(0));
+    // The surfaces this stage has written, so a tie with one of them is
+    // resolved by emission order, not by `precedes_ties`.
+    let mut written: Vec<String> = Vec::new();
     for (candidate, policy) in candidates {
         let key = candidate.surface_key();
         // What the stage did with a policy price: wrote it, or skipped it.
@@ -308,7 +316,8 @@ fn insert_candidates<O: PostprocessObserver>(
         };
         let Some((slot, existing)) = listed else {
             report(true);
-            insert_by_cost(paths, boosted(candidate), stage);
+            insert_by_cost(paths, boosted(candidate), stage, &written);
+            written.push(key);
             continue;
         };
         let resolved = match DuplicatePolicy::of(policy) {
@@ -330,7 +339,8 @@ fn insert_candidates<O: PostprocessObserver>(
             Slot::Head => head = Some(boosted(resolved)),
             Slot::At(i) => {
                 paths.remove(i);
-                insert_by_cost(paths, boosted(resolved), stage);
+                insert_by_cost(paths, boosted(resolved), stage, &written);
+                written.push(key);
             }
         }
     }
@@ -362,15 +372,26 @@ enum Slot {
 }
 
 /// Insert before the first entry that costs more, or at least as much when
-/// the stage precedes ties. A linear scan, so the position is defined even
+/// the stage precedes ties and the entry is not one the stage has already
+/// written (`written`, by surface): among a stage's own candidates the
+/// emission order holds, so an equal-priced candidate goes after the ones
+/// written before it. A linear scan, so the position is defined even
 /// where the list is not sorted (the Viterbi best is re-inserted at index 1
 /// after history reranking).
-fn insert_by_cost(paths: &mut Vec<ScoredPath>, path: ScoredPath, stage: RewriteStage) {
+fn insert_by_cost(
+    paths: &mut Vec<ScoredPath>,
+    path: ScoredPath,
+    stage: RewriteStage,
+    written: &[String],
+) {
     let precedes = stage.precedes_ties();
     let pos = paths
         .iter()
         .position(|p| {
-            p.viterbi_cost > path.viterbi_cost || (precedes && p.viterbi_cost == path.viterbi_cost)
+            p.viterbi_cost > path.viterbi_cost
+                || (precedes
+                    && p.viterbi_cost == path.viterbi_cost
+                    && !written.iter().any(|k| p.surface_key_eq(k)))
         })
         .unwrap_or(paths.len());
     paths.insert(pos, path);
@@ -834,7 +855,8 @@ impl NumericRewriter<'_> {
     /// and pricier counter homophones get penalised by their cost difference.
     /// This mirrors what Viterbi would do if a `<kanji_number><counter>`
     /// segmentation were representable in the lattice (no `三千` dictionary
-    /// entry).
+    /// entry). A Latin unit (`ft`, `s`) is emitted half-width only and is not
+    /// the anchor (see the body).
     fn append_counter_candidates(
         &self,
         lattice: &Lattice,
@@ -863,6 +885,9 @@ impl NumericRewriter<'_> {
             start: usize,
             surface: &'a str,
             cost: i16,
+            /// A Latin unit (`latin_unit::is_latin_unit`): paired with
+            /// half-width digits only, and not the price anchor.
+            latin: bool,
         }
         let mut by_surface: std::collections::HashMap<&str, Cand<'_>> =
             std::collections::HashMap::new();
@@ -880,6 +905,7 @@ impl NumericRewriter<'_> {
                 continue;
             }
             let cost = lattice.cost(idx);
+            let latin = is_latin_unit(lattice.pure_latin(idx), lattice.left_id(idx), Some(conn));
             by_surface
                 .entry(surface)
                 .and_modify(|c| {
@@ -892,18 +918,35 @@ impl NumericRewriter<'_> {
                     start: counter_start,
                     surface,
                     cost,
+                    latin,
                 });
         }
         if by_surface.is_empty() {
             return;
         }
 
-        // HashMap iteration is nondeterministic; sort by (cost, surface) so
-        // tied counter candidates emit in a stable, reproducible order.
+        // HashMap iteration is nondeterministic; sort by (latin, cost,
+        // surface) so tied counter candidates emit in a stable, reproducible
+        // order, and on an equal price (the Latin offset clamped to 0) the
+        // Japanese-name counter's form precedes the Latin unit's. The emit
+        // order is the final list's order: the stage keeps a tie among its
+        // own candidates in emission order ([`insert_by_cost`]).
         let mut cands: Vec<Cand<'_>> = by_surface.into_values().collect();
-        cands.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.surface.cmp(b.surface)));
+        cands.sort_by(|a, b| {
+            a.latin
+                .cmp(&b.latin)
+                .then_with(|| a.cost.cmp(&b.cost))
+                .then_with(|| a.surface.cmp(b.surface))
+        });
 
-        let cheapest = cands.first().map(|c| c.cost).unwrap_or(0);
+        // The price anchor is the cheapest counter that is not a Latin unit,
+        // so adding a Latin unit never moves the kanji compounds' prices; with
+        // none at this tail, the cheapest Latin unit. An offset below 0 (a
+        // Latin unit cheaper than the anchor) is clamped to 0, keeping the
+        // half-width form at or above the CounterFallback base.
+        // (The sort puts every non-Latin counter before the Latin units, so the
+        // first candidate is that anchor.)
+        let cheapest = cands.first().map_or(0, |c| c.cost);
 
         for cand in &cands {
             let prefix = &reading[..byte_offsets[cand.start]];
@@ -912,11 +955,23 @@ impl NumericRewriter<'_> {
             };
             // Widen to i64 before subtraction: i16 - i16 can overflow if the
             // dictionary contains extreme positive/negative costs.
-            let cost_offset = cand.cost as i64 - cheapest as i64;
+            let cost_offset = (cand.cost as i64 - cheapest as i64).max(0);
             let counter = |mut digits: String| {
                 digits.push_str(cand.surface);
                 digits
             };
+
+            // A Latin unit pairs with half-width digits only (no 三ft, ３ft):
+            // the same rule as the formation rule's typed digit, for a number
+            // read in kana.
+            if cand.latin {
+                out.push(self.price(PolicyRule::CounterFallback, cost_offset).path(
+                    reading,
+                    counter(numeric::to_halfwidth(n)),
+                    PathOrigin::Numeric,
+                ));
+                continue;
+            }
 
             out.push(self.price(PolicyRule::CounterCompound, cost_offset).path(
                 reading,

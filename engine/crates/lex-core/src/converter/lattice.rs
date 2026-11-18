@@ -3,6 +3,7 @@ use tracing::{debug, debug_span};
 use crate::dict::Dictionary;
 use crate::settings::settings;
 
+use super::latin_unit;
 use super::viterbi::RichSegment;
 
 /// Byte range within the Lattice string pool.
@@ -36,6 +37,10 @@ pub struct Lattice {
     costs: Vec<i16>,
     left_ids: Vec<u16>,
     right_ids: Vec<u16>,
+    /// Surface flags for the Latin-unit rule, computed once per node at push
+    /// (`latin_unit::pure_latin` / `latin_unit::typed_digit`).
+    pure_latin: Vec<bool>,
+    typed_digit: Vec<bool>,
 
     // ── String pool (cold — accessed during backtrace/postprocess) ──
     string_pool: Vec<u8>,
@@ -67,6 +72,8 @@ impl Lattice {
             costs: Vec::new(),
             left_ids: Vec::new(),
             right_ids: Vec::new(),
+            pure_latin: Vec::new(),
+            typed_digit: Vec::new(),
             string_pool: Vec::new(),
             reading_spans: Vec::new(),
             surface_spans: Vec::new(),
@@ -91,6 +98,8 @@ impl Lattice {
             costs: Vec::with_capacity(est_nodes),
             left_ids: Vec::with_capacity(est_nodes),
             right_ids: Vec::with_capacity(est_nodes),
+            pure_latin: Vec::with_capacity(est_nodes),
+            typed_digit: Vec::with_capacity(est_nodes),
             string_pool: Vec::with_capacity(est_pool),
             reading_spans: Vec::with_capacity(est_nodes),
             surface_spans: Vec::with_capacity(est_nodes),
@@ -101,7 +110,9 @@ impl Lattice {
         }
     }
 
-    /// Append a node to the lattice.
+    /// Append a node to the lattice. Every node — built, extended, or a
+    /// fallback — comes through here, so its surface flags are computed
+    /// exactly once.
     fn push_node(
         &mut self,
         pos: std::ops::Range<usize>,
@@ -123,6 +134,12 @@ impl Lattice {
         let s_span = self.resolve(surface);
         self.reading_spans.push(r_span);
         self.surface_spans.push(s_span);
+
+        let surface = self.span_str(&s_span);
+        let pure_latin = latin_unit::pure_latin(surface);
+        let typed_digit = latin_unit::typed_digit(self.span_str(&r_span), surface);
+        self.pure_latin.push(pure_latin);
+        self.typed_digit.push(typed_digit);
 
         self.nodes_by_end[pos.end].push(idx);
         self.nodes_by_start[pos.start].push(idx);
@@ -205,6 +222,16 @@ impl Lattice {
     /// Right boundary morpheme ID of node `idx`.
     pub fn right_id(&self, idx: usize) -> u16 {
         self.right_ids[idx]
+    }
+
+    /// The surface of node `idx` is pure Latin (`latin_unit::pure_latin`).
+    pub(crate) fn pure_latin(&self, idx: usize) -> bool {
+        self.pure_latin[idx]
+    }
+
+    /// Node `idx` is a typed digit (`latin_unit::typed_digit`).
+    pub(crate) fn typed_digit(&self, idx: usize) -> bool {
+        self.typed_digit[idx]
     }
 
     /// Reading (kana) of node `idx` — zero-copy from the string pool.
@@ -360,6 +387,12 @@ fn add_nodes_for_range(
                     entry.right_id,
                 );
             }
+            // A 1-char dictionary reading is itself a way through this
+            // position, so the unknown fallback below is skipped. That is
+            // sound only because no such node is a Latin unit (a counter with a
+            // pure-Latin surface), which the Viterbi / resegment formation rule
+            // can enter only after a typed digit: `dictool compile` rejects such
+            // a row (`check_latin_unit_connectivity`).
             if reading_char_count == 1 {
                 has_single_char_match = true;
             }

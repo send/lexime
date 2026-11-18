@@ -6,6 +6,7 @@ mod basic;
 mod bench;
 mod grouping;
 mod history;
+mod latin_unit;
 mod nbest;
 mod offers;
 mod reranker;

@@ -6,8 +6,15 @@ mixed_script_bonus = 3000
 # had the lowest raw Viterbi cost and lost purely to this penalty (vs the
 # mixed-script bonus on the kanji competitor). 150 keeps hiragana ahead on
 # near-ties but lets the dictionary decide otherwise. Measurements: #261.
+# Also the script price of a Latin unit formed right after a typed digit
+# (`3ft`, `3μs`): the two foreign scripts share one price, the largest a
+# non-Latin segment can get, so the unit never undercuts its Japanese name
+# (`3フィート`) by script. Raising this moves both alike, and a formed unit
+# can fall out of the cost-gap admission (SPEC.md § Viterbi).
 katakana_penalty = 150
 pure_kanji_bonus = 1000
+# A segment containing Latin letters — except a Latin unit formed right after
+# a typed digit, which is priced as katakana (above).
 latin_penalty = 20000
 unknown_word_cost = 10000
 

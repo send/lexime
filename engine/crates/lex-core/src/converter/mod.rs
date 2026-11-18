@@ -14,6 +14,7 @@
 pub(crate) mod cost;
 pub mod explain;
 pub(crate) mod features;
+mod latin_unit;
 mod lattice;
 mod postprocess;
 pub(crate) mod reranker;
@@ -33,6 +34,7 @@ use crate::user_history::UserHistory;
 use cost::DefaultCostFunction;
 use postprocess::postprocess;
 
+pub use latin_unit::pure_latin;
 pub use lattice::{build_lattice, Lattice};
 use viterbi::{viterbi_nbest, ScoredPath};
 pub use viterbi::{ConvertedSegment, PathOrigin};

@@ -141,9 +141,27 @@ pub fn zero_conn_with_fw(num_ids: u16, fw_min: u16, fw_max: u16) -> ConnectionMa
 
 /// Create a zero-cost connection matrix with roles.
 pub fn zero_conn_with_roles(num_ids: u16, roles: Vec<u8>) -> ConnectionMatrix {
+    zero_conn_with_fw_roles(num_ids, 0, 0, roles)
+}
+
+/// Create a zero-cost connection matrix with a function-word ID range and roles.
+pub fn zero_conn_with_fw_roles(
+    num_ids: u16,
+    fw_min: u16,
+    fw_max: u16,
+    roles: Vec<u8>,
+) -> ConnectionMatrix {
     let n = num_ids as usize;
     let text = format!("{num_ids} {num_ids}\n{}", "0\n".repeat(n * n));
-    ConnectionMatrix::from_text_with_roles(&text, 0, 0, roles).unwrap()
+    ConnectionMatrix::from_text_with_roles(&text, fw_min, fw_max, roles).unwrap()
+}
+
+/// A zero-cost connection matrix where POS id `counter_id` is tagged as
+/// counter (role 7). Other ids default to ContentWord (role 0).
+pub(crate) fn counter_test_conn(num_ids: u16, counter_id: u16) -> ConnectionMatrix {
+    let mut roles = vec![0u8; num_ids as usize];
+    roles[counter_id as usize] = 7; // ROLE_COUNTER
+    zero_conn_with_roles(num_ids, roles)
 }
 
 pub use super::joined_surface as joined;

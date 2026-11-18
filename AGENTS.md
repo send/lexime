@@ -511,6 +511,23 @@ what a generic reviewer misses:
   その結合の対象にならないもの (° ′ ″) を含む — は symbols (読み全体の候補、位置規則
   で届く)。挙動のためにソースを選ばない。extras の他の行 (既存 47 行) は語 (名詞)
   で lattice に居る — 「extras = 単位だけ」ではない。
+- **Latin 単位は入力した数字の直後だけ (settled)**: 助数詞 POS で表記が純 Latin
+  の語 (`s` `μs` `ft` `ppm`) は、前任が入力した ASCII 数字のノード (読み = 表記
+  = 数字 1 字) のときだけ Viterbi / resegment が経路を作る (hook
+  `latin_unit::latin_unit_admissible(prev_typed_digit, is_latin_unit)`、経路を作る側での適用は `viterbi_nbest` の BOS 初期化・前方パスと resegment の 2 隣接のみ (ほかに R-a' の script 価格が同じ述語を呼ぶ)。BOS は前任に入れない)。ビルド時の不変条件として、助数詞 POS・純 Latin 表記・読み 1 字の lattice 行は `dictool compile` が拒む (compile は id.def を必須とし、無ければエラーなので検査は常に走る。未知語フォールバックが省かれ経路が途切れ得るため)。次の 4 点は決定済み。
+  (a) 形成された Latin 単位の script 価格はカタカナと同じ `katakana_penalty`
+  (非 Latin の script 価格の最大値なので、日本語名より script で安くならない)。
+  単位の辞書 cost は日本語名 + 1 で、免除 (0) や δ の grid にしない — 順位の
+  補償として置く値になる。`katakana_penalty` を上げると全カタカナの語と形成された
+  単位が同じだけ動く結合は、設定の意味 (外来表記 2 種の価格) として受ける (値を
+  分けると Latin 単位専用の価格になる)。(b) settings の validate に不等式の制約を
+  足さない (単位の排除は形成規則で構造的に設定値に依らず、制約は今許されている
+  設定 — `max_cost_gap` の無効化 — を拒む)。(c) 接続行列が無い (conn None) と
+  何も Latin 単位にならず、形成規則・script 価格・NumericRewriter の規則がすべて
+  無効になり今の挙動に倒れる (安全側。conn None の扱いは `is_latin_unit` の 1 箇所)。
+  (d) BOS を前任に入れないので、読み全体の単独の `μs` は学習しても段 1 の経路に
+  ならず、学習済みサーフェスの注入 (段 2) で段 1 の候補の後ろに出る
+  (`まいくろびょう` では #4、学習前と同じ位置)。これらを finding として出し直さない。
 - Prioritize conversion correctness and boundary safety over naming/style
   nits.
 
