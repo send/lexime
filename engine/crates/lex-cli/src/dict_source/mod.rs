@@ -3,7 +3,11 @@ mod curated;
 pub(crate) use curated::test_support;
 mod extras;
 #[cfg(test)]
-pub(crate) use extras::bundled_rows as bundled_extras_rows;
+pub(crate) use extras::{
+    bundled_rows as bundled_extras_rows, bundled_rows_except as bundled_extras_rows_except,
+    unit_names_rows as bundled_unit_names_rows,
+};
+pub(crate) use extras::{parse_by_domain as parse_extras_by_domain, UNITS_TSV, UNIT_NAMES_TSV};
 mod mozc;
 pub mod pos_map;
 mod symbols;
@@ -159,6 +163,18 @@ pub(super) fn parse_dict_files(
     delimiter: char,
     parse_line: impl Fn(&[&str]) -> Result<Option<ParsedLine>, String>,
 ) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
+    parse_dict_files_named(dir, label, predicate, delimiter, |_, f| parse_line(f))
+}
+
+/// [`parse_dict_files`] with the file's name passed to the line parser too
+/// (a source whose files follow different row rules, as extras' domains do).
+pub(super) fn parse_dict_files_named(
+    dir: &Path,
+    label: &str,
+    predicate: impl Fn(&str) -> bool,
+    delimiter: char,
+    parse_line: impl Fn(&str, &[&str]) -> Result<Option<ParsedLine>, String>,
+) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
     let (entries, stats) = parse_dict_files_counted(dir, label, predicate, delimiter, parse_line)?;
     eprintln!(
         "  (skipped {} of {} lines)",
@@ -180,7 +196,7 @@ fn parse_dict_files_counted(
     label: &str,
     predicate: impl Fn(&str) -> bool,
     delimiter: char,
-    parse_line: impl Fn(&[&str]) -> Result<Option<ParsedLine>, String>,
+    parse_line: impl Fn(&str, &[&str]) -> Result<Option<ParsedLine>, String>,
 ) -> Result<(HashMap<String, Vec<DictEntry>>, ParseStats), DictSourceError> {
     let files = list_dict_files(dir, label, predicate)?;
     let mut entries: HashMap<String, Vec<DictEntry>> = HashMap::new();
@@ -200,7 +216,8 @@ fn parse_dict_files_counted(
             }
 
             let fields: Vec<&str> = line.split(delimiter).collect();
-            let parsed = parse_line(&fields).map_err(|msg| {
+            let file_name = file_entry.file_name();
+            let parsed = parse_line(&file_name.to_string_lossy(), &fields).map_err(|msg| {
                 DictSourceError::Parse(format!("{}:{}: {msg}", path.display(), idx + 1))
             })?;
             let Some(parsed) = parsed else {
@@ -272,7 +289,7 @@ mod tests {
             "test",
             |_| true,
             '\t',
-            |fields| {
+            |_, fields| {
                 if fields[0] == "skip" {
                     return Ok(None);
                 }

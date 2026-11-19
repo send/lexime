@@ -728,6 +728,7 @@ mod tests {
 7 名詞,固有名詞,組織,*,*,*,*
 8 名詞,固有名詞,地域,一般,*,*,*
 9 名詞,固有名詞,地域,国,*,*,*
+10 名詞,接尾,助数詞,*,*,*,*
 ";
 
     /// Synthetic mozc / symbols / extras input dirs under a fresh temp dir.
@@ -1157,18 +1158,15 @@ mod tests {
         assert_eq!(komuro.cost, 3402);
     }
 
-    /// T9: compiled through `build_entries` with a pin-shaped id.def, every
-    /// bundled extras row keeps its surface and its cost (5000 for a common
-    /// noun, the per-POS derived value for a proper noun, or the override) and gets the id of its tag — the person-name rows included:
-    /// the role-based offsets (+2000 for 人名) belong to the Mozc import and
-    /// are applied before the extras merge, never to a curated row. A Mozc
-    /// 人名 row still gets the offset, and the two Mozc rows the bundled
-    /// extras share (一保堂, マシン — as in the pin) are replaced by the
-    /// cheaper extras row.
-    #[test]
-    fn t9_extras_cost_is_final_and_mozc_keeps_its_offset() {
-        use crate::dict_source::test_support::{pin_id, pin_shaped_id_def, scratch};
-        let root = scratch("t9_extras_cost");
+    /// The bundled extras compiled through `build_entries` over a mozc source
+    /// holding the rows T9 pokes at (a 人名 row, a plain noun and the two
+    /// rows the bundled extras share with Mozc), as a pin-shaped id.def.
+    fn compile_bundled_extras_over_mozc() -> EntryMap {
+        use crate::dict_source::test_support::{pin_shaped_id_def, scratch};
+        // Several tests call this in parallel: one scratch dir per call.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = scratch(&format!("t9_extras_cost_{n}"));
         let mozc = root.join("mozc");
         fs::create_dir_all(&mozc).unwrap();
         let id_def = pin_shaped_id_def(&mozc);
@@ -1182,7 +1180,6 @@ mod tests {
         .unwrap();
         let extras_dir = root.join("extras");
         from_name("extras").unwrap().fetch(&extras_dir).unwrap();
-        let rows = crate::dict_source::bundled_extras_rows();
         let entries = build_entries(
             "mozc",
             &mozc.to_string_lossy(),
@@ -1194,8 +1191,53 @@ mod tests {
         )
         .unwrap();
         fs::remove_dir_all(&root).ok();
+        entries
+    }
 
-        assert_eq!(rows.len(), 47);
+    /// The extras entry of a bundled row in the compiled `entries`.
+    fn extras_entry<'a>(entries: &'a EntryMap, row: &[&str]) -> &'a DictEntry {
+        let same: Vec<&DictEntry> = entries[row[0]]
+            .iter()
+            .filter(|e| e.surface == row[1])
+            .collect();
+        assert_eq!(same.len(), 1, "{row:?}");
+        same[0]
+    }
+
+    /// T9 (pass-through): compiled through `build_entries` with a pin-shaped
+    /// id.def, every bundled extras row keeps its surface and the cost its
+    /// row writes, and gets the id of its tag — the person-name rows
+    /// included: the role-based offsets (+2000 for 人名) belong to the Mozc
+    /// import and are applied before the extras merge, never to a curated
+    /// row. Which cost a row should write is T9 (policy), below.
+    #[test]
+    fn t9_extras_rows_pass_through_compile() {
+        use crate::dict_source::test_support::pin_id;
+        let entries = compile_bundled_extras_over_mozc();
+        let rows = crate::dict_source::bundled_extras_rows();
+        for row in &rows {
+            let entry = extras_entry(&entries, row);
+            let want_id = pin_id(row[2]);
+            assert_eq!(
+                (entry.left_id, entry.right_id, entry.cost),
+                (want_id, want_id, row[3].parse().unwrap()),
+                "{row:?}"
+            );
+            assert!(!entry.symbol);
+        }
+        let person = rows.iter().filter(|r| r[2].contains("人名")).count();
+        assert_eq!(person, 11);
+    }
+
+    /// T9 (policy): the cost a bundled extras row writes follows the rule —
+    /// 5000 for a common noun, the per-POS derived value for a proper noun,
+    /// or the override. A Mozc 人名 row still gets the offset, and the two
+    /// Mozc rows the bundled extras share (一保堂, マシン — as in the pin) are
+    /// replaced by the cheaper extras row.
+    #[test]
+    fn t9_extras_cost_policy_and_mozc_keeps_its_offset() {
+        use crate::dict_source::{UNITS_TSV, UNIT_NAMES_TSV};
+        let entries = compile_bundled_extras_over_mozc();
         let extras_cost = |reading: &str, tag: &str| {
             if let Some(&(_, c)) = EXTRAS_COST_OVERRIDES.iter().find(|(r, _)| *r == reading) {
                 return c;
@@ -1209,24 +1251,12 @@ mod tests {
             );
             5000
         };
-        for row in &rows {
-            let (reading, surface, tag) = (row[0], row[1], row[2]);
-            let same: Vec<&DictEntry> = entries[reading]
-                .iter()
-                .filter(|e| e.surface == surface)
-                .collect();
-            assert_eq!(same.len(), 1, "{row:?}");
-            let want_cost = extras_cost(reading, tag);
-            let want_id = pin_id(tag);
-            assert_eq!(
-                (same[0].left_id, same[0].right_id, same[0].cost),
-                (want_id, want_id, want_cost),
-                "{row:?}"
-            );
-            assert!(!same[0].symbol);
+        // The units and the unit names carry a derived cost in the row (their
+        // rule is in the TSV headers, checked by check-units), not this table.
+        for row in crate::dict_source::bundled_extras_rows_except(&[UNITS_TSV, UNIT_NAMES_TSV]) {
+            let want_cost = extras_cost(row[0], row[2]);
+            assert_eq!(extras_entry(&entries, &row).cost, want_cost, "{row:?}");
         }
-        let person = rows.iter().filter(|r| r[2].contains("人名")).count();
-        assert_eq!(person, 11);
 
         let mozc_entry = |reading: &str| {
             let list = &entries[reading];

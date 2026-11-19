@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use super::curated::{self, CostColumn};
-use super::{parse_dict_files, DictSource, DictSourceError};
+use super::{parse_dict_files_named, DictSource, DictSourceError, ParsedLine};
 use lex_core::dict::DictEntry;
 
 /// Curated domain-specific vocabulary not covered by Mozc UT.
@@ -37,7 +37,8 @@ use lex_core::dict::DictEntry;
 ///    the extras value either). A proper-noun row takes the cost rule on
 ///    [`ALLOWED_POS_TAGS`]. A common-noun row picks a cost that is sound for
 ///    the word, grounded in the same reading's Mozc entries or in a
-///    before/after measurement.
+///    before/after measurement (a unit's Japanese name: the derived value
+///    of "The unit-names domain").
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -53,16 +54,47 @@ use lex_core::dict::DictEntry;
 ///    the cost anew: a proper-noun row by the cost rule on
 ///    [`ALLOWED_POS_TAGS`], a common-noun row grounded in the same reading's
 ///    Mozc entries or in a before/after measurement.
-const DOMAINS: &[(&str, &str)] = &[
-    ("it.tsv", include_str!("extras/it.tsv")),
-    ("food.tsv", include_str!("extras/food.tsv")),
-    ("geography.tsv", include_str!("extras/geography.tsv")),
-    ("history.tsv", include_str!("extras/history.tsv")),
-    ("culture.tsv", include_str!("extras/culture.tsv")),
+///
+/// Each domain also names the POS tags its rows may use (the third column of
+/// [`DOMAINS`]): the parser rejects any other tag, so a counter row cannot
+/// enter a word domain nor a common-noun row the units domain.
+const DOMAINS: &[(&str, &str, &[&str])] = &[
+    ("it.tsv", include_str!("extras/it.tsv"), WORD_POS_TAGS),
+    ("food.tsv", include_str!("extras/food.tsv"), WORD_POS_TAGS),
+    (
+        "geography.tsv",
+        include_str!("extras/geography.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (
+        "history.tsv",
+        include_str!("extras/history.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (
+        "culture.tsv",
+        include_str!("extras/culture.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (UNITS_TSV, include_str!("extras/units.tsv"), UNIT_POS_TAGS),
+    (
+        UNIT_NAMES_TSV,
+        include_str!("extras/unit-names.tsv"),
+        WORD_POS_TAGS,
+    ),
 ];
 
-/// Closed set of POS tags an extras row may use: 名詞,一般 and the six
-/// 名詞,固有名詞 subdivisions extras has words for. A tag outside the set is
+/// The unit symbols' domain file (priced by the cost rule in its header, not
+/// by the majority-rule table).
+pub(crate) const UNITS_TSV: &str = "units.tsv";
+/// The Japanese unit names' domain file (a derived cost per row).
+pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
+
+/// Closed set of POS tags an extras row may use: 名詞,一般, the six
+/// 名詞,固有名詞 subdivisions extras has words for ([`WORD_POS_TAGS`], what
+/// every word domain takes), and 名詞,接尾,助数詞 ([`UNIT_POS_TAGS`], what
+/// the `units` domain alone takes; each domain's set is in [`DOMAINS`]). A tag
+/// outside the domain's set is
 /// a parse error, so a typo cannot silently match another id.def tag; a new
 /// subdivision is added here in the same change as the row that needs it.
 /// The numeric ids are resolved from the pinned id.def at compile time by
@@ -136,6 +168,42 @@ const DOMAINS: &[(&str, &str)] = &[
 ///   Mozc). When one kind spans files, the full list sits in one file and
 ///   the others refer to it. Mozc upstream values are not changed.
 ///
+/// ## The units domain (名詞,接尾,助数詞)
+///
+/// `extras/units.tsv` holds SI units written in Latin letters (`s`, `μs`,
+/// `kB`, `Hz`, `°C`), every row 名詞,接尾,助数詞 — the POS Mozc gives unit
+/// words. It is outside the majority rule above: a unit is a counter by what
+/// it is, not by a vote, and the tag is added here (PR2b) because that is the
+/// POS the Latin-unit rules key on (a counter × a pure-Latin surface stands
+/// only after a typed digit). Its cost is not a proper-noun median nor 5000:
+/// `C = c_ref + rank`, c_ref being the cost of the unit's Japanese name: in
+/// the built dictionary (`engine/data/lexime.dict`, after compile's role cost
+/// correction), the cheapest entry of that name whose ids are both the unit's
+/// own (the counter id) if there is one, else the cheapest entry; for the 10
+/// readings Mozc has no name for, the name is a row of `unit-names.tsv` (next
+/// section) and c_ref is its cost. Derived and stated in the TSV's header and
+/// above each reading.
+///
+/// ## The unit-names domain (名詞,一般, derived cost)
+///
+/// `extras/unit-names.tsv` holds the Japanese names (ピコ秒, キロビット,
+/// テラワット, ...) of the units of `units.tsv` that the pinned Mozc has no
+/// entry for (10 readings, the ones `units.tsv` marks "derived"), so that a
+/// unit has a name to sort behind. It is a word domain, **not** outside the
+/// majority rule above: the POS is the rule's answer, 名詞,一般 (28 of the 28
+/// representative words that vote are common nouns; the count and the word
+/// list are the section comment in the TSV) — a counter POS here would make
+/// `ここ2キロビット`-type input convert to the 助数詞 name. **The cost is
+/// none of the common-noun 5000, a cost-override or a same-reading Mozc
+/// entry (the ways a common-noun row's cost is otherwise decided below): it is the derived value** — the cheapest entry, in the built
+/// dictionary, of the same family's unit-less base plus the floored median of
+/// the (compound − base) differences over the compounds the dictionary has. The formula is in the header of
+/// `units.tsv`; the values and their inputs are the `derived` lines of
+/// `testcorpus/unit-symbol-readings.txt`, and `dictool check-units` recomputes
+/// them from the dictionary, checks each name is one 名詞,一般 entry at that
+/// cost and is not in Mozc's source. When the pin is bumped, derive them again
+/// (bump step 4 of `engine/data/mozc-pin.txt`).
+///
 /// ## The cost of a proper-noun row
 ///
 /// The cost comes from the same sample as the POS: **cost = the median, over
@@ -153,14 +221,15 @@ const DOMAINS: &[(&str, &str)] = &[
 /// Mozc's effective full-name value. The
 /// values are counted on the mozc-raw of the pin in `engine/data/mozc-pin.txt`
 /// (the sha lives only there); when the pin is bumped, derive them again
-/// (that file's bump step 4). A Mozc entry's POS is read by its left id (the
+/// (bump step 4 of `engine/data/mozc-pin.txt`). A Mozc entry's POS is read by its left id (the
 /// id.def line of that id): the vote counts and the cost medians were both
 /// counted by left id.
 ///
 /// - When none of the representative words has a Mozc entry in the decided
 ///   POS (n = 0), the value is not given by this rule: stop and ask the user.
 /// - Common-noun rows are outside the rule: an existing row keeps its
-///   current value (5000, or its cost-override), and a new row's cost is
+///   current value (5000, or its cost-override, or — for `unit-names.tsv` —
+///   the derived value, see "The unit-names domain"), and a new row's cost is
 ///   decided as in "Adding entries" (grounded in the same reading's Mozc
 ///   entries or in a before/after measurement).
 /// - A proper-noun row with a cost-override comment is outside the rule too;
@@ -203,13 +272,47 @@ const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,固有名詞,組織,*,*,*,*",
     "名詞,固有名詞,地域,一般,*,*,*",
     "名詞,固有名詞,地域,国,*,*,*",
+    "名詞,接尾,助数詞,*,*,*,*",
 ];
+
+/// The tags of every domain but `units.tsv` ([`ALLOWED_POS_TAGS`] without the
+/// counter).
+const WORD_POS_TAGS: &[&str] = &[
+    "名詞,一般,*,*,*,*,*",
+    "名詞,固有名詞,一般,*,*,*,*",
+    "名詞,固有名詞,人名,一般,*,*,*",
+    "名詞,固有名詞,人名,名,*,*,*",
+    "名詞,固有名詞,組織,*,*,*,*",
+    "名詞,固有名詞,地域,一般,*,*,*",
+    "名詞,固有名詞,地域,国,*,*,*",
+];
+
+/// The only tag of `units.tsv`.
+const UNIT_POS_TAGS: &[&str] = &["名詞,接尾,助数詞,*,*,*,*"];
+
+/// One row of the domain file `file`: the curated grammar over
+/// [`ALLOWED_POS_TAGS`] (so the sentinel ids index the one table
+/// [`ExtrasSource::resolve_pos_ids`] resolves), then the domain's own tag set.
+fn parse_row(file: &str, fields: &[&str]) -> Result<Option<ParsedLine>, String> {
+    let (_, _, allowed) = DOMAINS
+        .iter()
+        .find(|(n, _, _)| *n == file)
+        .ok_or_else(|| format!("{file} is not a registered extras domain"))?;
+    let row = curated::parse_curated_line(fields, CostColumn::Required, ALLOWED_POS_TAGS)?;
+    if !allowed.contains(&fields[2]) {
+        return Err(format!(
+            "POS tag {:?} is not in the allowed set {allowed:?} of {file}",
+            fields[2]
+        ));
+    }
+    Ok(Some(row))
+}
 
 pub struct ExtrasSource;
 
 impl DictSource for ExtrasSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        parse_dict_files(
+        parse_dict_files_named(
             dir,
             "extras *.tsv",
             // Only parse files that are still registered in DOMAINS. This
@@ -217,12 +320,9 @@ impl DictSource for ExtrasSource {
             // file lingers in the gitignored extras-raw/ dir) from silently
             // leaking entries into the merged dict and making builds
             // non-deterministic. Mirrors symbols.rs's exact-name match.
-            |name| DOMAINS.iter().any(|(n, _)| *n == name),
+            |name| DOMAINS.iter().any(|(n, _, _)| *n == name),
             '\t',
-            |fields| {
-                curated::parse_curated_line(fields, CostColumn::Required, ALLOWED_POS_TAGS)
-                    .map(Some)
-            },
+            parse_row,
         )
     }
 
@@ -236,7 +336,7 @@ impl DictSource for ExtrasSource {
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
-        for (name, content) in DOMAINS {
+        for (name, content, _) in DOMAINS {
             fs::write(dest.join(name), content).map_err(DictSourceError::Io)?;
             eprintln!("  {name} ({} bytes)", content.len());
         }
@@ -250,13 +350,60 @@ impl DictSource for ExtrasSource {
     }
 }
 
+/// Every registered domain file of `dir`, parsed one by one by the row
+/// grammar of [`ExtrasSource::parse_dir`], keyed by file name (so a caller
+/// that needs a domain on its own reads the directory once). A missing
+/// domain file or a malformed row is an error.
+pub(crate) fn parse_by_domain(
+    dir: &Path,
+) -> Result<HashMap<&'static str, HashMap<String, Vec<DictEntry>>>, DictSourceError> {
+    DOMAINS
+        .iter()
+        .map(|(name, _, _)| {
+            parse_dict_files_named(dir, name, |n| n == *name, '\t', parse_row)
+                .map(|entries| (*name, entries))
+        })
+        .collect()
+}
+
+/// The data rows of the bundled domain TSV `name`.
+#[cfg(test)]
+fn domain_rows(name: &str) -> Vec<Vec<&'static str>> {
+    rows_of(|n| n == name)
+}
+
+/// The data rows of the bundled `unit-names.tsv`.
+#[cfg(test)]
+pub(crate) fn unit_names_rows() -> Vec<Vec<&'static str>> {
+    domain_rows(UNIT_NAMES_TSV)
+}
+
+/// The data rows of every bundled domain TSV not named in `skip`.
+#[cfg(test)]
+pub(crate) fn bundled_rows_except(skip: &[&str]) -> Vec<Vec<&'static str>> {
+    rows_of(|n| !skip.contains(&n))
+}
+
+#[cfg(test)]
+fn rows_of(keep: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .filter(|(name, _, _)| keep(name))
+        .flat_map(|(_, content, _)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
 /// The data rows of every bundled domain TSV.
 #[cfg(test)]
 pub(crate) fn bundled_rows() -> Vec<Vec<&'static str>> {
-    DOMAINS
-        .iter()
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
-        .collect()
+    bundled_rows_except(&[])
+}
+
+/// The data rows of every bundled domain TSV except `units.tsv` (the word
+/// domains, whose tags follow the majority rule — `unit-names.tsv` is one).
+#[cfg(test)]
+pub(crate) fn word_rows() -> Vec<Vec<&'static str>> {
+    bundled_rows_except(&[UNITS_TSV])
 }
 
 #[cfg(test)]
@@ -265,8 +412,10 @@ mod tests {
         self as ts, pin_id, pin_shaped_id_def, scratch, write_id_def,
     };
     use super::*;
+    use crate::dict_source::pos_map;
 
     const IPPAN: &str = "名詞,一般,*,*,*,*,*";
+    const JOSUUSHI: &str = "名詞,接尾,助数詞,*,*,*,*";
 
     fn parse_bundled(name: &str) -> (std::path::PathBuf, HashMap<String, Vec<DictEntry>>) {
         ts::parse_bundled(&ExtrasSource, &format!("extras_{name}"))
@@ -346,7 +495,10 @@ mod tests {
             let want = pin_id(fields[2]);
             assert_eq!((entry.left_id, entry.right_id), (want, want), "{fields:?}");
         }
-        let proper = rows.iter().filter(|f| f[2] != IPPAN).count();
+        let proper = rows
+            .iter()
+            .filter(|f| f[2] != IPPAN && f[2] != JOSUUSHI)
+            .count();
         assert_eq!(proper, 25);
         fs::remove_dir_all(&dir).ok();
     }
@@ -356,12 +508,17 @@ mod tests {
     #[test]
     fn t2_follows_renumbered_id() {
         let dir = scratch("extras_t2");
-        let body: String = ALLOWED_POS_TAGS
-            .iter()
-            .enumerate()
-            .map(|(i, tag)| format!("{}\tx{i}\t{tag}\t5000\n", "あ".repeat(i + 1)))
-            .collect();
-        fs::write(dir.join("it.tsv"), body).unwrap();
+        // Each tag in a domain that takes it (the counter only in units.tsv).
+        for (file, tags) in [("it.tsv", WORD_POS_TAGS), (UNITS_TSV, UNIT_POS_TAGS)] {
+            let body: String = tags
+                .iter()
+                .map(|tag| {
+                    let i = ALLOWED_POS_TAGS.iter().position(|t| t == tag).unwrap();
+                    format!("{}\tx{i}\t{tag}\t5000\n", "あ".repeat(i + 1))
+                })
+                .collect();
+            fs::write(dir.join(file), body).unwrap();
+        }
         let mut entries = ExtrasSource.parse_dir(&dir).unwrap();
         let overrides: Vec<(usize, &str)> = ALLOWED_POS_TAGS
             .iter()
@@ -390,6 +547,60 @@ mod tests {
         assert!(err.contains("it.tsv:2:"), "{err}");
         assert!(err.contains("記号,一般,*,*,*,*,*"), "{err}");
         assert!(err.contains("not in the allowed set"), "{err}");
+    }
+
+    /// The per-domain sets are the closed set split in two, in the same order.
+    #[test]
+    fn domain_tag_sets_partition_the_allowed_set() {
+        let joined: Vec<&str> = WORD_POS_TAGS.iter().chain(UNIT_POS_TAGS).copied().collect();
+        assert_eq!(joined, ALLOWED_POS_TAGS);
+        for (name, _, allowed) in DOMAINS {
+            let want = if *name == UNITS_TSV {
+                UNIT_POS_TAGS
+            } else {
+                WORD_POS_TAGS
+            };
+            assert_eq!(*allowed, want, "{name}");
+        }
+    }
+
+    /// A counter row in a word domain (unit-names.tsv included) and a
+    /// 名詞,一般 row in units.tsv are compile errors naming file and tag.
+    #[test]
+    fn tag_outside_the_domains_set_is_err() {
+        for file in ["it.tsv", UNIT_NAMES_TSV] {
+            let err = ts::parse_err(
+                &ExtrasSource,
+                file,
+                &format!("extras_counter_in_{file}"),
+                &format!("ぴこびょう\tps\t{JOSUUSHI}\t4501\n"),
+            );
+            assert!(err.contains(&format!("{file}:1:")), "{err}");
+            assert!(err.contains(JOSUUSHI), "{err}");
+            assert!(err.contains("not in the allowed set"), "{err}");
+        }
+        let err = ts::parse_err(
+            &ExtrasSource,
+            UNITS_TSV,
+            "extras_ippan_in_units",
+            &format!("ぴこびょう\tピコ秒\t{IPPAN}\t4500\n"),
+        );
+        assert!(err.contains("units.tsv:1:"), "{err}");
+        assert!(err.contains(IPPAN), "{err}");
+        assert!(err.contains("not in the allowed set"), "{err}");
+    }
+
+    /// `parse_by_domain` reads each registered file once with the same rows
+    /// as `parse_dir`.
+    #[test]
+    fn parse_by_domain_splits_the_bundled_domains() {
+        let (dir, all) = parse_bundled("by_domain");
+        let by = parse_by_domain(&dir).unwrap();
+        assert_eq!(by.len(), DOMAINS.len());
+        let n = |m: &HashMap<String, Vec<DictEntry>>| m.values().map(Vec::len).sum::<usize>();
+        assert_eq!(by.values().map(n).sum::<usize>(), n(&all));
+        assert_eq!(n(&by[UNITS_TSV]), domain_rows(UNITS_TSV).len());
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// T4: an allowed tag missing from id.def is an error naming the tag; a
@@ -495,8 +706,9 @@ mod tests {
     fn t7_no_row_is_dropped() {
         let (dir, entries) = parse_bundled("t7");
         let parsed = entries.values().map(Vec::len).sum::<usize>();
+        // The word rows (T8) + the unit names (T16n) + the unit rows (T16);
+        // the counts are pinned there, not here.
         assert_eq!(parsed, bundled_rows().len());
-        assert_eq!(parsed, 47);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -540,12 +752,12 @@ mod tests {
     const KOYU_IPPAN: &str = "名詞,固有名詞,一般,*,*,*,*";
     const JINMEI_IPPAN: &str = "名詞,固有名詞,人名,一般,*,*,*";
 
-    /// T8: the tag written on each bundled row — the 25 rows of
-    /// [`PROPER_NOUN_ROWS`], 名詞,一般 on the other 22 — and the count per
-    /// tag.
+    /// T8: the tag written on each bundled word row — the 25 rows of
+    /// [`PROPER_NOUN_ROWS`], 名詞,一般 on the other 32 (22 vocabulary + the
+    /// 10 of `unit-names.tsv`, T8n) — and the count per tag.
     #[test]
     fn t8_bundled_tags() {
-        let rows = bundled_rows();
+        let rows = word_rows();
         for fields in &rows {
             let want = PROPER_NOUN_ROWS
                 .iter()
@@ -557,11 +769,99 @@ mod tests {
         let counts: Vec<usize> = ALLOWED_POS_TAGS.iter().map(|t| count(t)).collect();
         // ALLOWED_POS_TAGS order: 名詞,一般 / 固有名詞,一般 / 人名,一般 /
         // 人名,名 / 組織 / 地域,一般 / 地域,国.
-        assert_eq!(counts, [22, 5, 10, 1, 7, 1, 1]);
-        assert_eq!(rows.len(), 47);
+        assert_eq!(counts, [32, 5, 10, 1, 7, 1, 1, 0]);
+        assert_eq!(counts.iter().sum::<usize>(), rows.len());
         assert!(PROPER_NOUN_ROWS
             .iter()
             .all(|(r, _)| rows.iter().filter(|f| f[0] == *r).count() == 1));
+    }
+
+    /// T8 (units): every row of `units.tsv` is 名詞,接尾,助数詞 — and no word
+    /// domain uses that tag.
+    #[test]
+    fn t8_units_are_all_counters() {
+        let units = domain_rows(UNITS_TSV);
+        assert!(units.iter().all(|f| f[2] == JOSUUSHI), "{units:?}");
+        assert!(word_rows().iter().all(|f| f[2] != JOSUUSHI));
+    }
+
+    /// T8n: every row of `unit-names.tsv` is 名詞,一般 — the majority rule's
+    /// answer for the Japanese names of prefixed units (28 of the 28 voters
+    /// are common nouns; the section comment holds the count) — never the
+    /// 助数詞 of the units themselves.
+    #[test]
+    fn t8n_unit_names_are_common_nouns() {
+        let names = unit_names_rows();
+        assert!(names.iter().all(|f| f[2] == IPPAN), "{names:?}");
+    }
+
+    /// T16n: the number of unit-name rows — the 10 readings units.tsv marks
+    /// "derived"; a silently dropped row fails here.
+    #[test]
+    fn t16n_unit_name_row_count() {
+        assert_eq!(unit_names_rows().len(), 10);
+    }
+
+    /// T17n: a unit name is Japanese script, so it never satisfies the
+    /// Latin-unit surface condition (`pure_latin`) the unit symbols in
+    /// units.tsv meet (T17).
+    #[test]
+    fn t17n_unit_names_are_not_pure_latin() {
+        for f in unit_names_rows() {
+            assert!(!lex_core::converter::pure_latin(f[1]), "{f:?}");
+        }
+    }
+
+    /// T15: μ is U+03BC (never U+00B5 MICRO SIGN), ° is U+00B0 (never U+00BA
+    /// or U+02DA), and no surface has a full-width alphanumeric.
+    #[test]
+    fn t15_unit_characters() {
+        let units = domain_rows(UNITS_TSV);
+        let mut mu = 0;
+        let mut degree = 0;
+        for f in &units {
+            let surface = f[1];
+            assert!(!surface.contains('\u{00B5}'), "{f:?}");
+            assert!(
+                !surface.contains('\u{00BA}') && !surface.contains('\u{02DA}'),
+                "{f:?}"
+            );
+            assert!(
+                !surface
+                    .chars()
+                    .any(|c| ('\u{FF10}'..='\u{FF5A}').contains(&c)),
+                "{f:?}"
+            );
+            mu += surface.matches('\u{03BC}').count();
+            degree += surface.matches('\u{00B0}').count();
+        }
+        // Every row that has a μ or ° has the intended code point: the
+        // micro readings (まいくろ…) carry μ, the temperature units °.
+        let micro = units
+            .iter()
+            .filter(|f| f[0].starts_with("まいくろ"))
+            .count();
+        assert_eq!(mu, micro);
+        assert_eq!(micro, 5);
+        assert_eq!(degree, 4); // °C ×2 (せっし, どしー), °F ×2 (かし, どえふ)
+    }
+
+    /// T16: the number of unit rows (75 = 73 units + the 2 variant readings
+    /// どしー / どえふ) — a silently dropped row fails here.
+    #[test]
+    fn t16_unit_row_count() {
+        assert_eq!(domain_rows(UNITS_TSV).len(), 75);
+    }
+
+    /// T17: every unit surface meets the Latin-unit surface condition (ASCII
+    /// letter, no Japanese character), by the very predicate the converter
+    /// uses (`pure_latin`) — a surface outside it would not get the Latin-unit
+    /// rules.
+    #[test]
+    fn t17_unit_surfaces_are_pure_latin() {
+        for f in domain_rows(UNITS_TSV) {
+            assert!(lex_core::converter::pure_latin(f[1]), "{f:?}");
+        }
     }
 
     /// T10: after resolution every id is a row of id.def — no sentinel left.
@@ -569,7 +869,7 @@ mod tests {
     fn t10_resolved_ids_within_id_def() {
         let (dir, mut entries) = parse_bundled("t10");
         let id_def = pin_shaped_id_def(&dir);
-        let rows = fs::read_to_string(&id_def).unwrap().lines().count();
+        let rows = pos_map::id_def_row_count(&id_def).unwrap();
         ExtrasSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();

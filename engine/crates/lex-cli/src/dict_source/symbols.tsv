@@ -6,9 +6,11 @@
 #     to its numeric id from the pinned id.def; an unknown tag, a tag missing
 #     from id.def, or a missing id.def fails the build.
 # POS follows Mozc's own symbol dictionary (src/data/symbol/symbol.tsv):
-# Greek letters are 記号,アルファベット, every other row is 記号,一般. The six
-# characters that file does not have (ℙ ∏ ≈ ≤ ≥ ♩) are not Greek and are
-# 記号,一般 by the same split.
+# Greek letters and the SI prefix rows are 記号,アルファベット, every other row is
+# 記号,一般. The six characters that file does not have (ℙ ∏ ≈ ≤ ≥ ♩) are not
+# Greek and are 記号,一般 by the same split. The SI prefix rows follow the kind
+# of the surface character (a letter, U23), and Mozc gives the same μ
+# 記号,アルファベット under any reading.
 # Symbols live outside the lattice: compile flags every row as a symbol entry,
 # lattice construction builds no nodes from them, and a row whose
 # (reading, surface) is also in mozc or extras fails the build (remove the row);
@@ -19,7 +21,7 @@
 # 単位は extras、それ以外の記号 — Mozc の symbol.tsv に在る字、数字の後ろで使う
 # 字でも Latin を含まずその結合の対象にならないもの (° ′ ″) を含む — は symbols
 # (読み全体の候補、位置規則で届く)。挙動のためにソースを選ばない。extras の他の行
-# (既存 47 行) は語 (名詞) で lattice に居る — 「extras = 単位だけ」ではない。
+# (既存 47 行と、単位の日本語名 10 行 = unit-names.tsv) は語 (名詞) で lattice に居る — 「extras = 単位だけ」ではない。
 
 # --- Greek letters (lowercase) ---
 あるふぁ	α	記号,アルファベット,*,*,*,*,*
@@ -215,3 +217,18 @@
 だがー	‡	記号,一般,*,*,*,*,*
 ちょさくけん	©	記号,一般,*,*,*,*,*
 とうろく	®	記号,一般,*,*,*,*,*
+
+# --- SI prefixes (alone; the unit follows in extras/units.tsv) ---
+# The prefix as a candidate of its own reading (まいくろ → μ): symbols live
+# outside the lattice, so a prefix never forms a path inside a longer reading
+# (3μ秒 is not reachable). U+03BC for μ.
+ぴこ	p	記号,アルファベット,*,*,*,*,*
+なの	n	記号,アルファベット,*,*,*,*,*
+まいくろ	μ	記号,アルファベット,*,*,*,*,*
+みり	m	記号,アルファベット,*,*,*,*,*
+せんち	c	記号,アルファベット,*,*,*,*,*
+きろ	k	記号,アルファベット,*,*,*,*,*
+めが	M	記号,アルファベット,*,*,*,*,*
+ぎが	G	記号,アルファベット,*,*,*,*,*
+てら	T	記号,アルファベット,*,*,*,*,*
+ぺた	P	記号,アルファベット,*,*,*,*,*

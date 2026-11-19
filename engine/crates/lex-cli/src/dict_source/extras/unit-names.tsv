@@ -1,0 +1,62 @@
+# Lexime curated extras: Japanese names of SI-prefixed units (ピコ秒, キロビット,
+# テラワット, ...) that the pinned Mozc has no entry for.
+#
+# Format: reading[TAB]surface[TAB]pos[TAB]cost (pos: an id.def tag from
+# this domain's set in DOMAINS in extras.rs; cost: required, the final cost).
+# Comment lines start with '#'. See it.tsv for full format spec.
+#
+# What these rows are: units.tsv prices each unit (ps, kbit, TW, ...) right
+# after the unit's Japanese name (C = c_ref + rank). For these 10 readings the
+# pinned Mozc has no Japanese name, so the name is added here and the unit
+# stands behind it. The 10 rows are words of this domain (the readings
+# units.tsv marks "derived"): the POS is decided by the majority rule (the vote
+# is in the section comment below), only the cost is a derived value.
+#
+# Cost rule: the cost is the reading's derived c_ref, not 5000 (the default of
+# a common-noun row). Derived = the unit-less base's cheapest entry in the
+# built dictionary + the median, floored, of (compound - base) over the
+# same-family prefixed compounds the dictionary has; the formula is in the header of units.tsv, the values and
+# their inputs are the `derived` lines of engine/testcorpus/unit-symbol-readings.txt,
+# and `dictool check-units` recomputes them from the dictionary and compares.
+# The values are counted on the built dictionary (engine/data/lexime.dict,
+# compiled from the pin in engine/data/mozc-pin.txt, after compile's role cost
+# correction; each word's cheapest entry); when the pin is bumped, derive them
+# again. When Mozc comes to have the same
+# (reading, surface), delete the row and turn the `derived` line into a `name`
+# line (check-units fails to tell you).
+#
+# --- 普通名詞・接頭辞つき単位の日本語名 ---
+# 種類 = 物 (接頭辞つき単位の名)。判定: 普通名詞 28/28 が過半かつ単独最多 → 名詞,一般
+# (他の区分: 固有名詞,一般 4/28)。
+# 代表語 50 / Mozc に在る 40 / 票を持つ 28。除いた別語のエントリ 28 件 (全部 名詞,接尾,助数詞、25 語。
+# うち別語のエントリしか持たず票の無い語 12: キロメートル ミリグラム キログラム キロリットル
+# キロヘルツ メガヘルツ メガビット ミリアンペア ミリボルト キロボルト キロワット キロワット時)。
+# 代表語 = Mozc に在る 40 語 (units 読み集合の [ref] の name 行のうち接頭辞つきの読み):
+#   ナノ秒 マイクロ秒 ミリ秒 ナノメートル マイクロメートル ミリメートル センチメートル キロメートル
+#   マイクログラム ミリグラム キログラム マイクロリットル ミリリットル キロリットル
+#   キロヘルツ メガヘルツ ギガヘルツ テラヘルツ キロバイト メガバイト ギガバイト テラバイト ペタバイト
+#   キビバイト メビバイト ギビバイト テビバイト メガビット ギガビット テラビット ペタビット
+#   マイクロアンペア ミリアンペア ミリボルト キロボルト キロワット メガワット ギガワット
+#   キロワット時 ペタフロップス
+#   / Mozc に無い 10 語 (この節の行): ピコ秒 ペビバイト キロビット キロビーピーエス メガビーピーエス
+#   ギガビーピーエス テラビーピーエス キロアンペア テラワット テラフロップス
+# 数え方: 語ごとに Mozc のエントリの左 id の POS を区分に写す (普通名詞 5 類 = 1 区分、固有名詞の下位区分はそのまま、
+# それ以外の名詞の下位区分と非名詞は別語)。
+# 各行の cost = その読みの c_ref。式と入力は行の上のコメント。
+# ぴこびょう: 秒 2553 + median(ナノ秒 7069 / マイクロ秒 7709 / ミリ秒 6873 の差 4516 5156 4320) = 4516 → 7069
+ぴこびょう	ピコ秒	名詞,一般,*,*,*,*,*	7069
+# ぺびばいと: バイト 4092 + IEC 4 読み (キビ / メビ / ギビ / テビバイトの差 4714 4629 4445 4847) の median 4671.5 → 切り捨て 4671 → 8763
+ぺびばいと	ペビバイト	名詞,一般,*,*,*,*,*	8763
+# きろびっと: ビット 3965 + median(メガ / ギガ / テラ / ペタビットの差 2423 2926 3967 4614) = 3446.5 → 切り捨て 3446 → 7411
+きろびっと	キロビット	名詞,一般,*,*,*,*,*	7411
+# きろびーぴーえす ほか bps 系 4 読み: ビーピーエス 8715 + 全系 36 件の (複合語 − 単位) の median 1936 → 10651 (4 読みとも同じ値)
+きろびーぴーえす	キロビーピーエス	名詞,一般,*,*,*,*,*	10651
+めがびーぴーえす	メガビーピーエス	名詞,一般,*,*,*,*,*	10651
+ぎがびーぴーえす	ギガビーピーエス	名詞,一般,*,*,*,*,*	10651
+てらびーぴーえす	テラビーピーエス	名詞,一般,*,*,*,*,*	10651
+# きろあんぺあ: アンペア 5181 + median(マイクロ / ミリアンペアの差 3026 1238) = 2132 → 7313
+きろあんぺあ	キロアンペア	名詞,一般,*,*,*,*,*	7313
+# てらわっと: ワット 4709 + median(キロ / メガ / ギガワットの差 135 2059 1167) = 1167 → 5876
+てらわっと	テラワット	名詞,一般,*,*,*,*,*	5876
+# てらふろっぷす: フロップス 8157 + 17 (ペタフロップスの差) → 8174
+てらふろっぷす	テラフロップス	名詞,一般,*,*,*,*,*	8174

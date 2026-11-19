@@ -1268,3 +1268,214 @@ expected = "三フィート"
 category = "regression"
 tags = ["unit-symbol", "guard"]
 note = "ガード (PR2a): かな数詞 + Latin 単位は半角形 (3ft、CounterFallback) だけで、三ft・３ft は出ない。top-1 は PR2a の前と同じ"
+
+# --- SI unit symbols (PR2b guards). expected = the top-1 of the PR2a build
+# (the before of PR2b), measured with the same corpus runner and --now
+# 1794703694; both widths agree. The history-side cases (a learned unit is #1,
+# no leak) are in accuracy-corpus-history.toml. ---
+
+[[cases]]
+reading = "3みりびょう"
+expected = "3ミリ秒"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "100めがばいと"
+expected = "100メガバイト"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "20ど"
+expected = "20度"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から 20ど (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
+
+[[cases]]
+reading = "ばいとにいく"
+expected = "バイトに行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "そうなの"
+expected = "そうなの"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "だいじょうぶなの"
+expected = "大丈夫なの"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "かしをかう"
+expected = "歌詞を買う"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "かしこい"
+expected = "賢い"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "てらにいく"
+expected = "寺に行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "めがねをかける"
+expected = "眼鏡を掛ける"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から 眼鏡を書ける (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
+
+[[cases]]
+reading = "きろにつく"
+expected = "帰路につく"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "びょういんにいく"
+expected = "病院に行く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "せんちめんたる"
+expected = "センチメンタル"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+[[cases]]
+reading = "わっとなく"
+expected = "わっと泣く"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から ワット無く (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
+
+[[cases]]
+reading = "ぼるとをしめる"
+expected = "ボルトを締める"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から ボルトを占める (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
+
+[[cases]]
+reading = "にばいと"
+expected = "2倍と"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+skip = true
+issue = "#413"
+note = "ガード (PR2b、§7-5): top-1 は PR2b の前から にバイト (誤変換、#413)。PR2b での変化の検出は §8-1 S-col (iii) の snapshot で行う"
+
+[[cases]]
+reading = "3びょういん"
+expected = "3病院"
+category = "regression"
+tags = ["unit-symbol", "guard"]
+note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+# --- SI unit names (PR2b reach cases, plan 7-5 / 30-11). expected = the Japanese name
+# that extras' unit-names.tsv adds for a prefixed unit Mozc has no name for.
+# Six of the ten readings converted to something else before PR2b, so they are
+# outside B1 (before == after) and judged by this expectation; the other four
+# (きろびっと / きろびーぴーえす / めがびーぴーえす / きろあんぺあ) already had
+# the same top-1 before, so B1 covers them too. ---
+
+[[cases]]
+reading = "ぴこびょう"
+expected = "ピコ秒"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "ぺびばいと"
+expected = "ペビバイト"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "きろびっと"
+expected = "キロビット"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "きろびーぴーえす"
+expected = "キロビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "めがびーぴーえす"
+expected = "メガビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "ぎがびーぴーえす"
+expected = "ギガビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "てらびーぴーえす"
+expected = "テラビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "きろあんぺあ"
+expected = "キロアンペア"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "てらわっと"
+expected = "テラワット"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"
+
+[[cases]]
+reading = "てらふろっぷす"
+expected = "テラフロップス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1"

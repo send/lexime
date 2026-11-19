@@ -3,7 +3,9 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 
 use lex_cli::candidates::wikipedia;
-use lex_cli::commands::{candidates_ops, config_ops, convert_ops, dict_ops, user_dict_ops};
+use lex_cli::commands::{
+    candidates_ops, config_ops, convert_ops, dict_ops, units_check, user_dict_ops,
+};
 
 /// Parse a `SOURCE:DIR` pair for `--extra-source`.
 fn parse_extra_source(raw: &str) -> Result<(String, String), String> {
@@ -140,6 +142,29 @@ enum Command {
         left: u16,
         /// Right POS ID (left_id of next morpheme)
         right: u16,
+    },
+    /// Check the built dictionary's SI unit / prefix entries (plan T14):
+    /// POS, `C == c_ref + rank` against the reading-set file's [ref] section
+    /// (c_ref = the cheapest entry of the Japanese name with the unit's own
+    /// id on both sides, else the cheapest), the 10 derived Japanese names
+    /// (exactly one 名詞,一般 entry at the derived c_ref; the same set as
+    /// unit-names.tsv; none of them in Mozc's source), and every
+    /// symbols/extras id below num_ids. Fails (never skips) when any input is
+    /// missing.
+    CheckUnits {
+        /// Built dictionary (`dictool compile` output)
+        dict_file: String,
+        /// The pinned Mozc id.def the dictionary was compiled with
+        id_def: String,
+        /// Reading-set file (engine/testcorpus/unit-symbol-readings.txt)
+        readings_file: String,
+        /// The symbols source dir that went into the compile
+        symbols_dir: String,
+        /// The extras source dir that went into the compile
+        extras_dir: String,
+        /// The pinned Mozc source dir (engine/data/mozc-raw): the derived
+        /// Japanese names must not be in it
+        mozc_dir: String,
     },
     /// Export default romaji mappings as TOML
     RomajiExport,
@@ -292,6 +317,26 @@ fn main() {
             left,
             right,
         } => convert_ops::conn_cost_cmd(&conn_file, left, right),
+        Command::CheckUnits {
+            dict_file,
+            id_def,
+            readings_file,
+            symbols_dir,
+            extras_dir,
+            mozc_dir,
+        } => {
+            if let Err(e) = units_check::run(
+                &dict_file,
+                &id_def,
+                &readings_file,
+                &symbols_dir,
+                &extras_dir,
+                &mozc_dir,
+            ) {
+                eprintln!("check-units: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::RomajiExport => config_ops::romaji_export(),
         Command::RomajiValidate { file } => config_ops::romaji_validate(&file),
         Command::SettingsExport => config_ops::settings_export(),
