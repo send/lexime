@@ -509,8 +509,8 @@ what a generic reviewer misses:
   Viterbi で入力した数字と結合させる Latin 単位は extras、それ以外
   の記号 — Mozc の `symbol.tsv` に在る字、数字の後ろで使う字でも Latin を含まず
   その結合の対象にならないもの (° ′ ″) を含む — は symbols (読み全体の候補、位置規則
-  で届く)。挙動のためにソースを選ばない。extras の他の行 (既存 47 行) は語 (名詞)
-  で lattice に居る — 「extras = 単位だけ」ではない。
+  で届く)。挙動のためにソースを選ばない。extras の他の行 (既存 47 行と、単位の日本語名 10 行 =
+  `unit-names.tsv`、名詞,一般) は語 (名詞) で lattice に居る — 「extras = 単位だけ」ではない。
 - **Latin 単位は入力した数字の直後だけ (settled)**: 助数詞 POS で表記が純 Latin
   の語 (`s` `μs` `ft` `ppm`) は、前任が入力した ASCII 数字のノード (読み = 表記
   = 数字 1 字) のときだけ Viterbi / resegment が経路を作る (hook

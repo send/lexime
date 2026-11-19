@@ -37,9 +37,18 @@
 #            effective value, and which row wins the merge),
 #        (j) the notes of the そうそう / あくゆう cases in
 #            engine/testcorpus/accuracy-corpus.toml (they quote the override
-#            costs from (e)).
+#            costs from (e)),
+#        (k) the values of extras/units.tsv and extras/unit-names.tsv and
+#            the `derived` lines of engine/testcorpus/unit-symbol-readings.txt
+#            (c_ref, the derived costs and their inputs; the unit-names vote
+#            counts in its section comment). Unlike the items above, CI
+#            enforces this one: `dictool check-units` (mise run
+#            test-unit-entries) recomputes them from the pinned mozc-raw and
+#            fails, and fails when Mozc has come to have a (reading, name) of
+#            a `derived` line (then delete its unit-names.tsv row and turn
+#            the line into a `name` line).
 #      T9 only checks that the TSV and the tables agree, so skipping this
-#      step does not fail CI.
+#      step does not fail CI (except (k), above).
 #
 # Read by scripts/mozc-pin.sh for both consumers: `mise run fetch-dict-mozc`
 # and the CI accuracy job's snapshot cache key.
