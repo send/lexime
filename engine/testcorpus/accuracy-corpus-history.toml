@@ -107,6 +107,24 @@ repeat = 1
 segments = [["おむろん", "OMRON"]]
 repeat = 1
 
+# SI unit symbols (PR2b, plan §7-5). Whole pair and per-segment records are
+# listed separately (the live engine records both).
+[[history]]
+segments = [["3まいくろびょう", "3μs"]]
+repeat = 1
+
+[[history]]
+segments = [["3", "3"], ["まいくろびょう", "μs"]]
+repeat = 1
+
+[[history]]
+segments = [["3びょう", "3s"]]
+repeat = 1
+
+[[history]]
+segments = [["3", "3"], ["びょう", "s"]]
+repeat = 1
+
 # ═══════════════════════════════════════════════════════════════════
 # Word-level history override
 # ═══════════════════════════════════════════════════════════════════
@@ -250,3 +268,54 @@ baseline = "オムロン"
 category = "regression"
 tags = ["history", "whole-path", "learned-top1"]
 note = "OMRON は 1 分節の辞書エントリで、履歴なしの #1 (オムロン) との差 29060 (admission の bound 8000 超なので N-best には無く、1-best の母集団 (30) と辞書 lookup には在る。lookup が候補列の tail に入れるので、baseline の window は absent にできず、window は付けない — top-1 の 2 幅チェックが PR-G を守る)。読み全体を 1 回確定した whole ペアの boost (1 分節なので unigram 3000 + whole 3000 × 5 = 18000) では差を埋めきれず、PR-G 前は オムロン が #1 のままだった。学習済み (whole) の経路が在れば #1 はその中で最安 (PR-G)。1 分節なので確定の記録は whole ペアだけで、分節・bigram の副作用は無い。corpus の [[history]] は age を持てない (fresh 1 回) ので、差は 18000 を十分超える必要がある — boost だけで #1 になるほど差が縮んだら (18000 以下) 別の表記に選び直す"
+
+# ═══════════════════════════════════════════════════════════════════
+# SI unit symbols (PR2b, plan §7-5): a learned unit is #1; a learned symbol does not leak
+# ═══════════════════════════════════════════════════════════════════
+
+[[cases]]
+reading = "3まいくろびょう"
+expected = "3μs"
+baseline = "3マイクロ秒"
+category = "regression"
+tags = ["history", "whole-path", "unit-symbol", "learned-top1"]
+note = "3μs を読み全体で 1 回確定 → 3μs が #1 (1-best・候補列の両幅)。3+μs の経路は N-best にあり、whole-path boost は (path 全体の読み, 連結 surface) が学習済みの時に立つ (admission 免除 + learned_first)。履歴なしは 3 マイクロ秒 (before の実値)"
+
+[[cases]]
+reading = "まいくろびょう"
+expected = "マイクロ秒"
+baseline = "マイクロ秒"
+category = "regression"
+tags = ["history", "unit-symbol", "guard"]
+note = "μs を確定しても top-1 は マイクロ秒 のまま: μs は段 1.5 の注入で lattice の外にあり (段 1 に経路が無い) whole-path boost が立たない。位置は #4 のまま (window は 4 位以内に在ることだけを固定する)"
+
+[cases.window]
+n = 4
+present = ["μs"]
+
+[cases.window.baseline]
+present = ["μs"]
+
+[[cases]]
+reading = "びょう"
+expected = "秒"
+baseline = "秒"
+category = "regression"
+tags = ["history", "unit-symbol", "leak"]
+note = "逆向きのリーク検査: 3s を確定しても (3|s の記録が) 日本語の びょう の #1 を変えない"
+
+[[cases]]
+reading = "びょういんにいく"
+expected = "病院に行く"
+baseline = "病院に行く"
+category = "regression"
+tags = ["history", "unit-symbol", "leak"]
+note = "逆向きのリーク検査: 3s の確定が びょういんにいく の #1 を変えない"
+
+[[cases]]
+reading = "このびょう"
+expected = "この秒"
+baseline = "この秒"
+category = "regression"
+tags = ["history", "unit-symbol", "leak"]
+note = "逆向きのリーク検査: 3s の確定が このびょう の #1 を変えない"
