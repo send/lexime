@@ -2,8 +2,9 @@
 //! dictionary (the one `dictool compile` writes, with the pinned id.def).
 //!
 //! Checks, for every PR2b entry:
-//! 1. each unit (reading, surface) exists and its POS is the counter id (a
-//!    duplicate merge did not swap in Mozc's POS);
+//! 1. each unit (reading, surface) is in the dictionary exactly once and that
+//!    entry has the counter id on both sides (a duplicate merge did not swap
+//!    in Mozc's POS, and no Mozc row of the same pair stays beside it);
 //! 2. each unit's cost is `c_ref + rank`, `c_ref` being the cost of the
 //!    Japanese-name entry the `[ref]` section names: among the entries of
 //!    (reading, name) the cheapest one with the counter id on both sides, else
@@ -23,7 +24,7 @@
 //! source or other source directory is a failure (plan C5). The reading-set
 //! file grammar is in that file's header.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -83,8 +84,9 @@ pub struct Derived {
     pub families: Vec<String>,
 }
 
-/// `pairs` as a set of borrowed (reading, surface).
-fn pair_set(pairs: &[Pair]) -> HashSet<(&str, &str)> {
+/// `pairs` as an ordered set of borrowed (reading, surface), so every set
+/// difference below lists its failures in one fixed order.
+fn pair_set(pairs: &[Pair]) -> BTreeSet<(&str, &str)> {
     pairs
         .iter()
         .map(|(r, s)| (r.as_str(), s.as_str()))
@@ -188,6 +190,13 @@ pub fn parse_readings(content: &str) -> Result<Readings, String> {
     if r.std_units.is_empty() || r.std_prefixes.is_empty() || r.names.is_empty() {
         return Err("a section is empty or missing ([S-std] units/prefixes, [ref] names)".into());
     }
+    // A generated set that is empty (a corpus regenerated wrongly) fails
+    // here, in the accuracy job, whatever else the PR touched.
+    for sec in SET_SECTIONS {
+        if r.sets.get(*sec).is_none_or(Vec::is_empty) {
+            return Err(format!("generated set [{sec}] is empty or missing"));
+        }
+    }
     Ok(r)
 }
 
@@ -248,7 +257,10 @@ fn with_surface(
         .collect()
 }
 
-/// The unit entry (counter POS on both sides) of (reading, surface).
+/// The unit entry of (reading, surface): the dictionary holds exactly one
+/// entry of that pair and it has the counter id on both sides (so no Mozc
+/// row of the same pair survives the merge beside it, as the derived names'
+/// check (2d) also requires).
 fn unit_entry(
     lookup: &dyn Fn(&str) -> Vec<DictEntry>,
     ids: &Ids,
@@ -256,24 +268,26 @@ fn unit_entry(
     surface: &str,
 ) -> Result<DictEntry, String> {
     let found = with_surface(lookup, reading, surface);
-    if found.is_empty() {
-        return Err(format!("({reading}, {surface}) is not in the dictionary"));
-    }
-    found
-        .iter()
-        .find(|e| e.left_id == ids.counter && e.right_id == ids.counter)
-        .cloned()
-        .ok_or_else(|| {
-            let got: Vec<String> = found
+    match found.as_slice() {
+        [] => Err(format!("({reading}, {surface}) is not in the dictionary")),
+        [one] if one.left_id == ids.counter && one.right_id == ids.counter => Ok(one.clone()),
+        [one] => Err(format!(
+            "({reading}, {surface}) has no 助数詞 entry (want id {}, got L={} R={})",
+            ids.counter, one.left_id, one.right_id
+        )),
+        many => {
+            let got: Vec<String> = many
                 .iter()
                 .map(|e| format!("L={} R={}", e.left_id, e.right_id))
                 .collect();
-            format!(
-                "({reading}, {surface}) has no 助数詞 entry (want id {}, got {})",
+            Err(format!(
+                "({reading}, {surface}) has {} entries, want exactly 1 with 助数詞 id {} (got {})",
+                many.len(),
                 ids.counter,
                 got.join(" / ")
-            )
-        })
+            ))
+        }
+    }
 }
 
 /// The lowest cost among `entries`.
@@ -514,7 +528,7 @@ pub fn check(
     // (2e) unit-names.tsv and the `derived` lines list the same
     // (reading, name) pairs.
     let names_tsv = pair_set(unit_names);
-    let names_derived: HashSet<(&str, &str)> = readings
+    let names_derived: BTreeSet<(&str, &str)> = readings
         .derived
         .iter()
         .map(|d| (d.reading.as_str(), d.name.as_str()))
@@ -590,6 +604,7 @@ fn pairs_of(parsed: impl IntoIterator<Item = (String, Vec<DictEntry>)>) -> Vec<P
         .collect()
 }
 
+/// Every (reading, surface) of the curated source `name` in `dir`.
 fn curated_pairs(name: &str, dir: &Path) -> Result<Vec<Pair>, String> {
     Ok(pairs_of(parse_source(name, dir)?))
 }
@@ -620,10 +635,23 @@ pub fn run(
     let content = fs::read_to_string(readings_file)
         .map_err(|e| format!("reading set {readings_file}: {e}"))?;
     let readings = parse_readings(&content).map_err(|e| format!("{readings_file}: {e}"))?;
-    let units_tsv = dict_source::parse_extras_domain(Path::new(extras_dir), UNITS_TSV)?;
-    let unit_names = dict_source::parse_extras_domain(Path::new(extras_dir), UNIT_NAMES_TSV)?;
+    // One read of the extras directory: units.tsv, unit-names.tsv and the
+    // whole extras source all come from it.
+    let mut extras = dict_source::parse_extras_by_domain(Path::new(extras_dir))
+        .map_err(|e| format!("parsing extras in {extras_dir}: {e}"))?;
+    let mut take = |name: &str| {
+        extras
+            .remove(name)
+            .map(pairs_of)
+            .ok_or_else(|| format!("extras domain {name} was not parsed"))
+    };
+    let units_tsv = take(UNITS_TSV)?;
+    let unit_names = take(UNIT_NAMES_TSV)?;
     let mut curated = curated_pairs("symbols", Path::new(symbols_dir))?;
-    curated.extend(curated_pairs("extras", Path::new(extras_dir))?);
+    curated.extend(units_tsv.iter().chain(&unit_names).cloned());
+    for (_, rest) in extras {
+        curated.extend(pairs_of(rest));
+    }
 
     let derived_readings: HashSet<&str> = readings
         .derived
@@ -695,6 +723,24 @@ name\tせっし\t摂氏\t°C
 alias\tどしー\t°C\tせっし
 family\tびょう\tびょう\tなのびょう
 derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
+[S-dig]
+r\t3びょう\tu
+[S-kana]
+r\tびょう\tu
+[S-mid]
+r\tびょう\tu
+[S-pre]
+r\tなの\tu
+[S-col]
+r\tびょう\tu
+[S-dig-col]
+r\t3びょう\tu
+[S-mozc]
+r\tびょう\tu
+[S-ni]
+r\tびょう\tu
+[S-snap]
+file\ta\tb
 ";
 
     fn world() -> HashMap<String, Vec<DictEntry>> {
@@ -843,13 +889,63 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         assert!(bad.iter().any(|b| b.contains("alias")), "{bad:?}");
     }
 
+    // The written c_ref (7000) equals the name's cost in the dictionary, so
+    // (2d) and the ranks pass; only the family's inputs say 4500. The
+    // recomputation branch is the one that has to fail.
     #[test]
     fn derived_value_is_recomputed() {
-        let bad = run_check(&world(), READINGS, &tsv(), &curated());
+        let mut w = world();
+        w.insert(
+            "ぴこびょう".into(),
+            vec![e("ピコ秒", 7000, IPPAN), e("ps", 7001, COUNTER)],
+        );
+        let bad = run_check(&w, READINGS, &tsv(), &curated());
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].starts_with("(2) derived ぴこびょう"), "{bad:?}");
+        assert!(bad[0].contains("dictionary gives 4500"), "{bad:?}");
+    }
+
+    // The [ref] section prices exactly the units [S-std] lists.
+    #[test]
+    fn ref_and_std_unit_sets_must_agree() {
+        let readings = readings_ok().replace("bit,b", "bit");
+        let bad = run_check(&world(), &readings, &tsv(), &curated());
         assert!(
-            bad.iter().any(|b| b.contains("derived ぴこびょう")),
+            bad.iter().any(|b| b.contains("differ from [S-std]")),
             "{bad:?}"
         );
+    }
+
+    // A Mozc row of the same (reading, surface) left beside the unit fails (1),
+    // even when its ids are the counter's too.
+    #[test]
+    fn duplicate_unit_entry_fails_1() {
+        for other in [IPPAN, COUNTER] {
+            let mut w = world();
+            w.get_mut("びょう").unwrap().push(e("s", 2600, other));
+            let bad = check_world(&w);
+            assert!(
+                bad.iter()
+                    .any(|b| b.starts_with("(1)") && b.contains("exactly 1")),
+                "{bad:?}"
+            );
+        }
+    }
+
+    // The failures of one set difference come in a fixed (sorted) order.
+    #[test]
+    fn set_difference_failures_are_sorted() {
+        let mut t = tsv();
+        t.retain(|(_, s)| s != "ns" && s != "bit" && s != "b");
+        let bad = run_check(&world(), &readings_ok(), &t, &curated());
+        let listed: Vec<&String> = bad
+            .iter()
+            .filter(|b| b.contains("not in units.tsv"))
+            .collect();
+        assert_eq!(listed.len(), 3, "{bad:?}");
+        let mut sorted = listed.clone();
+        sorted.sort();
+        assert_eq!(listed, sorted);
     }
 
     #[test]
@@ -1133,11 +1229,50 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         assert!(parse_readings("[S-std]\n").is_err());
         // A generated set takes only its own record kind, 3 fields.
         let head = "[S-std]\nunit\tあ\tb\nprefix\tあ\tb\n[ref]\nname\tあ\tb\tb\n";
-        assert!(parse_readings(&format!("{head}[S-dig]\nr\t3あ\tu\n")).is_ok());
-        assert!(parse_readings(&format!("{head}[S-dig]\nr\t3あ\n")).is_err());
-        assert!(parse_readings(&format!("{head}[S-dig]\nunit\t3あ\tu\n")).is_err());
-        assert!(parse_readings(&format!("{head}[S-snap]\nr\ta\tb\n")).is_err());
-        assert!(parse_readings(&format!("{head}[S-snap]\nfile\ta\tb\n")).is_ok());
+        let sets = |replace: Option<(&str, &str)>| -> String {
+            SET_SECTIONS
+                .iter()
+                .map(|s| match replace {
+                    Some((sec, body)) if sec == *s => format!("[{s}]\n{body}"),
+                    _ if *s == "S-snap" => format!("[{s}]\nfile\ta\tb\n"),
+                    _ => format!("[{s}]\nr\t3あ\tu\n"),
+                })
+                .collect()
+        };
+        assert!(parse_readings(&format!("{head}{}", sets(None))).is_ok());
+        for (sec, body) in [
+            ("S-dig", "r\t3あ\n"),
+            ("S-dig", "unit\t3あ\tu\n"),
+            ("S-snap", "r\ta\tb\n"),
+        ] {
+            let text = format!("{head}{}", sets(Some((sec, body))));
+            assert!(parse_readings(&text).is_err(), "{sec} {body:?}");
+        }
+    }
+
+    // Every generated set has to hold a record: an empty or missing one
+    // (a regenerated corpus that lost a set) is a parse error.
+    #[test]
+    fn empty_or_missing_generated_set_is_rejected() {
+        let head = "[S-std]\nunit\tあ\tb\nprefix\tあ\tb\n[ref]\nname\tあ\tb\tb\n";
+        let body = |skip: &str, empty: bool| -> String {
+            SET_SECTIONS
+                .iter()
+                .filter(|s| !(**s == skip && !empty))
+                .map(|s| match (*s == skip, *s == "S-snap") {
+                    (true, _) => format!("[{s}]\n"),
+                    (_, true) => format!("[{s}]\nfile\ta\tb\n"),
+                    _ => format!("[{s}]\nr\t3あ\tu\n"),
+                })
+                .collect()
+        };
+        assert!(parse_readings(&format!("{head}{}", body("", false))).is_ok());
+        for sec in SET_SECTIONS {
+            for empty in [true, false] {
+                let err = parse_readings(&format!("{head}{}", body(sec, empty))).unwrap_err();
+                assert!(err.contains(&format!("[{sec}]")), "{sec} {empty}: {err}");
+            }
+        }
     }
 
     /// The committed reading set parses and has the plan's counts (69

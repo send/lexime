@@ -84,6 +84,9 @@ jobs:
               - 'engine/uniffi-bindgen.rs'
             cli:
               - 'engine/crates/lex-cli/**'
+              # include_str!'d by lex-cli's units_check tests (the committed
+              # reading set's shape), so a corpus-only edit must run test-cli.
+              - 'engine/testcorpus/unit-symbol-readings.txt'
             corpus:
               - 'engine/testcorpus/**'
               # The Mozc pin and its readers (mozc-pin.sh execs read-pin.sh):

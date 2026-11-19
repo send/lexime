@@ -1163,7 +1163,10 @@ mod tests {
     /// rows the bundled extras share with Mozc), as a pin-shaped id.def.
     fn compile_bundled_extras_over_mozc() -> EntryMap {
         use crate::dict_source::test_support::{pin_shaped_id_def, scratch};
-        let root = scratch("t9_extras_cost");
+        // Several tests call this in parallel: one scratch dir per call.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = scratch(&format!("t9_extras_cost_{n}"));
         let mozc = root.join("mozc");
         fs::create_dir_all(&mozc).unwrap();
         let id_def = pin_shaped_id_def(&mozc);

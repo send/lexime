@@ -32,7 +32,9 @@
 #     family<TAB>id<TAB>base reading<TAB>compound readings (space-separated)
 #         a unit-less base and the prefixed compounds the dictionary has for
 #         it, all with a `name` line. A compound's difference is
-#         c_ref(compound) - c_ref(base).
+#         (the cheapest entry's cost of its `name` surface) - (the same of the
+#         base's): each word's cheapest entry, ids not considered, as for
+#         `derived` below (not the same-id c_ref of a `name` line).
 #     derived<TAB>reading<TAB>Japanese name<TAB>c_ref<TAB>unit surfaces<TAB>base reading<TAB>family ids
 #         a reading the pinned Mozc has no Japanese name for. The name is a row
 #         of extras' unit-names.tsv (名詞,一般, the only entry of that (reading,
@@ -64,8 +66,9 @@
 # `dictool check-units` parses every section (a malformed one fails) and
 # prices only [S-std] / [ref].
 #
-# The derived readings and their inputs (counted on the pin in
-# engine/data/mozc-pin.txt; derive again when the pin moves):
+# The derived readings and their inputs (counted on the built dictionary,
+# engine/data/lexime.dict compiled from the pin in engine/data/mozc-pin.txt,
+# after compile's role cost correction; derive again when the pin moves):
 #   ぴこびょう  base びょう (秒), family びょう (ナノ秒 / マイクロ秒 / ミリ秒), median 4516
 #   きろあんぺあ base あんぺあ (アンペア), family あんぺあ, median 2132
 #   てらわっと  base わっと (ワット), family わっと, median 1167

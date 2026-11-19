@@ -9,7 +9,8 @@
 #
 # Cost rule: C = c_ref + rank. c_ref is the cost of the unit's Japanese name
 # (same reading, the unit's canonical name — カタカナ, or 摂氏 / 華氏 / 秒 /
-# ワット時): among the entries of that (reading, surface) in the pinned Mozc,
+# ワット時): among the entries of that (reading, surface) in the built
+# dictionary (engine/data/lexime.dict, after compile's role cost correction),
 # the cheapest one whose left and right ids are both the unit's own id
 # (名詞,接尾,助数詞) if there is one, else the cheapest entry of the surface,
 # ids not considered. (Only なのめーとる / ぼると have a cheaper entry under
@@ -19,17 +20,19 @@
 # So a unit sorts right after its Japanese name and never above it.
 # A reading Mozc has no Japanese name for (10 readings, marked "derived")
 # has its name as a row of unit-names.tsv (名詞,一般, a single entry, so
-# c_ref = that row's cost). Its c_ref = the unit-less base's cheapest Mozc
-# entry's cost + the median, over the same-family prefixed compounds Mozc has,
-# of (compound cheapest cost - base cheapest cost); an even-n median is
-# floored. The derivation takes each word's cheapest entry (not the same-id
+# c_ref = that row's cost). Its c_ref = the cost of the unit-less base's
+# cheapest entry in the built dictionary + the median, over the same-family
+# prefixed compounds the dictionary has, of (compound cheapest cost - base
+# cheapest cost); an even-n median is floored. The derivation takes each word's cheapest entry (not the same-id
 # entry), so for a derived reading c_ref is that derived value and the two
 # quantities (c_ref, the cheapest) differ only in nm / V. The readings
 # どしー / どえふ are variants of せっし / かし and take the same C as the main
 # reading (the same surface is not priced differently by reading).
-# Values are counted on the mozc-raw of the pin in engine/data/mozc-pin.txt;
-# when the pin is bumped, derive them again. The comment above each reading
-# gives its c_ref (Mozc's Japanese name and cost) or its derivation.
+# Values are counted on the built dictionary (engine/data/lexime.dict, compiled
+# from the pin in engine/data/mozc-pin.txt, after compile's role cost
+# correction; each word's cheapest entry); when the pin is bumped, derive them
+# again. The comment above each reading gives its c_ref (the Japanese name and
+# its cost in the built dictionary) or its derivation.
 # びょう: 秒 2553
 びょう	s	名詞,接尾,助数詞,*,*,*,*	2554
 # ぴこびょう: derived. びょう 秒 2553 + median(ナノ秒 7069 / マイクロ秒 7709 / ミリ秒 6873 の差 4516 5156 4320) = 4516 → c_ref 7069。日本語名 = unit-names.tsv の ピコ秒

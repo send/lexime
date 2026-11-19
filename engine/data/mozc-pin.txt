@@ -43,7 +43,9 @@
 #            (c_ref, the derived costs and their inputs; the unit-names vote
 #            counts in its section comment). Unlike the items above, CI
 #            enforces this one: `dictool check-units` (mise run
-#            test-unit-entries) recomputes them from the pinned mozc-raw and
+#            test-unit-entries) recomputes them from the built dictionary
+#            (engine/data/lexime.dict, compiled from this pin, after
+#            compile's role cost correction; each word's cheapest entry) and
 #            fails, and fails when Mozc has come to have a (reading, name) of
 #            a `derived` line (then delete its unit-names.tsv row and turn
 #            the line into a `name` line).

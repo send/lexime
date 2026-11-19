@@ -12,13 +12,15 @@
 # section: the 10 words are the readings units.tsv marks "derived".
 #
 # Cost rule: the cost is the reading's derived c_ref, not 5000 (the default of
-# a common-noun row). Derived = the unit-less base's cheapest Mozc entry + the
-# median, floored, of (compound - base) over the same-family prefixed
-# compounds Mozc has; the formula is in the header of units.tsv, the values and
+# a common-noun row). Derived = the unit-less base's cheapest entry in the
+# built dictionary + the median, floored, of (compound - base) over the
+# same-family prefixed compounds the dictionary has; the formula is in the header of units.tsv, the values and
 # their inputs are the `derived` lines of engine/testcorpus/unit-symbol-readings.txt,
 # and `dictool check-units` recomputes them from the dictionary and compares.
-# The values are counted on the mozc-raw of the pin in engine/data/mozc-pin.txt;
-# when the pin is bumped, derive them again. When Mozc comes to have the same
+# The values are counted on the built dictionary (engine/data/lexime.dict,
+# compiled from the pin in engine/data/mozc-pin.txt, after compile's role cost
+# correction; each word's cheapest entry); when the pin is bumped, derive them
+# again. When Mozc comes to have the same
 # (reading, surface), delete the row and turn the `derived` line into a `name`
 # line (check-units fails to tell you).
 #
