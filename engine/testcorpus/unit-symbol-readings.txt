@@ -39,7 +39,7 @@
 #         a reading the pinned Mozc has no Japanese name for. The name is a row
 #         of extras' unit-names.tsv (名詞,一般, the only entry of that (reading,
 #         surface)); its cost = c_ref written here = the value recomputed from
-#         the dictionary: c_ref(base reading) + the median, floored (div by 2,
+#         the dictionary: cheapest(base reading) + the median, floored (div by 2,
 #         toward -inf), of the differences over all the listed families (more
 #         than one family only for the bps readings, whose own system has no
 #         compound). The recomputation takes each word's cheapest entry (not the

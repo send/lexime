@@ -19,7 +19,9 @@ const SYMBOLS_FILE: &str = "symbols.tsv";
 
 /// Closed set of POS tags the bundled symbols TSV may use, split the way
 /// Mozc's own symbol dictionary splits its rows: Greek letters are
-/// 記号,アルファベット, everything else 記号,一般. Keeping the set in one
+/// 記号,アルファベット, everything else 記号,一般. The SI prefix rows
+/// (μ, k, M, ...) are 記号,アルファベット too: the tag follows the kind of the
+/// surface character (a letter), not the meaning of the row. Keeping the set in one
 /// reviewable place lets a typo in the TSV fail at parse time instead of
 /// silently matching some other tag in id.def. Enumerated by POS, not by
 /// word.

@@ -2,14 +2,15 @@
 # テラワット, ...) that the pinned Mozc has no entry for.
 #
 # Format: reading[TAB]surface[TAB]pos[TAB]cost (pos: an id.def tag from
-# ALLOWED_POS_TAGS in extras.rs; cost: required, the final cost).
+# this domain's set in DOMAINS in extras.rs; cost: required, the final cost).
 # Comment lines start with '#'. See it.tsv for full format spec.
 #
 # What these rows are: units.tsv prices each unit (ps, kbit, TW, ...) right
 # after the unit's Japanese name (C = c_ref + rank). For these 10 readings the
 # pinned Mozc has no Japanese name, so the name is added here and the unit
-# stands behind it. Not a word row in the majority-vote sense of a vocabulary
-# section: the 10 words are the readings units.tsv marks "derived".
+# stands behind it. The 10 rows are words of this domain (the readings
+# units.tsv marks "derived"): the POS is decided by the majority rule (the vote
+# is in the section comment below), only the cost is a derived value.
 #
 # Cost rule: the cost is the reading's derived c_ref, not 5000 (the default of
 # a common-noun row). Derived = the unit-less base's cheapest entry in the

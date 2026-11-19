@@ -3,7 +3,7 @@
 # Mozc UT.
 #
 # Format: reading[TAB]surface[TAB]pos[TAB]cost (pos: an id.def tag from
-# ALLOWED_POS_TAGS in extras.rs; cost: required, the final cost).
+# this domain's set in DOMAINS in extras.rs; cost: required, the final cost).
 # Comment lines start with '#'. See it.tsv for full format spec.
 #
 # Sourcing: surfaces below were sampled from `dictool candidates corpus`

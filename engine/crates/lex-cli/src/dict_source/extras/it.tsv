@@ -2,8 +2,8 @@
 #
 # Format: reading[TAB]surface[TAB]pos[TAB]cost (exactly 4 columns)
 #   - reading: hiragana
-#   - pos: a full 7-field id.def POS tag, one of ALLOWED_POS_TAGS in
-#     extras.rs. compile resolves the tag to its numeric id from the pinned
+#   - pos: a full 7-field id.def POS tag, one of this domain's set
+#     (`DOMAINS` in extras.rs). compile resolves the tag to its numeric id from the pinned
 #     id.def; a tag outside the set, a tag missing from id.def, or a missing
 #     id.def fails the build.
 #   - cost: required, a non-negative i16. Lower = higher rank. It is the
@@ -17,6 +17,8 @@
 # split, is the POS decided by the word's meaning. Each section (a block of
 # rows of one kind) carries a comment with the kind, the representative words
 # and the counts. The full rule is the doc of ALLOWED_POS_TAGS in extras.rs.
+# (units.tsv is the exception: its rows are counters, 名詞,接尾,助数詞, priced
+# by its own header rule; the canonical statement is that same doc.)
 #
 # Cost rule: a proper-noun row's cost is the median, over the same
 # representative words, of each word's cheapest Mozc entry in the decided POS

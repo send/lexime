@@ -2,7 +2,7 @@
 # culinary terms across cuisines) not covered by Mozc UT.
 #
 # Format: reading[TAB]surface[TAB]pos[TAB]cost (pos: an id.def tag from
-# ALLOWED_POS_TAGS in extras.rs; cost: required, the final cost).
+# this domain's set in DOMAINS in extras.rs; cost: required, the final cost).
 # Comment lines start with '#'. See it.tsv for full format spec.
 
 # --- 普通名詞・中国の調味料と茶 (中華料理の調味料・スパイス、中国茶) ---

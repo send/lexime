@@ -202,7 +202,7 @@ pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 /// `testcorpus/unit-symbol-readings.txt`, and `dictool check-units` recomputes
 /// them from the dictionary, checks each name is one 名詞,一般 entry at that
 /// cost and is not in Mozc's source. When the pin is bumped, derive them again
-/// (that file's bump step 4).
+/// (bump step 4 of `engine/data/mozc-pin.txt`).
 ///
 /// ## The cost of a proper-noun row
 ///
@@ -221,7 +221,7 @@ pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 /// Mozc's effective full-name value. The
 /// values are counted on the mozc-raw of the pin in `engine/data/mozc-pin.txt`
 /// (the sha lives only there); when the pin is bumped, derive them again
-/// (that file's bump step 4). A Mozc entry's POS is read by its left id (the
+/// (bump step 4 of `engine/data/mozc-pin.txt`). A Mozc entry's POS is read by its left id (the
 /// id.def line of that id): the vote counts and the cost medians were both
 /// counted by left id.
 ///
