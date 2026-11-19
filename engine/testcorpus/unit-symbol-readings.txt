@@ -21,8 +21,11 @@
 # [ref]  where each unit reading's price comes from (T14, `dictool
 #        check-units`). The Japanese name of a unit is its c_ref entry:
 #     name<TAB>reading<TAB>ref surface<TAB>unit surfaces (comma, rank order)
-#         c_ref = the cheapest dictionary entry of (reading, ref surface),
-#         POS not considered; each unit's C = c_ref + its 1-based rank.
+#         c_ref = among the dictionary entries of (reading, ref surface), the
+#         cheapest one whose left and right ids are both the unit's own id
+#         (名詞,接尾,助数詞) if there is one, else the cheapest entry of the
+#         surface (ids not considered); each unit's C = c_ref + its 1-based
+#         rank. (Only なのめーとる 6059 / ぼると 4602 differ from the cheapest.)
 #     alias<TAB>reading<TAB>surface<TAB>main reading
 #         a variant reading: its C equals the main reading's unit of the same
 #         surface (the same surface is not priced differently by reading).
@@ -30,13 +33,17 @@
 #         a unit-less base and the prefixed compounds the dictionary has for
 #         it, all with a `name` line. A compound's difference is
 #         c_ref(compound) - c_ref(base).
-#     derived<TAB>reading<TAB>c_ref<TAB>unit surfaces<TAB>base reading<TAB>family ids
-#         a reading the dictionary has no Japanese name for: c_ref = c_ref(base
-#         reading) + the median, floored (div by 2, toward -inf), of the
-#         differences over all the listed families (more than one family only
-#         for the bps readings, whose own system has no compound). The check
-#         recomputes it from the dictionary and compares with the c_ref
-#         written here and with the unit's C.
+#     derived<TAB>reading<TAB>Japanese name<TAB>c_ref<TAB>unit surfaces<TAB>base reading<TAB>family ids
+#         a reading the pinned Mozc has no Japanese name for. The name is a row
+#         of extras' unit-names.tsv (名詞,一般, the only entry of that (reading,
+#         surface)); its cost = c_ref written here = the value recomputed from
+#         the dictionary: c_ref(base reading) + the median, floored (div by 2,
+#         toward -inf), of the differences over all the listed families (more
+#         than one family only for the bps readings, whose own system has no
+#         compound). The recomputation takes each word's cheapest entry (not the
+#         same-id entry, as `name` lines do). The check compares it with the
+#         c_ref written here and with the unit's C, and fails if Mozc comes to
+#         have the (reading, Japanese name).
 #
 # The reading sets (S-dig, S-kana, S-mid, S-pre, S-col, S-dig-col, S-mozc,
 # S-ni): one record per distinct reading, in generation order:
@@ -228,16 +235,16 @@ family	わっと	わっと	きろわっと めがわっと ぎがわっと
 family	わっとじ	わっとじ	きろわっとじ
 family	ふろっぷす	ふろっぷす	ぺたふろっぷす
 family	iec	ばいと	きびばいと めびばいと ぎびばいと てびばいと
-derived	ぴこびょう	7069	ps	びょう	びょう
-derived	ぺびばいと	8763	PiB	ばいと	iec
-derived	きろびっと	7411	kbit,kb	びっと	びっと
-derived	きろびーぴーえす	10651	kbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
-derived	めがびーぴーえす	10651	Mbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
-derived	ぎがびーぴーえす	10651	Gbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
-derived	てらびーぴーえす	10651	Tbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
-derived	きろあんぺあ	7313	kA	あんぺあ	あんぺあ
-derived	てらわっと	5876	TW	わっと	わっと
-derived	てらふろっぷす	8174	TFLOPS	ふろっぷす	ふろっぷす
+derived	ぴこびょう	ピコ秒	7069	ps	びょう	びょう
+derived	ぺびばいと	ペビバイト	8763	PiB	ばいと	iec
+derived	きろびっと	キロビット	7411	kbit,kb	びっと	びっと
+derived	きろびーぴーえす	キロビーピーエス	10651	kbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	めがびーぴーえす	メガビーピーエス	10651	Mbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	ぎがびーぴーえす	ギガビーピーエス	10651	Gbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	てらびーぴーえす	テラビーピーエス	10651	Tbps	びーぴーえす	びょう,めーとる,ぐらむ,りっとる,へるつ,ばいと,びっと,あんぺあ,ぼると,わっと,わっとじ,ふろっぷす
+derived	きろあんぺあ	キロアンペア	7313	kA	あんぺあ	あんぺあ
+derived	てらわっと	テラワット	5876	TW	わっと	わっと
+derived	てらふろっぷす	テラフロップス	8174	TFLOPS	ふろっぷす	ふろっぷす
 
 [S-dig]
 r	3びょう	u

@@ -37,7 +37,8 @@ use lex_core::dict::DictEntry;
 ///    the extras value either). A proper-noun row takes the cost rule on
 ///    [`ALLOWED_POS_TAGS`]. A common-noun row picks a cost that is sound for
 ///    the word, grounded in the same reading's Mozc entries or in a
-///    before/after measurement.
+///    before/after measurement (a unit's Japanese name: the derived value
+///    of "The unit-names domain").
 /// 2. **Proactive mining**: run `dictool candidates mine` (see
 ///    `lex_cli::candidates`). It downloads SudachiDict, diffs against the
 ///    build dict, and writes per-bucket candidate TSVs under
@@ -60,6 +61,7 @@ const DOMAINS: &[(&str, &str)] = &[
     ("history.tsv", include_str!("extras/history.tsv")),
     ("culture.tsv", include_str!("extras/culture.tsv")),
     ("units.tsv", include_str!("extras/units.tsv")),
+    ("unit-names.tsv", include_str!("extras/unit-names.tsv")),
 ];
 
 /// Closed set of POS tags an extras row may use: 名詞,一般, the six
@@ -146,8 +148,32 @@ const DOMAINS: &[(&str, &str)] = &[
 /// it is, not by a vote, and the tag is added here (PR2b) because that is the
 /// POS the Latin-unit rules key on (a counter × a pure-Latin surface stands
 /// only after a typed digit). Its cost is not a proper-noun median nor 5000:
-/// `C = c_ref + rank`, c_ref being the cost of the unit's Japanese-name entry
-/// in Mozc, derived and stated in the TSV's header and above each reading.
+/// `C = c_ref + rank`, c_ref being the cost of the unit's Japanese name: in
+/// Mozc, the cheapest entry of that name whose ids are both the unit's own
+/// (the counter id) if there is one, else the cheapest entry; for the 10
+/// readings Mozc has no name for, the name is a row of `unit-names.tsv` (next
+/// section) and c_ref is its cost. Derived and stated in the TSV's header and
+/// above each reading.
+///
+/// ## The unit-names domain (名詞,一般, derived cost)
+///
+/// `extras/unit-names.tsv` holds the Japanese names (ピコ秒, キロビット,
+/// テラワット, ...) of the units of `units.tsv` that the pinned Mozc has no
+/// entry for (10 readings, the ones `units.tsv` marks "derived"), so that a
+/// unit has a name to sort behind. It is a word domain, **not** outside the
+/// majority rule above: the POS is the rule's answer, 名詞,一般 (28 of the 28
+/// representative words that vote are common nouns; the count and the word
+/// list are the section comment in the TSV) — a counter POS here would make
+/// `ここ2キロビット`-type input convert to the 助数詞 name. **The cost is
+/// none of the common-noun 5000, a cost-override or a same-reading Mozc
+/// entry (the ways a common-noun row's cost is otherwise decided below): it is the derived value** — the cheapest Mozc entry of the same
+/// family's unit-less base plus the floored median of the (compound − base)
+/// differences over the compounds Mozc has. The formula is in the header of
+/// `units.tsv`; the values and their inputs are the `derived` lines of
+/// `testcorpus/unit-symbol-readings.txt`, and `dictool check-units` recomputes
+/// them from the dictionary, checks each name is one 名詞,一般 entry at that
+/// cost and is not in Mozc's source. When the pin is bumped, derive them again
+/// (that file's bump step 4).
 ///
 /// ## The cost of a proper-noun row
 ///
@@ -173,7 +199,8 @@ const DOMAINS: &[(&str, &str)] = &[
 /// - When none of the representative words has a Mozc entry in the decided
 ///   POS (n = 0), the value is not given by this rule: stop and ask the user.
 /// - Common-noun rows are outside the rule: an existing row keeps its
-///   current value (5000, or its cost-override), and a new row's cost is
+///   current value (5000, or its cost-override, or — for `unit-names.tsv` —
+///   the derived value, see "The unit-names domain"), and a new row's cost is
 ///   decided as in "Adding entries" (grounded in the same reading's Mozc
 ///   entries or in a before/after measurement).
 /// - A proper-noun row with a cost-override comment is outside the rule too;
@@ -283,8 +310,18 @@ pub(crate) fn units_rows() -> Vec<Vec<&'static str>> {
         .collect()
 }
 
+/// The data rows of the bundled `unit-names.tsv` only.
+#[cfg(test)]
+pub(crate) fn unit_names_rows() -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .filter(|(name, _)| *name == "unit-names.tsv")
+        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
 /// The data rows of every bundled domain TSV except `units.tsv` (the word
-/// domains, whose tags follow the majority rule).
+/// domains, whose tags follow the majority rule — `unit-names.tsv` is one).
 #[cfg(test)]
 pub(crate) fn word_rows() -> Vec<Vec<&'static str>> {
     DOMAINS
@@ -535,8 +572,9 @@ mod tests {
         let (dir, entries) = parse_bundled("t7");
         let parsed = entries.values().map(Vec::len).sum::<usize>();
         assert_eq!(parsed, bundled_rows().len());
-        // 47 word rows + 75 unit rows (T16 pins the unit count).
-        assert_eq!(parsed, 47 + 75);
+        // 57 word rows (47 vocabulary + 10 unit names, T16n) + 75 unit rows
+        // (T16 pins the unit count).
+        assert_eq!(parsed, 57 + 75);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -580,9 +618,9 @@ mod tests {
     const KOYU_IPPAN: &str = "名詞,固有名詞,一般,*,*,*,*";
     const JINMEI_IPPAN: &str = "名詞,固有名詞,人名,一般,*,*,*";
 
-    /// T8: the tag written on each bundled row — the 25 rows of
-    /// [`PROPER_NOUN_ROWS`], 名詞,一般 on the other 22 — and the count per
-    /// tag.
+    /// T8: the tag written on each bundled word row — the 25 rows of
+    /// [`PROPER_NOUN_ROWS`], 名詞,一般 on the other 32 (22 vocabulary + the
+    /// 10 of `unit-names.tsv`, T8n) — and the count per tag.
     #[test]
     fn t8_bundled_tags() {
         let rows = word_rows();
@@ -597,8 +635,8 @@ mod tests {
         let counts: Vec<usize> = ALLOWED_POS_TAGS.iter().map(|t| count(t)).collect();
         // ALLOWED_POS_TAGS order: 名詞,一般 / 固有名詞,一般 / 人名,一般 /
         // 人名,名 / 組織 / 地域,一般 / 地域,国.
-        assert_eq!(counts, [22, 5, 10, 1, 7, 1, 1, 0]);
-        assert_eq!(rows.len(), 47);
+        assert_eq!(counts, [32, 5, 10, 1, 7, 1, 1, 0]);
+        assert_eq!(rows.len(), 57);
         assert!(PROPER_NOUN_ROWS
             .iter()
             .all(|(r, _)| rows.iter().filter(|f| f[0] == *r).count() == 1));
@@ -611,6 +649,33 @@ mod tests {
         let units = units_rows();
         assert!(units.iter().all(|f| f[2] == JOSUUSHI), "{units:?}");
         assert!(word_rows().iter().all(|f| f[2] != JOSUUSHI));
+    }
+
+    /// T8n: every row of `unit-names.tsv` is 名詞,一般 — the majority rule's
+    /// answer for the Japanese names of prefixed units (28 of the 28 voters
+    /// are common nouns; the section comment holds the count) — never the
+    /// 助数詞 of the units themselves.
+    #[test]
+    fn t8n_unit_names_are_common_nouns() {
+        let names = unit_names_rows();
+        assert!(names.iter().all(|f| f[2] == IPPAN), "{names:?}");
+    }
+
+    /// T16n: the number of unit-name rows — the 10 readings units.tsv marks
+    /// "derived"; a silently dropped row fails here.
+    #[test]
+    fn t16n_unit_name_row_count() {
+        assert_eq!(unit_names_rows().len(), 10);
+    }
+
+    /// T17n: a unit name is Japanese script, so it never satisfies the
+    /// Latin-unit surface condition (`pure_latin`) the unit symbols in
+    /// units.tsv meet (T17).
+    #[test]
+    fn t17n_unit_names_are_not_pure_latin() {
+        for f in unit_names_rows() {
+            assert!(!lex_core::converter::pure_latin(f[1]), "{f:?}");
+        }
     }
 
     /// T15: μ is U+03BC (never U+00B5 MICRO SIGN), ° is U+00B0 (never U+00BA

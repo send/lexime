@@ -1196,8 +1196,12 @@ mod tests {
         .unwrap();
         fs::remove_dir_all(&root).ok();
 
-        // 47 word rows + 75 unit rows (units carry their cost in the row).
-        assert_eq!(rows.len(), 47 + 75);
+        // 57 word rows (47 vocabulary + the 10 Japanese unit names of
+        // unit-names.tsv) + 75 unit rows. Units and unit names carry their
+        // cost in the row (derived c_ref values, not the common-noun 5000).
+        assert_eq!(rows.len(), 57 + 75);
+        let unit_names = crate::dict_source::bundled_unit_names_rows();
+        assert_eq!(unit_names.len(), 10);
         let extras_cost = |reading: &str, tag: &str| {
             if let Some(&(_, c)) = EXTRAS_COST_OVERRIDES.iter().find(|(r, _)| *r == reading) {
                 return c;
@@ -1218,7 +1222,11 @@ mod tests {
                 .filter(|e| e.surface == surface)
                 .collect();
             assert_eq!(same.len(), 1, "{row:?}");
-            let want_cost = if tag == "名詞,接尾,助数詞,*,*,*,*" {
+            let want_cost = if tag == "名詞,接尾,助数詞,*,*,*,*"
+                || unit_names
+                    .iter()
+                    .any(|u| u[0] == reading && u[1] == surface)
+            {
                 row[3].parse().unwrap()
             } else {
                 extras_cost(reading, tag)

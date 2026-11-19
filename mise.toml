@@ -452,14 +452,15 @@ cd engine && cargo run --release -p lex-cli --bin lextool -- snapshot \
 [tasks.test-unit-entries]
 description = "Check the built dictionary's SI unit and prefix entries (plan unit-symbols T14), and that every symbols/extras id is below num_ids"
 # Runs on the dictionary `dict` just wrote, with the pinned id.def and the
-# symbols/extras directories that went into that compile. `accuracy` depends
+# symbols/extras directories that went into that compile and the pinned
+# mozc-raw (the derived Japanese names must not be in it). `accuracy` depends
 # on it, so CI's accuracy job runs it. A missing dictionary, id.def, reading
-# set or source directory fails the task; nothing here skips.
+# set or source directory (mozc-raw included) fails the task; nothing here skips.
 depends = ["screen", "dict"]
 run = """
 cd engine && cargo run --release -p lex-cli --bin dictool -- check-units \
   data/lexime.dict data/mozc-raw/id.def testcorpus/unit-symbol-readings.txt \
-  data/symbols-raw data/extras-raw
+  data/symbols-raw data/extras-raw data/mozc-raw
 """
 
 [tasks.accuracy]

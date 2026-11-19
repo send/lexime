@@ -7,24 +7,32 @@
 # (Viterbi formation, rerank script price, NumericRewriter) apply. μ is U+03BC
 # and ° is U+00B0.
 #
-# Cost rule: C = c_ref + rank. c_ref is the cost of the unit's Japanese-name
-# entry in the pinned Mozc (same reading, the unit's canonical name — カタカナ,
-# or 摂氏 / 華氏 / 秒 / ワット時 — cheapest entry of that surface, POS and ids
-# not considered). rank is the unit's place among the units of the same
+# Cost rule: C = c_ref + rank. c_ref is the cost of the unit's Japanese name
+# (same reading, the unit's canonical name — カタカナ, or 摂氏 / 華氏 / 秒 /
+# ワット時): among the entries of that (reading, surface) in the pinned Mozc,
+# the cheapest one whose left and right ids are both the unit's own id
+# (名詞,接尾,助数詞) if there is one, else the cheapest entry of the surface,
+# ids not considered. (Only なのめーとる / ぼると have a cheaper entry under
+# another id: ナノメートル 5337 / ボルト 4524; c_ref is 6058 / 4601, the
+# same-id entry.) rank is the unit's place among the units of the same
 # reading (1, 2, ...): bit = +1, b = +2; every other reading has one unit, +1.
 # So a unit sorts right after its Japanese name and never above it.
 # A reading Mozc has no Japanese name for (10 readings, marked "derived")
-# takes c_ref = the unit-less base's c_ref + the median, over the same-family
-# prefixed compounds Mozc has, of (compound c_ref - base c_ref); an even-n
-# median is floored. The readings どしー / どえふ are variants of せっし / かし
-# and take the same C as the main reading (the same surface is not priced
-# differently by reading).
+# has its name as a row of unit-names.tsv (名詞,一般, a single entry, so
+# c_ref = that row's cost). Its c_ref = the unit-less base's cheapest Mozc
+# entry's cost + the median, over the same-family prefixed compounds Mozc has,
+# of (compound cheapest cost - base cheapest cost); an even-n median is
+# floored. The derivation takes each word's cheapest entry (not the same-id
+# entry), so for a derived reading c_ref is that derived value and the two
+# quantities (c_ref, the cheapest) differ only in nm / V. The readings
+# どしー / どえふ are variants of せっし / かし and take the same C as the main
+# reading (the same surface is not priced differently by reading).
 # Values are counted on the mozc-raw of the pin in engine/data/mozc-pin.txt;
 # when the pin is bumped, derive them again. The comment above each reading
 # gives its c_ref (Mozc's Japanese name and cost) or its derivation.
 # びょう: 秒 2553
 びょう	s	名詞,接尾,助数詞,*,*,*,*	2554
-# ぴこびょう: derived. びょう 秒 2553 + median(ナノ秒 7069 / マイクロ秒 7709 / ミリ秒 6873 の差 4516 5156 4320) = 4516 → c_ref 7069
+# ぴこびょう: derived. びょう 秒 2553 + median(ナノ秒 7069 / マイクロ秒 7709 / ミリ秒 6873 の差 4516 5156 4320) = 4516 → c_ref 7069。日本語名 = unit-names.tsv の ピコ秒
 ぴこびょう	ps	名詞,接尾,助数詞,*,*,*,*	7070
 # なのびょう: ナノ秒 7069
 なのびょう	ns	名詞,接尾,助数詞,*,*,*,*	7070
@@ -34,8 +42,8 @@
 みりびょう	ms	名詞,接尾,助数詞,*,*,*,*	6874
 # めーとる: メートル 2937
 めーとる	m	名詞,接尾,助数詞,*,*,*,*	2938
-# なのめーとる: ナノメートル 5337 (cost 最小のエントリは別 id)
-なのめーとる	nm	名詞,接尾,助数詞,*,*,*,*	5338
+# なのめーとる: ナノメートル 6058 (単位と同じ id 2011 / 2011 のエントリ。最安 5337 は 2011 / 1851)
+なのめーとる	nm	名詞,接尾,助数詞,*,*,*,*	6059
 # まいくろめーとる: マイクロメートル 5370
 まいくろめーとる	μm	名詞,接尾,助数詞,*,*,*,*	5371
 # みりめーとる: ミリメートル 4394
@@ -90,12 +98,12 @@
 ぎびばいと	GiB	名詞,接尾,助数詞,*,*,*,*	8538
 # てびばいと: テビバイト 8939
 てびばいと	TiB	名詞,接尾,助数詞,*,*,*,*	8940
-# ぺびばいと: derived. IEC 系は接頭辞なし単位が B (ばいと バイト 4092)、同系複合語は IEC 4 読み (キビ 8806 / メビ 8721 / ギビ 8537 / テビ 8939、差 4714 4629 4445 4847) → median 4671.5 → 切り捨て 4671 → c_ref 8763
+# ぺびばいと: derived. IEC 系は接頭辞なし単位が B (ばいと バイト 4092)、同系複合語は IEC 4 読み (キビ 8806 / メビ 8721 / ギビ 8537 / テビ 8939、差 4714 4629 4445 4847) → median 4671.5 → 切り捨て 4671 → c_ref 8763。日本語名 = unit-names.tsv の ペビバイト
 ぺびばいと	PiB	名詞,接尾,助数詞,*,*,*,*	8764
 # びっと: ビット 3965
 びっと	bit	名詞,接尾,助数詞,*,*,*,*	3966
 びっと	b	名詞,接尾,助数詞,*,*,*,*	3967
-# きろびっと: derived. びっと ビット 3965 + median(メガ / ギガ / テラ / ペタビットの差 2423 2926 3967 4614) = 3446.5 → 切り捨て 3446 → c_ref 7411
+# きろびっと: derived. びっと ビット 3965 + median(メガ / ギガ / テラ / ペタビットの差 2423 2926 3967 4614) = 3446.5 → 切り捨て 3446 → c_ref 7411。日本語名 = unit-names.tsv の キロビット
 きろびっと	kbit	名詞,接尾,助数詞,*,*,*,*	7412
 きろびっと	kb	名詞,接尾,助数詞,*,*,*,*	7413
 # めがびっと: メガビット 6388
@@ -112,13 +120,13 @@
 ぺたびっと	Pb	名詞,接尾,助数詞,*,*,*,*	8581
 # びーぴーえす: ビーピーエス 8715
 びーぴーえす	bps	名詞,接尾,助数詞,*,*,*,*	8716
-# きろびーぴーえす: derived. bps 系は同系複合語が Mozc に無い: ビーピーエス 8715 + 全系 36 件の (複合語 − 単位) の median 1936 (ワット時系の外れ値 -2016 を含む) → c_ref 10651
+# きろびーぴーえす: derived. bps 系は同系複合語が Mozc に無い: ビーピーエス 8715 + 全系 36 件の (複合語 − 単位) の median 1936 (ワット時系の外れ値 -2016 を含む) → c_ref 10651。日本語名 = unit-names.tsv の キロビーピーエス
 きろびーぴーえす	kbps	名詞,接尾,助数詞,*,*,*,*	10652
-# めがびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)
+# めがびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)。日本語名 = unit-names.tsv の メガビーピーエス
 めがびーぴーえす	Mbps	名詞,接尾,助数詞,*,*,*,*	10652
-# ぎがびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)
+# ぎがびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)。日本語名 = unit-names.tsv の ギガビーピーエス
 ぎがびーぴーえす	Gbps	名詞,接尾,助数詞,*,*,*,*	10652
-# てらびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)
+# てらびーぴーえす: derived. bps 系 (きろびーぴーえす と同じ導出、c_ref 10651)。日本語名 = unit-names.tsv の テラビーピーエス
 てらびーぴーえす	Tbps	名詞,接尾,助数詞,*,*,*,*	10652
 # あんぺあ: アンペア 5181
 あんぺあ	A	名詞,接尾,助数詞,*,*,*,*	5182
@@ -126,10 +134,10 @@
 まいくろあんぺあ	μA	名詞,接尾,助数詞,*,*,*,*	8208
 # みりあんぺあ: ミリアンペア 6419
 みりあんぺあ	mA	名詞,接尾,助数詞,*,*,*,*	6420
-# きろあんぺあ: derived. あんぺあ アンペア 5181 + median(マイクロ / ミリアンペアの差 3026 1238) = 2132 → c_ref 7313
+# きろあんぺあ: derived. あんぺあ アンペア 5181 + median(マイクロ / ミリアンペアの差 3026 1238) = 2132 → c_ref 7313。日本語名 = unit-names.tsv の キロアンペア
 きろあんぺあ	kA	名詞,接尾,助数詞,*,*,*,*	7314
-# ぼると: ボルト 4524 (cost 最小のエントリは別 id)
-ぼると	V	名詞,接尾,助数詞,*,*,*,*	4525
+# ぼると: ボルト 4601 (単位と同じ id のエントリ。最安 4524 は 1851 / 1851)
+ぼると	V	名詞,接尾,助数詞,*,*,*,*	4602
 # みりぼると: ミリボルト 6407
 みりぼると	mV	名詞,接尾,助数詞,*,*,*,*	6408
 # きろぼると: キロボルト 6695
@@ -142,7 +150,7 @@
 めがわっと	MW	名詞,接尾,助数詞,*,*,*,*	6769
 # ぎがわっと: ギガワット 5876
 ぎがわっと	GW	名詞,接尾,助数詞,*,*,*,*	5877
-# てらわっと: derived. わっと ワット 4709 + median(キロ / メガ / ギガワットの差 135 2059 1167) = 1167 → c_ref 5876
+# てらわっと: derived. わっと ワット 4709 + median(キロ / メガ / ギガワットの差 135 2059 1167) = 1167 → c_ref 5876。日本語名 = unit-names.tsv の テラワット
 てらわっと	TW	名詞,接尾,助数詞,*,*,*,*	5877
 # わっとじ: ワット時 7768
 わっとじ	Wh	名詞,接尾,助数詞,*,*,*,*	7769
@@ -150,7 +158,7 @@
 きろわっとじ	kWh	名詞,接尾,助数詞,*,*,*,*	5753
 # ふろっぷす: フロップス 8157
 ふろっぷす	FLOPS	名詞,接尾,助数詞,*,*,*,*	8158
-# てらふろっぷす: derived. ふろっぷす フロップス 8157 + ペタフロップスの差 17 → c_ref 8174
+# てらふろっぷす: derived. ふろっぷす フロップス 8157 + ペタフロップスの差 17 → c_ref 8174。日本語名 = unit-names.tsv の テラフロップス
 てらふろっぷす	TFLOPS	名詞,接尾,助数詞,*,*,*,*	8175
 # ぺたふろっぷす: ペタフロップス 8174
 ぺたふろっぷす	PFLOPS	名詞,接尾,助数詞,*,*,*,*	8175

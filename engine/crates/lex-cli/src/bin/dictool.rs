@@ -144,9 +144,13 @@ enum Command {
         right: u16,
     },
     /// Check the built dictionary's SI unit / prefix entries (plan T14):
-    /// POS, `C == c_ref + rank` against the reading-set file's [ref] section,
-    /// and every symbols/extras id below num_ids. Fails (never skips) when
-    /// any input is missing.
+    /// POS, `C == c_ref + rank` against the reading-set file's [ref] section
+    /// (c_ref = the cheapest entry of the Japanese name with the unit's own
+    /// id on both sides, else the cheapest), the 10 derived Japanese names
+    /// (exactly one 名詞,一般 entry at the derived c_ref; the same set as
+    /// unit-names.tsv; none of them in Mozc's source), and every
+    /// symbols/extras id below num_ids. Fails (never skips) when any input is
+    /// missing.
     CheckUnits {
         /// Built dictionary (`dictool compile` output)
         dict_file: String,
@@ -158,6 +162,9 @@ enum Command {
         symbols_dir: String,
         /// The extras source dir that went into the compile
         extras_dir: String,
+        /// The pinned Mozc source dir (engine/data/mozc-raw): the derived
+        /// Japanese names must not be in it
+        mozc_dir: String,
     },
     /// Export default romaji mappings as TOML
     RomajiExport,
@@ -316,6 +323,7 @@ fn main() {
             readings_file,
             symbols_dir,
             extras_dir,
+            mozc_dir,
         } => {
             if let Err(e) = units_check::run(
                 &dict_file,
@@ -323,6 +331,7 @@ fn main() {
                 &readings_file,
                 &symbols_dir,
                 &extras_dir,
+                &mozc_dir,
             ) {
                 eprintln!("check-units: {e}");
                 std::process::exit(1);

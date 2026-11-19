@@ -4,6 +4,8 @@ pub(crate) use curated::test_support;
 mod extras;
 #[cfg(test)]
 pub(crate) use extras::bundled_rows as bundled_extras_rows;
+#[cfg(test)]
+pub(crate) use extras::unit_names_rows as bundled_unit_names_rows;
 mod mozc;
 pub mod pos_map;
 mod symbols;

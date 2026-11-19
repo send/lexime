@@ -5,15 +5,23 @@
 //! 1. each unit (reading, surface) exists and its POS is the counter id (a
 //!    duplicate merge did not swap in Mozc's POS);
 //! 2. each unit's cost is `c_ref + rank`, `c_ref` being the cost of the
-//!    Japanese-name entry the `[ref]` section names (derived readings: the
-//!    value recomputed from the dictionary; aliases: the main reading's C);
+//!    Japanese-name entry the `[ref]` section names: among the entries of
+//!    (reading, name) the cheapest one with the counter id on both sides, else
+//!    the cheapest entry (aliases: the main reading's C). Derived readings
+//!    (names Mozc lacks): (a) the c_ref written is the value recomputed from
+//!    the dictionary (each word's cheapest entry as the input); (d) the name
+//!    is in the dictionary exactly once, both ids 名詞,一般, at that cost (a
+//!    row of extras' unit-names.tsv); (e) unit-names.tsv's (reading, surface)
+//!    set is the `derived` lines' (reading, name) set; (g) Mozc's source has
+//!    no such (reading, name) (when it does, the row goes and the line becomes
+//!    a `name` line);
 //! 3. each SI prefix entry has the 記号,アルファベット id;
 //! 4. every entry of the symbols and extras sources has both ids below
 //!    `num_ids` (the id.def row count).
 //!
-//! Nothing is skipped: a missing dictionary, id.def, readings file or source
-//! directory is a failure (plan C5). The reading-set file grammar is in that
-//! file's header.
+//! Nothing is skipped: a missing dictionary, id.def, readings file, Mozc
+//! source or other source directory is a failure (plan C5). The reading-set
+//! file grammar is in that file's header.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -25,6 +33,8 @@ use crate::dict_source::{self, pos_map};
 
 const COUNTER_TAG: &str = "名詞,接尾,助数詞,*,*,*,*";
 const PREFIX_TAG: &str = "記号,アルファベット,*,*,*,*,*";
+/// The POS of the Japanese names extras' unit-names.tsv adds.
+const NAME_TAG: &str = "名詞,一般,*,*,*,*,*";
 
 type Pair = (String, String);
 
@@ -65,6 +75,8 @@ const SET_SECTIONS: &[&str] = &[
 #[derive(Debug, PartialEq)]
 pub struct Derived {
     pub reading: String,
+    /// The Japanese name (a row of extras' unit-names.tsv).
+    pub name: String,
     pub c_ref: i32,
     pub surfaces: Vec<String>,
     pub base: String,
@@ -140,16 +152,17 @@ pub fn parse_readings(content: &str) -> Result<Readings, String> {
                 }
             }
             (Some("ref"), "derived") => {
-                let f = fields(line, kind, 6, lineno)?;
-                let c_ref = f[2]
+                let f = fields(line, kind, 7, lineno)?;
+                let c_ref = f[3]
                     .parse()
-                    .map_err(|_| format!("line {lineno}: c_ref '{}' is not an integer", f[2]))?;
+                    .map_err(|_| format!("line {lineno}: c_ref '{}' is not an integer", f[3]))?;
                 r.derived.push(Derived {
                     reading: f[1].into(),
+                    name: f[2].into(),
                     c_ref,
-                    surfaces: f[3].split(',').map(String::from).collect(),
-                    base: f[4].into(),
-                    families: f[5].split(',').map(String::from).collect(),
+                    surfaces: f[4].split(',').map(String::from).collect(),
+                    base: f[5].into(),
+                    families: f[6].split(',').map(String::from).collect(),
                 });
             }
             (Some(s), k) if set_section == Some(s) => {
@@ -191,6 +204,8 @@ pub fn floor_median(v: &[i32]) -> i32 {
 pub struct Ids {
     pub counter: u16,
     pub prefix: u16,
+    /// 名詞,一般 (the POS of the unit-names.tsv rows).
+    pub name: u16,
     pub num_ids: u32,
 }
 
@@ -216,6 +231,7 @@ pub fn read_ids(id_def: &Path) -> Result<Ids, String> {
     Ok(Ids {
         counter: tag(COUNTER_TAG)?,
         prefix: tag(PREFIX_TAG)?,
+        name: tag(NAME_TAG)?,
         num_ids: rows as u32,
     })
 }
@@ -260,8 +276,9 @@ fn unit_entry(
         })
 }
 
-/// c_ref: the cheapest entry of (reading, ref surface), POS not considered.
-fn ref_cost(
+/// The cheapest entry of (reading, surface), POS not considered — the input
+/// of a derived reading's recomputation (each word's cheapest entry).
+fn cheapest_cost(
     lookup: &dyn Fn(&str) -> Vec<DictEntry>,
     reading: &str,
     surface: &str,
@@ -273,16 +290,39 @@ fn ref_cost(
         .ok_or_else(|| format!("ref ({reading}, {surface}) is not in the dictionary"))
 }
 
-/// Run T14 (1)-(4). `units_tsv` is the (reading, surface) pairs of the
-/// extras `units.tsv` that went into the compile; `curated` is every
-/// (reading, surface) of the symbols and extras sources. Returns every
-/// failure (empty = pass).
+/// c_ref: the cheapest entry of (reading, ref surface) with the counter id on
+/// both sides (the unit's own id) if there is one, else the cheapest entry
+/// with ids not considered. The input of `rank_check`.
+fn ref_cost(
+    lookup: &dyn Fn(&str) -> Vec<DictEntry>,
+    ids: &Ids,
+    reading: &str,
+    surface: &str,
+) -> Result<i32, String> {
+    let found = with_surface(lookup, reading, surface);
+    found
+        .iter()
+        .filter(|e| e.left_id == ids.counter && e.right_id == ids.counter)
+        .map(|e| i32::from(e.cost))
+        .min()
+        .or_else(|| found.iter().map(|e| i32::from(e.cost)).min())
+        .ok_or_else(|| format!("ref ({reading}, {surface}) is not in the dictionary"))
+}
+
+/// Run T14 (1)-(4). `units_tsv` / `unit_names` are the (reading, surface)
+/// pairs of the extras `units.tsv` / `unit-names.tsv` that went into the
+/// compile; `curated` is every (reading, surface) of the symbols and extras
+/// sources; `mozc` is the (reading, surface) pairs of the pinned Mozc source
+/// (at least those of the `derived` readings). Returns every failure (empty =
+/// pass).
 pub fn check(
     lookup: &dyn Fn(&str) -> Vec<DictEntry>,
     ids: &Ids,
     readings: &Readings,
     units_tsv: &[Pair],
+    unit_names: &[Pair],
     curated: &[Pair],
+    mozc: &[Pair],
 ) -> Vec<String> {
     let mut bad: Vec<String> = Vec::new();
 
@@ -349,11 +389,12 @@ pub fn check(
         .iter()
         .map(|(r, n, _)| (r.as_str(), n.as_str()))
         .collect();
-    let c_ref_of = |reading: &str| -> Result<i32, String> {
+    // The recomputation's input: each word's cheapest entry.
+    let cheapest_of = |reading: &str| -> Result<i32, String> {
         let n = name_of
             .get(reading)
             .ok_or_else(|| format!("no `name` line for family member '{reading}'"))?;
-        ref_cost(lookup, reading, n)
+        cheapest_cost(lookup, reading, n)
     };
     let rank_check =
         |reading: &str, surfaces: &[String], c_ref: i32, c_of: &HashMap<(&str, &str), i32>| {
@@ -372,7 +413,7 @@ pub fn check(
             out
         };
     for (r, n, ss) in &readings.names {
-        match ref_cost(lookup, r, n) {
+        match ref_cost(lookup, ids, r, n) {
             Ok(c_ref) => bad.extend(rank_check(r, ss, c_ref, &c_of)),
             Err(e) => bad.push(format!("(2) {e}")),
         }
@@ -392,9 +433,44 @@ pub fn check(
         }
     }
     for d in &readings.derived {
+        // (2d) the Japanese name is in the dictionary exactly once, with
+        // 名詞,一般 on both sides, at the c_ref written here.
+        let named = with_surface(lookup, &d.reading, &d.name);
+        match named.as_slice() {
+            [] => bad.push(format!(
+                "(2d) derived {}: name ({}, {}) is not in the dictionary",
+                d.reading, d.reading, d.name
+            )),
+            [one] => {
+                if one.left_id != ids.name || one.right_id != ids.name {
+                    bad.push(format!(
+                        "(2d) derived {}: name {} has ids L={} R={}, want 名詞,一般 (id {})",
+                        d.reading, d.name, one.left_id, one.right_id, ids.name
+                    ));
+                }
+                if i32::from(one.cost) != d.c_ref {
+                    bad.push(format!(
+                        "(2d) derived {}: name {} costs {} but c_ref is {}",
+                        d.reading, d.name, one.cost, d.c_ref
+                    ));
+                }
+            }
+            many => bad.push(format!(
+                "(2d) derived {}: name ({}, {}) has {} entries, want exactly 1",
+                d.reading,
+                d.reading,
+                d.name,
+                many.len()
+            )),
+        }
+        // The unit's rank is priced from the c_ref the dictionary gives (the
+        // same route as a `name` line). No entry at all was reported above.
+        if let Ok(c_ref) = ref_cost(lookup, ids, &d.reading, &d.name) {
+            bad.extend(rank_check(&d.reading, &d.surfaces, c_ref, &c_of));
+        }
         let mut diffs: Vec<i32> = Vec::new();
         let mut ok = true;
-        let base = match c_ref_of(&d.base) {
+        let base = match cheapest_of(&d.base) {
             Ok(b) => b,
             Err(e) => {
                 bad.push(format!("(2) derived {}: {e}", d.reading));
@@ -407,7 +483,7 @@ pub fn check(
                 ok = false;
                 continue;
             };
-            let fb = match c_ref_of(fbase) {
+            let fb = match cheapest_of(fbase) {
                 Ok(c) => c,
                 Err(e) => {
                     bad.push(format!("(2) derived {}: {e}", d.reading));
@@ -416,7 +492,7 @@ pub fn check(
                 }
             };
             for m in members {
-                match c_ref_of(m) {
+                match cheapest_of(m) {
                     Ok(c) => diffs.push(c - fb),
                     Err(e) => {
                         bad.push(format!("(2) derived {}: {e}", d.reading));
@@ -439,7 +515,42 @@ pub fn check(
                 diffs.len()
             ));
         }
-        bad.extend(rank_check(&d.reading, &d.surfaces, d.c_ref, &c_of));
+    }
+
+    // (2e) unit-names.tsv and the `derived` lines list the same
+    // (reading, name) pairs.
+    let names_tsv: HashSet<&Pair> = unit_names.iter().collect();
+    let names_derived: HashSet<Pair> = readings
+        .derived
+        .iter()
+        .map(|d| (d.reading.clone(), d.name.clone()))
+        .collect();
+    for p in &names_tsv {
+        if !names_derived.contains(*p) {
+            bad.push(format!(
+                "(2e) unit-names.tsv ({}, {}) has no `derived` line",
+                p.0, p.1
+            ));
+        }
+    }
+    for p in &names_derived {
+        if !names_tsv.contains(p) {
+            bad.push(format!(
+                "(2e) `derived` ({}, {}) is not in unit-names.tsv",
+                p.0, p.1
+            ));
+        }
+    }
+
+    // (2g) Mozc has none of the derived names (whatever its cost or ids).
+    let mozc_set: HashSet<&Pair> = mozc.iter().collect();
+    for p in &names_derived {
+        if mozc_set.contains(p) {
+            bad.push(format!(
+                "(2g) Mozc has ({}, {}): delete its unit-names.tsv row, turn the `derived` line into a `name` line and count again",
+                p.0, p.1
+            ));
+        }
     }
 
     // (3) prefixes.
@@ -475,8 +586,8 @@ pub fn check(
     bad
 }
 
-fn units_tsv_pairs(extras_dir: &Path) -> Result<Vec<Pair>, String> {
-    let path = extras_dir.join("units.tsv");
+fn extras_tsv_pairs(extras_dir: &Path, file: &str) -> Result<Vec<Pair>, String> {
+    let path = extras_dir.join(file);
     let content = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(content
         .lines()
@@ -499,6 +610,16 @@ fn curated_pairs(name: &str, dir: &Path) -> Result<Vec<Pair>, String> {
         .collect())
 }
 
+/// The (reading, surface) pairs of the pinned Mozc source in `dir`, only for
+/// `readings` (the whole source is ~700k entries and only the derived names
+/// are asked about). A directory with no `dictionary*.txt` is an error.
+fn mozc_pairs(dir: &Path, readings: &HashSet<&str>) -> Result<Vec<Pair>, String> {
+    Ok(curated_pairs("mozc", dir)?
+        .into_iter()
+        .filter(|(r, _)| readings.contains(r.as_str()))
+        .collect())
+}
+
 /// CLI entry. Prints each failure and returns `Err` (exit 1) on any.
 pub fn run(
     dict_file: &str,
@@ -506,6 +627,7 @@ pub fn run(
     readings_file: &str,
     symbols_dir: &str,
     extras_dir: &str,
+    mozc_dir: &str,
 ) -> Result<(), String> {
     let dict = TrieDictionary::open(Path::new(dict_file))
         .map_err(|e| format!("opening dictionary {dict_file}: {e}"))?;
@@ -513,11 +635,27 @@ pub fn run(
     let content = fs::read_to_string(readings_file)
         .map_err(|e| format!("reading set {readings_file}: {e}"))?;
     let readings = parse_readings(&content).map_err(|e| format!("{readings_file}: {e}"))?;
-    let units_tsv = units_tsv_pairs(Path::new(extras_dir))?;
+    let units_tsv = extras_tsv_pairs(Path::new(extras_dir), "units.tsv")?;
+    let unit_names = extras_tsv_pairs(Path::new(extras_dir), "unit-names.tsv")?;
     let mut curated = curated_pairs("symbols", Path::new(symbols_dir))?;
     curated.extend(curated_pairs("extras", Path::new(extras_dir))?);
 
-    let bad = check(&|r| dict.lookup(r), &ids, &readings, &units_tsv, &curated);
+    let derived_readings: HashSet<&str> = readings
+        .derived
+        .iter()
+        .map(|d| d.reading.as_str())
+        .collect();
+    let mozc = mozc_pairs(Path::new(mozc_dir), &derived_readings)?;
+
+    let bad = check(
+        &|r| dict.lookup(r),
+        &ids,
+        &readings,
+        &units_tsv,
+        &unit_names,
+        &curated,
+        &mozc,
+    );
     if bad.is_empty() {
         eprintln!(
             "check-units: ok ({} units, {} prefixes, {} curated entries, num_ids {})",
@@ -541,6 +679,7 @@ mod tests {
 
     const COUNTER: u16 = 2011;
     const ALPHA: u16 = 2643;
+    const IPPAN: u16 = 1851;
 
     fn e(surface: &str, cost: i16, id: u16) -> DictEntry {
         DictEntry {
@@ -569,7 +708,7 @@ name\tびっと\tビット\tbit,b
 name\tせっし\t摂氏\t°C
 alias\tどしー\t°C\tせっし
 family\tびょう\tびょう\tなのびょう
-derived\tぴこびょう\t7000\tps\tびょう\tびょう
+derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
 ";
 
     fn world() -> HashMap<String, Vec<DictEntry>> {
@@ -595,8 +734,12 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
             vec![e("摂氏", 6000, 1851), e("°C", 6001, COUNTER)],
         );
         put("どしー", vec![e("°C", 6001, COUNTER)]);
-        // derived: 2500 + (4500 - 2500) = 4500 -> wait, median of one diff.
-        put("ぴこびょう", vec![e("ps", 4501, COUNTER)]);
+        // derived: 2500 + median(4500 - 2500) = 4500; its name is a
+        // 名詞,一般 row (unit-names.tsv) and the unit stands at 4501.
+        put(
+            "ぴこびょう",
+            vec![e("ピコ秒", 4500, IPPAN), e("ps", 4501, COUNTER)],
+        );
         put("なの", vec![e("n", 0, ALPHA)]);
         m
     }
@@ -605,6 +748,7 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         Ids {
             counter: COUNTER,
             prefix: ALPHA,
+            name: IPPAN,
             num_ids: 2672,
         }
     }
@@ -615,14 +759,31 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         tsv: &[Pair],
         curated: &[Pair],
     ) -> Vec<String> {
+        run_check_with(w, readings, tsv, &unit_names(), curated, &[])
+    }
+
+    fn run_check_with(
+        w: &HashMap<String, Vec<DictEntry>>,
+        readings: &str,
+        tsv: &[Pair],
+        names: &[Pair],
+        curated: &[Pair],
+        mozc: &[Pair],
+    ) -> Vec<String> {
         let rd = parse_readings(readings).unwrap();
         check(
             &|r| w.get(r).cloned().unwrap_or_default(),
             &ids(),
             &rd,
             tsv,
+            names,
             curated,
+            mozc,
         )
+    }
+
+    fn unit_names() -> Vec<Pair> {
+        vec![("ぴこびょう".into(), "ピコ秒".into())]
     }
 
     fn tsv() -> Vec<Pair> {
@@ -744,6 +905,241 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         );
     }
 
+    // c_ref = the same-id (counter) entry when there is one, even if a
+    // cheaper entry of another id exists (nm / V in the real data).
+    #[test]
+    fn c_ref_prefers_the_same_id_entry() {
+        let mut w = world();
+        w.insert(
+            "せっし".into(),
+            vec![
+                e("摂氏", 5900, IPPAN),
+                e("摂氏", 6000, COUNTER),
+                e("°C", 6001, COUNTER),
+            ],
+        );
+        w.insert("どしー".into(), vec![e("°C", 6001, COUNTER)]);
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(bad.is_empty(), "{bad:?}");
+        // The cheapest (5900) would price the unit at 5901: that now fails.
+        w.get_mut("せっし").unwrap()[2].cost = 5901;
+        w.insert("どしー".into(), vec![e("°C", 5901, COUNTER)]);
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter().any(|b| b.starts_with("(2) (せっし, °C)")),
+            "{bad:?}"
+        );
+    }
+
+    // No same-id entry: the cheapest entry, ids not considered.
+    #[test]
+    fn c_ref_falls_back_to_the_cheapest() {
+        let mut w = world();
+        w.insert(
+            "せっし".into(),
+            vec![
+                e("摂氏", 6100, IPPAN),
+                e("摂氏", 6000, 1920),
+                e("°C", 6001, COUNTER),
+            ],
+        );
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    #[test]
+    fn derived_unit_is_priced_from_the_dictionary_name() {
+        let mut w = world();
+        w.get_mut("ぴこびょう").unwrap()[1].cost = 4502;
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter().any(|b| b.starts_with("(2) (ぴこびょう, ps)")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn derived_name_missing_fails_2d() {
+        let mut w = world();
+        w.get_mut("ぴこびょう").unwrap().remove(0);
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(bad.iter().any(|b| b.starts_with("(2d)")), "{bad:?}");
+    }
+
+    #[test]
+    fn derived_name_as_counter_fails_2d() {
+        // rev 9.10's shape (助数詞 on both sides) is no longer the one.
+        let mut w = world();
+        w.get_mut("ぴこびょう").unwrap()[0] = e("ピコ秒", 4500, COUNTER);
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2d)") && b.contains("ids")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn derived_name_with_one_side_ippan_fails_2d() {
+        let mut w = world();
+        let mut half = e("ピコ秒", 4500, IPPAN);
+        half.right_id = COUNTER;
+        w.get_mut("ぴこびょう").unwrap()[0] = half;
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2d)") && b.contains("ids")),
+            "{bad:?}"
+        );
+        let mut half = e("ピコ秒", 4500, IPPAN);
+        half.left_id = COUNTER;
+        w.get_mut("ぴこびょう").unwrap()[0] = half;
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2d)") && b.contains("ids")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn derived_name_twice_fails_2d() {
+        let mut w = world();
+        w.get_mut("ぴこびょう")
+            .unwrap()
+            .push(e("ピコ秒", 4500, 1920));
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2d)") && b.contains("exactly 1")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn derived_name_cost_off_fails_2d() {
+        let mut w = world();
+        w.get_mut("ぴこびょう").unwrap()[0].cost = 4400;
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2d)") && b.contains("costs")),
+            "{bad:?}"
+        );
+    }
+
+    // The recomputation takes each word's cheapest entry: a dearer entry of
+    // the unit's own id in a family member does not move the derived value.
+    #[test]
+    fn derivation_input_is_the_cheapest_entry() {
+        let mut w = world();
+        w.get_mut("なのびょう")
+            .unwrap()
+            .insert(1, e("ナノ秒", 6000, COUNTER));
+        // ns now stands behind the same-id name (6000).
+        w.get_mut("なのびょう").unwrap()[2].cost = 6001;
+        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    #[test]
+    fn unit_names_and_derived_must_agree_2e() {
+        let w = world();
+        let extra = vec![
+            ("ぴこびょう".into(), "ピコ秒".into()),
+            ("てらびょう".into(), "テラ秒".into()),
+        ];
+        let bad = run_check_with(&w, &readings_ok(), &tsv(), &extra, &curated(), &[]);
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2e)") && b.contains("no `derived` line")),
+            "{bad:?}"
+        );
+        let bad = run_check_with(&w, &readings_ok(), &tsv(), &[], &curated(), &[]);
+        assert!(
+            bad.iter()
+                .any(|b| b.starts_with("(2e)") && b.contains("not in unit-names.tsv")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn derived_name_in_mozc_fails_2g() {
+        let pair = vec![("ぴこびょう".to_string(), "ピコ秒".to_string())];
+        let bad = run_check_with(
+            &world(),
+            &readings_ok(),
+            &tsv(),
+            &unit_names(),
+            &curated(),
+            &pair,
+        );
+        assert!(bad.iter().any(|b| b.starts_with("(2g)")), "{bad:?}");
+        // Another surface of the same reading is not the name.
+        let other = vec![("ぴこびょう".to_string(), "ピコビョウ".to_string())];
+        let bad = run_check_with(
+            &world(),
+            &readings_ok(),
+            &tsv(),
+            &unit_names(),
+            &curated(),
+            &other,
+        );
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    fn scratch_mozc(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lexime_units_check_{name}"));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).unwrap();
+        for (f, body) in files {
+            fs::write(dir.join(f), body).unwrap();
+        }
+        dir
+    }
+
+    // Mozc's cost for the name does not matter (cheap or dear), only that the
+    // (reading, surface) is in the source; a missing / empty source fails.
+    #[test]
+    fn mozc_source_is_read_whatever_the_cost() {
+        let want: HashSet<&str> = ["ぴこびょう"].into_iter().collect();
+        for cost in [100, 30000] {
+            let dir = scratch_mozc(
+                &format!("cost{cost}"),
+                &[(
+                    "dictionary00.txt",
+                    &format!("ぴこびょう\t1851\t1851\t{cost}\tピコ秒\n"),
+                )],
+            );
+            let pairs = mozc_pairs(&dir, &want).unwrap();
+            assert_eq!(
+                pairs,
+                vec![("ぴこびょう".to_string(), "ピコ秒".to_string())]
+            );
+            let bad = run_check_with(
+                &world(),
+                &readings_ok(),
+                &tsv(),
+                &unit_names(),
+                &curated(),
+                &pairs,
+            );
+            assert!(bad.iter().any(|b| b.starts_with("(2g)")), "{bad:?}");
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_mozc_dir_fails() {
+        let want: HashSet<&str> = ["ぴこびょう"].into_iter().collect();
+        let missing = std::env::temp_dir().join("lexime_units_check_no_such_dir");
+        fs::remove_dir_all(&missing).ok();
+        assert!(mozc_pairs(&missing, &want).is_err());
+        let empty = scratch_mozc("empty", &[("unrelated.txt", "x")]);
+        assert!(mozc_pairs(&empty, &want).is_err());
+        fs::remove_dir_all(&empty).ok();
+    }
+
     #[test]
     fn median_is_floored() {
         assert_eq!(floor_median(&[1]), 1);
@@ -777,6 +1173,23 @@ derived\tぴこびょう\t7000\tps\tびょう\tびょう
         assert_eq!(r.std_units.len(), 75);
         assert_eq!(r.std_prefixes.len(), 10);
         assert_eq!(r.derived.len(), 10);
+        // Each derived reading names its Japanese name, and those are the
+        // rows of the bundled unit-names.tsv.
+        let tsv_pairs: HashSet<Pair> = include_str!("../dict_source/extras/unit-names.tsv")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut f = l.split('\t');
+                (f.next().unwrap().to_string(), f.next().unwrap().to_string())
+            })
+            .collect();
+        let derived_pairs: HashSet<Pair> = r
+            .derived
+            .iter()
+            .map(|d| (d.reading.clone(), d.name.clone()))
+            .collect();
+        assert_eq!(derived_pairs.len(), 10);
+        assert_eq!(derived_pairs, tsv_pairs);
         assert_eq!(r.aliases.len(), 2);
         assert_eq!(r.names.len(), 57);
         // The generated sets (plan 8-1; S-ctx is not made, see the PR notes).
