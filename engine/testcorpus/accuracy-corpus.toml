@@ -1401,3 +1401,78 @@ expected = "3病院"
 category = "regression"
 tags = ["unit-symbol", "guard"]
 note = "ガード (PR2b): 単位・接頭辞の読み (§7-5) を含む読み。top-1 は PR2b の前 (PR2a) と同じ"
+
+# --- SI unit names (PR2b reach cases, plan 7-5 / 30-11). expected = the Japanese name
+# that extras' unit-names.tsv adds for a prefixed unit Mozc has no name for;
+# before PR2b these readings converted to something else, so they are outside
+# B1 (before == after) and judged by this expectation. ---
+
+[[cases]]
+reading = "ぴこびょう"
+expected = "ピコ秒"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (ぴこびょう の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "ぺびばいと"
+expected = "ペビバイト"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (ぺびばいと の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "きろびっと"
+expected = "キロビット"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (きろびっと の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "きろびーぴーえす"
+expected = "キロビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (きろびーぴーえす の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "めがびーぴーえす"
+expected = "メガビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (めがびーぴーえす の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "ぎがびーぴーえす"
+expected = "ギガビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (ぎがびーぴーえす の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "てらびーぴーえす"
+expected = "テラビーピーエス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (てらびーぴーえす の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "きろあんぺあ"
+expected = "キロアンペア"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (きろあんぺあ の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "てらわっと"
+expected = "テラワット"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (てらわっと の記号) はその直後 (助数詞)"
+
+[[cases]]
+reading = "てらふろっぷす"
+expected = "テラフロップス"
+category = "regression"
+tags = ["unit-symbol"]
+note = "到達 (PR2b): 単位の日本語名 (unit-names.tsv、名詞,一般、cost = 導出値) が単独の読みで top-1。単位 (てらふろっぷす の記号) はその直後 (助数詞)"
