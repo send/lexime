@@ -81,6 +81,7 @@ impl DictSource for SymbolsSource {
 mod tests {
     use super::curated::test_support::{self as ts, data_rows, pin_shaped_id_def, write_id_def};
     use super::*;
+    use crate::dict_source::pos_map;
 
     const IPPAN: &str = "記号,一般,*,*,*,*,*";
     const ALPHABET: &str = "記号,アルファベット,*,*,*,*,*";
@@ -101,13 +102,31 @@ mod tests {
     /// The section header of the SI prefix rows.
     const SI_PREFIXES: &str = "SI prefixes";
 
-    /// The tag a bundled row writes, by (reading, surface).
-    fn row_tag(reading: &str, surface: &str) -> &'static str {
-        bundled_rows()
-            .into_iter()
-            .find(|(_, f)| f[0] == reading && f[1] == surface)
-            .map(|(_, f)| f[2])
-            .unwrap()
+    /// Every entry carries the id of the tag its row writes: `alpha_id` for
+    /// 記号,アルファベット rows, `other_id` for the rest. Returns how many
+    /// entries took each (alphabet, other).
+    fn assert_ids(
+        entries: &HashMap<String, Vec<DictEntry>>,
+        alpha_id: u16,
+        other_id: u16,
+    ) -> (usize, usize) {
+        let rows = bundled_rows();
+        let tags: HashMap<(&str, &str), &str> =
+            rows.iter().map(|(_, f)| ((f[0], f[1]), f[2])).collect();
+        let (mut alphabet, mut other) = (0, 0);
+        for (reading, list) in entries {
+            for entry in list {
+                let want = if tags[&(reading.as_str(), entry.surface.as_str())] == ALPHABET {
+                    alphabet += 1;
+                    alpha_id
+                } else {
+                    other += 1;
+                    other_id
+                };
+                assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
+            }
+        }
+        (alphabet, other)
     }
 
     /// The data rows of the bundled TSV with the section header above each.
@@ -168,19 +187,7 @@ mod tests {
         SymbolsSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        let (mut alphabet, mut other) = (0, 0);
-        for (reading, list) in &entries {
-            for entry in list {
-                let want = if row_tag(reading, &entry.surface) == ALPHABET {
-                    alphabet += 1;
-                    2643
-                } else {
-                    other += 1;
-                    2644
-                };
-                assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
-            }
-        }
+        let (alphabet, other) = assert_ids(&entries, 2643, 2644);
         assert_eq!((alphabet, other), (37 + 10, 118));
         fs::remove_dir_all(&dir).ok();
     }
@@ -193,16 +200,7 @@ mod tests {
         SymbolsSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();
-        for (reading, list) in &entries {
-            for entry in list {
-                let want = if row_tag(reading, &entry.surface) == ALPHABET {
-                    8
-                } else {
-                    7
-                };
-                assert_eq!((entry.left_id, entry.right_id), (want, want), "{entry:?}");
-            }
-        }
+        assert_ids(&entries, 8, 7);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -379,7 +377,7 @@ mod tests {
     fn t10_resolved_ids_within_id_def() {
         let (dir, mut entries) = parse_bundled("t10");
         let id_def = pin_shaped_id_def(&dir);
-        let rows = fs::read_to_string(&id_def).unwrap().lines().count();
+        let rows = pos_map::id_def_row_count(&id_def).unwrap();
         SymbolsSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();

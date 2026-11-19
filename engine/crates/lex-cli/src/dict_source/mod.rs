@@ -3,9 +3,11 @@ mod curated;
 pub(crate) use curated::test_support;
 mod extras;
 #[cfg(test)]
-pub(crate) use extras::bundled_rows as bundled_extras_rows;
-#[cfg(test)]
-pub(crate) use extras::unit_names_rows as bundled_unit_names_rows;
+pub(crate) use extras::{
+    bundled_rows as bundled_extras_rows, bundled_rows_except as bundled_extras_rows_except,
+    unit_names_rows as bundled_unit_names_rows,
+};
+pub(crate) use extras::{parse_domain as parse_extras_domain, UNITS_TSV, UNIT_NAMES_TSV};
 mod mozc;
 pub mod pos_map;
 mod symbols;

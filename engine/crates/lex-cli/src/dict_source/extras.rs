@@ -60,9 +60,15 @@ const DOMAINS: &[(&str, &str)] = &[
     ("geography.tsv", include_str!("extras/geography.tsv")),
     ("history.tsv", include_str!("extras/history.tsv")),
     ("culture.tsv", include_str!("extras/culture.tsv")),
-    ("units.tsv", include_str!("extras/units.tsv")),
-    ("unit-names.tsv", include_str!("extras/unit-names.tsv")),
+    (UNITS_TSV, include_str!("extras/units.tsv")),
+    (UNIT_NAMES_TSV, include_str!("extras/unit-names.tsv")),
 ];
+
+/// The unit symbols' domain file (priced by the cost rule in its header, not
+/// by the majority-rule table).
+pub(crate) const UNITS_TSV: &str = "units.tsv";
+/// The Japanese unit names' domain file (a derived cost per row).
+pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 
 /// Closed set of POS tags an extras row may use: 名詞,一般, the six
 /// 名詞,固有名詞 subdivisions extras has words for, and 名詞,接尾,助数詞 (the
@@ -291,44 +297,63 @@ impl DictSource for ExtrasSource {
     }
 }
 
+/// The `(reading, surface)` pairs of the domain file `name` in `dir`, parsed
+/// by the same row grammar as [`ExtrasSource::parse_dir`] (a malformed row or
+/// a missing file is an error naming the file).
+pub(crate) fn parse_domain(dir: &Path, name: &str) -> Result<Vec<(String, String)>, String> {
+    let path = dir.join(name);
+    let content = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut pairs = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        let row = curated::parse_curated_line(&fields, CostColumn::Required, ALLOWED_POS_TAGS)
+            .map_err(|msg| format!("{}:{}: {msg}", path.display(), i + 1))?;
+        pairs.push((row.reading, row.surface));
+    }
+    Ok(pairs)
+}
+
+/// The data rows of the bundled domain TSV `name`.
+#[cfg(test)]
+fn domain_rows(name: &str) -> Vec<Vec<&'static str>> {
+    rows_of(|n| n == name)
+}
+
+/// The data rows of the bundled `unit-names.tsv`.
+#[cfg(test)]
+pub(crate) fn unit_names_rows() -> Vec<Vec<&'static str>> {
+    domain_rows(UNIT_NAMES_TSV)
+}
+
+/// The data rows of every bundled domain TSV not named in `skip`.
+#[cfg(test)]
+pub(crate) fn bundled_rows_except(skip: &[&str]) -> Vec<Vec<&'static str>> {
+    rows_of(|n| !skip.contains(&n))
+}
+
+#[cfg(test)]
+fn rows_of(keep: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
+    DOMAINS
+        .iter()
+        .filter(|(name, _)| keep(name))
+        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .collect()
+}
+
 /// The data rows of every bundled domain TSV.
 #[cfg(test)]
 pub(crate) fn bundled_rows() -> Vec<Vec<&'static str>> {
-    DOMAINS
-        .iter()
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
-        .collect()
-}
-
-/// The data rows of the bundled `units.tsv` only.
-#[cfg(test)]
-pub(crate) fn units_rows() -> Vec<Vec<&'static str>> {
-    DOMAINS
-        .iter()
-        .filter(|(name, _)| *name == "units.tsv")
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
-        .collect()
-}
-
-/// The data rows of the bundled `unit-names.tsv` only.
-#[cfg(test)]
-pub(crate) fn unit_names_rows() -> Vec<Vec<&'static str>> {
-    DOMAINS
-        .iter()
-        .filter(|(name, _)| *name == "unit-names.tsv")
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
-        .collect()
+    bundled_rows_except(&[])
 }
 
 /// The data rows of every bundled domain TSV except `units.tsv` (the word
 /// domains, whose tags follow the majority rule — `unit-names.tsv` is one).
 #[cfg(test)]
 pub(crate) fn word_rows() -> Vec<Vec<&'static str>> {
-    DOMAINS
-        .iter()
-        .filter(|(name, _)| *name != "units.tsv")
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
-        .collect()
+    bundled_rows_except(&[UNITS_TSV])
 }
 
 #[cfg(test)]
@@ -337,6 +362,7 @@ mod tests {
         self as ts, pin_id, pin_shaped_id_def, scratch, write_id_def,
     };
     use super::*;
+    use crate::dict_source::pos_map;
 
     const IPPAN: &str = "名詞,一般,*,*,*,*,*";
     const JOSUUSHI: &str = "名詞,接尾,助数詞,*,*,*,*";
@@ -571,10 +597,9 @@ mod tests {
     fn t7_no_row_is_dropped() {
         let (dir, entries) = parse_bundled("t7");
         let parsed = entries.values().map(Vec::len).sum::<usize>();
+        // The word rows (T8) + the unit names (T16n) + the unit rows (T16);
+        // the counts are pinned there, not here.
         assert_eq!(parsed, bundled_rows().len());
-        // 57 word rows (47 vocabulary + 10 unit names, T16n) + 75 unit rows
-        // (T16 pins the unit count).
-        assert_eq!(parsed, 57 + 75);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -636,7 +661,7 @@ mod tests {
         // ALLOWED_POS_TAGS order: 名詞,一般 / 固有名詞,一般 / 人名,一般 /
         // 人名,名 / 組織 / 地域,一般 / 地域,国.
         assert_eq!(counts, [32, 5, 10, 1, 7, 1, 1, 0]);
-        assert_eq!(rows.len(), 57);
+        assert_eq!(counts.iter().sum::<usize>(), rows.len());
         assert!(PROPER_NOUN_ROWS
             .iter()
             .all(|(r, _)| rows.iter().filter(|f| f[0] == *r).count() == 1));
@@ -646,7 +671,7 @@ mod tests {
     /// domain uses that tag.
     #[test]
     fn t8_units_are_all_counters() {
-        let units = units_rows();
+        let units = domain_rows(UNITS_TSV);
         assert!(units.iter().all(|f| f[2] == JOSUUSHI), "{units:?}");
         assert!(word_rows().iter().all(|f| f[2] != JOSUUSHI));
     }
@@ -682,7 +707,7 @@ mod tests {
     /// or U+02DA), and no surface has a full-width alphanumeric.
     #[test]
     fn t15_unit_characters() {
-        let units = units_rows();
+        let units = domain_rows(UNITS_TSV);
         let mut mu = 0;
         let mut degree = 0;
         for f in &units {
@@ -716,7 +741,7 @@ mod tests {
     /// どしー / どえふ) — a silently dropped row fails here.
     #[test]
     fn t16_unit_row_count() {
-        assert_eq!(units_rows().len(), 75);
+        assert_eq!(domain_rows(UNITS_TSV).len(), 75);
     }
 
     /// T17: every unit surface meets the Latin-unit surface condition (ASCII
@@ -725,7 +750,7 @@ mod tests {
     /// rules.
     #[test]
     fn t17_unit_surfaces_are_pure_latin() {
-        for f in units_rows() {
+        for f in domain_rows(UNITS_TSV) {
             assert!(lex_core::converter::pure_latin(f[1]), "{f:?}");
         }
     }
@@ -735,7 +760,7 @@ mod tests {
     fn t10_resolved_ids_within_id_def() {
         let (dir, mut entries) = parse_bundled("t10");
         let id_def = pin_shaped_id_def(&dir);
-        let rows = fs::read_to_string(&id_def).unwrap().lines().count();
+        let rows = pos_map::id_def_row_count(&id_def).unwrap();
         ExtrasSource
             .resolve_pos_ids(&mut entries, Some(&id_def))
             .unwrap();

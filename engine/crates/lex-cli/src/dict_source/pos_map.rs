@@ -4,17 +4,27 @@ use std::path::Path;
 
 use super::DictSourceError;
 
-/// Parse Mozc `id.def` and return a map from POS tag string to Mozc ID.
+/// What one pass over a Mozc `id.def` yields.
+pub struct IdDef {
+    /// POS tag -> id, generic (`vocab == "*"`) rows only.
+    pub tags: std::collections::HashMap<String, u16>,
+    /// Number of non-blank rows (every row, generic or not).
+    pub rows: usize,
+    /// The largest id seen; `None` for an empty file.
+    pub max_id: Option<u16>,
+}
+
+/// Parse Mozc `id.def` once: the tag map, the row count and the largest id.
 ///
 /// Format: `<id> <pos1>,<pos2>,<pos3>,<pos4>,<conj_type>,<conj_form>,<vocab>`
 ///
-/// Only entries with `vocab == "*"` (generic) are included; vocabulary-specific
-/// entries are skipped because we want the general POS ID.
-pub fn parse_mozc_id_def(
-    path: &Path,
-) -> Result<std::collections::HashMap<String, u16>, DictSourceError> {
+/// Only entries with `vocab == "*"` (generic) are in `tags`; vocabulary-specific
+/// entries are skipped there because we want the general POS ID.
+pub fn parse_id_def(path: &Path) -> Result<IdDef, DictSourceError> {
     let content = fs::read_to_string(path).map_err(DictSourceError::Io)?;
-    let mut map = std::collections::HashMap::new();
+    let mut tags = std::collections::HashMap::new();
+    let mut rows = 0;
+    let mut max_id: Option<u16> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -28,6 +38,8 @@ pub fn parse_mozc_id_def(
         let id: u16 = id_str
             .parse()
             .map_err(|_| DictSourceError::Parse(format!("invalid id in id.def: {id_str}")))?;
+        rows += 1;
+        max_id = max_id.max(Some(id));
 
         // Parse the 7-field POS tag
         let fields: Vec<&str> = pos_tag.split(',').collect();
@@ -39,10 +51,24 @@ pub fn parse_mozc_id_def(
             continue;
         }
         // Store with vocab field intact (always "*")
-        map.insert(pos_tag.to_string(), id);
+        tags.insert(pos_tag.to_string(), id);
     }
 
-    Ok(map)
+    Ok(IdDef { tags, rows, max_id })
+}
+
+/// Parse Mozc `id.def` and return a map from POS tag string to Mozc ID (see
+/// [`parse_id_def`]).
+pub fn parse_mozc_id_def(
+    path: &Path,
+) -> Result<std::collections::HashMap<String, u16>, DictSourceError> {
+    parse_id_def(path).map(|d| d.tags)
+}
+
+/// The number of rows of `id.def` — `num_ids`, the bound every POS id stays
+/// below.
+pub fn id_def_row_count(path: &Path) -> Result<usize, DictSourceError> {
+    parse_id_def(path).map(|d| d.rows)
 }
 
 /// Look up `tag` (a full 7-field POS tag) in a map from [`parse_mozc_id_def`].

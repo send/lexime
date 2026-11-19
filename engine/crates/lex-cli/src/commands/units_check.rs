@@ -29,7 +29,7 @@ use std::path::Path;
 
 use lex_core::dict::{DictEntry, Dictionary, TrieDictionary};
 
-use crate::dict_source::{self, pos_map};
+use crate::dict_source::{self, pos_map, UNITS_TSV, UNIT_NAMES_TSV};
 
 const COUNTER_TAG: &str = "名詞,接尾,助数詞,*,*,*,*";
 const PREFIX_TAG: &str = "記号,アルファベット,*,*,*,*,*";
@@ -83,6 +83,14 @@ pub struct Derived {
     pub families: Vec<String>,
 }
 
+/// `pairs` as a set of borrowed (reading, surface).
+fn pair_set(pairs: &[Pair]) -> HashSet<(&str, &str)> {
+    pairs
+        .iter()
+        .map(|(r, s)| (r.as_str(), s.as_str()))
+        .collect()
+}
+
 fn fields<'a>(line: &'a str, kind: &str, n: usize, lineno: usize) -> Result<Vec<&'a str>, String> {
     let f: Vec<&str> = line.split('\t').collect();
     if f.len() != n || f.iter().any(|x| x.is_empty()) {
@@ -97,25 +105,21 @@ fn fields<'a>(line: &'a str, kind: &str, n: usize, lineno: usize) -> Result<Vec<
 pub fn parse_readings(content: &str) -> Result<Readings, String> {
     let mut r = Readings::default();
     let mut section: Option<&str> = None;
-    let mut set_section: Option<&str> = None;
     for (i, line) in content.lines().enumerate() {
         let lineno = i + 1;
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            set_section = None;
-            match name {
-                "S-std" => section = Some("S-std"),
-                "ref" => section = Some("ref"),
-                _ => match SET_SECTIONS.iter().find(|s| **s == name) {
-                    Some(s) => {
-                        section = Some(s);
-                        set_section = Some(s);
-                    }
-                    None => return Err(format!("line {lineno}: unknown section [{name}]")),
-                },
-            }
+            section = Some(match name {
+                "S-std" => "S-std",
+                "ref" => "ref",
+                _ => SET_SECTIONS
+                    .iter()
+                    .copied()
+                    .find(|s| *s == name)
+                    .ok_or_else(|| format!("line {lineno}: unknown section [{name}]"))?,
+            });
             continue;
         }
         let kind = line.split('\t').next().unwrap_or("");
@@ -165,7 +169,7 @@ pub fn parse_readings(content: &str) -> Result<Readings, String> {
                     families: f[6].split(',').map(String::from).collect(),
                 });
             }
-            (Some(s), k) if set_section == Some(s) => {
+            (Some(s), k) if SET_SECTIONS.contains(&s) => {
                 let want = if s == "S-snap" { "file" } else { "r" };
                 if k != want {
                     return Err(format!("line {lineno}: unknown record '{k}' in [{s}]"));
@@ -210,29 +214,25 @@ pub struct Ids {
 }
 
 pub fn read_ids(id_def: &Path) -> Result<Ids, String> {
-    let map = pos_map::parse_mozc_id_def(id_def).map_err(|e| format!("id.def: {e}"))?;
+    let def = pos_map::parse_id_def(id_def).map_err(|e| format!("id.def: {e}"))?;
     let tag = |t: &str| {
-        map.get(t)
+        def.tags
+            .get(t)
             .copied()
             .ok_or_else(|| format!("'{t}' not in {}", id_def.display()))
     };
-    let content = fs::read_to_string(id_def).map_err(|e| format!("{}: {e}", id_def.display()))?;
-    let rows = content.lines().filter(|l| !l.trim().is_empty()).count();
-    let max = content
-        .lines()
-        .filter_map(|l| l.split_once(' ')?.0.parse::<u32>().ok())
-        .max()
-        .ok_or("id.def has no rows")?;
-    if max as usize + 1 != rows {
+    let max = def.max_id.ok_or("id.def has no rows")?;
+    if usize::from(max) + 1 != def.rows {
         return Err(format!(
-            "id.def ids are not 0..rows (max id {max}, {rows} rows)"
+            "id.def ids are not 0..rows (max id {max}, {} rows)",
+            def.rows
         ));
     }
     Ok(Ids {
         counter: tag(COUNTER_TAG)?,
         prefix: tag(PREFIX_TAG)?,
         name: tag(NAME_TAG)?,
-        num_ids: rows as u32,
+        num_ids: def.rows as u32,
     })
 }
 
@@ -276,6 +276,11 @@ fn unit_entry(
         })
 }
 
+/// The lowest cost among `entries`.
+fn min_cost<'a>(entries: impl Iterator<Item = &'a DictEntry>) -> Option<i32> {
+    entries.map(|e| i32::from(e.cost)).min()
+}
+
 /// The cheapest entry of (reading, surface), POS not considered — the input
 /// of a derived reading's recomputation (each word's cheapest entry).
 fn cheapest_cost(
@@ -283,10 +288,7 @@ fn cheapest_cost(
     reading: &str,
     surface: &str,
 ) -> Result<i32, String> {
-    with_surface(lookup, reading, surface)
-        .iter()
-        .map(|e| i32::from(e.cost))
-        .min()
+    min_cost(with_surface(lookup, reading, surface).iter())
         .ok_or_else(|| format!("ref ({reading}, {surface}) is not in the dictionary"))
 }
 
@@ -300,13 +302,13 @@ fn ref_cost(
     surface: &str,
 ) -> Result<i32, String> {
     let found = with_surface(lookup, reading, surface);
-    found
-        .iter()
-        .filter(|e| e.left_id == ids.counter && e.right_id == ids.counter)
-        .map(|e| i32::from(e.cost))
-        .min()
-        .or_else(|| found.iter().map(|e| i32::from(e.cost)).min())
-        .ok_or_else(|| format!("ref ({reading}, {surface}) is not in the dictionary"))
+    min_cost(
+        found
+            .iter()
+            .filter(|e| e.left_id == ids.counter && e.right_id == ids.counter),
+    )
+    .or_else(|| min_cost(found.iter()))
+    .ok_or_else(|| format!("ref ({reading}, {surface}) is not in the dictionary"))
 }
 
 /// Run T14 (1)-(4). `units_tsv` / `unit_names` are the (reading, surface)
@@ -329,21 +331,16 @@ pub fn check(
     // The three places that list the units must agree: S-std, the units.tsv
     // that was compiled, and the ref section (each pair priced exactly once,
     // surfaces in the same order).
-    let std: Vec<&Pair> = readings.std_units.iter().collect();
-    let tsv: HashSet<&Pair> = units_tsv.iter().collect();
-    let std_set: HashSet<&Pair> = std.iter().copied().collect();
-    if std_set.len() != std.len() {
+    let tsv = pair_set(units_tsv);
+    let std_set = pair_set(&readings.std_units);
+    if std_set.len() != readings.std_units.len() {
         bad.push("[S-std] lists a unit pair twice".into());
     }
-    for p in &std_set {
-        if !tsv.contains(*p) {
-            bad.push(format!("S-std unit ({}, {}) is not in units.tsv", p.0, p.1));
-        }
+    for (r, s) in std_set.difference(&tsv) {
+        bad.push(format!("S-std unit ({r}, {s}) is not in units.tsv"));
     }
-    for p in &tsv {
-        if !std_set.contains(*p) {
-            bad.push(format!("units.tsv ({}, {}) is not in [S-std]", p.0, p.1));
-        }
+    for (r, s) in tsv.difference(&std_set) {
+        bad.push(format!("units.tsv ({r}, {s}) is not in [S-std]"));
     }
     let mut std_by_reading: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (r, s) in &readings.std_units {
@@ -396,25 +393,24 @@ pub fn check(
             .ok_or_else(|| format!("no `name` line for family member '{reading}'"))?;
         cheapest_cost(lookup, reading, n)
     };
-    let rank_check =
-        |reading: &str, surfaces: &[String], c_ref: i32, c_of: &HashMap<(&str, &str), i32>| {
-            let mut out = Vec::new();
-            for (i, s) in surfaces.iter().enumerate() {
-                let rank = i as i32 + 1;
-                if let Some(c) = c_of.get(&(reading, s.as_str())) {
-                    if c - c_ref != rank {
-                        out.push(format!(
-                            "(2) ({reading}, {s}): C {c} - c_ref {c_ref} = {}, rank {rank}",
-                            c - c_ref
-                        ));
-                    }
+    let rank_check = |reading: &str, surfaces: &[String], c_ref: i32| {
+        let mut out = Vec::new();
+        for (i, s) in surfaces.iter().enumerate() {
+            let rank = i as i32 + 1;
+            if let Some(c) = c_of.get(&(reading, s.as_str())) {
+                if c - c_ref != rank {
+                    out.push(format!(
+                        "(2) ({reading}, {s}): C {c} - c_ref {c_ref} = {}, rank {rank}",
+                        c - c_ref
+                    ));
                 }
             }
-            out
-        };
+        }
+        out
+    };
     for (r, n, ss) in &readings.names {
         match ref_cost(lookup, ids, r, n) {
-            Ok(c_ref) => bad.extend(rank_check(r, ss, c_ref, &c_of)),
+            Ok(c_ref) => bad.extend(rank_check(r, ss, c_ref)),
             Err(e) => bad.push(format!("(2) {e}")),
         }
     }
@@ -466,42 +462,40 @@ pub fn check(
         // The unit's rank is priced from the c_ref the dictionary gives (the
         // same route as a `name` line). No entry at all was reported above.
         if let Ok(c_ref) = ref_cost(lookup, ids, &d.reading, &d.name) {
-            bad.extend(rank_check(&d.reading, &d.surfaces, c_ref, &c_of));
+            bad.extend(rank_check(&d.reading, &d.surfaces, c_ref));
         }
-        let mut diffs: Vec<i32> = Vec::new();
-        let mut ok = true;
+        let before = bad.len();
+        let fail = |bad: &mut Vec<String>, e: String| {
+            bad.push(format!("(2) derived {}: {e}", d.reading));
+        };
         let base = match cheapest_of(&d.base) {
             Ok(b) => b,
             Err(e) => {
-                bad.push(format!("(2) derived {}: {e}", d.reading));
+                fail(&mut bad, e);
                 continue;
             }
         };
+        let mut diffs: Vec<i32> = Vec::new();
         for fid in &d.families {
             let Some((fbase, members)) = readings.families.get(fid) else {
-                bad.push(format!("(2) derived {}: unknown family '{fid}'", d.reading));
-                ok = false;
+                fail(&mut bad, format!("unknown family '{fid}'"));
                 continue;
             };
             let fb = match cheapest_of(fbase) {
                 Ok(c) => c,
                 Err(e) => {
-                    bad.push(format!("(2) derived {}: {e}", d.reading));
-                    ok = false;
+                    fail(&mut bad, e);
                     continue;
                 }
             };
             for m in members {
                 match cheapest_of(m) {
                     Ok(c) => diffs.push(c - fb),
-                    Err(e) => {
-                        bad.push(format!("(2) derived {}: {e}", d.reading));
-                        ok = false;
-                    }
+                    Err(e) => fail(&mut bad, e),
                 }
             }
         }
-        if !ok || diffs.is_empty() {
+        if bad.len() != before || diffs.is_empty() {
             continue;
         }
         let want = base + floor_median(&diffs);
@@ -519,38 +513,29 @@ pub fn check(
 
     // (2e) unit-names.tsv and the `derived` lines list the same
     // (reading, name) pairs.
-    let names_tsv: HashSet<&Pair> = unit_names.iter().collect();
-    let names_derived: HashSet<Pair> = readings
+    let names_tsv = pair_set(unit_names);
+    let names_derived: HashSet<(&str, &str)> = readings
         .derived
         .iter()
-        .map(|d| (d.reading.clone(), d.name.clone()))
+        .map(|d| (d.reading.as_str(), d.name.as_str()))
         .collect();
-    for p in &names_tsv {
-        if !names_derived.contains(*p) {
-            bad.push(format!(
-                "(2e) unit-names.tsv ({}, {}) has no `derived` line",
-                p.0, p.1
-            ));
-        }
+    for (r, s) in names_tsv.difference(&names_derived) {
+        bad.push(format!(
+            "(2e) unit-names.tsv ({r}, {s}) has no `derived` line"
+        ));
     }
-    for p in &names_derived {
-        if !names_tsv.contains(p) {
-            bad.push(format!(
-                "(2e) `derived` ({}, {}) is not in unit-names.tsv",
-                p.0, p.1
-            ));
-        }
+    for (r, s) in names_derived.difference(&names_tsv) {
+        bad.push(format!(
+            "(2e) `derived` ({r}, {s}) is not in unit-names.tsv"
+        ));
     }
 
     // (2g) Mozc has none of the derived names (whatever its cost or ids).
-    let mozc_set: HashSet<&Pair> = mozc.iter().collect();
-    for p in &names_derived {
-        if mozc_set.contains(p) {
-            bad.push(format!(
-                "(2g) Mozc has ({}, {}): delete its unit-names.tsv row, turn the `derived` line into a `name` line and count again",
-                p.0, p.1
-            ));
-        }
+    let mozc_set = pair_set(mozc);
+    for (r, s) in names_derived.intersection(&mozc_set) {
+        bad.push(format!(
+            "(2g) Mozc has ({r}, {s}): delete its unit-names.tsv row, turn the `derived` line into a `name` line and count again"
+        ));
     }
 
     // (3) prefixes.
@@ -569,6 +554,10 @@ pub fn check(
     }
 
     // (4) every symbols/extras entry exists with both ids below num_ids.
+    // `curated::resolve_pos_ids` guarantees this by construction (it replaces
+    // every sentinel with an id.def row id); this check confirms that
+    // invariant end to end, through the merge and the serialization into the
+    // built dictionary.
     for (r, s) in curated {
         let found = with_surface(lookup, r, s);
         if found.is_empty() {
@@ -586,38 +575,34 @@ pub fn check(
     bad
 }
 
-fn extras_tsv_pairs(extras_dir: &Path, file: &str) -> Result<Vec<Pair>, String> {
-    let path = extras_dir.join(file);
-    let content = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(content
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            Some((f.next()?.to_string(), f.next()?.to_string()))
-        })
-        .collect())
+/// The raw parse of the source `name` in `dir`.
+fn parse_source(name: &str, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, String> {
+    let src = dict_source::from_name(name).ok_or_else(|| format!("no source '{name}'"))?;
+    src.parse_dir(dir)
+        .map_err(|e| format!("parsing {name} in {}: {e}", dir.display()))
+}
+
+/// Every (reading, surface) of a parsed source.
+fn pairs_of(parsed: impl IntoIterator<Item = (String, Vec<DictEntry>)>) -> Vec<Pair> {
+    parsed
+        .into_iter()
+        .flat_map(|(r, list)| list.into_iter().map(move |e| (r.clone(), e.surface)))
+        .collect()
 }
 
 fn curated_pairs(name: &str, dir: &Path) -> Result<Vec<Pair>, String> {
-    let src = dict_source::from_name(name).ok_or_else(|| format!("no source '{name}'"))?;
-    let parsed = src
-        .parse_dir(dir)
-        .map_err(|e| format!("parsing {name} in {}: {e}", dir.display()))?;
-    Ok(parsed
-        .into_iter()
-        .flat_map(|(r, list)| list.into_iter().map(move |e| (r.clone(), e.surface)))
-        .collect())
+    Ok(pairs_of(parse_source(name, dir)?))
 }
 
 /// The (reading, surface) pairs of the pinned Mozc source in `dir`, only for
 /// `readings` (the whole source is ~700k entries and only the derived names
 /// are asked about). A directory with no `dictionary*.txt` is an error.
 fn mozc_pairs(dir: &Path, readings: &HashSet<&str>) -> Result<Vec<Pair>, String> {
-    Ok(curated_pairs("mozc", dir)?
-        .into_iter()
-        .filter(|(r, _)| readings.contains(r.as_str()))
-        .collect())
+    Ok(pairs_of(
+        parse_source("mozc", dir)?
+            .into_iter()
+            .filter(|(r, _)| readings.contains(r.as_str())),
+    ))
 }
 
 /// CLI entry. Prints each failure and returns `Err` (exit 1) on any.
@@ -635,8 +620,8 @@ pub fn run(
     let content = fs::read_to_string(readings_file)
         .map_err(|e| format!("reading set {readings_file}: {e}"))?;
     let readings = parse_readings(&content).map_err(|e| format!("{readings_file}: {e}"))?;
-    let units_tsv = extras_tsv_pairs(Path::new(extras_dir), "units.tsv")?;
-    let unit_names = extras_tsv_pairs(Path::new(extras_dir), "unit-names.tsv")?;
+    let units_tsv = dict_source::parse_extras_domain(Path::new(extras_dir), UNITS_TSV)?;
+    let unit_names = dict_source::parse_extras_domain(Path::new(extras_dir), UNIT_NAMES_TSV)?;
     let mut curated = curated_pairs("symbols", Path::new(symbols_dir))?;
     curated.extend(curated_pairs("extras", Path::new(extras_dir))?);
 
@@ -676,6 +661,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dict_source::test_support::scratch;
 
     const COUNTER: u16 = 2011;
     const ALPHA: u16 = 2643;
@@ -716,22 +702,25 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         let mut put = |r: &str, v: Vec<DictEntry>| {
             m.insert(r.into(), v);
         };
-        put("びょう", vec![e("秒", 2500, 2011), e("s", 2501, COUNTER)]);
+        put(
+            "びょう",
+            vec![e("秒", 2500, COUNTER), e("s", 2501, COUNTER)],
+        );
         put(
             "なのびょう",
-            vec![e("ナノ秒", 4500, 1851), e("ns", 4501, COUNTER)],
+            vec![e("ナノ秒", 4500, IPPAN), e("ns", 4501, COUNTER)],
         );
         put(
             "びっと",
             vec![
-                e("ビット", 3000, 1851),
+                e("ビット", 3000, IPPAN),
                 e("bit", 3001, COUNTER),
                 e("b", 3002, COUNTER),
             ],
         );
         put(
             "せっし",
-            vec![e("摂氏", 6000, 1851), e("°C", 6001, COUNTER)],
+            vec![e("摂氏", 6000, IPPAN), e("°C", 6001, COUNTER)],
         );
         put("どしー", vec![e("°C", 6001, COUNTER)]);
         // derived: 2500 + median(4500 - 2500) = 4500; its name is a
@@ -760,6 +749,10 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         curated: &[Pair],
     ) -> Vec<String> {
         run_check_with(w, readings, tsv, &unit_names(), curated, &[])
+    }
+
+    fn check_world(w: &HashMap<String, Vec<DictEntry>>) -> Vec<String> {
+        run_check(w, &readings_ok(), &tsv(), &curated())
     }
 
     fn run_check_with(
@@ -812,7 +805,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
 
     #[test]
     fn passes_on_a_consistent_world() {
-        let bad = run_check(&world(), &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&world());
         assert!(bad.is_empty(), "{bad:?}");
     }
 
@@ -820,7 +813,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn cost_off_by_one_fails_2() {
         let mut w = world();
         w.get_mut("びょう").unwrap()[1].cost += 1;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter().any(|b| b.starts_with("(2) (びょう, s)")),
             "{bad:?}"
@@ -831,14 +824,14 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn ref_cost_change_fails_2() {
         let mut w = world();
         w.get_mut("びょう").unwrap()[0].cost += 1;
-        assert!(!run_check(&w, &readings_ok(), &tsv(), &curated()).is_empty());
+        assert!(!check_world(&w).is_empty());
     }
 
     #[test]
     fn swapped_pos_fails_1() {
         let mut w = world();
-        w.get_mut("びょう").unwrap()[1] = e("s", 2501, 1851);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        w.get_mut("びょう").unwrap()[1] = e("s", 2501, IPPAN);
+        let bad = check_world(&w);
         assert!(bad.iter().any(|b| b.starts_with("(1)")), "{bad:?}");
     }
 
@@ -846,7 +839,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn alias_drift_fails_2() {
         let mut w = world();
         w.get_mut("どしー").unwrap()[0].cost += 1;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.iter().any(|b| b.contains("alias")), "{bad:?}");
     }
 
@@ -863,7 +856,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn bit_before_b_rank() {
         let mut w = world();
         w.get_mut("びっと").unwrap()[2].cost = 3001; // b at rank 1's price
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter().any(|b| b.starts_with("(2) (びっと, b)")),
             "{bad:?}"
@@ -873,8 +866,8 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     #[test]
     fn prefix_pos_fails_3() {
         let mut w = world();
-        w.get_mut("なの").unwrap()[0] = e("n", 0, 2011);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        w.get_mut("なの").unwrap()[0] = e("n", 0, COUNTER);
+        let bad = check_world(&w);
         assert!(bad.iter().any(|b| b.starts_with("(3)")), "{bad:?}");
     }
 
@@ -882,7 +875,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn id_out_of_range_fails_4() {
         let mut w = world();
         w.get_mut("なの").unwrap()[0] = e("n", 0, 2672);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.iter().any(|b| b.starts_with("(4)")), "{bad:?}");
     }
 
@@ -919,12 +912,12 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
             ],
         );
         w.insert("どしー".into(), vec![e("°C", 6001, COUNTER)]);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.is_empty(), "{bad:?}");
         // The cheapest (5900) would price the unit at 5901: that now fails.
         w.get_mut("せっし").unwrap()[2].cost = 5901;
         w.insert("どしー".into(), vec![e("°C", 5901, COUNTER)]);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter().any(|b| b.starts_with("(2) (せっし, °C)")),
             "{bad:?}"
@@ -943,7 +936,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
                 e("°C", 6001, COUNTER),
             ],
         );
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.is_empty(), "{bad:?}");
     }
 
@@ -951,7 +944,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn derived_unit_is_priced_from_the_dictionary_name() {
         let mut w = world();
         w.get_mut("ぴこびょう").unwrap()[1].cost = 4502;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter().any(|b| b.starts_with("(2) (ぴこびょう, ps)")),
             "{bad:?}"
@@ -962,7 +955,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn derived_name_missing_fails_2d() {
         let mut w = world();
         w.get_mut("ぴこびょう").unwrap().remove(0);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.iter().any(|b| b.starts_with("(2d)")), "{bad:?}");
     }
 
@@ -971,7 +964,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         // rev 9.10's shape (助数詞 on both sides) is no longer the one.
         let mut w = world();
         w.get_mut("ぴこびょう").unwrap()[0] = e("ピコ秒", 4500, COUNTER);
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter()
                 .any(|b| b.starts_with("(2d)") && b.contains("ids")),
@@ -982,24 +975,17 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     #[test]
     fn derived_name_with_one_side_ippan_fails_2d() {
         let mut w = world();
-        let mut half = e("ピコ秒", 4500, IPPAN);
-        half.right_id = COUNTER;
-        w.get_mut("ぴこびょう").unwrap()[0] = half;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
-        assert!(
-            bad.iter()
-                .any(|b| b.starts_with("(2d)") && b.contains("ids")),
-            "{bad:?}"
-        );
-        let mut half = e("ピコ秒", 4500, IPPAN);
-        half.left_id = COUNTER;
-        w.get_mut("ぴこびょう").unwrap()[0] = half;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
-        assert!(
-            bad.iter()
-                .any(|b| b.starts_with("(2d)") && b.contains("ids")),
-            "{bad:?}"
-        );
+        for (left, right) in [(IPPAN, COUNTER), (COUNTER, IPPAN)] {
+            let mut half = e("ピコ秒", 4500, IPPAN);
+            (half.left_id, half.right_id) = (left, right);
+            w.get_mut("ぴこびょう").unwrap()[0] = half;
+            let bad = check_world(&w);
+            assert!(
+                bad.iter()
+                    .any(|b| b.starts_with("(2d)") && b.contains("ids")),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
@@ -1008,7 +994,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         w.get_mut("ぴこびょう")
             .unwrap()
             .push(e("ピコ秒", 4500, 1920));
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter()
                 .any(|b| b.starts_with("(2d)") && b.contains("exactly 1")),
@@ -1020,7 +1006,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     fn derived_name_cost_off_fails_2d() {
         let mut w = world();
         w.get_mut("ぴこびょう").unwrap()[0].cost = 4400;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(
             bad.iter()
                 .any(|b| b.starts_with("(2d)") && b.contains("costs")),
@@ -1038,7 +1024,7 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
             .insert(1, e("ナノ秒", 6000, COUNTER));
         // ns now stands behind the same-id name (6000).
         w.get_mut("なのびょう").unwrap()[2].cost = 6001;
-        let bad = run_check(&w, &readings_ok(), &tsv(), &curated());
+        let bad = check_world(&w);
         assert!(bad.is_empty(), "{bad:?}");
     }
 
@@ -1088,29 +1074,18 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         assert!(bad.is_empty(), "{bad:?}");
     }
 
-    fn scratch_mozc(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lexime_units_check_{name}"));
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).unwrap();
-        for (f, body) in files {
-            fs::write(dir.join(f), body).unwrap();
-        }
-        dir
-    }
-
     // Mozc's cost for the name does not matter (cheap or dear), only that the
     // (reading, surface) is in the source; a missing / empty source fails.
     #[test]
     fn mozc_source_is_read_whatever_the_cost() {
         let want: HashSet<&str> = ["ぴこびょう"].into_iter().collect();
         for cost in [100, 30000] {
-            let dir = scratch_mozc(
-                &format!("cost{cost}"),
-                &[(
-                    "dictionary00.txt",
-                    &format!("ぴこびょう\t1851\t1851\t{cost}\tピコ秒\n"),
-                )],
-            );
+            let dir = scratch(&format!("units_check_cost{cost}"));
+            fs::write(
+                dir.join("dictionary00.txt"),
+                format!("ぴこびょう\t{IPPAN}\t{IPPAN}\t{cost}\tピコ秒\n"),
+            )
+            .unwrap();
             let pairs = mozc_pairs(&dir, &want).unwrap();
             assert_eq!(
                 pairs,
@@ -1132,10 +1107,11 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
     #[test]
     fn missing_or_empty_mozc_dir_fails() {
         let want: HashSet<&str> = ["ぴこびょう"].into_iter().collect();
-        let missing = std::env::temp_dir().join("lexime_units_check_no_such_dir");
-        fs::remove_dir_all(&missing).ok();
+        let missing = scratch("units_check_no_such_dir");
+        fs::remove_dir_all(&missing).unwrap();
         assert!(mozc_pairs(&missing, &want).is_err());
-        let empty = scratch_mozc("empty", &[("unrelated.txt", "x")]);
+        let empty = scratch("units_check_empty");
+        fs::write(empty.join("unrelated.txt"), "x").unwrap();
         assert!(mozc_pairs(&empty, &want).is_err());
         fs::remove_dir_all(&empty).ok();
     }
@@ -1175,20 +1151,15 @@ derived\tぴこびょう\tピコ秒\t7000\tps\tびょう\tびょう
         assert_eq!(r.derived.len(), 10);
         // Each derived reading names its Japanese name, and those are the
         // rows of the bundled unit-names.tsv.
-        let tsv_pairs: HashSet<Pair> = include_str!("../dict_source/extras/unit-names.tsv")
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-            .map(|l| {
-                let mut f = l.split('\t');
-                (f.next().unwrap().to_string(), f.next().unwrap().to_string())
-            })
+        let tsv_pairs: HashSet<Pair> = dict_source::bundled_unit_names_rows()
+            .iter()
+            .map(|f| (f[0].to_string(), f[1].to_string()))
             .collect();
         let derived_pairs: HashSet<Pair> = r
             .derived
             .iter()
             .map(|d| (d.reading.clone(), d.name.clone()))
             .collect();
-        assert_eq!(derived_pairs.len(), 10);
         assert_eq!(derived_pairs, tsv_pairs);
         assert_eq!(r.aliases.len(), 2);
         assert_eq!(r.names.len(), 57);
