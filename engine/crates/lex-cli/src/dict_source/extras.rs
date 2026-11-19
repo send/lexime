@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use super::curated::{self, CostColumn};
-use super::{parse_dict_files, DictSource, DictSourceError};
+use super::{parse_dict_files_named, DictSource, DictSourceError, ParsedLine};
 use lex_core::dict::DictEntry;
 
 /// Curated domain-specific vocabulary not covered by Mozc UT.
@@ -54,14 +54,34 @@ use lex_core::dict::DictEntry;
 ///    the cost anew: a proper-noun row by the cost rule on
 ///    [`ALLOWED_POS_TAGS`], a common-noun row grounded in the same reading's
 ///    Mozc entries or in a before/after measurement.
-const DOMAINS: &[(&str, &str)] = &[
-    ("it.tsv", include_str!("extras/it.tsv")),
-    ("food.tsv", include_str!("extras/food.tsv")),
-    ("geography.tsv", include_str!("extras/geography.tsv")),
-    ("history.tsv", include_str!("extras/history.tsv")),
-    ("culture.tsv", include_str!("extras/culture.tsv")),
-    (UNITS_TSV, include_str!("extras/units.tsv")),
-    (UNIT_NAMES_TSV, include_str!("extras/unit-names.tsv")),
+///
+/// Each domain also names the POS tags its rows may use (the third column of
+/// [`DOMAINS`]): the parser rejects any other tag, so a counter row cannot
+/// enter a word domain nor a common-noun row the units domain.
+const DOMAINS: &[(&str, &str, &[&str])] = &[
+    ("it.tsv", include_str!("extras/it.tsv"), WORD_POS_TAGS),
+    ("food.tsv", include_str!("extras/food.tsv"), WORD_POS_TAGS),
+    (
+        "geography.tsv",
+        include_str!("extras/geography.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (
+        "history.tsv",
+        include_str!("extras/history.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (
+        "culture.tsv",
+        include_str!("extras/culture.tsv"),
+        WORD_POS_TAGS,
+    ),
+    (UNITS_TSV, include_str!("extras/units.tsv"), UNIT_POS_TAGS),
+    (
+        UNIT_NAMES_TSV,
+        include_str!("extras/unit-names.tsv"),
+        WORD_POS_TAGS,
+    ),
 ];
 
 /// The unit symbols' domain file (priced by the cost rule in its header, not
@@ -71,8 +91,10 @@ pub(crate) const UNITS_TSV: &str = "units.tsv";
 pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 
 /// Closed set of POS tags an extras row may use: 名詞,一般, the six
-/// 名詞,固有名詞 subdivisions extras has words for, and 名詞,接尾,助数詞 (the
-/// `units` domain only). A tag outside the set is
+/// 名詞,固有名詞 subdivisions extras has words for ([`WORD_POS_TAGS`], what
+/// every word domain takes), and 名詞,接尾,助数詞 ([`UNIT_POS_TAGS`], what
+/// the `units` domain alone takes; each domain's set is in [`DOMAINS`]). A tag
+/// outside the domain's set is
 /// a parse error, so a typo cannot silently match another id.def tag; a new
 /// subdivision is added here in the same change as the row that needs it.
 /// The numeric ids are resolved from the pinned id.def at compile time by
@@ -155,8 +177,9 @@ pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 /// POS the Latin-unit rules key on (a counter × a pure-Latin surface stands
 /// only after a typed digit). Its cost is not a proper-noun median nor 5000:
 /// `C = c_ref + rank`, c_ref being the cost of the unit's Japanese name: in
-/// Mozc, the cheapest entry of that name whose ids are both the unit's own
-/// (the counter id) if there is one, else the cheapest entry; for the 10
+/// the built dictionary (`engine/data/lexime.dict`, after compile's role cost
+/// correction), the cheapest entry of that name whose ids are both the unit's
+/// own (the counter id) if there is one, else the cheapest entry; for the 10
 /// readings Mozc has no name for, the name is a row of `unit-names.tsv` (next
 /// section) and c_ref is its cost. Derived and stated in the TSV's header and
 /// above each reading.
@@ -172,9 +195,9 @@ pub(crate) const UNIT_NAMES_TSV: &str = "unit-names.tsv";
 /// list are the section comment in the TSV) — a counter POS here would make
 /// `ここ2キロビット`-type input convert to the 助数詞 name. **The cost is
 /// none of the common-noun 5000, a cost-override or a same-reading Mozc
-/// entry (the ways a common-noun row's cost is otherwise decided below): it is the derived value** — the cheapest Mozc entry of the same
-/// family's unit-less base plus the floored median of the (compound − base)
-/// differences over the compounds Mozc has. The formula is in the header of
+/// entry (the ways a common-noun row's cost is otherwise decided below): it is the derived value** — the cheapest entry, in the built
+/// dictionary, of the same family's unit-less base plus the floored median of
+/// the (compound − base) differences over the compounds the dictionary has. The formula is in the header of
 /// `units.tsv`; the values and their inputs are the `derived` lines of
 /// `testcorpus/unit-symbol-readings.txt`, and `dictool check-units` recomputes
 /// them from the dictionary, checks each name is one 名詞,一般 entry at that
@@ -252,11 +275,44 @@ const ALLOWED_POS_TAGS: &[&str] = &[
     "名詞,接尾,助数詞,*,*,*,*",
 ];
 
+/// The tags of every domain but `units.tsv` ([`ALLOWED_POS_TAGS`] without the
+/// counter).
+const WORD_POS_TAGS: &[&str] = &[
+    "名詞,一般,*,*,*,*,*",
+    "名詞,固有名詞,一般,*,*,*,*",
+    "名詞,固有名詞,人名,一般,*,*,*",
+    "名詞,固有名詞,人名,名,*,*,*",
+    "名詞,固有名詞,組織,*,*,*,*",
+    "名詞,固有名詞,地域,一般,*,*,*",
+    "名詞,固有名詞,地域,国,*,*,*",
+];
+
+/// The only tag of `units.tsv`.
+const UNIT_POS_TAGS: &[&str] = &["名詞,接尾,助数詞,*,*,*,*"];
+
+/// One row of the domain file `file`: the curated grammar over
+/// [`ALLOWED_POS_TAGS`] (so the sentinel ids index the one table
+/// [`ExtrasSource::resolve_pos_ids`] resolves), then the domain's own tag set.
+fn parse_row(file: &str, fields: &[&str]) -> Result<Option<ParsedLine>, String> {
+    let (_, _, allowed) = DOMAINS
+        .iter()
+        .find(|(n, _, _)| *n == file)
+        .ok_or_else(|| format!("{file} is not a registered extras domain"))?;
+    let row = curated::parse_curated_line(fields, CostColumn::Required, ALLOWED_POS_TAGS)?;
+    if !allowed.contains(&fields[2]) {
+        return Err(format!(
+            "POS tag {:?} is not in the allowed set {allowed:?} of {file}",
+            fields[2]
+        ));
+    }
+    Ok(Some(row))
+}
+
 pub struct ExtrasSource;
 
 impl DictSource for ExtrasSource {
     fn parse_dir(&self, dir: &Path) -> Result<HashMap<String, Vec<DictEntry>>, DictSourceError> {
-        parse_dict_files(
+        parse_dict_files_named(
             dir,
             "extras *.tsv",
             // Only parse files that are still registered in DOMAINS. This
@@ -264,12 +320,9 @@ impl DictSource for ExtrasSource {
             // file lingers in the gitignored extras-raw/ dir) from silently
             // leaking entries into the merged dict and making builds
             // non-deterministic. Mirrors symbols.rs's exact-name match.
-            |name| DOMAINS.iter().any(|(n, _)| *n == name),
+            |name| DOMAINS.iter().any(|(n, _, _)| *n == name),
             '\t',
-            |fields| {
-                curated::parse_curated_line(fields, CostColumn::Required, ALLOWED_POS_TAGS)
-                    .map(Some)
-            },
+            parse_row,
         )
     }
 
@@ -283,7 +336,7 @@ impl DictSource for ExtrasSource {
 
     fn fetch(&self, dest: &Path) -> Result<(), DictSourceError> {
         fs::create_dir_all(dest).map_err(DictSourceError::Io)?;
-        for (name, content) in DOMAINS {
+        for (name, content, _) in DOMAINS {
             fs::write(dest.join(name), content).map_err(DictSourceError::Io)?;
             eprintln!("  {name} ({} bytes)", content.len());
         }
@@ -297,23 +350,20 @@ impl DictSource for ExtrasSource {
     }
 }
 
-/// The `(reading, surface)` pairs of the domain file `name` in `dir`, parsed
-/// by the same row grammar as [`ExtrasSource::parse_dir`] (a malformed row or
-/// a missing file is an error naming the file).
-pub(crate) fn parse_domain(dir: &Path, name: &str) -> Result<Vec<(String, String)>, String> {
-    let path = dir.join(name);
-    let content = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut pairs = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
-        let row = curated::parse_curated_line(&fields, CostColumn::Required, ALLOWED_POS_TAGS)
-            .map_err(|msg| format!("{}:{}: {msg}", path.display(), i + 1))?;
-        pairs.push((row.reading, row.surface));
-    }
-    Ok(pairs)
+/// Every registered domain file of `dir`, parsed one by one by the row
+/// grammar of [`ExtrasSource::parse_dir`], keyed by file name (so a caller
+/// that needs a domain on its own reads the directory once). A missing
+/// domain file or a malformed row is an error.
+pub(crate) fn parse_by_domain(
+    dir: &Path,
+) -> Result<HashMap<&'static str, HashMap<String, Vec<DictEntry>>>, DictSourceError> {
+    DOMAINS
+        .iter()
+        .map(|(name, _, _)| {
+            parse_dict_files_named(dir, name, |n| n == *name, '\t', parse_row)
+                .map(|entries| (*name, entries))
+        })
+        .collect()
 }
 
 /// The data rows of the bundled domain TSV `name`.
@@ -338,8 +388,8 @@ pub(crate) fn bundled_rows_except(skip: &[&str]) -> Vec<Vec<&'static str>> {
 fn rows_of(keep: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
     DOMAINS
         .iter()
-        .filter(|(name, _)| keep(name))
-        .flat_map(|(_, content)| super::curated::test_support::data_rows(content))
+        .filter(|(name, _, _)| keep(name))
+        .flat_map(|(_, content, _)| super::curated::test_support::data_rows(content))
         .collect()
 }
 
@@ -458,12 +508,17 @@ mod tests {
     #[test]
     fn t2_follows_renumbered_id() {
         let dir = scratch("extras_t2");
-        let body: String = ALLOWED_POS_TAGS
-            .iter()
-            .enumerate()
-            .map(|(i, tag)| format!("{}\tx{i}\t{tag}\t5000\n", "あ".repeat(i + 1)))
-            .collect();
-        fs::write(dir.join("it.tsv"), body).unwrap();
+        // Each tag in a domain that takes it (the counter only in units.tsv).
+        for (file, tags) in [("it.tsv", WORD_POS_TAGS), (UNITS_TSV, UNIT_POS_TAGS)] {
+            let body: String = tags
+                .iter()
+                .map(|tag| {
+                    let i = ALLOWED_POS_TAGS.iter().position(|t| t == tag).unwrap();
+                    format!("{}\tx{i}\t{tag}\t5000\n", "あ".repeat(i + 1))
+                })
+                .collect();
+            fs::write(dir.join(file), body).unwrap();
+        }
         let mut entries = ExtrasSource.parse_dir(&dir).unwrap();
         let overrides: Vec<(usize, &str)> = ALLOWED_POS_TAGS
             .iter()
@@ -492,6 +547,60 @@ mod tests {
         assert!(err.contains("it.tsv:2:"), "{err}");
         assert!(err.contains("記号,一般,*,*,*,*,*"), "{err}");
         assert!(err.contains("not in the allowed set"), "{err}");
+    }
+
+    /// The per-domain sets are the closed set split in two, in the same order.
+    #[test]
+    fn domain_tag_sets_partition_the_allowed_set() {
+        let joined: Vec<&str> = WORD_POS_TAGS.iter().chain(UNIT_POS_TAGS).copied().collect();
+        assert_eq!(joined, ALLOWED_POS_TAGS);
+        for (name, _, allowed) in DOMAINS {
+            let want = if *name == UNITS_TSV {
+                UNIT_POS_TAGS
+            } else {
+                WORD_POS_TAGS
+            };
+            assert_eq!(*allowed, want, "{name}");
+        }
+    }
+
+    /// A counter row in a word domain (unit-names.tsv included) and a
+    /// 名詞,一般 row in units.tsv are compile errors naming file and tag.
+    #[test]
+    fn tag_outside_the_domains_set_is_err() {
+        for file in ["it.tsv", UNIT_NAMES_TSV] {
+            let err = ts::parse_err(
+                &ExtrasSource,
+                file,
+                &format!("extras_counter_in_{file}"),
+                &format!("ぴこびょう\tps\t{JOSUUSHI}\t4501\n"),
+            );
+            assert!(err.contains(&format!("{file}:1:")), "{err}");
+            assert!(err.contains(JOSUUSHI), "{err}");
+            assert!(err.contains("not in the allowed set"), "{err}");
+        }
+        let err = ts::parse_err(
+            &ExtrasSource,
+            UNITS_TSV,
+            "extras_ippan_in_units",
+            &format!("ぴこびょう\tピコ秒\t{IPPAN}\t4500\n"),
+        );
+        assert!(err.contains("units.tsv:1:"), "{err}");
+        assert!(err.contains(IPPAN), "{err}");
+        assert!(err.contains("not in the allowed set"), "{err}");
+    }
+
+    /// `parse_by_domain` reads each registered file once with the same rows
+    /// as `parse_dir`.
+    #[test]
+    fn parse_by_domain_splits_the_bundled_domains() {
+        let (dir, all) = parse_bundled("by_domain");
+        let by = parse_by_domain(&dir).unwrap();
+        assert_eq!(by.len(), DOMAINS.len());
+        let n = |m: &HashMap<String, Vec<DictEntry>>| m.values().map(Vec::len).sum::<usize>();
+        assert_eq!(by.values().map(n).sum::<usize>(), n(&all));
+        assert_eq!(n(&by[UNITS_TSV]), domain_rows(UNITS_TSV).len());
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// T4: an allowed tag missing from id.def is an error naming the tag; a

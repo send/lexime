@@ -12,6 +12,8 @@ pub struct IdDef {
     pub rows: usize,
     /// The largest id seen; `None` for an empty file.
     pub max_id: Option<u16>,
+    /// Every row as (id, 7-field tag with its vocab), file order.
+    pub entries: Vec<(u16, String)>,
 }
 
 /// Parse Mozc `id.def` once: the tag map, the row count and the largest id.
@@ -25,6 +27,7 @@ pub fn parse_id_def(path: &Path) -> Result<IdDef, DictSourceError> {
     let mut tags = std::collections::HashMap::new();
     let mut rows = 0;
     let mut max_id: Option<u16> = None;
+    let mut entries = Vec::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -40,6 +43,7 @@ pub fn parse_id_def(path: &Path) -> Result<IdDef, DictSourceError> {
             .map_err(|_| DictSourceError::Parse(format!("invalid id in id.def: {id_str}")))?;
         rows += 1;
         max_id = max_id.max(Some(id));
+        entries.push((id, pos_tag.to_string()));
 
         // Parse the 7-field POS tag
         let fields: Vec<&str> = pos_tag.split(',').collect();
@@ -54,7 +58,12 @@ pub fn parse_id_def(path: &Path) -> Result<IdDef, DictSourceError> {
         tags.insert(pos_tag.to_string(), id);
     }
 
-    Ok(IdDef { tags, rows, max_id })
+    Ok(IdDef {
+        tags,
+        rows,
+        max_id,
+        entries,
+    })
 }
 
 /// Parse Mozc `id.def` and return a map from POS tag string to Mozc ID (see
@@ -145,22 +154,10 @@ pub const ROLE_COUNTER: u8 = 7;
 /// - `6` (PersonName): 人名 (e.g., 名詞,固有名詞,人名,姓 / 名詞,固有名詞,人名,名)
 /// - `7` (Counter): 助数詞 (e.g., 名詞,接尾,助数詞) — narrower than Suffix
 pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
-    let content = fs::read_to_string(id_def_path).map_err(DictSourceError::Io)?;
-    let mut max_id: u16 = 0;
-    let mut entries: Vec<(u16, u8)> = Vec::new();
+    let def = parse_id_def(id_def_path)?;
+    let mut roles = vec![ROLE_CONTENT_WORD; def.max_id.map_or(1, |m| usize::from(m) + 1)];
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (id_str, pos_tag) = line
-            .split_once(' ')
-            .ok_or_else(|| DictSourceError::Parse(format!("invalid id.def line: {line}")))?;
-        let id: u16 = id_str
-            .parse()
-            .map_err(|_| DictSourceError::Parse(format!("invalid id in id.def: {id_str}")))?;
-
+    for (id, pos_tag) in &def.entries {
         let fields: Vec<&str> = pos_tag.split(',').collect();
         let role = if fields.len() >= 2 {
             if fields[0] == "助動詞" || fields[0] == "助詞" {
@@ -190,15 +187,7 @@ pub fn morpheme_roles(id_def_path: &Path) -> Result<Vec<u8>, DictSourceError> {
             ROLE_CONTENT_WORD
         };
 
-        if id > max_id {
-            max_id = id;
-        }
-        entries.push((id, role));
-    }
-
-    let mut roles = vec![ROLE_CONTENT_WORD; max_id as usize + 1];
-    for (id, role) in entries {
-        roles[id as usize] = role;
+        roles[usize::from(*id)] = role;
     }
     Ok(roles)
 }
