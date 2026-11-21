@@ -3,8 +3,8 @@ description: Install the verified shoutx release used to serialize GitHub Action
 runs:
   using: composite
   steps:
-    - uses: send/setup-shoutx@eb61a2361c6c0e0d37ab9cca1c50e998b4a94c24 # v0.1.0
+    - uses: send/setup-shoutx@4d56952710c9e225285e0474b381d6a10f4d3fdd # v0.2.0
       with:
-        shoutx-version: '1.0.0'
-        checksums-sha256: a6336c0e538c54e1fe4e35025983694e4f60ba9ab8aefda740796ab95ee13875
+        shoutx-version: '2.0.0'
+        checksums-sha256: b366c56f14818e856939742c807889af882d881b5fa0ef6ed60ffd63eb3c6553
         github-token: ${{ github.token }}
